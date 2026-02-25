@@ -204,10 +204,10 @@ fn extract_pi_json_final(payload: &str) -> Option<String> {
             _ => None,
         };
 
-        if let Some(text) = candidate {
-            if !text.trim().is_empty() {
-                final_text = Some(text);
-            }
+        if let Some(text) = candidate
+            && !text.trim().is_empty()
+        {
+            final_text = Some(text);
         }
     }
 
@@ -219,10 +219,10 @@ fn join_text_blocks(node: &Value) -> Option<String> {
     let mut chunks = Vec::new();
     for item in array {
         let item_type = item.get("type").and_then(Value::as_str);
-        if item_type == Some("text") {
-            if let Some(text) = item.get("text").and_then(Value::as_str) {
-                chunks.push(text.to_string());
-            }
+        if item_type == Some("text")
+            && let Some(text) = item.get("text").and_then(Value::as_str)
+        {
+            chunks.push(text.to_string());
         }
     }
 

@@ -288,17 +288,17 @@ fn ensure_file(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    if let Some(source) = preferred_source {
-        if source.exists() {
-            fs::copy(source, target).with_context(|| {
-                format!(
-                    "failed to copy template {} -> {}",
-                    source.display(),
-                    target.display()
-                )
-            })?;
-            return Ok(());
-        }
+    if let Some(source) = preferred_source
+        && source.exists()
+    {
+        fs::copy(source, target).with_context(|| {
+            format!(
+                "failed to copy template {} -> {}",
+                source.display(),
+                target.display()
+            )
+        })?;
+        return Ok(());
     }
 
     fs::write(target, fallback_content)

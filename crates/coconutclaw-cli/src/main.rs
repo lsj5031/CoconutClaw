@@ -343,7 +343,7 @@ fn run_run(cfg: &RuntimeConfig, store: &Store, args: &RunArgs) -> Result<()> {
                 reply_text: None,
             },
         )?;
-        print!("{output}\n");
+        println!("{output}");
         io::stdout().flush().ok();
     }
 
@@ -436,22 +436,22 @@ fn restore_inflight_update(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
         inflight_update_id = extract_update_id_from_json(&inflight_json)?;
     }
 
-    if let Some(update_id) = inflight_update_id.as_deref() {
-        if store.turn_exists_for_update_id(update_id)? {
-            store.clear_inflight()?;
-            match ack_webhook_queue_line(cfg, Some(update_id))? {
-                AckStatus::Acked => {
-                    eprintln!("info: restored inflight update_id={update_id} (dedup + ack)");
-                }
-                AckStatus::HeadMismatch => {
-                    eprintln!(
-                        "warn: inflight restore head mismatch for update_id={update_id}, leaving queue as-is"
-                    );
-                }
-                AckStatus::Empty => {}
+    if let Some(update_id) = inflight_update_id.as_deref()
+        && store.turn_exists_for_update_id(update_id)?
+    {
+        store.clear_inflight()?;
+        match ack_webhook_queue_line(cfg, Some(update_id))? {
+            AckStatus::Acked => {
+                eprintln!("info: restored inflight update_id={update_id} (dedup + ack)");
             }
-            return Ok(());
+            AckStatus::HeadMismatch => {
+                eprintln!(
+                    "warn: inflight restore head mismatch for update_id={update_id}, leaving queue as-is"
+                );
+            }
+            AckStatus::Empty => {}
         }
+        return Ok(());
     }
 
     let outcome = process_webhook_line(cfg, store, &inflight_json, SourceMode::WebhookRestore)?;
@@ -464,7 +464,7 @@ fn restore_inflight_update(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
             AckStatus::Acked => {
                 store.clear_inflight()?;
                 if let Some(output) = outcome.output {
-                    print!("{output}\n");
+                    println!("{output}");
                     io::stdout().flush().ok();
                 }
             }
@@ -514,7 +514,7 @@ fn drain_webhook_queue(
                 store.clear_inflight()?;
                 progressed = true;
                 if let Some(output) = outcome.output {
-                    print!("{output}\n");
+                    println!("{output}");
                     io::stdout().flush().ok();
                 }
             }
@@ -586,15 +586,15 @@ fn process_webhook_line(
             })
         }
         WebhookAction::Turn(turn) => {
-            if let Some(update_id) = turn.update_id.as_deref() {
-                if store.turn_exists_for_update_id(update_id)? {
-                    store.kv_set("last_update_id", update_id)?;
-                    return Ok(ProcessOutcome {
-                        should_ack: true,
-                        update_id: Some(update_id.to_string()),
-                        output: None,
-                    });
-                }
+            if let Some(update_id) = turn.update_id.as_deref()
+                && store.turn_exists_for_update_id(update_id)?
+            {
+                store.kv_set("last_update_id", update_id)?;
+                return Ok(ProcessOutcome {
+                    should_ack: true,
+                    update_id: Some(update_id.to_string()),
+                    output: None,
+                });
             }
 
             set_inflight_update(
@@ -807,6 +807,7 @@ where
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("failed to open {}", lock_path.display()))?;
     lock_file
@@ -1069,16 +1070,16 @@ fn build_context(
         text.push('\n');
     }
 
-    if let Some(reply_text) = quoted.reply_text.as_ref() {
-        if !reply_text.trim().is_empty() {
-            text.push_str("\n## Quoted/replied-to message\n");
-            let reply_from = quoted.reply_from.as_deref().unwrap_or("someone");
-            text.push_str(&format!("REPLY_FROM: {reply_from}\n"));
-            text.push_str(&format!("REPLY_TEXT: {reply_text}\n"));
-            text.push_str(
-                "The user is replying to the above message. Use it as context for understanding their intent.\n",
-            );
-        }
+    if let Some(reply_text) = quoted.reply_text.as_ref()
+        && !reply_text.trim().is_empty()
+    {
+        text.push_str("\n## Quoted/replied-to message\n");
+        let reply_from = quoted.reply_from.as_deref().unwrap_or("someone");
+        text.push_str(&format!("REPLY_FROM: {reply_from}\n"));
+        text.push_str(&format!("REPLY_TEXT: {reply_text}\n"));
+        text.push_str(
+            "The user is replying to the above message. Use it as context for understanding their intent.\n",
+        );
     }
 
     text.push_str("\n## Current user input\n");
@@ -1163,10 +1164,10 @@ fn first_marker(marker: &str, payload: &str) -> Option<String> {
 fn all_markers(marker: &str, payload: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in payload.lines() {
-        if let Some(value) = strip_marker(marker, line) {
-            if !value.trim().is_empty() {
-                out.push(value.to_string());
-            }
+        if let Some(value) = strip_marker(marker, line)
+            && !value.trim().is_empty()
+        {
+            out.push(value.to_string());
         }
     }
     out
