@@ -16,6 +16,7 @@ chrono-tz.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
 fs2.workspace = true
+reqwest.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 coconutclaw-config = { path = "../coconutclaw-config" }
