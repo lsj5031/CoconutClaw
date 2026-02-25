@@ -66,6 +66,8 @@ pub struct RuntimeConfig {
     pub allowlist_path: PathBuf,
     pub timezone: String,
     pub telegram_chat_id: Option<String>,
+    pub webhook_mode: bool,
+    pub poll_interval_seconds: u64,
     pub provider: AgentProvider,
     pub exec_policy: String,
     pub codex: CodexConfig,
@@ -165,6 +167,13 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
     let exec_policy = pick_value("EXEC_POLICY", &env_file)
         .unwrap_or_else(|| "yolo".to_string())
         .to_ascii_lowercase();
+    let webhook_mode = pick_value("WEBHOOK_MODE", &env_file)
+        .map(|value| value.eq_ignore_ascii_case("on"))
+        .unwrap_or(false);
+    let poll_interval_seconds = pick_value("POLL_INTERVAL_SECONDS", &env_file)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2);
 
     let pi_mode = pick_value("PI_MODE", &env_file)
         .unwrap_or_else(|| "text".to_string())
@@ -186,6 +195,8 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         allowlist_path,
         timezone: pick_value("TIMEZONE", &env_file).unwrap_or_else(|| "UTC".to_string()),
         telegram_chat_id: pick_value("TELEGRAM_CHAT_ID", &env_file),
+        webhook_mode,
+        poll_interval_seconds,
         provider,
         exec_policy,
         codex: CodexConfig {

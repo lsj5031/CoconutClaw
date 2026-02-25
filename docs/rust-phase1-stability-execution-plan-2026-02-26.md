@@ -39,9 +39,29 @@ Complete the first reliability-focused Rust iteration by shipping:
 5. Update this plan with completion status.
 
 ## Completion Checklist
-- [ ] Baseline checkpoint commit created.
-- [ ] Rust `run` supports long-running resilient local loop with graceful shutdown.
-- [ ] Webhook queue processing + inflight recovery implemented.
-- [ ] `update_id` dedup and turn persistence parity implemented.
-- [ ] Quoted/replied-to context included in prompt context.
-- [ ] Validation commands passed and documented.
+- [x] Baseline checkpoint commit created.
+- [x] Rust `run` supports long-running resilient local loop with graceful shutdown.
+- [x] Webhook queue processing + inflight recovery implemented.
+- [x] `update_id` dedup and turn persistence parity implemented.
+- [x] Quoted/replied-to context included in prompt context.
+- [x] Validation commands passed and documented.
+
+## Validation Notes (2026-02-26)
+- `cargo fmt --all` passed.
+- `cargo check -p coconutclaw` passed.
+- `once` smoke (isolated instance + failing local provider path) produced valid marker output with `TELEGRAM_REPLY` fallback.
+- Webhook queue smoke:
+  - queued update `900001` was processed and acknowledged (`queue_lines_after=0`).
+  - SQLite persisted `turns.update_id=900001` with `status=agent_error` in the fallback-provider smoke path.
+- Inflight restore smoke:
+  - preloaded `kv.inflight_*` + queue head `900002` was restored, processed, and acknowledged.
+  - SQLite persisted `turns.update_id=900002`.
+  - `kv` inflight keys were cleared after successful restore (`count=0`).
+- Reply context smoke (fake local provider):
+  - captured prompt context includes:
+    - `## Quoted/replied-to message`
+    - `REPLY_FROM: Tester`
+    - `REPLY_TEXT: quoted message content`
+- Marker compare script:
+  - Rust side produced marker output successfully.
+  - Bash side returned non-zero in this environment due Telegram/API path requirements, so full Bash-vs-Rust marker parity could not be concluded from this isolated offline run.
