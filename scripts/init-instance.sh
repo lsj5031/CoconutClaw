@@ -6,7 +6,7 @@ CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ $# -ne 1 ]]; then
   echo "usage: $0 <instance-dir>"
   echo ""
-  echo "Scaffold a new ShellClaw instance directory."
+  echo "Scaffold a new CoconutClaw instance directory."
   echo "Then run:  $CODE_DIR/agent.sh --instance-dir <instance-dir>"
   exit 1
 fi

@@ -1,4 +1,4 @@
-# AGENTS.md — ShellClaw
+# AGENTS.md — CoconutClaw
 
 ## What this is
 Bash-powered personal voice agent: Telegram ↔ ASR ↔ Codex CLI ↔ TTS. No test suite; verify manually with `./agent.sh --once` or `./agent.sh --inject-text "hello"`. Lint bash with `shellcheck agent.sh scripts/asr.sh scripts/telegram_api.sh scripts/heartbeat.sh scripts/nightly_reflection.sh scripts/tts.sh scripts/webhook_manage.sh scripts/setup.sh lib/common.sh`.

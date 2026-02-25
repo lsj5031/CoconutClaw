@@ -10,5 +10,6 @@ tmp/
 *.ogg
 *.wav
 __pycache__/
+target/
 
 .last_local_backup_path

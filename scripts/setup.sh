@@ -29,7 +29,7 @@ env_value() {
   grep "^${key}=" "$file" | head -n1 | cut -d= -f2- || true
 }
 
-echo "== ShellClaw setup =="
+echo "== CoconutClaw setup =="
 
 for c in bash curl jq ffmpeg sqlite3; do
   need_cmd "$c"
@@ -175,7 +175,7 @@ chmod +x \
 
 cat <<'MSG'
 
-ShellClaw setup is complete.
+CoconutClaw setup is complete.
 
 Quick smoke test:
   make test
@@ -193,5 +193,5 @@ Useful commands:
 Dashboard:
   ./services/dashboard.py         # open http://localhost:8080
 
-ShellClaw is now purring on Telegram.
+CoconutClaw is now purring on Telegram.
 MSG

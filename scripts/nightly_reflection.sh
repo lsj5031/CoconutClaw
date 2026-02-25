@@ -62,7 +62,7 @@ fi
   printf "%s\n" "$marker"
   printf "## %s 睡前复盘\n" "$today_local"
   printf -- "- generated_at: %s\n" "$now_iso"
-  printf -- "- source: shellclaw-nightly-reflection.timer\n"
+  printf -- "- source: coconutclaw-nightly-reflection.timer\n"
   printf -- "- turn_ts: %s\n" "${turn_ts:-<none>}"
   printf -- "- status: %s\n\n" "${turn_status:-<unknown>}"
   printf "%s\n\n" "$reflection_text"

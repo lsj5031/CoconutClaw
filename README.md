@@ -1,4 +1,4 @@
-# ShellClaw 🦀
+# CoconutClaw 🦀
 
 **Pure-bash local voice agent that lives in Telegram.**
 
@@ -8,7 +8,7 @@ Send a voice note → local ASR on your laptop → agent provider (`codex` or `p
 
 No servers. No heavy frameworks. No Docker-compose. Maximum privacy and hackability.
 
-<img src="docs/images/ShellClaw.png" alt="ShellClaw project logo" width="560" />
+<img src="docs/images/CoconutClaw.png" alt="CoconutClaw project logo" width="560" />
 
 ## ✨ Why people love it
 
@@ -26,8 +26,8 @@ No servers. No heavy frameworks. No Docker-compose. Maximum privacy and hackabil
 ## 🚀 Quick Start
 
 ```bash
-git clone https://github.com/lsj5031/ShellClaw.git
-cd ShellClaw
+git clone https://github.com/lsj5031/CoconutClaw.git
+cd CoconutClaw
 
 cp .env.example .env
 # Edit .env → add your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
@@ -40,6 +40,29 @@ make start             # starts agent (poll mode by default)
 # make webhook-register && make start
 ```
 
+## Rust CLI MVP (Phase 0 + 1)
+
+Text-only Rust runtime is available now with day-1 multi-instance isolation:
+
+```bash
+# Build once
+cargo build -p coconutclaw
+
+# One-shot injected turn
+./target/debug/coconutclaw --instance default once --inject-text "hello"
+
+# Or isolate by data root + instance name
+./target/debug/coconutclaw --data-dir ~/.local/state/coconutclaw --instance work once --inject-text "status?"
+
+# Health check
+./target/debug/coconutclaw --instance work doctor
+```
+
+Notes:
+- New instance flags: `--instance`, `--data-dir` (env: `COCONUTCLAW_INSTANCE`, `COCONUTCLAW_DATA_DIR`).
+- Legacy `--instance-dir` remains supported for non-breaking migration.
+- Per-instance lockfile protection prevents concurrent writes to the same instance directory.
+
 **Recommended backends** (super easy to run):
 - ASR → [GlmAsrDocker](https://github.com/lsj5031/GlmAsrDocker)
 - TTS → [kitten-tts-rs](https://github.com/lsj5031/kitten-tts-rs)
@@ -48,7 +71,7 @@ Then just send a voice note to your Telegram bot — done!
 
 ## Provider Switch (`codex` / `pi`)
 
-ShellClaw keeps `codex` as default and adds `pi` as a non-breaking optional provider.
+CoconutClaw keeps `codex` as default and adds `pi` as a non-breaking optional provider.
 
 `codex` (default):
 
@@ -225,7 +248,7 @@ flowchart LR
 
     subgraph Context_File["Context File (tmp/context_*.md)"]
         direction TB
-        HDR["# ShellClaw Runtime Context"]
+        HDR["# CoconutClaw Runtime Context"]
         META[Timestamp, Input type,<br/>Exec policy, Allowlist]
         SOUL["## SOUL.md<br/>(cat SOUL.md)"]
         USER["## USER.md<br/>(cat USER.md)"]
@@ -359,7 +382,7 @@ flowchart TB
         TG[Telegram App]
     end
 
-    subgraph ShellClaw
+    subgraph CoconutClaw
         direction TB
         AGENT[agent.sh]
 
@@ -453,7 +476,7 @@ sequenceDiagram
 
 ```mermaid
 mindmap
-  root((ShellClaw))
+  root((CoconutClaw))
     Core Scripts
       agent.sh
         Webhook loop or poll loop
@@ -567,7 +590,7 @@ Then choose one ASR mode:
 
 And set `TTS_CMD_TEMPLATE` for your TTS command.
 
-ShellClaw passes:
+CoconutClaw passes:
 - `AUDIO_INPUT` and `AUDIO_INPUT_PREP` to ASR command templates
 - `TEXT` and `WAV_OUTPUT` to TTS command templates
 
@@ -579,7 +602,7 @@ Optional nightly reflection settings:
 
 ## Codex output contract
 
-ShellClaw expects strict markers in Codex output:
+CoconutClaw expects strict markers in Codex output:
 - `TELEGRAM_REPLY: ...` (required)
 - `VOICE_REPLY: ...` (optional)
 - `SEND_PHOTO: <absolute path>` (optional)
@@ -588,7 +611,7 @@ ShellClaw expects strict markers in Codex output:
 - `MEMORY_APPEND: ...` (optional)
 - `TASK_APPEND: ...` (optional)
 
-If markers are missing, ShellClaw sends a safe fallback text reply and logs `parse_fallback`.
+If markers are missing, CoconutClaw sends a safe fallback text reply and logs `parse_fallback`.
 
 ## Ingress modes
 
@@ -625,17 +648,17 @@ make test              # smoke test via --inject-text
 
 | Unit | Description |
 |------|-------------|
-| `shellclaw.service` | Main agent loop (webhook or poll) |
-| `shellclaw-webhook.service` | Webhook HTTP server on `:8787` |
-| `shellclaw-tunnel.service` | Cloudflare Tunnel (`cloudflared`) |
-| `shellclaw-heartbeat.timer` | Daily heartbeat at 09:00 |
-| `shellclaw-nightly-reflection.timer` | Daily reflection at 22:30 (local time) |
+| `coconutclaw.service` | Main agent loop (webhook or poll) |
+| `coconutclaw-webhook.service` | Webhook HTTP server on `:8787` |
+| `coconutclaw-tunnel.service` | Cloudflare Tunnel (`cloudflared`) |
+| `coconutclaw-heartbeat.timer` | Daily heartbeat at 09:00 |
+| `coconutclaw-nightly-reflection.timer` | Daily reflection at 22:30 (local time) |
 
 Install all with `make install`, or manually:
 ```bash
-cp systemd/shellclaw* ~/.config/systemd/user/
+cp systemd/coconutclaw* ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.timer shellclaw-nightly-reflection.timer
+systemctl --user enable coconutclaw.service coconutclaw-webhook.service coconutclaw-tunnel.service coconutclaw-heartbeat.timer coconutclaw-nightly-reflection.timer
 sudo loginctl enable-linger $USER   # services survive logout & start on boot
 ```
 

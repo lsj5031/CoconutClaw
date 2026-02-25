@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-UNITS := shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.service shellclaw-heartbeat.timer shellclaw-nightly-reflection.service shellclaw-nightly-reflection.timer
+UNITS := coconutclaw.service coconutclaw-webhook.service coconutclaw-tunnel.service coconutclaw-heartbeat.service coconutclaw-heartbeat.timer coconutclaw-nightly-reflection.service coconutclaw-nightly-reflection.timer
 SYSTEMD_DIR := $(HOME)/.config/systemd/user
 
 .PHONY: help install uninstall start stop restart status logs logs-webhook logs-tunnel webhook-register webhook-unregister webhook-status lint test
@@ -11,7 +11,7 @@ help: ## Show this help
 
 install: ## Install systemd units and enable linger
 	mkdir -p $(SYSTEMD_DIR)
-	cp systemd/shellclaw*.service systemd/shellclaw*.timer $(SYSTEMD_DIR)/
+	cp systemd/coconutclaw*.service systemd/coconutclaw*.timer $(SYSTEMD_DIR)/
 	systemctl --user daemon-reload
 	systemctl --user enable $(UNITS)
 	loginctl enable-linger $(USER)
@@ -23,15 +23,15 @@ uninstall: stop ## Remove systemd units
 	systemctl --user daemon-reload
 
 start: ## Start all services
-	systemctl --user start shellclaw-webhook.service
-	systemctl --user start shellclaw-tunnel.service
-	systemctl --user start shellclaw.service
-	systemctl --user start shellclaw-heartbeat.timer
-	systemctl --user start shellclaw-nightly-reflection.timer
+	systemctl --user start coconutclaw-webhook.service
+	systemctl --user start coconutclaw-tunnel.service
+	systemctl --user start coconutclaw.service
+	systemctl --user start coconutclaw-heartbeat.timer
+	systemctl --user start coconutclaw-nightly-reflection.timer
 	@$(MAKE) --no-print-directory status
 
 stop: ## Stop all services
-	systemctl --user stop shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.timer shellclaw-nightly-reflection.timer 2>/dev/null || true
+	systemctl --user stop coconutclaw.service coconutclaw-webhook.service coconutclaw-tunnel.service coconutclaw-heartbeat.timer coconutclaw-nightly-reflection.timer 2>/dev/null || true
 
 restart: ## Restart all services
 	$(MAKE) --no-print-directory stop
@@ -44,16 +44,16 @@ status: ## Show service status
 # ── Logs ───────────────────────────────────────────────────────────
 
 logs: ## Follow agent logs
-	journalctl --user -u shellclaw.service -f
+	journalctl --user -u coconutclaw.service -f
 
 logs-webhook: ## Follow webhook server logs
-	journalctl --user -u shellclaw-webhook.service -f
+	journalctl --user -u coconutclaw-webhook.service -f
 
 logs-tunnel: ## Follow tunnel logs
-	journalctl --user -u shellclaw-tunnel.service -f
+	journalctl --user -u coconutclaw-tunnel.service -f
 
 logs-reflection: ## Follow nightly reflection logs
-	journalctl --user -u shellclaw-nightly-reflection.service -f
+	journalctl --user -u coconutclaw-nightly-reflection.service -f
 
 # ── Webhook management ─────────────────────────────────────────────
 

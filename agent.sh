@@ -142,9 +142,9 @@ validate_runtime_requirements() {
   file_base="https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}"
   register_bot_commands
   if [[ "$WEBHOOK_MODE" == "on" ]]; then
-    log_info "ShellClaw ready (mode=webhook, provider=$AGENT_PROVIDER, exec_policy=$EXEC_POLICY)"
+    log_info "CoconutClaw ready (mode=webhook, provider=$AGENT_PROVIDER, exec_policy=$EXEC_POLICY)"
   else
-    log_info "ShellClaw ready (mode=poll, poll_interval=${POLL_INTERVAL_SECONDS}s, provider=$AGENT_PROVIDER, exec_policy=$EXEC_POLICY)"
+    log_info "CoconutClaw ready (mode=poll, poll_interval=${POLL_INTERVAL_SECONDS}s, provider=$AGENT_PROVIDER, exec_policy=$EXEC_POLICY)"
   fi
 }
 
@@ -415,7 +415,7 @@ build_context_file() {
   local reply_text="${8:-}"
 
   {
-    echo "# ShellClaw Runtime Context"
+    echo "# CoconutClaw Runtime Context"
     echo ""
     echo "Timestamp: $(iso_now)"
     echo "Input type: $input_type"
