@@ -123,8 +123,7 @@ CoconutClaw/
 │   │       └── webhook.rs    # Axum-based webhook server
 │   ├── coconutclaw-config/   # Configuration loading & migration
 │   └── coconutclaw-provider/ # AI provider abstraction (Codex/Pi)
-├── scripts/                  # Cross-platform helpers
-├── systemd/                  # Linux service units
+├── scripts/                  # Cross-platform service & media helpers
 └── sql/                      # Schema migrations
 ```
 

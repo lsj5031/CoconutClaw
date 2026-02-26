@@ -1,8 +1,0 @@
-[Unit]
-Description=CoconutClaw Daily Heartbeat
-
-[Service]
-Type=oneshot
-WorkingDirectory=%h/code/CoconutClaw
-Environment=INSTANCE_DIR=%h/code/CoconutClaw
-ExecStart=/usr/bin/env coconutclaw heartbeat
