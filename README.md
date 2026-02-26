@@ -91,10 +91,25 @@ Type these in Telegram:
 
 ### Voice Messages
 
-Send a voice note to your bot, and it can reply with voice too. Configure in `config.toml`:
+Send a voice note to your bot, and it can reply with voice too.
+
+#### Recommended Tools
+
+These tools are developed by the same author as CoconutClaw and integrate smoothly:
+
+- **[glm-asr](https://github.com/lsj5031/glm-asr)** - Fast ASR (speech-to-text) with Docker deployment
+- **tts-cli** - TTS (text-to-speech) command-line tool
+
+#### Setup
 
 ```toml
+# ASR: Use glm-asr
+ASR_CMD_TEMPLATE = "glm-asr transcribe --audio {AUDIO_INPUT_PREP} --lang en"
+
+# Or use an HTTP endpoint
 ASR_URL = "http://localhost:8080/asr"
+
+# TTS: Use tts-cli
 TTS_CMD_TEMPLATE = "tts-cli --text '{text}' --output {output}"
 ```
 
