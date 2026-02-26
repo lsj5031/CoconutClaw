@@ -29,12 +29,4 @@ CREATE TABLE IF NOT EXISTS tasks (
   done INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS summaries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT NOT NULL,
-  window_start TEXT NOT NULL,
-  window_end TEXT NOT NULL,
-  summary TEXT NOT NULL
-);
-
 INSERT OR IGNORE INTO kv(key, value) VALUES ('last_update_id', '0');

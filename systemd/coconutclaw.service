@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/code/CoconutClaw
-EnvironmentFile=%h/code/CoconutClaw/.env
+Environment=INSTANCE_DIR=%h/code/CoconutClaw
 ExecStart=/usr/bin/env coconutclaw run
 Restart=always
 RestartSec=3

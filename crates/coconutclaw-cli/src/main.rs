@@ -41,7 +41,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Once(TurnArgs),
-    Run(RunArgs),
+    Run(TurnArgs),
     Heartbeat,
     NightlyReflection,
     Doctor,
@@ -49,16 +49,6 @@ enum Commands {
 
 #[derive(Args, Debug, Clone)]
 struct TurnArgs {
-    #[arg(long)]
-    inject_text: Option<String>,
-    #[arg(long)]
-    inject_file: Option<PathBuf>,
-    #[arg(long)]
-    chat_id: Option<String>,
-}
-
-#[derive(Args, Debug, Clone)]
-struct RunArgs {
     #[arg(long)]
     inject_text: Option<String>,
     #[arg(long)]
@@ -140,12 +130,6 @@ enum IncomingMedia {
 #[derive(Debug, Clone)]
 struct CancelSignal {
     callback_query_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum SourceMode {
-    Webhook,
-    WebhookRestore,
 }
 
 #[derive(Debug, Clone)]
@@ -386,7 +370,7 @@ fn run_once(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_run(cfg: &RuntimeConfig, store: &Store, args: &RunArgs) -> Result<()> {
+fn run_run(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
     if args.inject_text.is_some() || args.inject_file.is_some() {
         let input = resolve_turn_input(args.inject_text.clone(), args.inject_file.clone(), cfg)?;
         let output = process_turn(
@@ -468,9 +452,9 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
         return Ok(());
     }
 
-    let prompt = nightly_reflection_prompt();
+    let prompt = nightly_reflection_prompt(cfg);
     let before_id = store.max_turn_id()?;
-    let skip_agent = nightly_reflection_skip_agent();
+    let skip_agent = cfg.nightly_reflection_skip_agent;
     if !skip_agent {
         let output = process_turn(
             cfg,
@@ -558,13 +542,22 @@ fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
         }
     );
     println!("poll_interval_seconds={}", cfg.poll_interval_seconds);
-    println!("env_file={}", cfg.env_file_path.display());
+    println!("config_file={}", cfg.config_file_path.display());
 
     let codex_ok = command_exists(&cfg.codex.bin);
     let pi_ok = command_exists(&cfg.pi.bin);
     let ffmpeg_ok = command_exists("ffmpeg");
+    let bash_ok = command_exists("bash");
+    let curl_ok = command_exists("curl");
+    let jq_ok = command_exists("jq");
     let telegram_token_ok = valid_telegram_token(cfg).is_some();
     let telegram_chat_id_ok = valid_telegram_chat_id(cfg).is_some();
+    let asr_script_ok = cfg.root_dir.join("scripts/asr.sh").exists();
+    let tts_script_ok = cfg.root_dir.join("scripts/tts.sh").exists();
+    let asr_enabled = asr_feature_enabled(cfg);
+    let asr_uses_http = cfg.asr_cmd_template.is_none() && cfg.asr_url.is_some();
+    let asr_preprocess = parse_on_like(cfg.asr_preprocess.as_deref(), true);
+    let tts_enabled = cfg.tts_cmd_template.is_some();
 
     println!("check_codex_bin={} ({})", yes_no(codex_ok), cfg.codex.bin);
     println!("check_pi_bin={} ({})", yes_no(pi_ok), cfg.pi.bin);
@@ -576,15 +569,57 @@ fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
         "check_telegram_chat_id={} (required for run)",
         yes_no(telegram_chat_id_ok)
     );
-    println!("check_ffmpeg={} (optional)", yes_no(ffmpeg_ok));
-    println!(
-        "check_asr_script={} (optional)",
-        yes_no(cfg.root_dir.join("scripts/asr.sh").exists())
-    );
-    println!(
-        "check_tts_script={} (optional)",
-        yes_no(cfg.root_dir.join("scripts/tts.sh").exists())
-    );
+    println!("feature_asr={}", if asr_enabled { "on" } else { "off" });
+    println!("feature_tts={}", if tts_enabled { "on" } else { "off" });
+
+    if asr_enabled {
+        println!(
+            "check_asr_script={} (required when ASR is enabled)",
+            yes_no(asr_script_ok)
+        );
+        println!(
+            "check_bash={} (required when ASR is enabled)",
+            yes_no(bash_ok)
+        );
+        if asr_preprocess {
+            println!(
+                "check_ffmpeg={} (required when ASR_PREPROCESS is enabled)",
+                yes_no(ffmpeg_ok)
+            );
+        } else {
+            println!("check_ffmpeg={} (ASR_PREPROCESS is off)", yes_no(ffmpeg_ok));
+        }
+        if asr_uses_http {
+            println!("check_curl={} (required for ASR_URL mode)", yes_no(curl_ok));
+            println!("check_jq={} (required for ASR_URL mode)", yes_no(jq_ok));
+        } else {
+            println!("check_curl={} (optional)", yes_no(curl_ok));
+            println!("check_jq={} (optional)", yes_no(jq_ok));
+        }
+    } else {
+        println!("check_asr_script={} (optional)", yes_no(asr_script_ok));
+        println!("check_bash={} (optional)", yes_no(bash_ok));
+        println!("check_ffmpeg={} (optional)", yes_no(ffmpeg_ok));
+        println!("check_curl={} (optional)", yes_no(curl_ok));
+        println!("check_jq={} (optional)", yes_no(jq_ok));
+    }
+
+    if tts_enabled {
+        println!(
+            "check_tts_script={} (required when TTS is enabled)",
+            yes_no(tts_script_ok)
+        );
+        println!(
+            "check_bash={} (required when TTS is enabled)",
+            yes_no(bash_ok)
+        );
+        println!(
+            "check_ffmpeg={} (required when TTS is enabled)",
+            yes_no(ffmpeg_ok)
+        );
+    } else {
+        println!("check_tts_script={} (optional)", yes_no(tts_script_ok));
+    }
 
     Ok(())
 }
@@ -634,7 +669,7 @@ fn run_poll_loop(
                 extract_update_id_from_value(&update).and_then(|value| value.parse::<u64>().ok());
             let line =
                 serde_json::to_string(&update).context("failed to serialize polled update JSON")?;
-            let outcome = process_webhook_line(cfg, store, &line, SourceMode::Webhook)?;
+            let outcome = process_webhook_line(cfg, store, &line)?;
 
             if let Some(output) = outcome.output.as_deref() {
                 dispatch_telegram_output(
@@ -731,7 +766,7 @@ fn restore_inflight_update(
         return Ok(());
     }
 
-    let outcome = process_webhook_line(cfg, store, &inflight_json, SourceMode::WebhookRestore)?;
+    let outcome = process_webhook_line(cfg, store, &inflight_json)?;
     if outcome.should_ack {
         let expected_id = outcome
             .update_id
@@ -785,7 +820,7 @@ fn drain_webhook_queue(
         };
         let expected_update_id = extract_update_id_from_json(&line)?;
 
-        let outcome = match process_webhook_line(cfg, store, &line, SourceMode::Webhook) {
+        let outcome = match process_webhook_line(cfg, store, &line) {
             Ok(outcome) => outcome,
             Err(err) => {
                 eprintln!("warn: webhook processing failed (will retry): {err:#}");
@@ -842,12 +877,7 @@ struct ProcessOutcome {
     progress_message_id: Option<String>,
 }
 
-fn process_webhook_line(
-    cfg: &RuntimeConfig,
-    store: &Store,
-    line: &str,
-    _mode: SourceMode,
-) -> Result<ProcessOutcome> {
+fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Result<ProcessOutcome> {
     let action = parse_webhook_action(cfg, line)?;
 
     match action {
@@ -1036,17 +1066,21 @@ fn hydrate_turn_input(
             input.attachment_path = None;
             input.attachment_owned = false;
 
-            match run_asr_script(cfg, &voice_path) {
-                Ok(asr_text) => {
-                    let asr_text = asr_text.trim().to_string();
-                    if !asr_text.is_empty() {
-                        input.asr_text = asr_text.clone();
-                        input.user_text = asr_text;
+            if asr_feature_enabled(cfg) {
+                match run_asr_script(cfg, &voice_path) {
+                    Ok(asr_text) => {
+                        let asr_text = asr_text.trim().to_string();
+                        if !asr_text.is_empty() {
+                            input.asr_text = asr_text.clone();
+                            input.user_text = asr_text;
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("warn: ASR failed for voice attachment: {err:#}");
                     }
                 }
-                Err(err) => {
-                    eprintln!("warn: ASR failed for voice attachment: {err:#}");
-                }
+            } else {
+                eprintln!("info: voice attachment received but ASR is disabled in config.toml");
             }
 
             let _ = fs::remove_file(voice_path);
@@ -1116,11 +1150,31 @@ fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
         bail!("bash not found; cannot run ASR script");
     }
 
-    let output = Command::new("bash")
-        .arg(script)
+    let mut cmd = Command::new("bash");
+    cmd.arg(script)
         .arg(audio_path)
         .current_dir(&cfg.root_dir)
-        .env("INSTANCE_DIR", &cfg.instance_dir)
+        .env("INSTANCE_DIR", &cfg.instance_dir);
+    if let Some(value) = cfg.asr_url.as_deref() {
+        cmd.env("ASR_URL", value);
+    }
+    if let Some(value) = cfg.asr_cmd_template.as_deref() {
+        cmd.env("ASR_CMD_TEMPLATE", value);
+    }
+    if let Some(value) = cfg.asr_file_field.as_deref() {
+        cmd.env("ASR_FILE_FIELD", value);
+    }
+    if let Some(value) = cfg.asr_text_jq.as_deref() {
+        cmd.env("ASR_TEXT_JQ", value);
+    }
+    if let Some(value) = cfg.asr_preprocess.as_deref() {
+        cmd.env("ASR_PREPROCESS", value);
+    }
+    if let Some(value) = cfg.asr_sample_rate.as_deref() {
+        cmd.env("ASR_SAMPLE_RATE", value);
+    }
+
+    let output = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1138,7 +1192,7 @@ fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
 
 fn telegram_file_base(cfg: &RuntimeConfig) -> Result<String> {
     let token = valid_telegram_token(cfg).ok_or_else(|| {
-        anyhow::anyhow!("TELEGRAM_BOT_TOKEN is missing; set it in the instance .env")
+        anyhow::anyhow!("TELEGRAM_BOT_TOKEN is missing; set it in instance config.toml")
     })?;
     Ok(format!("https://api.telegram.org/file/bot{token}"))
 }
@@ -1201,7 +1255,7 @@ fn valid_telegram_chat_id(cfg: &RuntimeConfig) -> Option<&str> {
 
 fn telegram_api_base(cfg: &RuntimeConfig) -> Result<String> {
     let token = valid_telegram_token(cfg).ok_or_else(|| {
-        anyhow::anyhow!("TELEGRAM_BOT_TOKEN is missing; set it in the instance .env")
+        anyhow::anyhow!("TELEGRAM_BOT_TOKEN is missing; set it in instance config.toml")
     })?;
     Ok(format!("https://api.telegram.org/bot{token}"))
 }
@@ -1209,7 +1263,7 @@ fn telegram_api_base(cfg: &RuntimeConfig) -> Result<String> {
 fn build_telegram_client(cfg: &RuntimeConfig) -> Result<Client> {
     let _ = telegram_api_base(cfg)?;
     let _ = valid_telegram_chat_id(cfg).ok_or_else(|| {
-        anyhow::anyhow!("TELEGRAM_CHAT_ID is missing; set it in the instance .env")
+        anyhow::anyhow!("TELEGRAM_CHAT_ID is missing; set it in instance config.toml")
     })?;
     Client::builder()
         .timeout(Duration::from_secs(60))
@@ -1668,12 +1722,23 @@ fn send_voice_reply(client: &Client, cfg: &RuntimeConfig, chat_id: &str, text: &
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    let output = Command::new("bash")
-        .arg(script)
+    let mut cmd = Command::new("bash");
+    cmd.arg(script)
         .arg(text)
         .arg(&output_voice)
         .current_dir(&cfg.root_dir)
-        .env("INSTANCE_DIR", &cfg.instance_dir)
+        .env("INSTANCE_DIR", &cfg.instance_dir);
+    if let Some(value) = cfg.tts_cmd_template.as_deref() {
+        cmd.env("TTS_CMD_TEMPLATE", value);
+    }
+    if let Some(value) = cfg.voice_bitrate.as_deref() {
+        cmd.env("VOICE_BITRATE", value);
+    }
+    if let Some(value) = cfg.tts_max_chars.as_deref() {
+        cmd.env("TTS_MAX_CHARS", value);
+    }
+
+    let output = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2586,26 +2651,14 @@ fn nightly_reflection_marker(day: &str) -> String {
     format!("<!-- nightly-reflection:{day} -->")
 }
 
-fn nightly_reflection_skip_agent() -> bool {
-    env::var("NIGHTLY_REFLECTION_SKIP_AGENT")
-        .map(|value| value.trim().eq_ignore_ascii_case("on"))
-        .unwrap_or(false)
-}
-
-fn nightly_reflection_prompt() -> String {
-    env::var("NIGHTLY_REFLECTION_PROMPT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            "Do a brief nightly reflection in first person: include today outcomes, today lessons, and the single most important thing for tomorrow in under 120 words.".to_string()
-        })
+fn nightly_reflection_prompt(cfg: &RuntimeConfig) -> String {
+    cfg.nightly_reflection_prompt.clone().unwrap_or_else(|| {
+        "Do a brief nightly reflection in first person: include today outcomes, today lessons, and the single most important thing for tomorrow in under 120 words.".to_string()
+    })
 }
 
 fn nightly_reflection_file_path(cfg: &RuntimeConfig) -> PathBuf {
-    let raw = env::var("NIGHTLY_REFLECTION_FILE")
-        .unwrap_or_else(|_| "./LOGS/nightly_reflection.md".to_string());
-    resolve_instance_path(&cfg.instance_dir, PathBuf::from(raw))
+    cfg.nightly_reflection_file.clone()
 }
 
 fn command_exists(bin: &str) -> bool {
@@ -2636,6 +2689,21 @@ fn command_exists(bin: &str) -> bool {
 
 fn yes_no(value: bool) -> &'static str {
     if value { "ok" } else { "missing" }
+}
+
+fn asr_feature_enabled(cfg: &RuntimeConfig) -> bool {
+    cfg.asr_cmd_template.is_some() || cfg.asr_url.is_some()
+}
+
+fn parse_on_like(value: Option<&str>, default: bool) -> bool {
+    let Some(value) = value else {
+        return default;
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "1" | "yes" => true,
+        "off" | "false" | "0" | "no" => false,
+        _ => default,
+    }
 }
 
 #[cfg(test)]
@@ -2670,6 +2738,18 @@ mod tests {
             poll_interval_seconds: 1,
             provider: AgentProvider::Codex,
             exec_policy: "yolo".to_string(),
+            asr_url: None,
+            asr_cmd_template: None,
+            asr_file_field: None,
+            asr_text_jq: None,
+            asr_preprocess: None,
+            asr_sample_rate: None,
+            tts_cmd_template: None,
+            voice_bitrate: None,
+            tts_max_chars: None,
+            nightly_reflection_file: root.join("LOGS/nightly_reflection.md"),
+            nightly_reflection_skip_agent: false,
+            nightly_reflection_prompt: None,
             codex: CodexConfig {
                 bin: "codex".to_string(),
                 model: None,
@@ -2682,7 +2762,7 @@ mod tests {
                 mode: "text".to_string(),
                 extra_args: None,
             },
-            env_file_path: root.join(".env"),
+            config_file_path: root.join("config.toml"),
         };
         coconutclaw_config::ensure_instance_layout(&cfg).expect("layout");
         cfg
@@ -2694,8 +2774,7 @@ mod tests {
         let store = Store::open(&cfg).expect("store");
         let update = r#"{"update_id":100,"message":{"chat":{"id":"321"},"text":"/fresh"}}"#;
 
-        let outcome =
-            process_webhook_line(&cfg, &store, update, SourceMode::Webhook).expect("process");
+        let outcome = process_webhook_line(&cfg, &store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
         assert!(output.contains("TELEGRAM_REPLY:"));
@@ -2725,8 +2804,7 @@ mod tests {
         assert!(inserted);
 
         let update = r#"{"update_id":42,"message":{"chat":{"id":"321"},"text":"hello again"}}"#;
-        let outcome =
-            process_webhook_line(&cfg, &store, update, SourceMode::Webhook).expect("process");
+        let outcome = process_webhook_line(&cfg, &store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
         assert!(output.contains("TELEGRAM_REPLY: Old reply"));
@@ -2779,7 +2857,7 @@ mod tests {
             fs::remove_file(&marker_path).expect("cleanup stale marker");
         }
 
-        let _ = process_webhook_line(&cfg, &store, update, SourceMode::Webhook).expect("process");
+        let _ = process_webhook_line(&cfg, &store, update).expect("process");
 
         assert!(marker_path.exists());
     }

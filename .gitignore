@@ -1,4 +1,5 @@
 .env
+config.toml
 state.db
 USER.md
 MEMORY.md

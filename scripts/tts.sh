@@ -7,16 +7,6 @@ if [[ "$INSTANCE_DIR" != /* ]]; then
   INSTANCE_DIR="$(cd "$INSTANCE_DIR" && pwd)"
 fi
 
-load_env() {
-  local env_file="${INSTANCE_DIR}/.env"
-  if [[ -f "$env_file" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$env_file"
-    set +a
-  fi
-}
-
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "missing dependency: $1" >&2
@@ -31,8 +21,6 @@ trim() {
   printf "%s" "$x"
 }
 
-load_env
-
 require_cmd ffmpeg
 
 if [[ $# -ne 2 ]]; then
@@ -43,7 +31,7 @@ fi
 text="$1"
 output_ogg="$2"
 
-: "${TTS_CMD_TEMPLATE:?TTS_CMD_TEMPLATE is required in .env}"
+: "${TTS_CMD_TEMPLATE:?TTS_CMD_TEMPLATE is required in config.toml}"
 : "${VOICE_BITRATE:=32k}"
 : "${TTS_MAX_CHARS:=260}"
 

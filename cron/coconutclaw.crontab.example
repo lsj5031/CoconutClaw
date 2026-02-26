@@ -1,8 +1,8 @@
 # Keep agent alive (every minute watchdog)
-* * * * * cd "$HOME/code/CoconutClaw" && pgrep -f "coconutclaw run" >/dev/null || nohup coconutclaw run >> LOGS/cron-agent.log 2>&1 &
+* * * * * cd "$HOME/code/CoconutClaw" && pgrep -f "coconutclaw --instance-dir $HOME/code/CoconutClaw run" >/dev/null || nohup coconutclaw --instance-dir "$HOME/code/CoconutClaw" run >> LOGS/cron-agent.log 2>&1 &
 
 # Daily heartbeat at 09:00 local time
-0 9 * * * cd "$HOME/code/CoconutClaw" && ./scripts/heartbeat.sh >> LOGS/cron-heartbeat.log 2>&1
+0 9 * * * cd "$HOME/code/CoconutClaw" && coconutclaw --instance-dir "$HOME/code/CoconutClaw" heartbeat >> LOGS/cron-heartbeat.log 2>&1
 
 # Nightly reflection at 22:30 local time
-30 22 * * * cd "$HOME/code/CoconutClaw" && ./scripts/nightly_reflection.sh >> LOGS/cron-reflection.log 2>&1
+30 22 * * * cd "$HOME/code/CoconutClaw" && coconutclaw --instance-dir "$HOME/code/CoconutClaw" nightly-reflection >> LOGS/cron-reflection.log 2>&1

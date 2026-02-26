@@ -73,15 +73,92 @@ pub struct RuntimeConfig {
     pub poll_interval_seconds: u64,
     pub provider: AgentProvider,
     pub exec_policy: String,
+    pub asr_url: Option<String>,
+    pub asr_cmd_template: Option<String>,
+    pub asr_file_field: Option<String>,
+    pub asr_text_jq: Option<String>,
+    pub asr_preprocess: Option<String>,
+    pub asr_sample_rate: Option<String>,
+    pub tts_cmd_template: Option<String>,
+    pub voice_bitrate: Option<String>,
+    pub tts_max_chars: Option<String>,
+    pub nightly_reflection_file: PathBuf,
+    pub nightly_reflection_skip_agent: bool,
+    pub nightly_reflection_prompt: Option<String>,
     pub codex: CodexConfig,
     pub pi: PiConfig,
-    pub env_file_path: PathBuf,
+    pub config_file_path: PathBuf,
 }
 
 pub struct InstanceLock {
     _file: File,
     pub path: PathBuf,
 }
+
+const DEFAULT_CONFIG_TOML: &str = r#"# CoconutClaw runtime config
+TELEGRAM_BOT_TOKEN = "replace_me"
+TELEGRAM_CHAT_ID = "replace_me"
+TELEGRAM_PARSE_MODE = "off"
+TELEGRAM_PARSE_FALLBACK = "plain"
+
+TIMEZONE = "UTC"
+SQLITE_DB_PATH = "./state.db"
+LOG_DIR = "./LOGS"
+ALLOWLIST_PATH = "./config/allowlist.txt"
+POLL_INTERVAL_SECONDS = 2
+WEBHOOK_MODE = "off"
+
+AGENT_PROVIDER = "codex"
+EXEC_POLICY = "yolo"
+CODEX_BIN = "codex"
+PI_BIN = "pi"
+PI_MODE = "text"
+
+ASR_URL = ""
+ASR_CMD_TEMPLATE = ""
+TTS_CMD_TEMPLATE = ""
+VOICE_BITRATE = "32k"
+TTS_MAX_CHARS = 260
+
+NIGHTLY_REFLECTION_FILE = "./LOGS/nightly_reflection.md"
+NIGHTLY_REFLECTION_SKIP_AGENT = "off"
+NIGHTLY_REFLECTION_PROMPT = ""
+"#;
+
+const MIGRATABLE_ENV_KEYS: &[&str] = &[
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+    "TELEGRAM_PARSE_MODE",
+    "TELEGRAM_PARSE_FALLBACK",
+    "TIMEZONE",
+    "SQLITE_DB_PATH",
+    "LOG_DIR",
+    "ALLOWLIST_PATH",
+    "POLL_INTERVAL_SECONDS",
+    "WEBHOOK_MODE",
+    "AGENT_PROVIDER",
+    "EXEC_POLICY",
+    "CODEX_BIN",
+    "CODEX_MODEL",
+    "CODEX_REASONING_EFFORT",
+    "PI_BIN",
+    "PI_PROVIDER",
+    "PI_MODEL",
+    "PI_MODE",
+    "PI_EXTRA_ARGS",
+    "ASR_URL",
+    "ASR_CMD_TEMPLATE",
+    "ASR_FILE_FIELD",
+    "ASR_TEXT_JQ",
+    "ASR_PREPROCESS",
+    "ASR_SAMPLE_RATE",
+    "TTS_CMD_TEMPLATE",
+    "VOICE_BITRATE",
+    "TTS_MAX_CHARS",
+    "NIGHTLY_REFLECTION_FILE",
+    "NIGHTLY_REFLECTION_SKIP_AGENT",
+    "NIGHTLY_REFLECTION_PROMPT",
+];
 
 impl RuntimeConfig {
     pub fn acquire_instance_lock(&self) -> Result<InstanceLock> {
@@ -147,49 +224,70 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         (data_root, instance_name, instance_dir)
     };
 
-    let env_file_path = instance_dir.join(".env");
-    let env_file = load_env_file(&env_file_path)?;
+    let config_file_path = instance_dir.join("config.toml");
+    let legacy_env_file_path = instance_dir.join(".env");
+    migrate_legacy_env_if_needed(&config_file_path, &legacy_env_file_path)?;
+    let config_file = load_config_file(&config_file_path)?;
 
     let sqlite_db_path = resolve_path(
         &instance_dir,
-        pick_value("SQLITE_DB_PATH", &env_file).unwrap_or_else(|| "./state.db".to_string()),
+        pick_value("SQLITE_DB_PATH", &config_file).unwrap_or_else(|| "./state.db".to_string()),
     );
     let log_dir = resolve_path(
         &instance_dir,
-        pick_value("LOG_DIR", &env_file).unwrap_or_else(|| "./LOGS".to_string()),
+        pick_value("LOG_DIR", &config_file).unwrap_or_else(|| "./LOGS".to_string()),
     );
     let allowlist_path = resolve_path(
         &instance_dir,
-        pick_value("ALLOWLIST_PATH", &env_file)
+        pick_value("ALLOWLIST_PATH", &config_file)
             .unwrap_or_else(|| "./config/allowlist.txt".to_string()),
     );
 
     let provider = AgentProvider::parse(
-        &pick_value("AGENT_PROVIDER", &env_file).unwrap_or_else(|| "codex".to_string()),
+        &pick_value("AGENT_PROVIDER", &config_file).unwrap_or_else(|| "codex".to_string()),
     )?;
-    let exec_policy = pick_value("EXEC_POLICY", &env_file)
+    let exec_policy = pick_value("EXEC_POLICY", &config_file)
         .unwrap_or_else(|| "yolo".to_string())
         .to_ascii_lowercase();
-    let webhook_mode = pick_value("WEBHOOK_MODE", &env_file)
-        .map(|value| value.eq_ignore_ascii_case("on"))
-        .unwrap_or(false);
-    let poll_interval_seconds = pick_value("POLL_INTERVAL_SECONDS", &env_file)
+    let webhook_mode = parse_on_off(pick_value("WEBHOOK_MODE", &config_file).as_deref(), false);
+    let poll_interval_seconds = pick_value("POLL_INTERVAL_SECONDS", &config_file)
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(2);
     let telegram_parse_mode = TelegramParseMode::parse(
-        &pick_value("TELEGRAM_PARSE_MODE", &env_file).unwrap_or_else(|| "off".to_string()),
+        &pick_value("TELEGRAM_PARSE_MODE", &config_file).unwrap_or_else(|| "off".to_string()),
     )?;
     let telegram_parse_fallback = TelegramParseFallback::parse(
-        &pick_value("TELEGRAM_PARSE_FALLBACK", &env_file).unwrap_or_else(|| "plain".to_string()),
+        &pick_value("TELEGRAM_PARSE_FALLBACK", &config_file).unwrap_or_else(|| "plain".to_string()),
     )?;
 
-    let pi_mode = pick_value("PI_MODE", &env_file)
+    let pi_mode = pick_value("PI_MODE", &config_file)
         .unwrap_or_else(|| "text".to_string())
         .to_ascii_lowercase();
     if pi_mode != "text" && pi_mode != "json" {
         bail!("invalid PI_MODE: {pi_mode} (expected text or json)");
     }
+
+    let asr_url = normalize_optional(pick_value("ASR_URL", &config_file));
+    let asr_cmd_template = normalize_optional(pick_value("ASR_CMD_TEMPLATE", &config_file));
+    let asr_file_field = normalize_optional(pick_value("ASR_FILE_FIELD", &config_file));
+    let asr_text_jq = normalize_optional(pick_value("ASR_TEXT_JQ", &config_file));
+    let asr_preprocess = normalize_optional(pick_value("ASR_PREPROCESS", &config_file));
+    let asr_sample_rate = normalize_optional(pick_value("ASR_SAMPLE_RATE", &config_file));
+    let tts_cmd_template = normalize_optional(pick_value("TTS_CMD_TEMPLATE", &config_file));
+    let voice_bitrate = normalize_optional(pick_value("VOICE_BITRATE", &config_file));
+    let tts_max_chars = normalize_optional(pick_value("TTS_MAX_CHARS", &config_file));
+    let nightly_reflection_file = resolve_path(
+        &instance_dir,
+        pick_value("NIGHTLY_REFLECTION_FILE", &config_file)
+            .unwrap_or_else(|| "./LOGS/nightly_reflection.md".to_string()),
+    );
+    let nightly_reflection_skip_agent = parse_on_off(
+        pick_value("NIGHTLY_REFLECTION_SKIP_AGENT", &config_file).as_deref(),
+        false,
+    );
+    let nightly_reflection_prompt =
+        normalize_optional(pick_value("NIGHTLY_REFLECTION_PROMPT", &config_file));
 
     let cfg = RuntimeConfig {
         root_dir,
@@ -202,48 +300,60 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         log_dir,
         sqlite_db_path,
         allowlist_path,
-        timezone: pick_value("TIMEZONE", &env_file).unwrap_or_else(|| "UTC".to_string()),
-        telegram_bot_token: pick_value("TELEGRAM_BOT_TOKEN", &env_file),
-        telegram_chat_id: pick_value("TELEGRAM_CHAT_ID", &env_file),
+        timezone: pick_value("TIMEZONE", &config_file).unwrap_or_else(|| "UTC".to_string()),
+        telegram_bot_token: pick_value("TELEGRAM_BOT_TOKEN", &config_file),
+        telegram_chat_id: pick_value("TELEGRAM_CHAT_ID", &config_file),
         telegram_parse_mode,
         telegram_parse_fallback,
         webhook_mode,
         poll_interval_seconds,
         provider,
         exec_policy,
+        asr_url,
+        asr_cmd_template,
+        asr_file_field,
+        asr_text_jq,
+        asr_preprocess,
+        asr_sample_rate,
+        tts_cmd_template,
+        voice_bitrate,
+        tts_max_chars,
+        nightly_reflection_file,
+        nightly_reflection_skip_agent,
+        nightly_reflection_prompt,
         codex: CodexConfig {
-            bin: pick_value("CODEX_BIN", &env_file).unwrap_or_else(|| "codex".to_string()),
-            model: pick_value("CODEX_MODEL", &env_file)
+            bin: pick_value("CODEX_BIN", &config_file).unwrap_or_else(|| "codex".to_string()),
+            model: pick_value("CODEX_MODEL", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
-            reasoning_effort: pick_value("CODEX_REASONING_EFFORT", &env_file)
+            reasoning_effort: pick_value("CODEX_REASONING_EFFORT", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
         },
         pi: PiConfig {
-            bin: pick_value("PI_BIN", &env_file).unwrap_or_else(|| "pi".to_string()),
-            provider: pick_value("PI_PROVIDER", &env_file)
+            bin: pick_value("PI_BIN", &config_file).unwrap_or_else(|| "pi".to_string()),
+            provider: pick_value("PI_PROVIDER", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
-            model: pick_value("PI_MODEL", &env_file)
+            model: pick_value("PI_MODEL", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
             mode: pi_mode,
-            extra_args: pick_value("PI_EXTRA_ARGS", &env_file)
+            extra_args: pick_value("PI_EXTRA_ARGS", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
         },
-        env_file_path,
+        config_file_path,
     };
 
     ensure_instance_layout(&cfg)?;
@@ -282,6 +392,13 @@ pub fn ensure_instance_layout(cfg: &RuntimeConfig) -> Result<()> {
         Some(&cfg.root_dir.join("USER.md")),
         "# User Profile\n",
     )?;
+    if !cfg.config_file_path.exists() {
+        ensure_file(
+            &cfg.config_file_path,
+            Some(&cfg.root_dir.join("config.toml.example")),
+            DEFAULT_CONFIG_TOML,
+        )?;
+    }
 
     Ok(())
 }
@@ -318,11 +435,105 @@ fn ensure_file(
     Ok(())
 }
 
-fn pick_value(key: &str, env_file: &HashMap<String, String>) -> Option<String> {
+fn migrate_legacy_env_if_needed(
+    config_file_path: &Path,
+    legacy_env_file_path: &Path,
+) -> Result<()> {
+    if config_file_path.exists() || !legacy_env_file_path.exists() {
+        return Ok(());
+    }
+
+    let legacy_env = load_env_file(legacy_env_file_path)?;
+    let mut output = String::from("# Migrated from legacy .env by CoconutClaw.\n");
+    for key in MIGRATABLE_ENV_KEYS {
+        if let Some(value) = legacy_env.get(*key) {
+            output.push_str(&format!("{key} = {}\n", toml::Value::String(value.clone())));
+        }
+    }
+
+    if let Some(parent) = config_file_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(config_file_path, output)
+        .with_context(|| format!("failed to write {}", config_file_path.display()))?;
+
+    if let Err(err) = fs::remove_file(legacy_env_file_path) {
+        eprintln!(
+            "warn: migrated legacy .env but failed to delete {}: {err}",
+            legacy_env_file_path.display()
+        );
+    }
+
+    eprintln!(
+        "info: migrated legacy .env to {}",
+        config_file_path.display()
+    );
+    Ok(())
+}
+
+fn pick_value(key: &str, config_file: &HashMap<String, String>) -> Option<String> {
     if let Ok(value) = env::var(key) {
         return Some(value);
     }
-    env_file.get(key).cloned()
+    config_file.get(key).cloned()
+}
+
+fn normalize_optional(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn parse_on_off(value: Option<&str>, default: bool) -> bool {
+    let Some(value) = value else {
+        return default;
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "1" | "yes" => true,
+        "off" | "false" | "0" | "no" => false,
+        _ => default,
+    }
+}
+
+fn load_config_file(path: &Path) -> Result<HashMap<String, String>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let body =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let value: toml::Value =
+        toml::from_str(&body).with_context(|| format!("failed to parse {}", path.display()))?;
+    let table = value
+        .as_table()
+        .ok_or_else(|| anyhow!("{} must contain a top-level TOML table", path.display()))?;
+
+    let mut output = HashMap::new();
+    for (key, node) in table {
+        if let Some(value) = toml_scalar_to_string(node) {
+            output.insert(key.to_string(), value);
+        } else {
+            bail!(
+                "unsupported value for key {} in {} (only string/int/float/bool are supported)",
+                key,
+                path.display()
+            );
+        }
+    }
+    Ok(output)
+}
+
+fn toml_scalar_to_string(value: &toml::Value) -> Option<String> {
+    match value {
+        toml::Value::String(v) => Some(v.clone()),
+        toml::Value::Integer(v) => Some(v.to_string()),
+        toml::Value::Float(v) => Some(v.to_string()),
+        toml::Value::Boolean(v) => Some(v.to_string()),
+        _ => None,
+    }
 }
 
 fn load_env_file(path: &Path) -> Result<HashMap<String, String>> {
@@ -418,7 +629,12 @@ mod tests {
         std::env::temp_dir().join(format!("coconutclaw_cfg_test_{unique}"))
     }
 
-    fn write_env(instance_dir: &Path, body: &str) {
+    fn write_config(instance_dir: &Path, body: &str) {
+        fs::create_dir_all(instance_dir).expect("mkdir instance");
+        fs::write(instance_dir.join("config.toml"), body).expect("write config.toml");
+    }
+
+    fn write_legacy_env(instance_dir: &Path, body: &str) {
         fs::create_dir_all(instance_dir).expect("mkdir instance");
         fs::write(instance_dir.join(".env"), body).expect("write .env");
     }
@@ -426,15 +642,15 @@ mod tests {
     #[test]
     fn telegram_parse_mode_defaults_to_off() {
         let instance_dir = unique_dir();
-        write_env(
+        write_config(
             &instance_dir,
-            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\n",
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\n",
         );
 
         let cfg = load_runtime_config(&CliOverrides {
             instance: None,
             data_dir: None,
-            instance_dir: Some(instance_dir),
+            instance_dir: Some(instance_dir.clone()),
         })
         .expect("config");
 
@@ -444,15 +660,15 @@ mod tests {
     #[test]
     fn telegram_parse_mode_accepts_markdown_v2() {
         let instance_dir = unique_dir();
-        write_env(
+        write_config(
             &instance_dir,
-            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_MODE=MarkdownV2\n",
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_MODE = \"MarkdownV2\"\n",
         );
 
         let cfg = load_runtime_config(&CliOverrides {
             instance: None,
             data_dir: None,
-            instance_dir: Some(instance_dir),
+            instance_dir: Some(instance_dir.clone()),
         })
         .expect("config");
 
@@ -462,9 +678,9 @@ mod tests {
     #[test]
     fn telegram_parse_mode_rejects_invalid_value() {
         let instance_dir = unique_dir();
-        write_env(
+        write_config(
             &instance_dir,
-            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_MODE=Markdown\n",
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_MODE = \"Markdown\"\n",
         );
 
         let err = load_runtime_config(&CliOverrides {
@@ -481,9 +697,9 @@ mod tests {
     #[test]
     fn telegram_parse_fallback_defaults_to_plain() {
         let instance_dir = unique_dir();
-        write_env(
+        write_config(
             &instance_dir,
-            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\n",
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\n",
         );
 
         let cfg = load_runtime_config(&CliOverrides {
@@ -499,9 +715,9 @@ mod tests {
     #[test]
     fn telegram_parse_fallback_accepts_none() {
         let instance_dir = unique_dir();
-        write_env(
+        write_config(
             &instance_dir,
-            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_FALLBACK=none\n",
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_FALLBACK = \"none\"\n",
         );
 
         let cfg = load_runtime_config(&CliOverrides {
@@ -517,9 +733,9 @@ mod tests {
     #[test]
     fn telegram_parse_fallback_rejects_invalid_value() {
         let instance_dir = unique_dir();
-        write_env(
+        write_config(
             &instance_dir,
-            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_FALLBACK=retry\n",
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_FALLBACK = \"retry\"\n",
         );
 
         let err = load_runtime_config(&CliOverrides {
@@ -531,6 +747,46 @@ mod tests {
 
         let text = format!("{err:#}");
         assert!(text.contains("invalid TELEGRAM_PARSE_FALLBACK"));
+    }
+
+    #[test]
+    fn migrates_legacy_env_to_config_toml() {
+        let instance_dir = unique_dir();
+        write_legacy_env(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_MODE=MarkdownV2\n",
+        );
+
+        let cfg = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir.clone()),
+        })
+        .expect("config");
+
+        assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2);
+        assert!(instance_dir.join("config.toml").exists());
+        assert!(!instance_dir.join(".env").exists());
+    }
+
+    #[test]
+    fn ignores_legacy_env_when_config_toml_exists() {
+        let instance_dir = unique_dir();
+        write_config(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_MODE = \"off\"\n",
+        );
+        write_legacy_env(&instance_dir, "TELEGRAM_PARSE_MODE=MarkdownV2\n");
+
+        let cfg = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir.clone()),
+        })
+        .expect("config");
+
+        assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::Off);
+        assert!(instance_dir.join(".env").exists());
     }
 }
 

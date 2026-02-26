@@ -2,83 +2,176 @@
 
 CoconutClaw is a Telegram personal agent runtime implemented in Rust.
 
-## Quick start
+## SOTA UX Quick Start
+
+### 1) Clone and configure once
 
 ```bash
 git clone https://github.com/lsj5031/CoconutClaw.git
 cd CoconutClaw
-
-cp .env.example .env
-# Edit .env and set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
-
-cargo build -p coconutclaw
-cargo run -p coconutclaw -- doctor
 ```
 
-Run once:
+Windows PowerShell:
+
+```powershell
+Copy-Item config.toml.example config.toml
+```
+
+Linux/macOS:
 
 ```bash
-cargo run -p coconutclaw -- once --inject-text "hello"
+cp config.toml.example config.toml
 ```
 
-Run poll loop:
+Edit `config.toml` and set at least:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+
+### 2) Sanity check
+
+Windows:
+
+```powershell
+.\scripts\run.ps1 -Doctor
+```
+
+Linux/macOS:
 
 ```bash
-cargo run -p coconutclaw -- run
+bash scripts/run.sh --doctor
 ```
 
-## Commands
+### 3) Install background runtime (one command)
 
-- `coconutclaw run` - main runtime loop
-- `coconutclaw once --inject-text "..."` - one-shot turn
-- `coconutclaw doctor` - environment checks
-- `coconutclaw heartbeat` - proactive daily heartbeat turn
-- `coconutclaw nightly-reflection` - append daily reflection markdown block
+Windows (Task Scheduler):
 
-## Telegram Markdown replies
-
-Configure in `.env`:
-
-```env
-TELEGRAM_PARSE_MODE=off        # off | MarkdownV2
-TELEGRAM_PARSE_FALLBACK=plain  # plain | none
+```powershell
+.\scripts\install.ps1
 ```
 
-Behavior:
-
-- `off`: send plain text
-- `MarkdownV2`: send with Telegram `parse_mode=MarkdownV2`
-- `plain` fallback: if Telegram rejects malformed markdown, retry once as plain text
-- `none` fallback: do not retry
-
-## ASR / TTS helpers
-
-Rust runtime currently calls:
-
-- `scripts/asr.sh`
-- `scripts/tts.sh`
-
-These are lightweight helper scripts and not the old Bash runtime.
-
-## Systemd units
-
-The repository ships Rust-first user units in `systemd/`:
-
-- `coconutclaw.service` -> `coconutclaw run`
-- `coconutclaw-heartbeat.service` + timer
-- `coconutclaw-nightly-reflection.service` + timer
-
-Install with:
+Linux/macOS (systemd user / launchd):
 
 ```bash
-make install
-make start
+bash scripts/install.sh
 ```
 
-## Legacy compatibility shims
+Start services:
+
+Windows:
+
+```powershell
+.\scripts\start.ps1
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/start.sh
+```
+
+Check status:
+
+Windows:
+
+```powershell
+.\scripts\status.ps1
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/status.sh
+```
+
+Stop or uninstall:
+
+Windows:
+
+```powershell
+.\scripts\stop.ps1
+.\scripts\uninstall.ps1
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/stop.sh
+bash scripts/uninstall.sh
+```
+
+## Unified Runtime Commands
+
+- `run`: main runtime loop
+- `once`: one-shot turn (`--inject-text`, `--inject-file`)
+- `doctor`: environment checks
+- `heartbeat`: proactive turn
+- `nightly-reflection`: append daily reflection markdown block
+
+PowerShell:
+
+```powershell
+.\scripts\run.ps1
+.\scripts\run.ps1 -Once -InjectText "hello"
+.\scripts\run.ps1 -Heartbeat
+.\scripts\run.ps1 -NightlyReflection
+```
+
+Bash:
+
+```bash
+bash scripts/run.sh
+bash scripts/run.sh --once --inject-text "hello"
+bash scripts/run.sh --heartbeat
+bash scripts/run.sh --nightly-reflection
+```
+
+## Config
+
+Default config file: `config.toml`.
+
+If a legacy `.env` exists and `config.toml` is missing, CoconutClaw auto-migrates `.env` to `config.toml` on startup and then removes `.env`.
+
+## Telegram Markdown Replies
+
+```toml
+TELEGRAM_PARSE_MODE = "off"       # off | MarkdownV2
+TELEGRAM_PARSE_FALLBACK = "plain" # plain | none
+```
+
+## ASR / TTS
+
+ASR and TTS are optional and default to off.
+
+- Enable ASR by setting `ASR_CMD_TEMPLATE` or `ASR_URL`.
+- Enable TTS by setting `TTS_CMD_TEMPLATE`.
+- `doctor` reports required dependencies only when these features are enabled.
+
+## Service Schedule Tuning
+
+Service install defaults:
+
+- heartbeat: `09:00`
+- nightly reflection: `22:30`
+
+Override on install:
+
+Windows:
+
+```powershell
+.\scripts\install.ps1 -HeartbeatTime 10:00 -ReflectionTime 23:00
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/install.sh --heartbeat 10:00 --reflection 23:00
+```
+
+## Legacy Compatibility Shims
 
 - `./agent.sh`
 - `./scripts/heartbeat.sh`
 - `./scripts/nightly_reflection.sh`
 
-These wrappers are temporary and forward to Rust CLI commands.
+These wrappers are compatibility-only and forward to the unified runtime scripts.
