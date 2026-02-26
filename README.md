@@ -1,15 +1,35 @@
 # CoconutClaw (Rust Runtime)
 
-CoconutClaw is a Telegram personal agent runtime implemented in Rust.
+CoconutClaw is a Telegram personal agent runtime in Rust.  
+It supports Windows, Linux, and macOS with the same service lifecycle:
 
-## SOTA UX Quick Start
+- `install`
+- `start`
+- `status`
+- `stop`
+- `uninstall`
 
-### 1) Clone and configure once
+## What You Get
 
-```bash
-git clone https://github.com/lsj5031/CoconutClaw.git
-cd CoconutClaw
-```
+- Single binary runtime (`coconutclaw`)
+- Unified scripts for all platforms
+- Background service support (Windows Task Scheduler / Linux user `systemd` / macOS user `launchd`)
+- Optional ASR / TTS integration
+- Multi-instance service support (`instance` or `instance-dir`)
+
+## Quick Start (From Release Build)
+
+### 1) Download and unzip the latest release
+
+Get the archive for your platform from:
+`https://github.com/lsj5031/CoconutClaw/releases`
+
+### 2) Create `config.toml`
+
+Copy `config.toml.example` to `config.toml`, then set at least:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
 
 Windows PowerShell:
 
@@ -23,12 +43,7 @@ Linux/macOS:
 cp config.toml.example config.toml
 ```
 
-Edit `config.toml` and set at least:
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-
-### 2) Sanity check
+### 3) Run environment check
 
 Windows:
 
@@ -42,53 +57,40 @@ Linux/macOS:
 bash scripts/run.sh --doctor
 ```
 
-### 3) Install background runtime (one command)
+### 4) Install and start background service
 
-Windows (Task Scheduler):
+Windows:
 
 ```powershell
 .\scripts\install.ps1
-```
-
-Linux/macOS (systemd user / launchd):
-
-```bash
-bash scripts/install.sh
-```
-
-Start services:
-
-Windows:
-
-```powershell
 .\scripts\start.ps1
-```
-
-Linux/macOS:
-
-```bash
-bash scripts/start.sh
-```
-
-Check status:
-
-Windows:
-
-```powershell
 .\scripts\status.ps1
 ```
 
 Linux/macOS:
 
 ```bash
+bash scripts/install.sh
+bash scripts/start.sh
 bash scripts/status.sh
 ```
 
-Stop or uninstall:
+## Quick Start (From Source)
+
+```bash
+git clone https://github.com/lsj5031/CoconutClaw.git
+cd CoconutClaw
+```
+
+Then follow the same steps above.
+
+## Day-to-Day Commands
 
 Windows:
 
 ```powershell
+.\scripts\start.ps1
+.\scripts\status.ps1
 .\scripts\stop.ps1
 .\scripts\uninstall.ps1
 ```
@@ -96,83 +98,68 @@ Windows:
 Linux/macOS:
 
 ```bash
+bash scripts/start.sh
+bash scripts/status.sh
 bash scripts/stop.sh
 bash scripts/uninstall.sh
 ```
 
-## Unified Runtime Commands
+## Runtime Commands (Manual Mode)
 
-- `run`: main runtime loop
-- `once`: one-shot turn (`--inject-text`, `--inject-file`)
-- `doctor`: environment checks
-- `heartbeat`: proactive turn
-- `nightly-reflection`: append daily reflection markdown block
-
-PowerShell:
-
-```powershell
-.\scripts\run.ps1
-.\scripts\run.ps1 -Once -InjectText "hello"
-.\scripts\run.ps1 -Heartbeat
-.\scripts\run.ps1 -NightlyReflection
-```
-
-Bash:
-
-```bash
-bash scripts/run.sh
-bash scripts/run.sh --once --inject-text "hello"
-bash scripts/run.sh --heartbeat
-bash scripts/run.sh --nightly-reflection
-```
-
-## Config
-
-Default config file: `config.toml`.
-
-If a legacy `.env` exists and `config.toml` is missing, CoconutClaw auto-migrates `.env` to `config.toml` on startup and then removes `.env`.
-
-## Telegram Markdown Replies
-
-```toml
-TELEGRAM_PARSE_MODE = "off"       # off | MarkdownV2
-TELEGRAM_PARSE_FALLBACK = "plain" # plain | none
-```
-
-## ASR / TTS
-
-ASR and TTS are optional and default to off.
-
-- Enable ASR by setting `ASR_CMD_TEMPLATE` or `ASR_URL`.
-- Enable TTS by setting `TTS_CMD_TEMPLATE`.
-- `doctor` reports required dependencies only when these features are enabled.
-
-## Service Schedule Tuning
-
-Service install defaults:
-
-- heartbeat: `09:00`
-- nightly reflection: `22:30`
-
-Override on install:
+Main runtime:
 
 Windows:
 
 ```powershell
-.\scripts\install.ps1 -HeartbeatTime 10:00 -ReflectionTime 23:00
+.\scripts\run.ps1
 ```
 
 Linux/macOS:
 
 ```bash
-bash scripts/install.sh --heartbeat 10:00 --reflection 23:00
+bash scripts/run.sh
 ```
 
-## Multi-Instance Service Commands
+One-shot turn:
 
-Service scripts now support instance-scoped install/start/stop/status/uninstall.
+Windows:
 
-Use named instance:
+```powershell
+.\scripts\run.ps1 -Once -InjectText "hello"
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/run.sh --once --inject-text "hello"
+```
+
+Heartbeat / nightly reflection:
+
+Windows:
+
+```powershell
+.\scripts\run.ps1 -Heartbeat
+.\scripts\run.ps1 -NightlyReflection
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/run.sh --heartbeat
+bash scripts/run.sh --nightly-reflection
+```
+
+## Multi-Instance Services
+
+Use one of:
+
+- Named instance (`--instance` / `-Instance`)
+- Explicit instance directory (`--instance-dir` / `-InstanceDir`)
+
+Do not use both together.
+
+Named instance example:
 
 Windows:
 
@@ -190,7 +177,7 @@ bash scripts/start.sh --instance work
 bash scripts/status.sh --instance work
 ```
 
-Use explicit instance directory:
+Instance directory example:
 
 Windows:
 
@@ -204,15 +191,49 @@ Linux/macOS:
 bash scripts/install.sh --instance-dir ./instances/work
 ```
 
-Notes:
+## Schedule Tuning
 
-- `--instance` and `--instance-dir` are mutually exclusive.
-- Omit both to keep default single-instance behavior (`default`).
+Default install schedule:
 
-## Legacy Compatibility Shims
+- heartbeat: `09:00`
+- nightly reflection: `22:30`
+
+Override during install:
+
+Windows:
+
+```powershell
+.\scripts\install.ps1 -HeartbeatTime 10:00 -ReflectionTime 23:00
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/install.sh --heartbeat 10:00 --reflection 23:00
+```
+
+## Configuration Notes
+
+- Main config file is `config.toml`.
+- If `.env` exists and `config.toml` is missing, CoconutClaw migrates `.env` to `config.toml` on startup and removes `.env`.
+
+Telegram parse mode:
+
+```toml
+TELEGRAM_PARSE_MODE = "off"       # off | MarkdownV2
+TELEGRAM_PARSE_FALLBACK = "plain" # plain | none
+```
+
+Optional ASR / TTS:
+
+- Enable ASR via `ASR_CMD_TEMPLATE` or `ASR_URL`.
+- Enable TTS via `TTS_CMD_TEMPLATE`.
+- `doctor` checks ASR/TTS dependencies only when enabled.
+
+## Legacy Compatibility Wrappers
 
 - `./agent.sh`
 - `./scripts/heartbeat.sh`
 - `./scripts/nightly_reflection.sh`
 
-These wrappers are compatibility-only and forward to the unified runtime scripts.
+These wrappers forward to the unified runtime scripts.
