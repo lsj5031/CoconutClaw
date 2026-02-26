@@ -9,7 +9,7 @@ Primary runtime is `coconutclaw` (`crates/coconutclaw-cli/src/main.rs`).
 
 - Rust tests: `cargo test`
 - One-shot smoke: `cargo run -p coconutclaw -- once --inject-text "hello"`
-- Bash helper lint: `shellcheck scripts/asr.sh scripts/tts.sh scripts/run.sh scripts/service.sh scripts/install.sh scripts/start.sh scripts/stop.sh scripts/status.sh scripts/uninstall.sh`
+- Bash helper lint: `shellcheck scripts/asr.sh scripts/tts.sh`
 
 ## Architecture
 
@@ -20,10 +20,6 @@ Primary runtime is `coconutclaw` (`crates/coconutclaw-cli/src/main.rs`).
 - Helper scripts kept by design:
   - `scripts/asr.sh`
   - `scripts/tts.sh`
-- Service management scripts:
-  - `scripts/run.sh`
-  - `scripts/service.sh`
-  - `scripts/{install,start,stop,status,uninstall}.sh`
 
 ## Output contract
 

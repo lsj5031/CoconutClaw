@@ -14,16 +14,16 @@ release: ## Build optimized release binary
 	cargo build -p coconutclaw --release
 
 install: ## Install background services (Linux: systemd user, macOS: launchd)
-	bash ./scripts/install.sh
+	cargo run -p coconutclaw -- service install
 
 uninstall: ## Remove background services
-	bash ./scripts/uninstall.sh
+	cargo run -p coconutclaw -- service uninstall
 
 start: ## Start runtime service + timers
-	bash ./scripts/start.sh
+	cargo run -p coconutclaw -- service start
 
 stop: ## Stop runtime service + timers
-	bash ./scripts/stop.sh
+	cargo run -p coconutclaw -- service stop
 
 restart: ## Restart runtime service + timers
 	$(MAKE) --no-print-directory stop
@@ -31,7 +31,7 @@ restart: ## Restart runtime service + timers
 	$(MAKE) --no-print-directory start
 
 status: ## Show runtime service status
-	bash ./scripts/status.sh
+	cargo run -p coconutclaw -- service status
 
 logs: ## Follow main agent logs (Linux systemd only)
 	journalctl --user -u coconutclaw.service -f
@@ -40,7 +40,7 @@ logs-reflection: ## Follow nightly reflection logs (Linux systemd only)
 	journalctl --user -u coconutclaw-nightly-reflection.service -f
 
 lint: ## Shellcheck maintained shell helpers
-	shellcheck scripts/asr.sh scripts/tts.sh scripts/run.sh scripts/service.sh scripts/install.sh scripts/start.sh scripts/stop.sh scripts/status.sh scripts/uninstall.sh
+	shellcheck scripts/asr.sh scripts/tts.sh
 
 test: ## Rust tests + one injected smoke run
 	cargo test

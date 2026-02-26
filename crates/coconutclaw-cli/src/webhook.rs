@@ -9,7 +9,7 @@ use coconutclaw_config::RuntimeConfig;
 use fs2::FileExt;
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::sync::{
     Arc,
@@ -196,6 +196,23 @@ pub(crate) fn append_webhook_queue_line(cfg: &RuntimeConfig, payload_line: &str)
             .with_context(|| format!("failed to append {}", queue_path.display()))?;
         file.flush()
             .with_context(|| format!("failed to flush {}", queue_path.display()))?;
+
+        const MAX_LINES: usize = 200;
+        let content = fs::read_to_string(&queue_path)
+            .with_context(|| format!("failed to re-read {}", queue_path.display()))?;
+        let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        if non_empty.len() > MAX_LINES {
+            let dropped = non_empty.len() - MAX_LINES;
+            tracing::warn!(
+                dropped,
+                kept = MAX_LINES,
+                "webhook queue exceeded cap, truncating oldest entries"
+            );
+            let kept = non_empty[dropped..].join("\n");
+            fs::write(&queue_path, format!("{kept}\n"))
+                .with_context(|| format!("failed to truncate {}", queue_path.display()))?;
+        }
+
         Ok(())
     })
 }
@@ -212,11 +229,13 @@ pub(crate) fn peek_webhook_queue_line(cfg: &RuntimeConfig) -> Result<Option<Stri
         if !queue_path.exists() {
             return Ok(None);
         }
-        let payload = fs::read_to_string(&queue_path)
+        let file = fs::File::open(&queue_path)
             .with_context(|| format!("failed to read {}", queue_path.display()))?;
-        for line in payload.lines() {
+        let reader = std::io::BufReader::new(file);
+        for line in reader.lines() {
+            let line = line.with_context(|| format!("failed to read {}", queue_path.display()))?;
             if !line.trim().is_empty() {
-                return Ok(Some(line.to_string()));
+                return Ok(Some(line));
             }
         }
         Ok(None)

@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use telegram_markdown_v2::{UnsupportedTagsStrategy, convert_with_strategy};
 
 mod markers;
+mod service;
 mod store;
 mod webhook;
 
@@ -57,6 +58,7 @@ enum Commands {
     Heartbeat,
     NightlyReflection,
     Doctor,
+    Service(ServiceArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -67,6 +69,26 @@ struct TurnArgs {
     inject_file: Option<PathBuf>,
     #[arg(long)]
     chat_id: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ServiceArgs {
+    #[command(subcommand)]
+    action: ServiceAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum ServiceAction {
+    Install {
+        #[arg(long, default_value = "09:00")]
+        heartbeat: String,
+        #[arg(long, default_value = "22:30")]
+        reflection: String,
+    },
+    Start,
+    Stop,
+    Status,
+    Uninstall,
 }
 
 #[derive(Debug, Clone)]
@@ -152,22 +174,29 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-
-    let cfg = load_runtime_config(&CliOverrides {
+    let overrides = CliOverrides {
         instance: cli.instance.clone(),
         data_dir: cli.data_dir.clone(),
         instance_dir: cli.instance_dir.clone(),
-    })?;
+    };
+
+    let cfg = load_runtime_config(&overrides)?;
+    let command = cli.command;
+
+    if let Commands::Service(args) = &command {
+        return service::run_service(&cfg, &overrides, args.clone());
+    }
 
     let _instance_lock = cfg.acquire_instance_lock()?;
     let store = Store::open(&cfg)?;
 
-    match cli.command {
+    match command {
         Commands::Once(args) => run_once(&cfg, &store, &args),
         Commands::Run(args) => run_run(&cfg, &store, &args),
         Commands::Heartbeat => run_heartbeat(&cfg, &store),
         Commands::NightlyReflection => run_nightly_reflection(&cfg, &store),
         Commands::Doctor => run_doctor(&cfg),
+        Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
     }
 }
 
@@ -1681,18 +1710,52 @@ fn split_text_chunks(text: &str, max_chars: usize) -> Vec<String> {
     if max_chars == 0 {
         return vec![text.to_string()];
     }
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
+    if text.is_empty() {
         return Vec::new();
+    }
+    if text.chars().count() <= max_chars {
+        return vec![text.to_string()];
     }
 
     let mut chunks = Vec::new();
-    let mut start = 0usize;
-    while start < chars.len() {
-        let end = (start + max_chars).min(chars.len());
-        let chunk: String = chars[start..end].iter().collect();
-        chunks.push(chunk);
-        start = end;
+    let mut current = String::new();
+
+    for line in text.split('\n') {
+        let line_len = line.chars().count();
+        if line_len > max_chars {
+            // Finalize current chunk before handling the oversized line.
+            if !current.is_empty() {
+                chunks.push(current);
+                current = String::new();
+            }
+            // Fall back to character-boundary splitting for this single line.
+            let chars: Vec<char> = line.chars().collect();
+            let mut start = 0usize;
+            while start < chars.len() {
+                let end = (start + max_chars).min(chars.len());
+                chunks.push(chars[start..end].iter().collect());
+                start = end;
+            }
+            continue;
+        }
+
+        let sep = if current.is_empty() { 0 } else { 1 }; // for '\n'
+        if current.chars().count() + sep + line_len > max_chars {
+            // Adding this line would exceed the limit; finalize current chunk.
+            if !current.is_empty() {
+                chunks.push(current);
+            }
+            current = line.to_string();
+        } else {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
     }
     chunks
 }
@@ -2214,8 +2277,7 @@ fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {
 
 fn is_allowed_chat(cfg: &RuntimeConfig, chat_id: Option<&str>) -> bool {
     match (cfg.telegram_chat_id.as_deref(), chat_id) {
-        (None, _) => true,
-        (Some(_), None) => false,
+        (None, _) | (Some(_), None) => false,
         (Some(expected), Some(actual)) => expected == actual,
     }
 }
@@ -3142,6 +3204,12 @@ mod tests {
     #[test]
     fn nightly_reflection_subcommand_is_recognized() {
         let parsed = Cli::try_parse_from(["coconutclaw", "nightly-reflection"]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn service_subcommand_is_recognized() {
+        let parsed = Cli::try_parse_from(["coconutclaw", "service", "status"]);
         assert!(parsed.is_ok());
     }
 

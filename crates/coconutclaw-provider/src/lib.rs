@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
@@ -243,7 +243,7 @@ fn run_child_process(
 
     let mut cancelled = false;
     let pgid = child.id() as libc::pid_t;
-    let status = loop {
+    let status = 'outer: loop {
         if let Some(status) = child.try_wait().context(wait_context)? {
             break status;
         }
@@ -251,9 +251,19 @@ fn run_child_process(
             && cancel_flag.load(Ordering::SeqCst)
         {
             cancelled = true;
-            unsafe { libc::kill(-pgid, libc::SIGKILL) };
-            let status = child.wait().context(kill_wait_context)?;
-            break status;
+            unsafe { libc::kill(-pgid, libc::SIGTERM) };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(status) = child.try_wait().context(wait_context)? {
+                    break 'outer status;
+                }
+                if Instant::now() >= deadline {
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                    let status = child.wait().context(kill_wait_context)?;
+                    break 'outer status;
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
         }
         thread::sleep(Duration::from_millis(200));
     };

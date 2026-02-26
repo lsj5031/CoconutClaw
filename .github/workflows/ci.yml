@@ -54,4 +54,4 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       - name: Shellcheck scripts
-        run: shellcheck scripts/asr.sh scripts/tts.sh scripts/run.sh scripts/service.sh scripts/install.sh scripts/start.sh scripts/stop.sh scripts/status.sh scripts/uninstall.sh
+        run: shellcheck scripts/asr.sh scripts/tts.sh

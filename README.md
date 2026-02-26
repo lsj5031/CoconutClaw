@@ -2,169 +2,241 @@
 
 <img src="logo.jpg" alt="CoconutClaw Logo" width="200">
 
-A personal AI assistant that lives in your Telegram. Fast, cross-platform, and self-hosted.
+**Your personal AI assistant on Telegram.** Send messages, get things done — no cloud subscription, no data leaving your machine.
 
-## Features
+---
 
-- **Single Binary** - No runtime dependencies. Download and run.
-- **Cross-Platform** - Windows, Linux, macOS with unified commands.
-- **Multi-Instance** - Run multiple isolated assistants (work, personal, etc.)
-- **Dual AI Providers** - OpenAI Codex and Pi (with extensible provider system).
-- **Smart Telegram** - MarkdownV2 with auto-fallback, progress updates, `/cancel` button.
-- **Background Service** - Auto-start on boot with systemd / launchd / Task Scheduler.
-- **Optional ASR/TTS** - Voice input/output when you need it.
-- **Context Persistence** - SQLite-backed memory across restarts.
+## What Can It Do?
 
-## Quick Start
+CoconutClaw helps you with everyday tasks through Telegram:
 
-### From Release
+- 📝 **Answer questions** - Ask anything, get helpful responses
+- 💻 **Write and fix code** - Debug, refactor, explain codebases
+- 📁 **Manage files** - Organize, search, and work with local files
+- 🔧 **Run commands** - Execute shell tasks safely on your machine
+- 🧠 **Remember things** - Persistent memory across conversations
+- 🗣️ **Voice support** - Send voice notes, get voice replies (optional)
 
-```bash
-# Download from https://github.com/lsj5031/CoconutClaw/releases
-unzip coconutclaw-linux-x86_64.zip
-cd CoconutClaw
-cp config.toml.example config.toml
-# Edit config.toml with your Telegram bot token and chat ID
-./scripts/install.sh && ./scripts/start.sh
-```
+Everything runs **locally on your computer**. Your data stays with you.
 
-### From Source
+---
+
+## Getting Started
+
+### What You'll Need
+
+1. **A Telegram account** - You already have this
+2. **A bot token** - Free from [@BotFather](https://t.me/botfather) on Telegram
+3. **Your chat ID** - Message [@userinfobot](https://t.me/userinfobot) to get it
+4. **A computer** - Linux, macOS, or Windows
+
+### Installation
+
+#### Option A: Download Release (Recommended)
+
+1. Download the latest release for your system from [Releases](https://github.com/lsj5031/CoconutClaw/releases)
+2. Unzip the file
+3. Open a terminal in the extracted folder
+4. Copy the example config:
+   ```bash
+   cp config.toml.example config.toml
+   ```
+5. Edit `config.toml` and add your bot token and chat ID:
+   ```toml
+   TELEGRAM_BOT_TOKEN = "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
+   TELEGRAM_CHAT_ID = "123456789"
+   ```
+6. Install and start:
+   ```bash
+   ./coconutclaw service install
+   ./coconutclaw service start
+   ```
+
+That's it! Message your bot on Telegram.
+
+#### Option B: Build from Source
+
+If you prefer building yourself:
 
 ```bash
 git clone https://github.com/lsj5031/CoconutClaw.git
 cd CoconutClaw
 make release
 cp config.toml.example config.toml
-# Edit config.toml
-./scripts/install.sh && ./scripts/start.sh
+# Edit config.toml with your credentials
+./target/release/coconutclaw service install
+./target/release/coconutclaw service start
 ```
 
-## Configuration
+---
 
-Minimal `config.toml`:
+## Using CoconutClaw
 
-```toml
-TELEGRAM_BOT_TOKEN = "your-bot-token"
-TELEGRAM_CHAT_ID = "your-chat-id"
+Once running, just message your bot on Telegram:
+
+```
+You: What's in my ~/Documents folder?
+Bot: I'll check that for you...
+     [lists folder contents]
 ```
 
-Optional settings:
+### Special Commands
+
+Type these in Telegram:
+
+| Command | What it does |
+|---------|--------------|
+| `/cancel` | Stop the current task |
+| `/fresh` | Start fresh (clear conversation context) |
+
+### Voice Messages
+
+Send a voice note to your bot, and it can reply with voice too. Configure in `config.toml`:
 
 ```toml
-# AI provider (codex or pi)
-AGENT_PROVIDER = "codex"
-CODEX_REASONING_EFFORT = "xhigh"  # low | medium | high | xhigh
-
-# Telegram formatting
-TELEGRAM_PARSE_MODE = "MarkdownV2"
-TELEGRAM_PARSE_FALLBACK = "plain"
-
-# Optional voice
 ASR_URL = "http://localhost:8080/asr"
 TTS_CMD_TEMPLATE = "tts-cli --text '{text}' --output {output}"
 ```
 
-## Service Management
+Voice is optional — text works perfectly without it.
 
-| Action | Linux/macOS | Windows |
-|--------|-------------|---------|
-| Install | `./scripts/install.sh` | `.\scripts\install.ps1` |
-| Start | `./scripts/start.sh` | `.\scripts\start.ps1` |
-| Status | `./scripts/status.sh` | `.\scripts\status.ps1` |
-| Stop | `./scripts/stop.sh` | `.\scripts\stop.ps1` |
-| Uninstall | `./scripts/uninstall.sh` | `.\scripts\uninstall.ps1` |
+---
 
-## Multi-Instance
+## Configuration Options
 
-Run separate assistants for different purposes:
+Your `config.toml` can be as simple as:
 
-```bash
-# Named instance
-./scripts/install.sh --instance work
-./scripts/start.sh --instance work
-
-# Custom directory
-./scripts/install.sh --instance-dir ~/instances/personal
+```toml
+TELEGRAM_BOT_TOKEN = "your-token"
+TELEGRAM_CHAT_ID = "your-chat-id"
 ```
 
-Each instance has isolated:
-- SQLite database
+Optional extras:
+
+```toml
+# Choose AI provider (codex or pi)
+AGENT_PROVIDER = "codex"
+
+# How much the AI thinks before responding
+CODEX_REASONING_EFFORT = "xhigh"  # low, medium, high, or xhigh
+
+# Message formatting
+TELEGRAM_PARSE_MODE = "MarkdownV2"
+TELEGRAM_PARSE_FALLBACK = "plain"
+```
+
+---
+
+## Running Multiple Assistants
+
+Want separate assistants for work and personal use?
+
+```bash
+# Create a "work" instance
+./coconutclaw --instance work service install
+./coconutclaw --instance work service start
+
+# Or use a custom location
+./coconutclaw --instance-dir ~/my-assistants/personal service install
+```
+
+Each instance keeps its own:
+- Conversation history
+- Memory and notes
 - Configuration
-- Lock file
 - Logs
 
-## Runtime Commands
+---
+
+## Controlling the Service
+
+| Action | Command |
+|--------|---------|
+| Install as background service | `./coconutclaw service install` |
+| Start | `./coconutclaw service start` |
+| Check status | `./coconutclaw service status` |
+| Stop | `./coconutclaw service stop` |
+| Remove service | `./coconutclaw service uninstall` |
+| Run once manually | `./coconutclaw run` |
+| Health check | `./coconutclaw doctor` |
+
+---
+
+## Scheduled Tasks
+
+CoconutClaw can run tasks automatically:
+
+- **Heartbeat** (default: 9:00 AM) - Health check
+- **Nightly reflection** (default: 10:30 PM) - Daily summary
+
+Customize when installing:
 
 ```bash
-# Manual run (foreground)
-./scripts/run.sh
-
-# One-shot message
-./scripts/run.sh --once --inject-text "What's the weather?"
-
-# Health check
-./scripts/run.sh --doctor
-
-# Scheduled tasks
-./scripts/run.sh --heartbeat
-./scripts/run.sh --nightly-reflection
+./coconutclaw service install --heartbeat 10:00 --reflection 23:00
 ```
 
-## Architecture
+---
+
+## How It Works
+
+```
+┌─────────────┐      ┌──────────────────┐      ┌─────────────┐
+│  Telegram   │ ◄──► │  CoconutClaw     │ ◄──► │   AI Model  │
+│   (your     │      │  (your computer) │      │  (local or  │
+│    phone)   │      │                  │      │   cloud)    │
+└─────────────┘      └──────────────────┘      └─────────────┘
+```
+
+1. You send a message on Telegram
+2. CoconutClaw receives it on your computer
+3. AI processes your request locally
+4. Response comes back to Telegram
+
+**Your data flows through your machine, not a third-party service.**
+
+---
+
+## Privacy & Security
+
+- 🔒 **Self-hosted** - Runs on your hardware
+- 💾 **Local storage** - Conversation history in local SQLite
+- 🚫 **No tracking** - No telemetry, no analytics
+- 🔑 **Your API keys** - If using cloud AI, you control the keys
+
+---
+
+## For Developers
+
+### Project Structure
 
 ```
 CoconutClaw/
 ├── crates/
-│   ├── coconutclaw-cli/      # Main CLI entry point
-│   │   └── src/
-│   │       ├── main.rs       # Core agent loop, Telegram polling
-│   │       ├── markers.rs    # Output marker parsing/rendering
-│   │       ├── store.rs      # SQLite persistence layer
-│   │       └── webhook.rs    # Axum-based webhook server
-│   ├── coconutclaw-config/   # Configuration loading & migration
-│   └── coconutclaw-provider/ # AI provider abstraction (Codex/Pi)
-├── scripts/                  # Cross-platform service & media helpers
-└── sql/                      # Schema migrations
+│   ├── coconutclaw-cli/      # CLI and main agent loop
+│   ├── coconutclaw-config/   # Configuration handling
+│   └── coconutclaw-provider/ # AI provider abstraction
+├── scripts/                  # Optional ASR/TTS helpers
+└── sql/                      # Database migrations
 ```
 
-**~5,500 lines of Rust** across 3 crates with 58 tests.
+~5,500 lines of Rust, 58 tests.
 
-Key design decisions:
-- **Axum web framework** - Clean, async webhook handling with minimal footprint.
-- **Enum dispatch** - Provider abstraction without trait overhead.
-- **fs2 locking** - Prevent concurrent instance conflicts.
-- **Webhook + polling** - Flexible Telegram integration with message dedup.
-- **Modular CLI crate** - Separate modules for markers, store, webhook.
-
-## Telegram Features
-
-- **Progress updates** - See live progress as the agent works.
-- **`/cancel`** - Interrupt long-running operations.
-- **`/fresh`** - Reset context for a clean slate.
-- **MarkdownV2** - Rich formatting with automatic fallback.
-
-## Scheduled Jobs
-
-Default schedule (customizable on install):
-- **Heartbeat** at 09:00 - Health check and status.
-- **Nightly reflection** at 22:30 - Daily summary and insights.
-
-```bash
-./scripts/install.sh --heartbeat 10:00 --reflection 23:00
-```
-
-## Development
+### Development Commands
 
 ```bash
 make dev        # Debug build
 make release    # Optimized build
-make test       # Run 58 tests
+make test       # Run tests
 make lint       # Clippy checks
 ```
 
+---
+
 ## License
 
-MIT
+MIT — use it however you'd like.
+
+---
 
 ## Credits
 
