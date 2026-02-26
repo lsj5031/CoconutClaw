@@ -12,7 +12,8 @@ use rusqlite::{Connection, params};
 use serde_json::Value;
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -22,6 +23,7 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
+use telegram_markdown_v2::{UnsupportedTagsStrategy, convert_with_strategy};
 
 const SCHEMA_SQL: &str = include_str!("../../../sql/schema.sql");
 
@@ -530,6 +532,26 @@ fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
         "webhook_mode={}",
         if cfg.webhook_mode { "on" } else { "off" }
     );
+    println!("webhook_bind={}", cfg.webhook_bind);
+    println!("webhook_path={}", webhook_request_path(cfg));
+    println!(
+        "webhook_public_url={}",
+        cfg.webhook_public_url.as_deref().unwrap_or("")
+    );
+    println!(
+        "webhook_secret_set={}",
+        if cfg
+            .webhook_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            "yes"
+        } else {
+            "no"
+        }
+    );
     println!(
         "telegram_parse_mode={}",
         cfg.telegram_parse_mode.as_api_value().unwrap_or("off")
@@ -552,6 +574,13 @@ fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
     let jq_ok = command_exists("jq");
     let telegram_token_ok = valid_telegram_token(cfg).is_some();
     let telegram_chat_id_ok = valid_telegram_chat_id(cfg).is_some();
+    let webhook_bind_ok = cfg.webhook_bind.parse::<std::net::SocketAddr>().is_ok();
+    let webhook_public_url_ok = cfg
+        .webhook_public_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+        .is_some();
     let asr_script_ok = cfg.root_dir.join("scripts/asr.sh").exists();
     let tts_script_ok = cfg.root_dir.join("scripts/tts.sh").exists();
     let asr_enabled = asr_feature_enabled(cfg);
@@ -569,6 +598,22 @@ fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
         "check_telegram_chat_id={} (required for run)",
         yes_no(telegram_chat_id_ok)
     );
+    if cfg.webhook_mode {
+        println!(
+            "check_webhook_bind={} (required when WEBHOOK_MODE is enabled)",
+            yes_no(webhook_bind_ok)
+        );
+        println!(
+            "check_webhook_public_url={} (required when WEBHOOK_MODE is enabled)",
+            yes_no(webhook_public_url_ok)
+        );
+    } else {
+        println!("check_webhook_bind={} (optional)", yes_no(webhook_bind_ok));
+        println!(
+            "check_webhook_public_url={} (optional)",
+            yes_no(webhook_public_url_ok)
+        );
+    }
     println!("feature_asr={}", if asr_enabled { "on" } else { "off" });
     println!("feature_tts={}", if tts_enabled { "on" } else { "off" });
 
@@ -714,6 +759,9 @@ fn run_webhook_loop(
             .with_context(|| format!("failed to initialize {}", queue_path.display()))?;
     }
 
+    register_telegram_webhook(telegram_client, cfg)?;
+    let _http_server = spawn_webhook_http_server(cfg.clone(), Arc::clone(shutdown))?;
+
     if let Err(err) = restore_inflight_update(cfg, store, telegram_client) {
         eprintln!("warn: failed to restore inflight webhook update: {err:#}");
     }
@@ -726,6 +774,240 @@ fn run_webhook_loop(
     }
 
     eprintln!("info: shutdown signal received, stopping webhook loop");
+    Ok(())
+}
+
+fn webhook_request_path(cfg: &RuntimeConfig) -> &str {
+    cfg.webhook_path.as_str()
+}
+
+fn webhook_public_endpoint(cfg: &RuntimeConfig) -> Result<String> {
+    let base = cfg
+        .webhook_public_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("WEBHOOK_PUBLIC_URL is required when WEBHOOK_MODE is on"))?;
+
+    let base = base.trim_end_matches('/');
+    let path = webhook_request_path(cfg).trim();
+    if path == "/" {
+        return Ok(base.to_string());
+    }
+
+    Ok(format!("{base}/{}", path.trim_start_matches('/')))
+}
+
+fn register_telegram_webhook(client: &Client, cfg: &RuntimeConfig) -> Result<()> {
+    let webhook_url = webhook_public_endpoint(cfg)?;
+    let base = telegram_api_base(cfg)?;
+
+    let mut params: Vec<(String, String)> = vec![
+        ("url".to_string(), webhook_url),
+        (
+            "allowed_updates".to_string(),
+            r#"["message","callback_query"]"#.to_string(),
+        ),
+        ("drop_pending_updates".to_string(), "false".to_string()),
+    ];
+    if let Some(secret) = cfg.webhook_secret.as_deref().map(str::trim)
+        && !secret.is_empty()
+    {
+        params.push(("secret_token".to_string(), secret.to_string()));
+    }
+
+    let response = client
+        .post(format!("{base}/setWebhook"))
+        .form(&params)
+        .send()
+        .context("failed to call telegram setWebhook")?;
+    parse_telegram_response(response, "setWebhook")?;
+    Ok(())
+}
+
+fn spawn_webhook_http_server(
+    cfg: RuntimeConfig,
+    shutdown: Arc<AtomicBool>,
+) -> Result<std::thread::JoinHandle<()>> {
+    let listener = TcpListener::bind(&cfg.webhook_bind)
+        .with_context(|| format!("failed to bind webhook server at {}", cfg.webhook_bind))?;
+    listener
+        .set_nonblocking(true)
+        .context("failed to set webhook listener nonblocking")?;
+
+    eprintln!(
+        "info: webhook server listening on {}{}",
+        cfg.webhook_bind,
+        webhook_request_path(&cfg)
+    );
+
+    Ok(thread::spawn(move || {
+        while !shutdown.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _peer)) => {
+                    if let Err(err) = handle_webhook_connection(&cfg, &mut stream) {
+                        eprintln!("warn: webhook request handling failed: {err:#}");
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(err) => {
+                    eprintln!("warn: webhook listener accept failed: {err}");
+                    thread::sleep(Duration::from_millis(250));
+                }
+            }
+        }
+    }))
+}
+
+fn handle_webhook_connection(cfg: &RuntimeConfig, stream: &mut TcpStream) -> Result<()> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut request_bytes: Vec<u8> = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let mut header_end: Option<usize> = None;
+
+    while header_end.is_none() && request_bytes.len() < 1_048_576 {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                request_bytes.extend_from_slice(&chunk[..n]);
+                header_end = request_bytes
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|pos| pos + 4);
+            }
+            Err(err)
+                if err.kind() == io::ErrorKind::WouldBlock
+                    || err.kind() == io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(err) => return Err(err).context("failed reading webhook request"),
+        }
+    }
+
+    let Some(header_end) = header_end else {
+        let _ = send_http_response(stream, 400, "{\"ok\":false,\"error\":\"bad_request\"}");
+        return Ok(());
+    };
+
+    let header_text = match std::str::from_utf8(&request_bytes[..header_end]) {
+        Ok(text) => text,
+        Err(_) => {
+            let _ = send_http_response(stream, 400, "{\"ok\":false,\"error\":\"invalid_header\"}");
+            return Ok(());
+        }
+    };
+
+    let mut lines = header_text.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or_default();
+    let raw_path = request_parts.next().unwrap_or_default();
+
+    let mut content_length = 0usize;
+    let mut secret_header: Option<String> = None;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut pair = line.splitn(2, ':');
+        let name = pair.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let value = pair.next().unwrap_or_default().trim().to_string();
+        if name == "content-length" {
+            content_length = value.parse::<usize>().unwrap_or(0);
+        } else if name == "x-telegram-bot-api-secret-token" {
+            secret_header = Some(value);
+        }
+    }
+
+    if method != "POST" {
+        let _ = send_http_response(
+            stream,
+            405,
+            "{\"ok\":false,\"error\":\"method_not_allowed\"}",
+        );
+        return Ok(());
+    }
+
+    let req_path = raw_path.split('?').next().unwrap_or_default();
+    if req_path != webhook_request_path(cfg) {
+        let _ = send_http_response(stream, 404, "{\"ok\":false,\"error\":\"not_found\"}");
+        return Ok(());
+    }
+
+    if let Some(expected_secret) = cfg.webhook_secret.as_deref().map(str::trim)
+        && !expected_secret.is_empty()
+        && secret_header.as_deref() != Some(expected_secret)
+    {
+        let _ = send_http_response(stream, 403, "{\"ok\":false,\"error\":\"forbidden\"}");
+        return Ok(());
+    }
+
+    let mut body = request_bytes[header_end..].to_vec();
+    while body.len() < content_length {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => body.extend_from_slice(&chunk[..n]),
+            Err(err)
+                if err.kind() == io::ErrorKind::WouldBlock
+                    || err.kind() == io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(err) => return Err(err).context("failed reading webhook request body"),
+        }
+    }
+    if body.len() < content_length {
+        let _ = send_http_response(stream, 400, "{\"ok\":false,\"error\":\"truncated_body\"}");
+        return Ok(());
+    }
+
+    let body_text = match std::str::from_utf8(&body) {
+        Ok(text) => text.trim(),
+        Err(_) => {
+            let _ = send_http_response(stream, 400, "{\"ok\":false,\"error\":\"invalid_utf8\"}");
+            return Ok(());
+        }
+    };
+    if serde_json::from_str::<Value>(body_text).is_err() {
+        let _ = send_http_response(stream, 400, "{\"ok\":false,\"error\":\"invalid_json\"}");
+        return Ok(());
+    }
+
+    if let Err(err) = append_webhook_queue_line(cfg, body_text) {
+        eprintln!("warn: failed to append webhook update to queue: {err:#}");
+        let _ = send_http_response(
+            stream,
+            500,
+            "{\"ok\":false,\"error\":\"queue_write_failed\"}",
+        );
+        return Ok(());
+    }
+
+    let _ = send_http_response(stream, 200, "{\"ok\":true}");
+    Ok(())
+}
+
+fn send_http_response(stream: &mut TcpStream, status_code: u16, body: &str) -> Result<()> {
+    let reason = match status_code {
+        200 => "OK",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        500 => "Internal Server Error",
+        _ => "OK",
+    };
+    let response = format!(
+        "HTTP/1.1 {status_code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .context("failed writing webhook response")?;
+    stream.flush().context("failed flushing webhook response")?;
     Ok(())
 }
 
@@ -818,7 +1100,17 @@ fn drain_webhook_queue(
         let Some(line) = peek_webhook_queue_line(cfg)? else {
             break;
         };
-        let expected_update_id = extract_update_id_from_json(&line)?;
+        let expected_update_id = match extract_update_id_from_json(&line) {
+            Ok(update_id) => update_id,
+            Err(err) => {
+                eprintln!("warn: dropping malformed webhook queue entry: {err:#}");
+                match ack_webhook_queue_line(cfg, None)? {
+                    AckStatus::Acked => progressed = true,
+                    AckStatus::HeadMismatch | AckStatus::Empty => {}
+                }
+                continue;
+            }
+        };
 
         let outcome = match process_webhook_line(cfg, store, &line) {
             Ok(outcome) => outcome,
@@ -1363,6 +1655,7 @@ fn cancel_signal_from_update(value: &Value, expected_chat_id: &str) -> Option<Ca
 fn maybe_spawn_cancel_watcher(
     cfg: &RuntimeConfig,
     store: &Store,
+    active_update_id: Option<String>,
     cancel_flag: Arc<AtomicBool>,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<Option<std::thread::JoinHandle<()>>> {
@@ -1373,7 +1666,7 @@ fn maybe_spawn_cancel_watcher(
         return Ok(None);
     }
 
-    let mut offset = store
+    let poll_offset = store
         .kv_get("last_update_id")?
         .and_then(|value| value.parse::<u64>().ok())
         .map(|value| value.saturating_add(1));
@@ -1384,8 +1677,34 @@ fn maybe_spawn_cancel_watcher(
             Ok(client) => client,
             Err(_) => return,
         };
+        let mut offset = poll_offset;
 
         while !stop_flag.load(Ordering::SeqCst) && !cancel_flag.load(Ordering::SeqCst) {
+            if cfg_clone.webhook_mode {
+                match scan_webhook_queue_for_cancel(
+                    &cfg_clone,
+                    &expected_chat,
+                    active_update_id.as_deref(),
+                ) {
+                    Ok(Some(signal)) => {
+                        if let Some(callback_id) = signal.callback_query_id.as_deref() {
+                            let _ = telegram_answer_callback(&client, &cfg_clone, callback_id);
+                        }
+                        cancel_flag.store(true, Ordering::SeqCst);
+                        let _ = signal_cancel_marker(&cfg_clone);
+                        break;
+                    }
+                    Ok(None) => {
+                        thread::sleep(Duration::from_millis(300));
+                        continue;
+                    }
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                }
+            }
+
             let updates = match fetch_cancel_updates(&client, &cfg_clone, offset) {
                 Ok(updates) => updates,
                 Err(_) => {
@@ -1418,6 +1737,41 @@ fn maybe_spawn_cancel_watcher(
     Ok(Some(handle))
 }
 
+fn scan_webhook_queue_for_cancel(
+    cfg: &RuntimeConfig,
+    expected_chat_id: &str,
+    active_update_id: Option<&str>,
+) -> Result<Option<CancelSignal>> {
+    with_webhook_lock(cfg, || {
+        let queue_path = cfg.runtime_dir.join("webhook_updates.jsonl");
+        if !queue_path.exists() {
+            return Ok(None);
+        }
+
+        let payload = fs::read_to_string(&queue_path)
+            .with_context(|| format!("failed to read {}", queue_path.display()))?;
+        for line in payload.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value: Value = match serde_json::from_str(trimmed) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if let Some(active_id) = active_update_id
+                && extract_update_id_from_value(&value).as_deref() == Some(active_id)
+            {
+                continue;
+            }
+            if let Some(signal) = cancel_signal_from_update(&value, expected_chat_id) {
+                return Ok(Some(signal));
+            }
+        }
+        Ok(None)
+    })
+}
+
 fn dispatch_telegram_output(
     client: &Client,
     cfg: &RuntimeConfig,
@@ -1437,7 +1791,13 @@ fn dispatch_telegram_output(
     if let Some(reply) = markers.telegram_reply.as_deref() {
         let reply = reply.trim();
         if !reply.is_empty() {
-            send_or_edit_text(client, cfg, chat_id, reply, progress_message_id)?;
+            let rendered_reply = if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2)
+            {
+                render_markdown_v2_reply(reply)
+            } else {
+                reply.to_string()
+            };
+            send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
         } else if let Some(message_id) = progress_message_id {
             let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
         }
@@ -1553,7 +1913,10 @@ fn spawn_progress_updater(
             match progress_rx.recv_timeout(Duration::from_millis(400)) {
                 Ok(status) => {
                     let status = status.trim().to_string();
-                    if !status.is_empty() && statuses.last() != Some(&status) {
+                    if !status.is_empty() {
+                        if let Some(existing) = statuses.iter().position(|item| item == &status) {
+                            statuses.remove(existing);
+                        }
                         statuses.push(status);
                         if statuses.len() > 5 {
                             statuses.remove(0);
@@ -1639,6 +2002,16 @@ fn split_text_chunks(text: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
+fn render_markdown_v2_reply(text: &str) -> String {
+    match convert_with_strategy(text, UnsupportedTagsStrategy::Escape) {
+        Ok(rendered) => rendered.trim_end_matches('\n').to_string(),
+        Err(err) => {
+            eprintln!("warn: markdown conversion failed, sending original text: {err:#}");
+            text.to_string()
+        }
+    }
+}
+
 fn telegram_edit_message_text(
     client: &Client,
     cfg: &RuntimeConfig,
@@ -1658,7 +2031,8 @@ fn telegram_edit_message_text(
     let url = format!("{base}/editMessageText");
     match telegram_post_form(client, &url, &params, "editMessageText") {
         Ok(_) => Ok(()),
-        Err(_err) if should_retry_plain_text(cfg) => {
+        Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
+            eprintln!("warn: editMessageText markdown parse failed, retrying plain text: {err:#}");
             let retry = strip_parse_mode_param(&params);
             telegram_post_form(client, &url, &retry, "editMessageText").map(|_| ())
         }
@@ -1767,7 +2141,8 @@ fn telegram_send_message(
     let url = format!("{base}/sendMessage");
     let value = match telegram_post_form(client, &url, &params, "sendMessage") {
         Ok(value) => value,
-        Err(_err) if should_retry_plain_text(cfg) => {
+        Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
+            eprintln!("warn: sendMessage markdown parse failed, retrying plain text: {err:#}");
             let retry = strip_parse_mode_param(&params);
             telegram_post_form(client, &url, &retry, "sendMessage")?
         }
@@ -1815,6 +2190,15 @@ fn strip_parse_mode_param(params: &[(String, String)]) -> Vec<(String, String)> 
 fn should_retry_plain_text(cfg: &RuntimeConfig) -> bool {
     matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2)
         && matches!(cfg.telegram_parse_fallback, TelegramParseFallback::Plain)
+}
+
+fn should_fallback_plain_for_error(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}").to_ascii_lowercase();
+    text.contains("can't parse entities")
+        || text.contains("can't find end of")
+        || text.contains("character '-' is reserved")
+        || text.contains("character '.' is reserved")
+        || text.contains("character '!' is reserved")
 }
 
 fn telegram_post_form(
@@ -2125,6 +2509,36 @@ fn set_inflight_update(
     Ok(())
 }
 
+fn append_webhook_queue_line(cfg: &RuntimeConfig, payload_line: &str) -> Result<()> {
+    with_webhook_lock(cfg, || {
+        let queue_path = cfg.runtime_dir.join("webhook_updates.jsonl");
+        if let Some(parent) = queue_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let normalized_payload = normalize_webhook_payload_line(payload_line)?;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&queue_path)
+            .with_context(|| format!("failed to open {}", queue_path.display()))?;
+        file.write_all(normalized_payload.as_bytes())
+            .with_context(|| format!("failed to append {}", queue_path.display()))?;
+        file.write_all(b"\n")
+            .with_context(|| format!("failed to append {}", queue_path.display()))?;
+        file.flush()
+            .with_context(|| format!("failed to flush {}", queue_path.display()))?;
+        Ok(())
+    })
+}
+
+fn normalize_webhook_payload_line(payload_line: &str) -> Result<String> {
+    let value: Value =
+        serde_json::from_str(payload_line).context("invalid webhook JSON payload")?;
+    serde_json::to_string(&value).context("failed to serialize webhook JSON payload")
+}
+
 fn peek_webhook_queue_line(cfg: &RuntimeConfig) -> Result<Option<String>> {
     with_webhook_lock(cfg, || {
         let queue_path = cfg.runtime_dir.join("webhook_updates.jsonl");
@@ -2258,6 +2672,7 @@ fn process_turn(
         maybe_spawn_cancel_watcher(
             cfg,
             store,
+            update_id.clone(),
             Arc::clone(&cancel_flag),
             Arc::clone(&cancel_watcher_stop),
         )
@@ -2283,7 +2698,16 @@ fn process_turn(
         (None, None)
     };
 
-    let provider_result = run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
+    let mut provider_result =
+        run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
+    if let Ok(result) = &provider_result
+        && !result.success
+        && !cancel_flag.load(Ordering::SeqCst)
+        && should_retry_provider_failure(&result.raw_output)
+    {
+        eprintln!("warn: provider failed with retryable error, retrying once");
+        provider_result = run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
+    }
     cancel_watcher_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = cancel_watcher {
         let _ = handle.join();
@@ -2312,17 +2736,30 @@ fn process_turn(
         status = "cancelled".to_string();
     } else if telegram_reply.trim().is_empty() && voice_reply.trim().is_empty() {
         if provider_success {
-            telegram_reply =
-                "I hit a parser issue on my side. Please resend that in text while I recover."
-                    .to_string();
-            status = "parse_fallback".to_string();
+            if let Some(recovered) = recover_unstructured_reply(&raw_output) {
+                telegram_reply = recovered;
+                status = "parse_recovered".to_string();
+            } else {
+                telegram_reply =
+                    "I could not parse structured markers from the model output.".to_string();
+                status = "parse_fallback".to_string();
+            }
         } else {
-            let err_line = raw_output
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("Please check local logs and retry.");
-            telegram_reply = format!("Agent execution failed locally. {err_line}");
-            status = "agent_error".to_string();
+            if let Some(recovered) = extract_assistant_text_from_json_stream(&raw_output) {
+                telegram_reply = recovered;
+                status = "agent_error_recovered".to_string();
+            } else {
+                let err_line = extract_error_summary(&raw_output)
+                    .or_else(|| {
+                        raw_output
+                            .lines()
+                            .find(|line| !line.trim().is_empty())
+                            .map(|line| line.to_string())
+                    })
+                    .unwrap_or_else(|| "Please check local logs and retry.".to_string());
+                telegram_reply = format!("Agent execution failed locally. {err_line}");
+                status = "agent_error".to_string();
+            }
         }
     } else if provider_success {
         status = "ok".to_string();
@@ -2546,7 +2983,9 @@ fn build_context(
     text.push_str("TASK_APPEND: <single task line>\n");
     if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2) {
         text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
-        text.push_str("You may use Telegram MarkdownV2 formatting inside marker values only.\n");
+        text.push_str("Use Telegram MarkdownV2 formatting only inside marker values.\n");
+        text.push_str("Use `*bold*`, `_italic_`, and `` `code` `` syntax.\n");
+        text.push_str("Do not use CommonMark syntax like `**bold**` or fenced code blocks.\n");
         text.push_str("Keep marker prefixes plain and unchanged.\n");
         text.push_str("Do not use code fences or extra prefixes.\n");
     } else {
@@ -2585,8 +3024,8 @@ fn render_output(telegram_reply: &str, voice_reply: &str, markers: &ParsedMarker
 
 fn parse_markers(payload: &str) -> ParsedMarkers {
     ParsedMarkers {
-        telegram_reply: first_marker("TELEGRAM_REPLY", payload),
-        voice_reply: first_marker("VOICE_REPLY", payload),
+        telegram_reply: first_marker_block("TELEGRAM_REPLY", payload),
+        voice_reply: first_marker_block("VOICE_REPLY", payload),
         send_photo: all_markers("SEND_PHOTO", payload),
         send_document: all_markers("SEND_DOCUMENT", payload),
         send_video: all_markers("SEND_VIDEO", payload),
@@ -2595,10 +3034,207 @@ fn parse_markers(payload: &str) -> ParsedMarkers {
     }
 }
 
-fn first_marker(marker: &str, payload: &str) -> Option<String> {
+fn recover_unstructured_reply(raw_output: &str) -> Option<String> {
+    let trimmed = raw_output.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(reply) = extract_assistant_text_from_json_stream(trimmed)
+        && !reply.trim().is_empty()
+    {
+        return Some(reply);
+    }
+
+    if looks_like_json_event_stream(trimmed) {
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
+fn should_retry_provider_failure(raw_output: &str) -> bool {
+    let summary = extract_error_summary(raw_output)
+        .unwrap_or_else(|| raw_output.to_ascii_lowercase())
+        .to_ascii_lowercase();
+    [
+        "network failure",
+        "connection reset",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+        "too many requests",
+        "rate limit",
+        "api error: json parse error",
+    ]
+    .iter()
+    .any(|needle| summary.contains(needle))
+}
+
+fn extract_error_summary(payload: &str) -> Option<String> {
+    let mut found: Option<String> = None;
+
     for line in payload.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        let candidate = match event_type {
+            "agent_end" => value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            "turn_end" => value
+                .get("message")
+                .and_then(|node| node.get("errorMessage"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            _ => None,
+        };
+
+        if let Some(text) = candidate
+            && !text.trim().is_empty()
+        {
+            found = Some(text);
+        }
+    }
+
+    found
+}
+
+fn looks_like_json_event_stream(payload: &str) -> bool {
+    let mut parsed_lines = 0usize;
+    let mut typed_events = 0usize;
+
+    for line in payload.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        parsed_lines += 1;
+        if value.get("type").and_then(Value::as_str).is_some() {
+            typed_events += 1;
+        }
+    }
+
+    parsed_lines > 0 && typed_events > 0
+}
+
+fn extract_assistant_text_from_json_stream(payload: &str) -> Option<String> {
+    let mut final_text: Option<String> = None;
+    let mut parsed_json_lines = 0usize;
+
+    for line in payload.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        parsed_json_lines += 1;
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        let candidate = match event_type {
+            "message_end" => {
+                let role = value
+                    .get("message")
+                    .and_then(|node| node.get("role"))
+                    .and_then(Value::as_str);
+                if role == Some("assistant") {
+                    value
+                        .get("message")
+                        .and_then(|node| node.get("content"))
+                        .and_then(join_text_blocks)
+                } else {
+                    None
+                }
+            }
+            "agent_end" => value
+                .get("messages")
+                .and_then(Value::as_array)
+                .and_then(|messages| {
+                    let mut chunks = Vec::new();
+                    for message in messages {
+                        let role = message.get("role").and_then(Value::as_str);
+                        if role != Some("assistant") {
+                            continue;
+                        }
+                        if let Some(content) = message.get("content").and_then(join_text_blocks) {
+                            chunks.push(content);
+                        }
+                    }
+                    if chunks.is_empty() {
+                        None
+                    } else {
+                        Some(chunks.join("\n"))
+                    }
+                }),
+            _ => None,
+        };
+
+        if let Some(text) = candidate
+            && !text.trim().is_empty()
+        {
+            final_text = Some(text);
+        }
+    }
+
+    if parsed_json_lines == 0 {
+        None
+    } else {
+        final_text
+    }
+}
+
+fn join_text_blocks(node: &Value) -> Option<String> {
+    if let Some(text) = node.as_str() {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        return Some(text.to_string());
+    }
+
+    let array = node.as_array()?;
+    let mut chunks = Vec::new();
+    for item in array {
+        let item_type = item.get("type").and_then(Value::as_str);
+        if item_type == Some("text")
+            && let Some(text) = item.get("text").and_then(Value::as_str)
+        {
+            let text = text.trim();
+            if !text.is_empty() {
+                chunks.push(text.to_string());
+            }
+        }
+    }
+
+    if chunks.is_empty() {
+        None
+    } else {
+        Some(chunks.join("\n"))
+    }
+}
+
+fn first_marker_block(marker: &str, payload: &str) -> Option<String> {
+    let lines: Vec<&str> = payload.lines().collect();
+    for (idx, line) in lines.iter().enumerate() {
         if let Some(value) = strip_marker(marker, line) {
-            return Some(value.to_string());
+            let mut block = String::new();
+            block.push_str(value);
+
+            for tail in lines.iter().skip(idx + 1) {
+                if is_marker_line(tail) {
+                    break;
+                }
+                block.push('\n');
+                block.push_str(tail);
+            }
+
+            return Some(block.trim_end().to_string());
         }
     }
     None
@@ -2618,10 +3254,25 @@ fn all_markers(marker: &str, payload: &str) -> Vec<String> {
 
 fn strip_marker<'a>(marker: &str, line: &'a str) -> Option<&'a str> {
     let prefix = format!("{marker}:");
+    let line = line.trim_start();
     if let Some(rest) = line.strip_prefix(&prefix) {
         return Some(rest.trim_start());
     }
     None
+}
+
+fn is_marker_line(line: &str) -> bool {
+    [
+        "TELEGRAM_REPLY",
+        "VOICE_REPLY",
+        "SEND_PHOTO",
+        "SEND_DOCUMENT",
+        "SEND_VIDEO",
+        "MEMORY_APPEND",
+        "TASK_APPEND",
+    ]
+    .iter()
+    .any(|marker| strip_marker(marker, line).is_some())
 }
 
 fn read_or_default(path: &Path, fallback: &str) -> String {
@@ -2735,6 +3386,10 @@ mod tests {
             telegram_parse_mode: TelegramParseMode::Off,
             telegram_parse_fallback: TelegramParseFallback::Plain,
             webhook_mode: false,
+            webhook_bind: "127.0.0.1:8787".to_string(),
+            webhook_public_url: None,
+            webhook_secret: None,
+            webhook_path: "/webhook".to_string(),
             poll_interval_seconds: 1,
             provider: AgentProvider::Codex,
             exec_policy: "yolo".to_string(),
@@ -2902,6 +3557,66 @@ mod tests {
     }
 
     #[test]
+    fn parse_markers_keeps_multiline_telegram_reply() {
+        let payload = "TELEGRAM_REPLY: line one\nline two\nline three\nMEMORY_APPEND: fact";
+        let markers = parse_markers(payload);
+        assert_eq!(
+            markers.telegram_reply.as_deref(),
+            Some("line one\nline two\nline three")
+        );
+    }
+
+    #[test]
+    fn parse_markers_stops_multiline_reply_at_next_marker() {
+        let payload =
+            "noise\nTELEGRAM_REPLY: first\nsecond\nVOICE_REPLY: spoken\nTASK_APPEND: todo item";
+        let markers = parse_markers(payload);
+        assert_eq!(markers.telegram_reply.as_deref(), Some("first\nsecond"));
+        assert_eq!(markers.voice_reply.as_deref(), Some("spoken"));
+        assert_eq!(markers.task_append, vec!["todo item".to_string()]);
+    }
+
+    #[test]
+    fn recover_unstructured_reply_prefers_json_assistant_text() {
+        let payload = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello from JSON"}]}}"#;
+        let recovered = recover_unstructured_reply(payload);
+        assert_eq!(recovered.as_deref(), Some("Hello from JSON"));
+    }
+
+    #[test]
+    fn recover_unstructured_reply_uses_plain_text_when_no_json() {
+        let payload = "plain fallback reply";
+        let recovered = recover_unstructured_reply(payload);
+        assert_eq!(recovered.as_deref(), Some("plain fallback reply"));
+    }
+
+    #[test]
+    fn recover_unstructured_reply_ignores_json_stream_without_assistant_text() {
+        let payload = r#"{"type":"session","id":"abc"}
+{"type":"agent_end","messages":[]}"#;
+        let recovered = recover_unstructured_reply(payload);
+        assert!(recovered.is_none());
+    }
+
+    #[test]
+    fn extract_error_summary_prefers_structured_event_error() {
+        let payload = r#"{"type":"session","id":"abc"}
+{"type":"turn_end","message":{"errorMessage":"internal timeout"}}
+{"type":"agent_end","error":"Internal Network Failure"}"#;
+        let summary = extract_error_summary(payload);
+        assert_eq!(summary.as_deref(), Some("Internal Network Failure"));
+    }
+
+    #[test]
+    fn should_retry_provider_failure_matches_transient_errors() {
+        assert!(should_retry_provider_failure("Internal Network Failure"));
+        assert!(should_retry_provider_failure(
+            "API error: JSON parse error: missing field `type`"
+        ));
+        assert!(!should_retry_provider_failure("permission denied"));
+    }
+
+    #[test]
     fn text_params_include_parse_mode_for_markdown_v2() {
         let mut cfg = test_config();
         cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
@@ -2913,6 +3628,54 @@ mod tests {
             Some(r#"{"inline_keyboard":[]}"#),
         );
         assert!(params.contains(&("parse_mode".to_string(), "MarkdownV2".to_string())));
+    }
+
+    #[test]
+    fn markdown_entity_error_triggers_plain_fallback() {
+        let err = anyhow::anyhow!(
+            "telegram sendMessage failed: Bad Request: can't parse entities: Character '-' is reserved"
+        );
+        assert!(should_fallback_plain_for_error(&err));
+    }
+
+    #[test]
+    fn non_entity_error_does_not_trigger_plain_fallback() {
+        let err =
+            anyhow::anyhow!("telegram sendMessage failed: Bad Request: message is not modified");
+        assert!(!should_fallback_plain_for_error(&err));
+    }
+
+    #[test]
+    fn render_markdown_v2_converts_commonmark_bold() {
+        let text = "**Architecture highlights:**\n- item";
+        let rendered = render_markdown_v2_reply(text);
+        assert!(rendered.contains("Architecture highlights"));
+        assert!(!rendered.contains("**Architecture"));
+        assert!(rendered.contains("item"));
+    }
+
+    #[test]
+    fn render_markdown_v2_keeps_commonmark_bold_inside_code() {
+        let text = "`**not bold**` then **bold**";
+        let rendered = render_markdown_v2_reply(text);
+        assert!(rendered.contains("`**not bold**`"));
+        assert!(rendered.contains("*bold*"));
+    }
+
+    #[test]
+    fn render_markdown_v2_escapes_reserved_chars() {
+        let text = "- item\n1. test (x.y)";
+        let rendered = render_markdown_v2_reply(text);
+        assert!(!rendered.is_empty());
+        assert!(rendered.contains("item"));
+        assert!(rendered.contains("test"));
+    }
+
+    #[test]
+    fn render_markdown_v2_leaves_already_valid_snippet_reasonable() {
+        let text = "*标题* and `main.rs`";
+        let rendered = render_markdown_v2_reply(text);
+        assert!(rendered.contains("`main.rs`"));
     }
 
     #[test]
@@ -2987,5 +3750,81 @@ mod tests {
             nightly_reflection_marker("2026-02-25"),
             "<!-- nightly-reflection:2026-02-25 -->"
         );
+    }
+
+    #[test]
+    fn webhook_public_endpoint_joins_base_and_path() {
+        let mut cfg = test_config();
+        cfg.webhook_public_url = Some("https://claw.example".to_string());
+        cfg.webhook_path = "/telegram/webhook".to_string();
+
+        let endpoint = webhook_public_endpoint(&cfg).expect("endpoint");
+        assert_eq!(endpoint, "https://claw.example/telegram/webhook");
+    }
+
+    #[test]
+    fn append_webhook_queue_line_persists_single_line() {
+        let cfg = test_config();
+        let payload = r#"{"update_id":9001,"message":{"chat":{"id":"321"},"text":"ping"}}"#;
+
+        append_webhook_queue_line(&cfg, payload).expect("append queue");
+        let queue_path = cfg.runtime_dir.join("webhook_updates.jsonl");
+        let content = fs::read_to_string(queue_path).expect("queue content");
+        let line = content.trim_end_matches('\n');
+        assert!(!line.contains('\n'));
+        let stored: Value = serde_json::from_str(line).expect("stored json");
+        let original: Value = serde_json::from_str(payload).expect("original json");
+        assert_eq!(stored, original);
+    }
+
+    #[test]
+    fn append_webhook_queue_line_normalizes_multiline_payload() {
+        let cfg = test_config();
+        let payload = "{\n  \"update_id\": 9002,\n  \"message\": {\"chat\": {\"id\": \"321\"}, \"text\": \"ping\"}\n}";
+
+        append_webhook_queue_line(&cfg, payload).expect("append queue");
+        let queue_path = cfg.runtime_dir.join("webhook_updates.jsonl");
+        let content = fs::read_to_string(queue_path).expect("queue content");
+        let line = content.trim_end_matches('\n');
+        assert!(!line.contains('\n'));
+        let value: Value = serde_json::from_str(line).expect("normalized json");
+        assert_eq!(
+            extract_update_id_from_value(&value).as_deref(),
+            Some("9002")
+        );
+    }
+
+    #[test]
+    fn queue_cancel_scan_ignores_active_update_and_detects_tail_cancel() {
+        let cfg = test_config();
+        let active = r#"{"update_id":42,"message":{"chat":{"id":"321"},"text":"long task"}}"#;
+        let cancel = r#"{"update_id":43,"callback_query":{"id":"cb1","data":"cancel","message":{"chat":{"id":"321"}}}}"#;
+        append_webhook_queue_line(&cfg, active).expect("append active");
+        append_webhook_queue_line(&cfg, cancel).expect("append cancel");
+
+        let signal =
+            scan_webhook_queue_for_cancel(&cfg, "321", Some("42")).expect("scan queue cancel");
+        assert_eq!(
+            signal.and_then(|item| item.callback_query_id),
+            Some("cb1".to_string())
+        );
+    }
+
+    #[test]
+    fn drain_webhook_queue_drops_malformed_head_entry() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        let client = Client::builder().build().expect("client");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let queue_path = cfg.runtime_dir.join("webhook_updates.jsonl");
+
+        fs::write(&queue_path, "{\"update_id\":9003,\n").expect("write malformed queue line");
+
+        let progressed =
+            drain_webhook_queue(&cfg, &store, &client, &shutdown).expect("drain webhook queue");
+        assert!(progressed);
+
+        let content = fs::read_to_string(queue_path).expect("queue content");
+        assert!(content.trim().is_empty());
     }
 }

@@ -15,6 +15,10 @@ LOG_DIR = "./LOGS"
 # Polling mode
 POLL_INTERVAL_SECONDS = 2
 WEBHOOK_MODE = "off"
+WEBHOOK_BIND = "127.0.0.1:8787"
+WEBHOOK_PUBLIC_URL = ""
+WEBHOOK_SECRET = ""
+WEBHOOK_PATH = "/webhook"
 
 # ASR contract (optional, default off)
 ASR_URL = ""

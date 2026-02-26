@@ -171,10 +171,17 @@ fn run_pi(
     config: &RuntimeConfig,
     context: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
-    _progress_tx: Option<&Sender<String>>,
+    progress_tx: Option<&Sender<String>>,
 ) -> Result<ProviderOutput> {
+    let pi_mode = if progress_tx.is_some() {
+        // JSON mode exposes structured streaming events we can forward as progress.
+        "json"
+    } else {
+        config.pi.mode.as_str()
+    };
+
     let mut cmd = Command::new(&config.pi.bin);
-    cmd.arg("-p").arg("--mode").arg(&config.pi.mode);
+    cmd.arg("-p").arg("--mode").arg(pi_mode);
 
     if let Some(provider) = &config.pi.provider {
         cmd.arg("--provider").arg(provider);
@@ -196,6 +203,36 @@ fn run_pi(
         .spawn()
         .with_context(|| format!("failed to start {}", config.pi.bin))?;
 
+    let progress_sender = progress_tx.cloned();
+    let stdout_handle = child.stdout.take().map(|stdout| {
+        thread::spawn(move || -> String {
+            let mut collected = String::new();
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                if !line.is_empty() {
+                    collected.push_str(&line);
+                    collected.push('\n');
+                }
+                if let Some(status) = parse_pi_progress_line(&line)
+                    && let Some(sender) = progress_sender.as_ref()
+                {
+                    let _ = sender.send(status);
+                }
+            }
+            collected
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|mut stderr| {
+        thread::spawn(move || -> String {
+            let mut stderr_buf = Vec::new();
+            let _ = stderr.read_to_end(&mut stderr_buf);
+            String::from_utf8_lossy(&stderr_buf).to_string()
+        })
+    });
+
     let mut cancelled = false;
     let status = loop {
         if let Some(status) = child.try_wait().context("failed waiting for pi command")? {
@@ -212,27 +249,22 @@ fn run_pi(
         thread::sleep(Duration::from_millis(200));
     };
 
-    let mut stdout_buf = Vec::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_end(&mut stdout_buf);
-    }
-    let mut stderr_buf = Vec::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_end(&mut stderr_buf);
-    }
-
     let exit_code = if cancelled {
         130
     } else {
         status.code().unwrap_or(1)
     };
 
-    let stdout_text = String::from_utf8_lossy(&stdout_buf).to_string();
-    let stderr_text = String::from_utf8_lossy(&stderr_buf).to_string();
+    let stdout_text = stdout_handle
+        .map(|handle| handle.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr_text = stderr_handle
+        .map(|handle| handle.join().unwrap_or_default())
+        .unwrap_or_default();
 
     let raw_output = if cancelled {
         "cancelled".to_string()
-    } else if status.success() && config.pi.mode == "json" {
+    } else if status.success() && pi_mode == "json" {
         extract_pi_json_final(&stdout_text).unwrap_or_else(|| {
             if !stdout_text.trim().is_empty() {
                 stdout_text.clone()
@@ -263,6 +295,113 @@ fn parse_codex_progress_line(line: &str) -> Option<String> {
         "item.completed" => parse_codex_item_progress(value.get("item")?, false),
         _ => None,
     }
+}
+
+fn parse_pi_progress_line(line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let event_type = value.get("type").and_then(Value::as_str)?;
+
+    match event_type {
+        "turn_start" => Some("Processing...".to_string()),
+        "tool_execution_start" => {
+            pi_tool_label_from_exec_event(&value).map(|label| format!("Running: {label}"))
+        }
+        "tool_execution_end" => {
+            let label = pi_tool_label_from_exec_event(&value)
+                .or_else(|| {
+                    value
+                        .get("toolName")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_else(|| "tool".to_string());
+            let is_error = value
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if is_error {
+                Some(format!("Failed: {label}"))
+            } else {
+                Some(format!("Completed: {label}"))
+            }
+        }
+        "message_update" => {
+            let update_type = value
+                .get("assistantMessageEvent")
+                .and_then(|node| node.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match update_type {
+                "thinking_start" => Some("Reasoning...".to_string()),
+                "thinking_end" => value
+                    .get("assistantMessageEvent")
+                    .and_then(|node| node.get("content"))
+                    .and_then(Value::as_str)
+                    .map(clean_progress_text)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| format!("Reasoning: {text}"))
+                    .or_else(|| Some("Reasoning...".to_string())),
+                "toolcall_end" => value
+                    .get("assistantMessageEvent")
+                    .and_then(|node| node.get("toolCall"))
+                    .and_then(pi_tool_label_from_tool_call)
+                    .map(|label| format!("Planned: {label}")),
+                "text_start" => Some("Drafting response...".to_string()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn pi_tool_label_from_exec_event(value: &Value) -> Option<String> {
+    let tool_name = value
+        .get("toolName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    let detail = value.get("args").and_then(pi_tool_args_detail);
+    if let Some(detail) = detail {
+        Some(format!("{tool_name} {detail}"))
+    } else {
+        Some(tool_name.to_string())
+    }
+}
+
+fn pi_tool_label_from_tool_call(value: &Value) -> Option<String> {
+    let tool_name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    let detail = value.get("arguments").and_then(pi_tool_args_detail);
+    if let Some(detail) = detail {
+        Some(format!("{tool_name} {detail}"))
+    } else {
+        Some(tool_name.to_string())
+    }
+}
+
+fn pi_tool_args_detail(args: &Value) -> Option<String> {
+    if let Some(command) = args
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(shorten_status_text(command, 100));
+    }
+
+    if let Some(path) = args
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(shorten_status_text(path, 100));
+    }
+
+    None
 }
 
 fn parse_codex_item_progress(item: &Value, started: bool) -> Option<String> {
@@ -449,7 +588,7 @@ fn now_nanos() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_codex_progress_line;
+    use super::{parse_codex_progress_line, parse_pi_progress_line};
 
     #[test]
     fn parses_codex_turn_started_progress() {
@@ -507,6 +646,60 @@ mod tests {
         assert_eq!(
             parse_codex_progress_line(line),
             Some("Drafting response...".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_pi_turn_started_progress() {
+        let line = r#"{"type":"turn_start","turnIndex":0}"#;
+        assert_eq!(
+            parse_pi_progress_line(line),
+            Some("Processing...".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_pi_reasoning_started_progress() {
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"thinking_start"}}"#;
+        assert_eq!(
+            parse_pi_progress_line(line),
+            Some("Reasoning...".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_pi_text_started_progress() {
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_start"}}"#;
+        assert_eq!(
+            parse_pi_progress_line(line),
+            Some("Drafting response...".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_pi_toolcall_planned_progress() {
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","toolCall":{"name":"bash","arguments":{"command":"pwd"}}}}"#;
+        assert_eq!(
+            parse_pi_progress_line(line),
+            Some("Planned: bash pwd".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_pi_tool_execution_started_progress() {
+        let line = r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"pwd"}}"#;
+        assert_eq!(
+            parse_pi_progress_line(line),
+            Some("Running: bash pwd".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_pi_tool_execution_completed_progress() {
+        let line = r#"{"type":"tool_execution_end","toolName":"bash","args":{"command":"pwd"},"isError":false}"#;
+        assert_eq!(
+            parse_pi_progress_line(line),
+            Some("Completed: bash pwd".to_string())
         );
     }
 }

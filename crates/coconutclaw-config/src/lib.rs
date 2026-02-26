@@ -70,6 +70,10 @@ pub struct RuntimeConfig {
     pub telegram_parse_mode: TelegramParseMode,
     pub telegram_parse_fallback: TelegramParseFallback,
     pub webhook_mode: bool,
+    pub webhook_bind: String,
+    pub webhook_public_url: Option<String>,
+    pub webhook_secret: Option<String>,
+    pub webhook_path: String,
     pub poll_interval_seconds: u64,
     pub provider: AgentProvider,
     pub exec_policy: String,
@@ -107,6 +111,10 @@ LOG_DIR = "./LOGS"
 ALLOWLIST_PATH = "./config/allowlist.txt"
 POLL_INTERVAL_SECONDS = 2
 WEBHOOK_MODE = "off"
+WEBHOOK_BIND = "127.0.0.1:8787"
+WEBHOOK_PUBLIC_URL = ""
+WEBHOOK_SECRET = ""
+WEBHOOK_PATH = "/webhook"
 
 AGENT_PROVIDER = "codex"
 EXEC_POLICY = "yolo"
@@ -136,6 +144,10 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "ALLOWLIST_PATH",
     "POLL_INTERVAL_SECONDS",
     "WEBHOOK_MODE",
+    "WEBHOOK_BIND",
+    "WEBHOOK_PUBLIC_URL",
+    "WEBHOOK_SECRET",
+    "WEBHOOK_PATH",
     "AGENT_PROVIDER",
     "EXEC_POLICY",
     "CODEX_BIN",
@@ -250,6 +262,13 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         .unwrap_or_else(|| "yolo".to_string())
         .to_ascii_lowercase();
     let webhook_mode = parse_on_off(pick_value("WEBHOOK_MODE", &config_file).as_deref(), false);
+    let webhook_bind = pick_value("WEBHOOK_BIND", &config_file)
+        .unwrap_or_else(|| "127.0.0.1:8787".to_string())
+        .trim()
+        .to_string();
+    let webhook_public_url = normalize_optional(pick_value("WEBHOOK_PUBLIC_URL", &config_file));
+    let webhook_secret = normalize_optional(pick_value("WEBHOOK_SECRET", &config_file));
+    let webhook_path = normalize_webhook_path(pick_value("WEBHOOK_PATH", &config_file).as_deref());
     let poll_interval_seconds = pick_value("POLL_INTERVAL_SECONDS", &config_file)
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -306,6 +325,10 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         telegram_parse_mode,
         telegram_parse_fallback,
         webhook_mode,
+        webhook_bind,
+        webhook_public_url,
+        webhook_secret,
+        webhook_path,
         poll_interval_seconds,
         provider,
         exec_policy,
@@ -485,6 +508,17 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn normalize_webhook_path(raw: Option<&str>) -> String {
+    let trimmed = raw.map(str::trim).unwrap_or_default();
+    if trimmed.is_empty() || trimmed == "/" {
+        return "/webhook".to_string();
+    }
+    if trimmed.starts_with('/') {
+        return trimmed.to_string();
+    }
+    format!("/{trimmed}")
 }
 
 fn parse_on_off(value: Option<&str>, default: bool) -> bool {
@@ -787,6 +821,37 @@ mod tests {
 
         assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::Off);
         assert!(instance_dir.join(".env").exists());
+    }
+
+    #[test]
+    fn webhook_native_fields_are_loaded() {
+        let instance_dir = unique_dir();
+        write_config(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\n\
+TELEGRAM_CHAT_ID = \"321\"\n\
+WEBHOOK_MODE = \"on\"\n\
+WEBHOOK_BIND = \"127.0.0.1:8789\"\n\
+WEBHOOK_PUBLIC_URL = \"https://claw.example\"\n\
+WEBHOOK_SECRET = \"secret-token\"\n\
+WEBHOOK_PATH = \"/telegram/webhook\"\n",
+        );
+
+        let cfg = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir),
+        })
+        .expect("config");
+
+        assert!(cfg.webhook_mode);
+        assert_eq!(cfg.webhook_bind, "127.0.0.1:8789");
+        assert_eq!(
+            cfg.webhook_public_url.as_deref(),
+            Some("https://claw.example")
+        );
+        assert_eq!(cfg.webhook_secret.as_deref(), Some("secret-token"));
+        assert_eq!(cfg.webhook_path, "/telegram/webhook");
     }
 }
 
