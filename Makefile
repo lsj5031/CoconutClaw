@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build dev release install uninstall start stop restart status logs logs-reflection lint test
+.PHONY: help build dev release install uninstall start stop restart status logs logs-reflection lint test hooks
 
 help: ## Show this help
 	@grep -E '^[a-z][-a-z]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -45,3 +45,7 @@ lint: ## Shellcheck maintained shell helpers
 test: ## Rust tests + one injected smoke run
 	cargo test
 	cargo run -q -p coconutclaw -- once --inject-text "ping"
+
+hooks: ## Install git pre-commit hook
+	git config core.hooksPath .githooks
+	@echo "git hooks installed from .githooks/"

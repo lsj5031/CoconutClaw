@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "pre-commit: cargo clippy"
+cargo clippy --workspace --all-targets --locked -- -D warnings
+
+echo "pre-commit: cargo test"
+cargo test --workspace --all-targets --locked
+
+if command -v shellcheck &>/dev/null; then
+    echo "pre-commit: shellcheck"
+    shellcheck scripts/asr.sh scripts/tts.sh scripts/run.sh scripts/service.sh scripts/install.sh scripts/start.sh scripts/stop.sh scripts/status.sh scripts/uninstall.sh
+else
+    echo "pre-commit: shellcheck not found, skipping"
+fi
+
+echo "pre-commit: all checks passed"

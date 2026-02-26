@@ -74,9 +74,10 @@ pub(crate) fn spawn_webhook_http_server(
         .with_context(|| format!("failed to parse webhook bind address {}", cfg.webhook_bind))?;
     let route_path = normalize_route_path(cfg.webhook_path.clone());
 
-    eprintln!(
-        "info: webhook server listening on {}{}",
-        cfg.webhook_bind, route_path
+    tracing::info!(
+        "webhook server listening on {}{}",
+        cfg.webhook_bind,
+        route_path
     );
 
     Ok(thread::spawn(move || {
@@ -86,7 +87,7 @@ pub(crate) fn spawn_webhook_http_server(
         {
             Ok(runtime) => runtime,
             Err(err) => {
-                eprintln!("warn: failed to build webhook runtime: {err:#}");
+                tracing::warn!("failed to build webhook runtime: {err:#}");
                 return;
             }
         };
@@ -100,7 +101,7 @@ pub(crate) fn spawn_webhook_http_server(
             let listener = match tokio::net::TcpListener::bind(bind_addr).await {
                 Ok(listener) => listener,
                 Err(err) => {
-                    eprintln!("warn: failed to bind webhook listener at {bind_addr}: {err}");
+                    tracing::warn!("failed to bind webhook listener at {bind_addr}: {err}");
                     return;
                 }
             };
@@ -115,7 +116,7 @@ pub(crate) fn spawn_webhook_http_server(
                 .with_graceful_shutdown(shutdown_wait)
                 .await
             {
-                eprintln!("warn: webhook server error: {err}");
+                tracing::warn!("webhook server error: {err}");
             }
         });
     }))
@@ -164,7 +165,7 @@ async fn webhook_post_handler(
     }
 
     if let Err(err) = append_webhook_queue_line(cfg, body_text) {
-        eprintln!("warn: failed to append webhook update to queue: {err:#}");
+        tracing::warn!("failed to append webhook update to queue: {err:#}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"ok":false,"error":"queue_write_failed"})),
@@ -244,9 +245,16 @@ pub(crate) fn ack_webhook_queue_line(
 
         let head = lines.remove(0);
         if let Some(expected) = expected_update_id {
-            let head_update_id = extract_update_id_from_json(head)?;
-            if head_update_id.as_deref() != Some(expected) {
-                return Ok(AckStatus::HeadMismatch);
+            match extract_update_id_from_json(head) {
+                Ok(head_update_id) => {
+                    if head_update_id.as_deref() != Some(expected) {
+                        return Ok(AckStatus::HeadMismatch);
+                    }
+                }
+                Err(err) => {
+                    // If the queue head is malformed, drop it so queue draining can recover.
+                    tracing::warn!("dropping malformed webhook queue head during ack: {err:#}");
+                }
             }
         }
 

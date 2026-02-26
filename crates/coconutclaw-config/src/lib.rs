@@ -482,16 +482,13 @@ fn migrate_legacy_env_if_needed(
         .with_context(|| format!("failed to write {}", config_file_path.display()))?;
 
     if let Err(err) = fs::remove_file(legacy_env_file_path) {
-        eprintln!(
-            "warn: migrated legacy .env but failed to delete {}: {err}",
+        tracing::warn!(
+            "migrated legacy .env but failed to delete {}: {err}",
             legacy_env_file_path.display()
         );
     }
 
-    eprintln!(
-        "info: migrated legacy .env to {}",
-        config_file_path.display()
-    );
+    tracing::info!("migrated legacy .env to {}", config_file_path.display());
     Ok(())
 }
 

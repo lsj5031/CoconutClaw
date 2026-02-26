@@ -143,6 +143,14 @@ struct TurnResult {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli = Cli::parse();
 
     let cfg = load_runtime_config(&CliOverrides {
@@ -205,6 +213,10 @@ fn run_run(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
     let shutdown = install_shutdown_handler()?;
     let telegram_client = build_telegram_client(cfg)?;
 
+    if let Err(err) = register_bot_commands(&telegram_client, cfg) {
+        tracing::warn!("failed to register bot menu commands: {err:#}");
+    }
+
     if cfg.webhook_mode {
         run_webhook_loop(cfg, store, &telegram_client, &shutdown)?;
         return Ok(());
@@ -260,7 +272,7 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
     let existing = fs::read_to_string(&reflection_path)
         .with_context(|| format!("failed to read {}", reflection_path.display()))?;
     if existing.contains(&marker) {
-        println!("{now_iso} [INFO] nightly reflection already exists for {local_day}");
+        tracing::info!("nightly reflection already exists for {local_day}");
         return Ok(());
     }
 
@@ -323,8 +335,8 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
     file.write_all(block.as_bytes())
         .with_context(|| format!("failed to write {}", reflection_path.display()))?;
 
-    println!(
-        "{now_iso} [INFO] nightly reflection appended to {}",
+    tracing::info!(
+        "nightly reflection appended to {}",
         reflection_path.display()
     );
     Ok(())
@@ -504,7 +516,7 @@ fn run_poll_loop(
         let updates = match fetch_poll_updates(telegram_client, cfg, offset) {
             Ok(updates) => updates,
             Err(err) => {
-                eprintln!("warn: telegram polling failed: {err:#}");
+                tracing::warn!("telegram polling failed: {err:#}");
                 thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
                 continue;
             }
@@ -522,26 +534,54 @@ fn run_poll_loop(
 
             let update_id =
                 extract_update_id_from_value(&update).and_then(|value| value.parse::<u64>().ok());
-            let line =
-                serde_json::to_string(&update).context("failed to serialize polled update JSON")?;
-            let outcome = process_webhook_line(cfg, store, &line)?;
+            let line = match serde_json::to_string(&update) {
+                Ok(line) => line,
+                Err(err) => {
+                    tracing::warn!("failed to serialize polled update (dropping): {err:#}");
+                    if let Some(update_id) = update_id {
+                        offset = Some(update_id.saturating_add(1));
+                    }
+                    continue;
+                }
+            };
+            let outcome = match process_webhook_line(cfg, store, &line) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to process polled update_id={} (dropping update): {err:#}",
+                        update_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    );
+                    if let Some(update_id) = update_id {
+                        offset = Some(update_id.saturating_add(1));
+                    }
+                    let _ = store.clear_inflight();
+                    continue;
+                }
+            };
 
             if let Some(output) = outcome.output.as_deref() {
-                dispatch_telegram_output(
+                if let Err(err) = dispatch_telegram_output(
                     telegram_client,
                     cfg,
                     outcome.chat_id.as_deref(),
                     output,
                     outcome.progress_message_id.as_deref(),
-                )?;
-                println!("{output}");
-                io::stdout().flush().ok();
+                ) {
+                    tracing::warn!("failed to dispatch polled output: {err:#}");
+                } else {
+                    println!("{output}");
+                    io::stdout().flush().ok();
+                }
             }
             if let Some(path) = outcome.cleanup_path.as_deref() {
                 let _ = fs::remove_file(path);
             }
 
-            store.clear_inflight()?;
+            if let Err(err) = store.clear_inflight() {
+                tracing::warn!("failed to clear inflight after poll processing: {err:#}");
+            }
 
             if let Some(update_id) = update_id {
                 offset = Some(update_id.saturating_add(1));
@@ -549,7 +589,7 @@ fn run_poll_loop(
         }
     }
 
-    eprintln!("info: shutdown signal received, stopping poll loop");
+    tracing::info!("shutdown signal received, stopping poll loop");
     Ok(())
 }
 
@@ -565,17 +605,39 @@ fn run_webhook_loop(
     let _http_server = spawn_webhook_http_server(cfg.clone(), Arc::clone(shutdown))?;
 
     if let Err(err) = restore_inflight_update(cfg, store, telegram_client) {
-        eprintln!("warn: failed to restore inflight webhook update: {err:#}");
+        tracing::warn!("failed to restore inflight webhook update: {err:#}");
     }
 
     while !shutdown.load(Ordering::SeqCst) {
-        let progressed = drain_webhook_queue(cfg, store, telegram_client, shutdown)?;
+        let progressed = match drain_webhook_queue(cfg, store, telegram_client, shutdown) {
+            Ok(progressed) => progressed,
+            Err(err) => {
+                tracing::warn!("webhook queue drain failed (will continue): {err:#}");
+                false
+            }
+        };
         if !progressed {
             thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
         }
     }
 
-    eprintln!("info: shutdown signal received, stopping webhook loop");
+    tracing::info!("shutdown signal received, stopping webhook loop");
+    Ok(())
+}
+
+fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Result<()> {
+    let base = telegram_api_base(cfg)?;
+    let commands = serde_json::json!([
+        {"command": "fresh", "description": "Start a fresh conversation"},
+        {"command": "cancel", "description": "Cancel the current task"},
+    ]);
+    let params = vec![("commands".to_string(), commands.to_string())];
+    telegram_post_form(
+        client,
+        &format!("{base}/setMyCommands"),
+        &params,
+        "setMyCommands",
+    )?;
     Ok(())
 }
 
@@ -622,7 +684,14 @@ fn restore_inflight_update(
         .trim()
         .is_empty()
     {
-        inflight_update_id = extract_update_id_from_json(&inflight_json)?;
+        match extract_update_id_from_json(&inflight_json) {
+            Ok(id) => inflight_update_id = id,
+            Err(err) => {
+                tracing::warn!("inflight JSON is malformed, clearing inflight record: {err:#}");
+                let _ = store.clear_inflight();
+                return Ok(());
+            }
+        }
     }
 
     if let Some(update_id) = inflight_update_id.as_deref()
@@ -631,11 +700,11 @@ fn restore_inflight_update(
         store.clear_inflight()?;
         match ack_webhook_queue_line(cfg, Some(update_id))? {
             AckStatus::Acked => {
-                eprintln!("info: restored inflight update_id={update_id} (dedup + ack)");
+                tracing::info!("restored inflight update_id={update_id} (dedup + ack)");
             }
             AckStatus::HeadMismatch => {
-                eprintln!(
-                    "warn: inflight restore head mismatch for update_id={update_id}, leaving queue as-is"
+                tracing::warn!(
+                    "inflight restore head mismatch for update_id={update_id}, leaving queue as-is"
                 );
             }
             AckStatus::Empty => {}
@@ -643,7 +712,14 @@ fn restore_inflight_update(
         return Ok(());
     }
 
-    let outcome = process_webhook_line(cfg, store, &inflight_json)?;
+    let outcome = match process_webhook_line(cfg, store, &inflight_json) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::warn!("failed to process inflight update, clearing: {err:#}");
+            let _ = store.clear_inflight();
+            return Ok(());
+        }
+    };
     if outcome.should_ack {
         let expected_id = outcome
             .update_id
@@ -653,22 +729,25 @@ fn restore_inflight_update(
             AckStatus::Acked => {
                 store.clear_inflight()?;
                 if let Some(output) = outcome.output {
-                    dispatch_telegram_output(
+                    if let Err(err) = dispatch_telegram_output(
                         telegram_client,
                         cfg,
                         outcome.chat_id.as_deref(),
                         &output,
                         outcome.progress_message_id.as_deref(),
-                    )?;
-                    println!("{output}");
-                    io::stdout().flush().ok();
+                    ) {
+                        tracing::warn!("failed to dispatch restored inflight output: {err:#}");
+                    } else {
+                        println!("{output}");
+                        io::stdout().flush().ok();
+                    }
                 }
                 if let Some(path) = outcome.cleanup_path.as_deref() {
                     let _ = fs::remove_file(path);
                 }
             }
             AckStatus::HeadMismatch => {
-                eprintln!("warn: inflight restore ack skipped due queue head mismatch");
+                tracing::warn!("inflight restore ack skipped due queue head mismatch");
             }
             AckStatus::Empty => {
                 store.clear_inflight()?;
@@ -698,10 +777,16 @@ fn drain_webhook_queue(
         let expected_update_id = match extract_update_id_from_json(&line) {
             Ok(update_id) => update_id,
             Err(err) => {
-                eprintln!("warn: dropping malformed webhook queue entry: {err:#}");
-                match ack_webhook_queue_line(cfg, None)? {
-                    AckStatus::Acked => progressed = true,
-                    AckStatus::HeadMismatch | AckStatus::Empty => {}
+                tracing::warn!("dropping malformed webhook queue entry: {err:#}");
+                match ack_webhook_queue_line(cfg, None) {
+                    Ok(AckStatus::Acked) => progressed = true,
+                    Ok(AckStatus::HeadMismatch | AckStatus::Empty) => {}
+                    Err(ack_err) => {
+                        tracing::warn!(
+                            "failed to ack malformed webhook queue entry (will retry): {ack_err:#}"
+                        );
+                        break;
+                    }
                 }
                 continue;
             }
@@ -710,7 +795,7 @@ fn drain_webhook_queue(
         let outcome = match process_webhook_line(cfg, store, &line) {
             Ok(outcome) => outcome,
             Err(err) => {
-                eprintln!("warn: webhook processing failed (will retry): {err:#}");
+                tracing::warn!("webhook processing failed (will retry): {err:#}");
                 break;
             }
         };
@@ -719,28 +804,41 @@ fn drain_webhook_queue(
             break;
         }
 
-        match ack_webhook_queue_line(cfg, expected_update_id.as_deref())? {
+        let ack_status = match ack_webhook_queue_line(cfg, expected_update_id.as_deref()) {
+            Ok(status) => status,
+            Err(err) => {
+                tracing::warn!("webhook ack failed (will retry): {err:#}");
+                break;
+            }
+        };
+
+        match ack_status {
             AckStatus::Acked => {
-                store.clear_inflight()?;
+                if let Err(err) = store.clear_inflight() {
+                    tracing::warn!("failed to clear inflight after webhook ack: {err:#}");
+                }
                 progressed = true;
                 if let Some(output) = outcome.output {
-                    dispatch_telegram_output(
+                    if let Err(err) = dispatch_telegram_output(
                         telegram_client,
                         cfg,
                         outcome.chat_id.as_deref(),
                         &output,
                         outcome.progress_message_id.as_deref(),
-                    )?;
-                    println!("{output}");
-                    io::stdout().flush().ok();
+                    ) {
+                        tracing::warn!("failed to dispatch webhook output: {err:#}");
+                    } else {
+                        println!("{output}");
+                        io::stdout().flush().ok();
+                    }
                 }
                 if let Some(path) = outcome.cleanup_path.as_deref() {
                     let _ = fs::remove_file(path);
                 }
             }
             AckStatus::HeadMismatch => {
-                eprintln!(
-                    "warn: webhook ack skipped due queue head mismatch update_id={}",
+                tracing::warn!(
+                    "webhook ack skipped due queue head mismatch update_id={}",
                     expected_update_id.as_deref().unwrap_or("unknown")
                 );
                 break;
@@ -771,11 +869,11 @@ fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Resul
         WebhookAction::Ignore { update_id, reason } => {
             let update_id_text = update_id.as_deref().unwrap_or_default().to_string();
             let ignored_at = iso_now(&cfg.timezone);
-            store.kv_set("last_ignored_update_id", &update_id_text)?;
-            store.kv_set("last_ignored_reason", &reason)?;
-            store.kv_set("last_ignored_at", &ignored_at)?;
-            eprintln!(
-                "info: ignored telegram update_id={} reason={reason}",
+            let _ = store.kv_set("last_ignored_update_id", &update_id_text);
+            let _ = store.kv_set("last_ignored_reason", &reason);
+            let _ = store.kv_set("last_ignored_at", &ignored_at);
+            tracing::info!(
+                "ignored telegram update_id={} reason={reason}",
                 if update_id_text.trim().is_empty() {
                     "unknown"
                 } else {
@@ -783,7 +881,7 @@ fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Resul
                 }
             );
             if let Some(update_id) = update_id.as_ref() {
-                store.kv_set("last_update_id", update_id)?;
+                let _ = store.kv_set("last_update_id", update_id);
             }
             Ok(ProcessOutcome {
                 should_ack: true,
@@ -796,10 +894,10 @@ fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Resul
         }
         WebhookAction::Cancel { update_id } => {
             if let Err(err) = signal_cancel_marker(cfg) {
-                eprintln!("warn: failed to set cancel marker: {err:#}");
+                tracing::warn!("failed to set cancel marker: {err:#}");
             }
             if let Some(update_id) = update_id.as_ref() {
-                store.kv_set("last_update_id", update_id)?;
+                let _ = store.kv_set("last_update_id", update_id);
             }
             Ok(ProcessOutcome {
                 should_ack: true,
@@ -812,12 +910,13 @@ fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Resul
         }
         WebhookAction::Fresh { update_id, chat_id } => {
             let ts = iso_now(&cfg.timezone);
-            let inserted = store.insert_boundary_turn(&ts, &chat_id, update_id.as_deref())?;
-            if inserted {
-                eprintln!("info: inserted context boundary for chat_id={chat_id}");
+            match store.insert_boundary_turn(&ts, &chat_id, update_id.as_deref()) {
+                Ok(true) => tracing::info!("inserted context boundary for chat_id={chat_id}"),
+                Ok(false) => {}
+                Err(err) => tracing::warn!("failed to insert context boundary: {err:#}"),
             }
             if let Some(update_id) = update_id.as_ref() {
-                store.kv_set("last_update_id", update_id)?;
+                let _ = store.kv_set("last_update_id", update_id);
             }
             Ok(ProcessOutcome {
                 should_ack: true,
@@ -841,7 +940,7 @@ fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Resul
             if let Some(update_id) = turn.update_id.as_deref()
                 && store.turn_exists_for_update_id(update_id)?
             {
-                store.kv_set("last_update_id", update_id)?;
+                let _ = store.kv_set("last_update_id", update_id);
                 let replay_output = store.rendered_output_for_update_id(update_id)?;
                 return Ok(ProcessOutcome {
                     should_ack: true,
@@ -862,7 +961,7 @@ fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Resul
 
             let progress_message_id = send_progress_message(cfg, &chat_id)
                 .map_err(|err| {
-                    eprintln!("warn: failed to send progress message: {err:#}");
+                    tracing::warn!("failed to send progress message: {err:#}");
                     err
                 })
                 .ok()
@@ -882,7 +981,7 @@ fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Resul
             )?;
 
             if let Some(update_id) = turn.update_id.as_ref() {
-                store.kv_set("last_update_id", update_id)?;
+                let _ = store.kv_set("last_update_id", update_id);
             }
 
             Ok(ProcessOutcome {
@@ -929,7 +1028,7 @@ fn hydrate_turn_input(
     let client = match build_telegram_client(cfg) {
         Ok(client) => client,
         Err(err) => {
-            eprintln!("warn: telegram media fetch disabled: {err:#}");
+            tracing::warn!("telegram media fetch disabled: {err:#}");
             return Ok((input, None));
         }
     };
@@ -944,7 +1043,7 @@ fn hydrate_turn_input(
         IncomingMedia::Voice { file_id } => {
             let voice_path = cfg.tmp_dir.join(format!("in_{suffix}.oga"));
             if let Err(err) = telegram_download_file(&client, cfg, &file_id, &voice_path) {
-                eprintln!("warn: failed to download voice attachment: {err:#}");
+                tracing::warn!("failed to download voice attachment: {err:#}");
                 return Ok((input, None));
             }
 
@@ -963,11 +1062,11 @@ fn hydrate_turn_input(
                         }
                     }
                     Err(err) => {
-                        eprintln!("warn: ASR failed for voice attachment: {err:#}");
+                        tracing::warn!("ASR failed for voice attachment: {err:#}");
                     }
                 }
             } else {
-                eprintln!("info: voice attachment received but ASR is disabled in config.toml");
+                tracing::info!("voice attachment received but ASR is disabled in config.toml");
             }
 
             let _ = fs::remove_file(voice_path);
@@ -976,7 +1075,7 @@ fn hydrate_turn_input(
         IncomingMedia::Photo { file_id } => {
             let path = cfg.tmp_dir.join(format!("photo_{suffix}.jpg"));
             if let Err(err) = telegram_download_file(&client, cfg, &file_id, &path) {
-                eprintln!("warn: failed to download photo attachment: {err:#}");
+                tracing::warn!("failed to download photo attachment: {err:#}");
                 return Ok((input, None));
             }
             input.input_type = "photo".to_string();
@@ -992,7 +1091,7 @@ fn hydrate_turn_input(
                 .unwrap_or("bin");
             let path = cfg.tmp_dir.join(format!("doc_{suffix}.{ext}"));
             if let Err(err) = telegram_download_file(&client, cfg, &file_id, &path) {
-                eprintln!("warn: failed to download document attachment: {err:#}");
+                tracing::warn!("failed to download document attachment: {err:#}");
                 return Ok((input, None));
             }
             input.input_type = "document".to_string();
@@ -1004,7 +1103,7 @@ fn hydrate_turn_input(
         IncomingMedia::Video { file_id } => {
             let path = cfg.tmp_dir.join(format!("video_{suffix}.mp4"));
             if let Err(err) = telegram_download_file(&client, cfg, &file_id, &path) {
-                eprintln!("warn: failed to download video attachment: {err:#}");
+                tracing::warn!("failed to download video attachment: {err:#}");
                 return Ok((input, None));
             }
             input.input_type = "video".to_string();
@@ -1016,7 +1115,7 @@ fn hydrate_turn_input(
         IncomingMedia::VideoNote { file_id } => {
             let path = cfg.tmp_dir.join(format!("video_note_{suffix}.mp4"));
             if let Err(err) = telegram_download_file(&client, cfg, &file_id, &path) {
-                eprintln!("warn: failed to download video_note attachment: {err:#}");
+                tracing::warn!("failed to download video_note attachment: {err:#}");
                 return Ok((input, None));
             }
             input.input_type = "video_note".to_string();
@@ -1374,13 +1473,14 @@ fn dispatch_telegram_output(
     output: &str,
     progress_message_id: Option<&str>,
 ) -> Result<()> {
-    let chat_id = chat_id_override
+    let Some(chat_id) = chat_id_override
         .or(cfg.telegram_chat_id.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!("TELEGRAM_CHAT_ID missing and update chat_id unavailable")
-        })?;
+    else {
+        tracing::warn!("cannot dispatch telegram output: no chat_id available");
+        return Ok(());
+    };
 
     let markers = parse_markers(output);
     if let Some(reply) = markers.telegram_reply.as_deref() {
@@ -1405,7 +1505,7 @@ fn dispatch_telegram_output(
         if !voice_reply.is_empty()
             && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)
         {
-            eprintln!("warn: failed to send voice reply: {err:#}");
+            tracing::warn!("failed to send voice reply: {err:#}");
         }
     }
 
@@ -1414,7 +1514,7 @@ fn dispatch_telegram_output(
         if let Err(err) =
             telegram_send_media_file(client, cfg, chat_id, "sendPhoto", "photo", &path)
         {
-            eprintln!("warn: failed to send photo {}: {err:#}", path.display());
+            tracing::warn!("failed to send photo {}: {err:#}", path.display());
         }
     }
     for item in markers.send_document {
@@ -1422,7 +1522,7 @@ fn dispatch_telegram_output(
         if let Err(err) =
             telegram_send_media_file(client, cfg, chat_id, "sendDocument", "document", &path)
         {
-            eprintln!("warn: failed to send document {}: {err:#}", path.display());
+            tracing::warn!("failed to send document {}: {err:#}", path.display());
         }
     }
     for item in markers.send_video {
@@ -1430,7 +1530,7 @@ fn dispatch_telegram_output(
         if let Err(err) =
             telegram_send_media_file(client, cfg, chat_id, "sendVideo", "video", &path)
         {
-            eprintln!("warn: failed to send video {}: {err:#}", path.display());
+            tracing::warn!("failed to send video {}: {err:#}", path.display());
         }
     }
 
@@ -1559,22 +1659,22 @@ fn send_or_edit_text(
         return Ok(());
     }
 
-    let mut first_done = false;
-    if let Some(message_id) = progress_message_id
-        && telegram_edit_message_text(client, cfg, chat_id, message_id, &chunks[0], false).is_ok()
-    {
-        first_done = true;
+    if let Some(message_id) = progress_message_id {
+        let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
     }
 
-    if !first_done {
-        let _ = telegram_send_message(client, cfg, chat_id, &chunks[0])?;
+    let mut last_err: Option<anyhow::Error> = None;
+    for chunk in chunks {
+        if let Err(err) = telegram_send_message(client, cfg, chat_id, &chunk) {
+            tracing::warn!("failed to send text chunk: {err:#}");
+            last_err = Some(err);
+        }
     }
 
-    for chunk in chunks.iter().skip(1) {
-        let _ = telegram_send_message(client, cfg, chat_id, chunk)?;
+    match last_err {
+        Some(err) => Err(err),
+        None => Ok(()),
     }
-
-    Ok(())
 }
 
 fn split_text_chunks(text: &str, max_chars: usize) -> Vec<String> {
@@ -1601,7 +1701,7 @@ fn render_markdown_v2_reply(text: &str) -> String {
     match convert_with_strategy(text, UnsupportedTagsStrategy::Escape) {
         Ok(rendered) => rendered.trim_end_matches('\n').to_string(),
         Err(err) => {
-            eprintln!("warn: markdown conversion failed, sending original text: {err:#}");
+            tracing::warn!("markdown conversion failed, sending original text: {err:#}");
             text.to_string()
         }
     }
@@ -1624,15 +1724,8 @@ fn telegram_edit_message_text(
     let params =
         telegram_text_form_params(cfg, chat_id, Some(message_id), text, Some(reply_markup));
     let url = format!("{base}/editMessageText");
-    match telegram_post_form(client, &url, &params, "editMessageText") {
-        Ok(_) => Ok(()),
-        Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
-            eprintln!("warn: editMessageText markdown parse failed, retrying plain text: {err:#}");
-            let retry = strip_parse_mode_param(&params);
-            telegram_post_form(client, &url, &retry, "editMessageText").map(|_| ())
-        }
-        Err(err) => Err(err),
-    }
+    let plain_params = strip_parse_mode_param(&params);
+    telegram_post_form(client, &url, &plain_params, "editMessageText").map(|_| ())
 }
 
 fn telegram_remove_keyboard(
@@ -1737,7 +1830,7 @@ fn telegram_send_message(
     let value = match telegram_post_form(client, &url, &params, "sendMessage") {
         Ok(value) => value,
         Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
-            eprintln!("warn: sendMessage markdown parse failed, retrying plain text: {err:#}");
+            tracing::warn!("sendMessage markdown parse failed, retrying plain text: {err:#}");
             let retry = strip_parse_mode_param(&params);
             telegram_post_form(client, &url, &retry, "sendMessage")?
         }
@@ -1802,12 +1895,47 @@ fn telegram_post_form(
     params: &[(String, String)],
     action: &str,
 ) -> Result<Value> {
-    let response = client
-        .post(url)
-        .form(params)
-        .send()
-        .with_context(|| format!("failed to call telegram {action}"))?;
-    parse_telegram_response(response, action)
+    const MAX_429_RETRY_ATTEMPTS: usize = 1;
+    const MAX_429_SLEEP_SECS: u64 = 60;
+
+    let mut attempts = 0usize;
+    loop {
+        let response = client
+            .post(url)
+            .form(params)
+            .send()
+            .with_context(|| format!("failed to call telegram {action}"))?;
+
+        if response.status().as_u16() == 429 {
+            let body = response
+                .text()
+                .with_context(|| format!("failed to read telegram {action} response body"))?;
+            if attempts < MAX_429_RETRY_ATTEMPTS
+                && let Some(retry_after) = telegram_retry_after_seconds(&body)
+            {
+                let sleep_secs = retry_after.clamp(1, MAX_429_SLEEP_SECS);
+                attempts += 1;
+                tracing::warn!("telegram {action} rate limited, retrying in {sleep_secs}s");
+                thread::sleep(Duration::from_secs(sleep_secs));
+                continue;
+            }
+            bail!("telegram {action} HTTP 429: {body}");
+        }
+
+        return parse_telegram_response(response, action);
+    }
+}
+
+fn telegram_retry_after_seconds(body: &str) -> Option<u64> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    value
+        .get("parameters")
+        .and_then(|node| node.get("retry_after"))
+        .and_then(|node| {
+            node.as_u64()
+                .or_else(|| node.as_i64().and_then(|value| u64::try_from(value).ok()))
+                .or_else(|| node.as_str().and_then(|value| value.parse::<u64>().ok()))
+        })
 }
 
 fn telegram_send_media_file(
@@ -2160,7 +2288,7 @@ fn process_turn(
         && !cancel_flag.load(Ordering::SeqCst)
         && should_retry_provider_failure(&result.raw_output)
     {
-        eprintln!("warn: provider failed with retryable error, retrying once");
+        tracing::warn!("provider failed with retryable error, retrying once");
         provider_result = run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
     }
     cancel_watcher_stop.store(true, Ordering::SeqCst);
@@ -2823,6 +2951,13 @@ mod tests {
     }
 
     #[test]
+    fn should_retry_provider_failure_ignores_non_retryable_turn_failed_stream() {
+        let payload = r#"{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"mentions timeout in a file path only"}}
+{"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."}}"#;
+        assert!(!should_retry_provider_failure(payload));
+    }
+
+    #[test]
     fn resolve_turn_result_marks_cancelled() {
         let result = resolve_turn_result("TELEGRAM_REPLY: hi", true, true);
         assert_eq!(result.status, "cancelled");
@@ -2857,6 +2992,20 @@ mod tests {
     }
 
     #[test]
+    fn resolve_turn_result_uses_turn_failed_error_message() {
+        let payload = r#"{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window."}}"#;
+        let result = resolve_turn_result(payload, false, false);
+        assert_eq!(result.status, "agent_error");
+        assert!(result.telegram_reply.contains("context window"));
+        assert!(
+            !result
+                .telegram_reply
+                .contains(r#"{"type":"thread.started""#)
+        );
+    }
+
+    #[test]
     fn text_params_include_parse_mode_for_markdown_v2() {
         let mut cfg = test_config();
         cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
@@ -2883,6 +3032,18 @@ mod tests {
         let err =
             anyhow::anyhow!("telegram sendMessage failed: Bad Request: message is not modified");
         assert!(!should_fallback_plain_for_error(&err));
+    }
+
+    #[test]
+    fn telegram_retry_after_seconds_reads_integer_value() {
+        let body = r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":15}}"#;
+        assert_eq!(telegram_retry_after_seconds(body), Some(15));
+    }
+
+    #[test]
+    fn telegram_retry_after_seconds_reads_string_value() {
+        let body = r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":"7"}}"#;
+        assert_eq!(telegram_retry_after_seconds(body), Some(7));
     }
 
     #[test]
@@ -3066,5 +3227,21 @@ mod tests {
 
         let content = fs::read_to_string(queue_path).expect("queue content");
         assert!(content.trim().is_empty());
+    }
+
+    #[test]
+    fn ack_webhook_queue_line_drops_malformed_head_with_expected_update_id() {
+        let cfg = test_config();
+        let queue_path = cfg.runtime_dir.join("webhook_updates.jsonl");
+        let malformed = "{\"update_id\":9003,\n";
+        let valid = r#"{"update_id":9004,"message":{"chat":{"id":"321"},"text":"ping"}}"#;
+        fs::write(&queue_path, format!("{malformed}{valid}\n")).expect("write queue");
+
+        let status =
+            ack_webhook_queue_line(&cfg, Some("9004")).expect("ack with malformed queue head");
+        assert_eq!(status, AckStatus::Acked);
+
+        let content = fs::read_to_string(queue_path).expect("queue content");
+        assert_eq!(content.trim_end(), valid);
     }
 }
