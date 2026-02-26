@@ -5,4 +5,4 @@ Description=CoconutClaw Daily Heartbeat
 Type=oneshot
 WorkingDirectory=%h/code/CoconutClaw
 EnvironmentFile=%h/code/CoconutClaw/.env
-ExecStart=/bin/bash -lc 'cd %h/code/CoconutClaw && ./scripts/heartbeat.sh'
+ExecStart=/usr/bin/env coconutclaw heartbeat

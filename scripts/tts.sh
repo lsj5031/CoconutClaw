@@ -2,8 +2,35 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck disable=SC1091
-source "$ROOT_DIR/lib/common.sh"
+INSTANCE_DIR="${INSTANCE_DIR:-$ROOT_DIR}"
+if [[ "$INSTANCE_DIR" != /* ]]; then
+  INSTANCE_DIR="$(cd "$INSTANCE_DIR" && pwd)"
+fi
+
+load_env() {
+  local env_file="${INSTANCE_DIR}/.env"
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$env_file"
+    set +a
+  fi
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "missing dependency: $1" >&2
+    exit 1
+  }
+}
+
+trim() {
+  local x="$1"
+  x="${x#"${x%%[![:space:]]*}"}"
+  x="${x%"${x##*[![:space:]]}"}"
+  printf "%s" "$x"
+}
+
 load_env
 
 require_cmd ffmpeg

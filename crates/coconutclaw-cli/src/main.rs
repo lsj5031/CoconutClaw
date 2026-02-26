@@ -2,7 +2,9 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use clap::{Args, Parser, Subcommand};
-use coconutclaw_config::{CliOverrides, RuntimeConfig, load_runtime_config};
+use coconutclaw_config::{
+    CliOverrides, RuntimeConfig, TelegramParseFallback, TelegramParseMode, load_runtime_config,
+};
 use coconutclaw_provider::run_provider;
 use fs2::FileExt;
 use reqwest::blocking::{Client, multipart};
@@ -40,6 +42,8 @@ struct Cli {
 enum Commands {
     Once(TurnArgs),
     Run(RunArgs),
+    Heartbeat,
+    NightlyReflection,
     Doctor,
 }
 
@@ -310,6 +314,35 @@ impl Store {
         )?;
         Ok(())
     }
+
+    fn max_turn_id(&self) -> Result<i64> {
+        let id: i64 = self
+            .conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM turns", [], |row| {
+                row.get(0)
+            })?;
+        Ok(id)
+    }
+
+    fn latest_turn_for_prompt_after_id(
+        &self,
+        after_id: i64,
+        prompt: &str,
+    ) -> Result<Option<(String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts, COALESCE(NULLIF(telegram_reply, ''), NULLIF(voice_reply, ''), ''), status
+             FROM turns
+             WHERE id > ?1
+               AND user_text = ?2
+             ORDER BY id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![after_id, prompt])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some((row.get(0)?, row.get(1)?, row.get(2)?)))
+    }
 }
 
 fn main() -> Result<()> {
@@ -327,6 +360,8 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Once(args) => run_once(&cfg, &store, &args),
         Commands::Run(args) => run_run(&cfg, &store, &args),
+        Commands::Heartbeat => run_heartbeat(&cfg, &store),
+        Commands::NightlyReflection => run_nightly_reflection(&cfg, &store),
         Commands::Doctor => run_doctor(&cfg),
     }
 }
@@ -381,6 +416,123 @@ fn run_run(cfg: &RuntimeConfig, store: &Store, args: &RunArgs) -> Result<()> {
     run_poll_loop(cfg, store, &telegram_client, &shutdown)
 }
 
+fn run_heartbeat(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+    let prompt = "Daily heartbeat for CoconutClaw. Summarize today, surface urgent tasks from TASKS/pending.md, and suggest next 1-3 actions.";
+    let output = process_turn(
+        cfg,
+        store,
+        TurnInput {
+            input_type: "text".to_string(),
+            user_text: prompt.to_string(),
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+        },
+        cfg.telegram_chat_id.clone(),
+        None,
+        None,
+        &QuotedMessage {
+            reply_from: None,
+            reply_text: None,
+        },
+    )?;
+
+    let client = build_telegram_client(cfg)?;
+    dispatch_telegram_output(&client, cfg, cfg.telegram_chat_id.as_deref(), &output, None)?;
+    print!("{output}");
+    io::stdout().flush().ok();
+    Ok(())
+}
+
+fn run_nightly_reflection(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+    let reflection_path = nightly_reflection_file_path(cfg);
+    let local_day = local_day(&cfg.timezone);
+    let marker = nightly_reflection_marker(&local_day);
+    let now_iso = iso_now(&cfg.timezone);
+
+    if let Some(parent) = reflection_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    if !reflection_path.exists() {
+        fs::write(&reflection_path, "")
+            .with_context(|| format!("failed to initialize {}", reflection_path.display()))?;
+    }
+
+    let existing = fs::read_to_string(&reflection_path)
+        .with_context(|| format!("failed to read {}", reflection_path.display()))?;
+    if existing.contains(&marker) {
+        println!("{now_iso} [INFO] nightly reflection already exists for {local_day}");
+        return Ok(());
+    }
+
+    let prompt = nightly_reflection_prompt();
+    let before_id = store.max_turn_id()?;
+    let skip_agent = nightly_reflection_skip_agent();
+    if !skip_agent {
+        let output = process_turn(
+            cfg,
+            store,
+            TurnInput {
+                input_type: "text".to_string(),
+                user_text: prompt.clone(),
+                asr_text: String::new(),
+                attachment_type: None,
+                attachment_path: None,
+                attachment_owned: false,
+            },
+            cfg.telegram_chat_id.clone(),
+            None,
+            None,
+            &QuotedMessage {
+                reply_from: None,
+                reply_text: None,
+            },
+        )?;
+        let client = build_telegram_client(cfg)?;
+        dispatch_telegram_output(&client, cfg, cfg.telegram_chat_id.as_deref(), &output, None)?;
+    }
+
+    let (turn_ts, reflection_text, status) = if let Some((turn_ts, text, status)) =
+        store.latest_turn_for_prompt_after_id(before_id, &prompt)?
+    {
+        if !text.trim().is_empty() {
+            (turn_ts, text, status)
+        } else {
+            (
+                "<none>".to_string(),
+                "- Today outcomes:\n- Today insights:\n- Most important thing tomorrow:"
+                    .to_string(),
+                "template_only".to_string(),
+            )
+        }
+    } else {
+        (
+            "<none>".to_string(),
+            "- Today outcomes:\n- Today insights:\n- Most important thing tomorrow:".to_string(),
+            "template_only".to_string(),
+        )
+    };
+
+    let block = format!(
+        "{marker}\n## {local_day} nightly reflection\n- generated_at: {now_iso}\n- source: coconutclaw nightly-reflection\n- turn_ts: {turn_ts}\n- status: {status}\n\n{reflection_text}\n\n"
+    );
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&reflection_path)
+        .with_context(|| format!("failed to open {}", reflection_path.display()))?;
+    file.write_all(block.as_bytes())
+        .with_context(|| format!("failed to write {}", reflection_path.display()))?;
+
+    println!(
+        "{now_iso} [INFO] nightly reflection appended to {}",
+        reflection_path.display()
+    );
+    Ok(())
+}
+
 fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
     println!("CoconutClaw doctor");
     println!("instance_name={}", cfg.instance_name);
@@ -392,6 +544,17 @@ fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
     println!(
         "webhook_mode={}",
         if cfg.webhook_mode { "on" } else { "off" }
+    );
+    println!(
+        "telegram_parse_mode={}",
+        cfg.telegram_parse_mode.as_api_value().unwrap_or("off")
+    );
+    println!(
+        "telegram_parse_fallback={}",
+        match cfg.telegram_parse_fallback {
+            TelegramParseFallback::Plain => "plain",
+            TelegramParseFallback::None => "none",
+        }
     );
     println!("poll_interval_seconds={}", cfg.poll_interval_seconds);
     println!("env_file={}", cfg.env_file_path.display());
@@ -1422,19 +1585,17 @@ fn telegram_edit_message_text(
     } else {
         r#"{"inline_keyboard":[]}"#
     };
-    let params = [
-        ("chat_id", chat_id.to_string()),
-        ("message_id", message_id.to_string()),
-        ("text", text.to_string()),
-        ("reply_markup", reply_markup.to_string()),
-    ];
-    let response = client
-        .post(format!("{base}/editMessageText"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram editMessageText")?;
-    parse_telegram_response(response, "editMessageText")?;
-    Ok(())
+    let params =
+        telegram_text_form_params(cfg, chat_id, Some(message_id), text, Some(reply_markup));
+    let url = format!("{base}/editMessageText");
+    match telegram_post_form(client, &url, &params, "editMessageText") {
+        Ok(_) => Ok(()),
+        Err(_err) if should_retry_plain_text(cfg) => {
+            let retry = strip_parse_mode_param(&params);
+            telegram_post_form(client, &url, &retry, "editMessageText").map(|_| ())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn telegram_remove_keyboard(
@@ -1523,13 +1684,16 @@ fn telegram_send_message(
     text: &str,
 ) -> Result<Option<String>> {
     let base = telegram_api_base(cfg)?;
-    let params = [("chat_id", chat_id.to_string()), ("text", text.to_string())];
-    let response = client
-        .post(format!("{base}/sendMessage"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram sendMessage")?;
-    let value = parse_telegram_response(response, "sendMessage")?;
+    let params = telegram_text_form_params(cfg, chat_id, None, text, None);
+    let url = format!("{base}/sendMessage");
+    let value = match telegram_post_form(client, &url, &params, "sendMessage") {
+        Ok(value) => value,
+        Err(_err) if should_retry_plain_text(cfg) => {
+            let retry = strip_parse_mode_param(&params);
+            telegram_post_form(client, &url, &retry, "sendMessage")?
+        }
+        Err(err) => return Err(err),
+    };
     let message_id = value
         .get("result")
         .and_then(|node| node.get("message_id"))
@@ -1537,6 +1701,55 @@ fn telegram_send_message(
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty());
     Ok(message_id)
+}
+
+fn telegram_text_form_params(
+    cfg: &RuntimeConfig,
+    chat_id: &str,
+    message_id: Option<&str>,
+    text: &str,
+    reply_markup: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut params = Vec::new();
+    params.push(("chat_id".to_string(), chat_id.to_string()));
+    if let Some(message_id) = message_id {
+        params.push(("message_id".to_string(), message_id.to_string()));
+    }
+    params.push(("text".to_string(), text.to_string()));
+    if let Some(reply_markup) = reply_markup {
+        params.push(("reply_markup".to_string(), reply_markup.to_string()));
+    }
+    if let Some(parse_mode) = cfg.telegram_parse_mode.as_api_value() {
+        params.push(("parse_mode".to_string(), parse_mode.to_string()));
+    }
+    params
+}
+
+fn strip_parse_mode_param(params: &[(String, String)]) -> Vec<(String, String)> {
+    params
+        .iter()
+        .filter(|(key, _)| key != "parse_mode")
+        .cloned()
+        .collect()
+}
+
+fn should_retry_plain_text(cfg: &RuntimeConfig) -> bool {
+    matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2)
+        && matches!(cfg.telegram_parse_fallback, TelegramParseFallback::Plain)
+}
+
+fn telegram_post_form(
+    client: &Client,
+    url: &str,
+    params: &[(String, String)],
+    action: &str,
+) -> Result<Value> {
+    let response = client
+        .post(url)
+        .form(params)
+        .send()
+        .with_context(|| format!("failed to call telegram {action}"))?;
+    parse_telegram_response(response, action)
 }
 
 fn telegram_send_media_file(
@@ -2213,7 +2426,14 @@ fn build_context(
     text.push_str("SEND_VIDEO: <absolute file path>\n");
     text.push_str("MEMORY_APPEND: <single memory line>\n");
     text.push_str("TASK_APPEND: <single task line>\n");
-    text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
+    if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2) {
+        text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
+        text.push_str("You may use Telegram MarkdownV2 formatting inside marker values only.\n");
+        text.push_str("Keep marker prefixes plain and unchanged.\n");
+        text.push_str("Do not use code fences or extra prefixes.\n");
+    } else {
+        text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
+    }
 
     Ok(text)
 }
@@ -2290,6 +2510,14 @@ fn read_or_default(path: &Path, fallback: &str) -> String {
     fs::read_to_string(path).unwrap_or_else(|_| fallback.to_string())
 }
 
+fn local_day(timezone: &str) -> String {
+    let now: DateTime<Utc> = Utc::now();
+    if let Ok(tz) = timezone.parse::<Tz>() {
+        return now.with_timezone(&tz).format("%Y-%m-%d").to_string();
+    }
+    now.format("%Y-%m-%d").to_string()
+}
+
 fn iso_now(timezone: &str) -> String {
     let now: DateTime<Utc> = Utc::now();
     if let Ok(tz) = timezone.parse::<Tz>() {
@@ -2299,6 +2527,32 @@ fn iso_now(timezone: &str) -> String {
             .to_string();
     }
     now.format("%Y-%m-%dT%H:%M:%S%z").to_string()
+}
+
+fn nightly_reflection_marker(day: &str) -> String {
+    format!("<!-- nightly-reflection:{day} -->")
+}
+
+fn nightly_reflection_skip_agent() -> bool {
+    env::var("NIGHTLY_REFLECTION_SKIP_AGENT")
+        .map(|value| value.trim().eq_ignore_ascii_case("on"))
+        .unwrap_or(false)
+}
+
+fn nightly_reflection_prompt() -> String {
+    env::var("NIGHTLY_REFLECTION_PROMPT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            "Do a brief nightly reflection in first person: include today outcomes, today lessons, and the single most important thing for tomorrow in under 120 words.".to_string()
+        })
+}
+
+fn nightly_reflection_file_path(cfg: &RuntimeConfig) -> PathBuf {
+    let raw = env::var("NIGHTLY_REFLECTION_FILE")
+        .unwrap_or_else(|_| "./LOGS/nightly_reflection.md".to_string());
+    resolve_instance_path(&cfg.instance_dir, PathBuf::from(raw))
 }
 
 fn command_exists(bin: &str) -> bool {
@@ -2357,6 +2611,8 @@ mod tests {
             timezone: "UTC".to_string(),
             telegram_bot_token: Some("123:token".to_string()),
             telegram_chat_id: Some("321".to_string()),
+            telegram_parse_mode: TelegramParseMode::Off,
+            telegram_parse_fallback: TelegramParseFallback::Plain,
             webhook_mode: false,
             poll_interval_seconds: 1,
             provider: AgentProvider::Codex,
@@ -2512,5 +2768,93 @@ mod tests {
         assert!(text.contains("Elapsed: 9s"));
         assert!(text.contains("- Processing..."));
         assert!(text.contains("- Running: cargo test"));
+    }
+
+    #[test]
+    fn text_params_include_parse_mode_for_markdown_v2() {
+        let mut cfg = test_config();
+        cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
+        let params = telegram_text_form_params(
+            &cfg,
+            "321",
+            Some("42"),
+            "hello",
+            Some(r#"{"inline_keyboard":[]}"#),
+        );
+        assert!(params.contains(&("parse_mode".to_string(), "MarkdownV2".to_string())));
+    }
+
+    #[test]
+    fn context_requires_plain_text_when_parse_mode_off() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        let input = TurnInput {
+            input_type: "text".to_string(),
+            user_text: "hello".to_string(),
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+        };
+        let text = build_context(
+            &cfg,
+            &store,
+            &input,
+            "2026-01-01T00:00:00+0000",
+            &QuotedMessage {
+                reply_from: None,
+                reply_text: None,
+            },
+        )
+        .expect("context");
+        assert!(text.contains("Do not use markdown"));
+    }
+
+    #[test]
+    fn context_allows_markdown_v2_when_parse_mode_enabled() {
+        let mut cfg = test_config();
+        cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
+        let store = Store::open(&cfg).expect("store");
+        let input = TurnInput {
+            input_type: "text".to_string(),
+            user_text: "hello".to_string(),
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+        };
+        let text = build_context(
+            &cfg,
+            &store,
+            &input,
+            "2026-01-01T00:00:00+0000",
+            &QuotedMessage {
+                reply_from: None,
+                reply_text: None,
+            },
+        )
+        .expect("context");
+        assert!(text.contains("MarkdownV2"));
+        assert!(!text.contains("Do not use markdown"));
+    }
+
+    #[test]
+    fn heartbeat_subcommand_is_recognized() {
+        let parsed = Cli::try_parse_from(["coconutclaw", "heartbeat"]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn nightly_reflection_subcommand_is_recognized() {
+        let parsed = Cli::try_parse_from(["coconutclaw", "nightly-reflection"]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn nightly_reflection_marker_format_is_stable() {
+        assert_eq!(
+            nightly_reflection_marker("2026-02-25"),
+            "<!-- nightly-reflection:2026-02-25 -->"
+        );
     }
 }

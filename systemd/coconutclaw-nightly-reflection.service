@@ -5,4 +5,4 @@ Description=CoconutClaw Nightly Reflection
 Type=oneshot
 WorkingDirectory=%h/code/CoconutClaw
 EnvironmentFile=%h/code/CoconutClaw/.env
-ExecStart=/bin/bash -lc 'cd %h/code/CoconutClaw && ./scripts/nightly_reflection.sh'
+ExecStart=/usr/bin/env coconutclaw nightly-reflection

@@ -67,6 +67,8 @@ pub struct RuntimeConfig {
     pub timezone: String,
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
+    pub telegram_parse_mode: TelegramParseMode,
+    pub telegram_parse_fallback: TelegramParseFallback,
     pub webhook_mode: bool,
     pub poll_interval_seconds: u64,
     pub provider: AgentProvider,
@@ -175,6 +177,12 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(2);
+    let telegram_parse_mode = TelegramParseMode::parse(
+        &pick_value("TELEGRAM_PARSE_MODE", &env_file).unwrap_or_else(|| "off".to_string()),
+    )?;
+    let telegram_parse_fallback = TelegramParseFallback::parse(
+        &pick_value("TELEGRAM_PARSE_FALLBACK", &env_file).unwrap_or_else(|| "plain".to_string()),
+    )?;
 
     let pi_mode = pick_value("PI_MODE", &env_file)
         .unwrap_or_else(|| "text".to_string())
@@ -197,6 +205,8 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         timezone: pick_value("TIMEZONE", &env_file).unwrap_or_else(|| "UTC".to_string()),
         telegram_bot_token: pick_value("TELEGRAM_BOT_TOKEN", &env_file),
         telegram_chat_id: pick_value("TELEGRAM_CHAT_ID", &env_file),
+        telegram_parse_mode,
+        telegram_parse_fallback,
         webhook_mode,
         poll_interval_seconds,
         provider,
@@ -393,4 +403,172 @@ fn find_project_root(start: &Path) -> PathBuf {
         }
     }
     start.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_dir() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("coconutclaw_cfg_test_{unique}"))
+    }
+
+    fn write_env(instance_dir: &Path, body: &str) {
+        fs::create_dir_all(instance_dir).expect("mkdir instance");
+        fs::write(instance_dir.join(".env"), body).expect("write .env");
+    }
+
+    #[test]
+    fn telegram_parse_mode_defaults_to_off() {
+        let instance_dir = unique_dir();
+        write_env(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\n",
+        );
+
+        let cfg = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir),
+        })
+        .expect("config");
+
+        assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::Off);
+    }
+
+    #[test]
+    fn telegram_parse_mode_accepts_markdown_v2() {
+        let instance_dir = unique_dir();
+        write_env(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_MODE=MarkdownV2\n",
+        );
+
+        let cfg = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir),
+        })
+        .expect("config");
+
+        assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2);
+    }
+
+    #[test]
+    fn telegram_parse_mode_rejects_invalid_value() {
+        let instance_dir = unique_dir();
+        write_env(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_MODE=Markdown\n",
+        );
+
+        let err = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir),
+        })
+        .expect_err("invalid parse mode should fail");
+
+        let text = format!("{err:#}");
+        assert!(text.contains("invalid TELEGRAM_PARSE_MODE"));
+    }
+
+    #[test]
+    fn telegram_parse_fallback_defaults_to_plain() {
+        let instance_dir = unique_dir();
+        write_env(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\n",
+        );
+
+        let cfg = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir),
+        })
+        .expect("config");
+
+        assert_eq!(cfg.telegram_parse_fallback, TelegramParseFallback::Plain);
+    }
+
+    #[test]
+    fn telegram_parse_fallback_accepts_none() {
+        let instance_dir = unique_dir();
+        write_env(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_FALLBACK=none\n",
+        );
+
+        let cfg = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir),
+        })
+        .expect("config");
+
+        assert_eq!(cfg.telegram_parse_fallback, TelegramParseFallback::None);
+    }
+
+    #[test]
+    fn telegram_parse_fallback_rejects_invalid_value() {
+        let instance_dir = unique_dir();
+        write_env(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_FALLBACK=retry\n",
+        );
+
+        let err = load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir),
+        })
+        .expect_err("invalid fallback should fail");
+
+        let text = format!("{err:#}");
+        assert!(text.contains("invalid TELEGRAM_PARSE_FALLBACK"));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelegramParseMode {
+    Off,
+    MarkdownV2,
+}
+
+impl TelegramParseMode {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "markdownv2" => Ok(Self::MarkdownV2),
+            other => bail!("invalid TELEGRAM_PARSE_MODE: {other} (expected off or MarkdownV2)"),
+        }
+    }
+
+    pub fn as_api_value(self) -> Option<&'static str> {
+        match self {
+            Self::Off => None,
+            Self::MarkdownV2 => Some("MarkdownV2"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelegramParseFallback {
+    Plain,
+    None,
+}
+
+impl TelegramParseFallback {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "plain" => Ok(Self::Plain),
+            "none" => Ok(Self::None),
+            other => bail!("invalid TELEGRAM_PARSE_FALLBACK: {other} (expected plain or none)"),
+        }
+    }
 }

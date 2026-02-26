@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck disable=SC1091
-source "$ROOT_DIR/lib/common.sh"
-load_env
+echo "warning: scripts/heartbeat.sh is deprecated; forwarding to coconutclaw heartbeat" >&2
 
-msg="Daily heartbeat for CoconutClaw. Summarize today, surface urgent tasks from TASKS/pending.md, and suggest next 1-3 actions."
-"$ROOT_DIR/agent.sh" --inject-text "$msg"
+BIN="${COCONUTCLAW_BIN:-coconutclaw}"
+if ! command -v "$BIN" >/dev/null 2>&1; then
+  if [[ -x "./target/debug/coconutclaw" ]]; then
+    BIN="./target/debug/coconutclaw"
+  else
+    echo "error: coconutclaw binary not found in PATH. Build with: cargo build -p coconutclaw" >&2
+    exit 1
+  fi
+fi
+
+exec "$BIN" heartbeat
