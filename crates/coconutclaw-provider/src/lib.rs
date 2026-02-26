@@ -3,6 +3,7 @@ use coconutclaw_config::{AgentProvider, RuntimeConfig};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{
@@ -76,6 +77,7 @@ fn run_codex(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .with_context(|| format!("failed to start {}", config.codex.bin))?;
 
@@ -149,7 +151,8 @@ fn run_pi(
     cmd.arg(context)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .process_group(0);
 
     let child = cmd
         .spawn()
@@ -239,6 +242,7 @@ fn run_child_process(
     });
 
     let mut cancelled = false;
+    let pgid = child.id() as libc::pid_t;
     let status = loop {
         if let Some(status) = child.try_wait().context(wait_context)? {
             break status;
@@ -247,7 +251,7 @@ fn run_child_process(
             && cancel_flag.load(Ordering::SeqCst)
         {
             cancelled = true;
-            let _ = child.kill();
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
             let status = child.wait().context(kill_wait_context)?;
             break status;
         }
