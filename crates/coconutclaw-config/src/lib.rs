@@ -653,6 +653,7 @@ fn find_project_root(start: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_dir() -> PathBuf {
@@ -673,6 +674,59 @@ mod tests {
         fs::write(instance_dir.join(".env"), body).expect("write .env");
     }
 
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct TestEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(String, Option<String>)>,
+    }
+
+    impl TestEnvGuard {
+        fn clear_config_env() -> Self {
+            let lock = env_lock().lock().expect("lock env");
+            let mut keys: Vec<&str> = MIGRATABLE_ENV_KEYS.to_vec();
+            keys.push("COCONUTCLAW_INSTANCE");
+            keys.push("COCONUTCLAW_DATA_DIR");
+
+            let mut saved = Vec::new();
+            for key in keys {
+                saved.push((key.to_string(), env::var(key).ok()));
+                // SAFETY: Tests in this module hold a global lock while mutating process env.
+                unsafe {
+                    env::remove_var(key);
+                }
+            }
+
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for TestEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                // SAFETY: Tests in this module hold a global lock while mutating process env.
+                unsafe {
+                    match value {
+                        Some(value) => env::set_var(key, value),
+                        None => env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    fn load_runtime_config_isolated(instance_dir: PathBuf) -> Result<RuntimeConfig> {
+        let _guard = TestEnvGuard::clear_config_env();
+        load_runtime_config(&CliOverrides {
+            instance: None,
+            data_dir: None,
+            instance_dir: Some(instance_dir),
+        })
+    }
+
     #[test]
     fn telegram_parse_mode_defaults_to_off() {
         let instance_dir = unique_dir();
@@ -681,12 +735,7 @@ mod tests {
             "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\n",
         );
 
-        let cfg = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir.clone()),
-        })
-        .expect("config");
+        let cfg = load_runtime_config_isolated(instance_dir).expect("config");
 
         assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::Off);
     }
@@ -699,12 +748,7 @@ mod tests {
             "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_MODE = \"MarkdownV2\"\n",
         );
 
-        let cfg = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir.clone()),
-        })
-        .expect("config");
+        let cfg = load_runtime_config_isolated(instance_dir).expect("config");
 
         assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2);
     }
@@ -717,12 +761,8 @@ mod tests {
             "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_MODE = \"Markdown\"\n",
         );
 
-        let err = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir),
-        })
-        .expect_err("invalid parse mode should fail");
+        let err =
+            load_runtime_config_isolated(instance_dir).expect_err("invalid parse mode should fail");
 
         let text = format!("{err:#}");
         assert!(text.contains("invalid TELEGRAM_PARSE_MODE"));
@@ -736,12 +776,7 @@ mod tests {
             "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\n",
         );
 
-        let cfg = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir),
-        })
-        .expect("config");
+        let cfg = load_runtime_config_isolated(instance_dir).expect("config");
 
         assert_eq!(cfg.telegram_parse_fallback, TelegramParseFallback::Plain);
     }
@@ -754,12 +789,7 @@ mod tests {
             "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_FALLBACK = \"none\"\n",
         );
 
-        let cfg = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir),
-        })
-        .expect("config");
+        let cfg = load_runtime_config_isolated(instance_dir).expect("config");
 
         assert_eq!(cfg.telegram_parse_fallback, TelegramParseFallback::None);
     }
@@ -772,12 +802,8 @@ mod tests {
             "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_FALLBACK = \"retry\"\n",
         );
 
-        let err = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir),
-        })
-        .expect_err("invalid fallback should fail");
+        let err =
+            load_runtime_config_isolated(instance_dir).expect_err("invalid fallback should fail");
 
         let text = format!("{err:#}");
         assert!(text.contains("invalid TELEGRAM_PARSE_FALLBACK"));
@@ -791,12 +817,7 @@ mod tests {
             "TELEGRAM_BOT_TOKEN=123:token\nTELEGRAM_CHAT_ID=321\nTELEGRAM_PARSE_MODE=MarkdownV2\n",
         );
 
-        let cfg = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir.clone()),
-        })
-        .expect("config");
+        let cfg = load_runtime_config_isolated(instance_dir.clone()).expect("config");
 
         assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2);
         assert!(instance_dir.join("config.toml").exists());
@@ -812,12 +833,7 @@ mod tests {
         );
         write_legacy_env(&instance_dir, "TELEGRAM_PARSE_MODE=MarkdownV2\n");
 
-        let cfg = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir.clone()),
-        })
-        .expect("config");
+        let cfg = load_runtime_config_isolated(instance_dir.clone()).expect("config");
 
         assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::Off);
         assert!(instance_dir.join(".env").exists());
@@ -837,12 +853,7 @@ WEBHOOK_SECRET = \"secret-token\"\n\
 WEBHOOK_PATH = \"/telegram/webhook\"\n",
         );
 
-        let cfg = load_runtime_config(&CliOverrides {
-            instance: None,
-            data_dir: None,
-            instance_dir: Some(instance_dir),
-        })
-        .expect("config");
+        let cfg = load_runtime_config_isolated(instance_dir).expect("config");
 
         assert!(cfg.webhook_mode);
         assert_eq!(cfg.webhook_bind, "127.0.0.1:8789");
