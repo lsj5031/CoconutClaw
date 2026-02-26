@@ -6,6 +6,7 @@ param(
     [string]$InjectText,
     [string]$InjectFile,
     [string]$ChatId,
+    [string]$Instance,
     [string]$InstanceDir = ".",
     [switch]$UseCargo
 )
@@ -14,6 +15,16 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
+
+$instanceSpecified = $PSBoundParameters.ContainsKey("Instance")
+$instanceDirSpecified = $PSBoundParameters.ContainsKey("InstanceDir")
+if ($instanceSpecified -and $instanceDirSpecified) {
+    throw "-Instance and -InstanceDir are mutually exclusive"
+}
+
+if ($instanceSpecified -and $Instance -notmatch "^[a-zA-Z0-9_.-]+$") {
+    throw "invalid instance: $Instance (expected [a-zA-Z0-9_.-])"
+}
 
 $command = "run"
 if ($Doctor) {
@@ -26,7 +37,11 @@ if ($Doctor) {
     $command = "once"
 }
 
-$cliArgs = @("--instance-dir", $InstanceDir, $command)
+if ($instanceSpecified) {
+    $cliArgs = @("--instance", $Instance, $command)
+} else {
+    $cliArgs = @("--instance-dir", $InstanceDir, $command)
+}
 if ($command -eq "once") {
     if ($InjectText) {
         $cliArgs += @("--inject-text", $InjectText)

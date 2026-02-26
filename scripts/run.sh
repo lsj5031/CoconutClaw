@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTANCE=""
 INSTANCE_DIR="."
+INSTANCE_SPECIFIED=0
+INSTANCE_DIR_SPECIFIED=0
 USE_CARGO=0
 
 command_name="run"
@@ -22,6 +25,7 @@ Options:
   --inject-text <text>
   --inject-file <path>
   --chat-id <id>
+  --instance <name>
   --instance-dir <path>
   --use-cargo
   -h, --help
@@ -58,8 +62,14 @@ while [[ $# -gt 0 ]]; do
       chat_id="${2:-}"
       shift 2
       ;;
+    --instance)
+      INSTANCE="${2:-}"
+      INSTANCE_SPECIFIED=1
+      shift 2
+      ;;
     --instance-dir)
       INSTANCE_DIR="${2:-.}"
+      INSTANCE_DIR_SPECIFIED=1
       shift 2
       ;;
     --use-cargo)
@@ -78,13 +88,29 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$INSTANCE_DIR" != /* ]]; then
-  INSTANCE_DIR="$(cd "$ROOT_DIR" && mkdir -p "$INSTANCE_DIR" && cd "$INSTANCE_DIR" && pwd)"
-else
-  mkdir -p "$INSTANCE_DIR"
+if [[ "$INSTANCE_SPECIFIED" -eq 1 && "$INSTANCE_DIR_SPECIFIED" -eq 1 ]]; then
+  echo "--instance and --instance-dir are mutually exclusive" >&2
+  exit 1
 fi
 
-args=(--instance-dir "$INSTANCE_DIR" "$command_name")
+if [[ "$INSTANCE_SPECIFIED" -eq 1 ]]; then
+  [[ "$INSTANCE" =~ ^[a-zA-Z0-9_.-]+$ ]] || {
+    echo "invalid instance: $INSTANCE (expected [a-zA-Z0-9_.-])" >&2
+    exit 1
+  }
+else
+  if [[ "$INSTANCE_DIR" != /* ]]; then
+    INSTANCE_DIR="$(cd "$ROOT_DIR" && mkdir -p "$INSTANCE_DIR" && cd "$INSTANCE_DIR" && pwd)"
+  else
+    mkdir -p "$INSTANCE_DIR"
+  fi
+fi
+
+if [[ "$INSTANCE_SPECIFIED" -eq 1 ]]; then
+  args=(--instance "$INSTANCE" "$command_name")
+else
+  args=(--instance-dir "$INSTANCE_DIR" "$command_name")
+fi
 if [[ "$command_name" == "once" ]]; then
   if [[ -n "$inject_text" ]]; then
     args+=(--inject-text "$inject_text")

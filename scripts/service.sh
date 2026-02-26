@@ -2,26 +2,40 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTANCE=""
 INSTANCE_DIR="."
+INSTANCE_SPECIFIED=0
+INSTANCE_DIR_SPECIFIED=0
+INSTANCE_KEY="default"
 HEARTBEAT_TIME="09:00"
 REFLECTION_TIME="22:30"
 USE_CARGO=0
+SERVICE_LOG_DIR="$ROOT_DIR/LOGS"
 
-RUN_LABEL="io.coconutclaw.run"
-HEARTBEAT_LABEL="io.coconutclaw.heartbeat"
-REFLECTION_LABEL="io.coconutclaw.nightly_reflection"
+BASE_RUN_LABEL="io.coconutclaw.run"
+BASE_HEARTBEAT_LABEL="io.coconutclaw.heartbeat"
+BASE_REFLECTION_LABEL="io.coconutclaw.nightly_reflection"
+BASE_RUN_TASK="coconutclaw.service"
+BASE_HEARTBEAT_TASK="coconutclaw-heartbeat.service"
+BASE_HEARTBEAT_TIMER="coconutclaw-heartbeat.timer"
+BASE_REFLECTION_TASK="coconutclaw-nightly-reflection.service"
+BASE_REFLECTION_TIMER="coconutclaw-nightly-reflection.timer"
 
-RUN_TASK="coconutclaw.service"
-HEARTBEAT_TASK="coconutclaw-heartbeat.service"
-HEARTBEAT_TIMER="coconutclaw-heartbeat.timer"
-REFLECTION_TASK="coconutclaw-nightly-reflection.service"
-REFLECTION_TIMER="coconutclaw-nightly-reflection.timer"
+RUN_LABEL="$BASE_RUN_LABEL"
+HEARTBEAT_LABEL="$BASE_HEARTBEAT_LABEL"
+REFLECTION_LABEL="$BASE_REFLECTION_LABEL"
+RUN_TASK="$BASE_RUN_TASK"
+HEARTBEAT_TASK="$BASE_HEARTBEAT_TASK"
+HEARTBEAT_TIMER="$BASE_HEARTBEAT_TIMER"
+REFLECTION_TASK="$BASE_REFLECTION_TASK"
+REFLECTION_TIMER="$BASE_REFLECTION_TIMER"
 
 usage() {
   cat <<'EOF'
 Usage: service.sh <install|start|stop|status|uninstall> [options]
 
 Options:
+  --instance <name>       Instance name ([a-zA-Z0-9_.-], default: default)
   --instance-dir <path>   Instance directory (default: .)
   --heartbeat <HH:MM>     Daily heartbeat time (default: 09:00)
   --reflection <HH:MM>    Daily reflection time (default: 22:30)
@@ -44,6 +58,59 @@ validate_hhmm() {
   }
 }
 
+validate_instance_name() {
+  [[ "$1" =~ ^[a-zA-Z0-9_.-]+$ ]] || {
+    echo "invalid instance: $1 (expected [a-zA-Z0-9_.-])" >&2
+    exit 1
+  }
+}
+
+sanitize_identifier() {
+  local input="$1"
+  echo "$input" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//'
+}
+
+cksum_identifier() {
+  local input="$1"
+  printf '%s' "$input" | cksum | awk '{print $1}'
+}
+
+configure_service_names() {
+  local key=""
+  if [[ "$INSTANCE_SPECIFIED" -eq 1 ]]; then
+    local normalized
+    normalized="$(sanitize_identifier "$INSTANCE")"
+    if [[ "$normalized" != "default" ]]; then
+      key="$normalized"
+      INSTANCE_KEY="$normalized"
+    fi
+  elif [[ "$INSTANCE_DIR" != "$ROOT_DIR" ]]; then
+    local base hash
+    base="$(basename "$INSTANCE_DIR")"
+    base="$(sanitize_identifier "$base")"
+    if [[ -z "$base" ]]; then
+      base="instance"
+    fi
+    hash="$(cksum_identifier "$INSTANCE_DIR")"
+    key="dir-$base-$hash"
+    INSTANCE_KEY="$key"
+  fi
+
+  if [[ -z "$key" ]]; then
+    return
+  fi
+
+  local label_key="${key//_/-}"
+  RUN_TASK="coconutclaw-$key.service"
+  HEARTBEAT_TASK="coconutclaw-heartbeat-$key.service"
+  HEARTBEAT_TIMER="coconutclaw-heartbeat-$key.timer"
+  REFLECTION_TASK="coconutclaw-nightly-reflection-$key.service"
+  REFLECTION_TIMER="coconutclaw-nightly-reflection-$key.timer"
+  RUN_LABEL="$BASE_RUN_LABEL.$label_key"
+  HEARTBEAT_LABEL="$BASE_HEARTBEAT_LABEL.$label_key"
+  REFLECTION_LABEL="$BASE_REFLECTION_LABEL.$label_key"
+}
+
 linux_systemd_dir() {
   echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 }
@@ -54,7 +121,12 @@ mac_launchagents_dir() {
 
 run_wrapper_args() {
   local mode="$1"
-  local args=("--instance-dir" "$INSTANCE_DIR")
+  local args=()
+  if [[ "$INSTANCE_SPECIFIED" -eq 1 ]]; then
+    args+=("--instance" "$INSTANCE")
+  else
+    args+=("--instance-dir" "$INSTANCE_DIR")
+  fi
   if [[ "$USE_CARGO" -eq 1 ]]; then
     args+=("--use-cargo")
   fi
@@ -65,6 +137,20 @@ run_wrapper_args() {
     *) echo "invalid mode: $mode" >&2; exit 1 ;;
   esac
   printf "%s " "${args[@]}"
+}
+
+write_plist_instance_args() {
+  if [[ "$INSTANCE_SPECIFIED" -eq 1 ]]; then
+    cat <<EOF
+    <string>--instance</string>
+    <string>$INSTANCE</string>
+EOF
+  else
+    cat <<EOF
+    <string>--instance-dir</string>
+    <string>$INSTANCE_DIR</string>
+EOF
+  fi
 }
 
 linux_install() {
@@ -82,7 +168,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$ROOT_DIR
-Environment=INSTANCE_DIR=$INSTANCE_DIR
 ExecStart=/usr/bin/env bash $ROOT_DIR/scripts/run.sh $(run_wrapper_args run)
 Restart=always
 RestartSec=3
@@ -98,7 +183,6 @@ Description=CoconutClaw Daily Heartbeat
 [Service]
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
-Environment=INSTANCE_DIR=$INSTANCE_DIR
 ExecStart=/usr/bin/env bash $ROOT_DIR/scripts/run.sh $(run_wrapper_args heartbeat)
 EOF
 
@@ -122,7 +206,6 @@ Description=CoconutClaw Nightly Reflection
 [Service]
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
-Environment=INSTANCE_DIR=$INSTANCE_DIR
 ExecStart=/usr/bin/env bash $ROOT_DIR/scripts/run.sh $(run_wrapper_args reflection)
 EOF
 
@@ -142,6 +225,7 @@ EOF
   systemctl --user daemon-reload
   systemctl --user enable "$RUN_TASK" "$HEARTBEAT_TIMER" "$REFLECTION_TIMER"
   echo "installed user systemd units in $dir"
+  echo "instance key: $INSTANCE_KEY"
 }
 
 linux_start() {
@@ -187,9 +271,8 @@ mac_write_run_plist() {
   <array>
     <string>/bin/bash</string>
     <string>$ROOT_DIR/scripts/run.sh</string>
-    <string>--instance-dir</string>
-    <string>$INSTANCE_DIR</string>
 EOF
+  write_plist_instance_args >>"$path"
   if [[ "$USE_CARGO" -eq 1 ]]; then
     cat >>"$path" <<EOF
     <string>--use-cargo</string>
@@ -204,9 +287,9 @@ EOF
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>$INSTANCE_DIR/LOGS/launchd-run.log</string>
+  <string>$SERVICE_LOG_DIR/$RUN_LABEL.log</string>
   <key>StandardErrorPath</key>
-  <string>$INSTANCE_DIR/LOGS/launchd-run.err.log</string>
+  <string>$SERVICE_LOG_DIR/$RUN_LABEL.err.log</string>
 </dict>
 </plist>
 EOF
@@ -229,9 +312,8 @@ mac_write_timer_plist() {
   <array>
     <string>/bin/bash</string>
     <string>$ROOT_DIR/scripts/run.sh</string>
-    <string>--instance-dir</string>
-    <string>$INSTANCE_DIR</string>
 EOF
+  write_plist_instance_args >>"$path"
   if [[ "$USE_CARGO" -eq 1 ]]; then
     cat >>"$path" <<EOF
     <string>--use-cargo</string>
@@ -258,9 +340,9 @@ EOF
     <integer>$minute</integer>
   </dict>
   <key>StandardOutPath</key>
-  <string>$INSTANCE_DIR/LOGS/$label.log</string>
+  <string>$SERVICE_LOG_DIR/$label.log</string>
   <key>StandardErrorPath</key>
-  <string>$INSTANCE_DIR/LOGS/$label.err.log</string>
+  <string>$SERVICE_LOG_DIR/$label.err.log</string>
 </dict>
 </plist>
 EOF
@@ -278,7 +360,7 @@ mac_install() {
   require_cmd launchctl
   local dir
   dir="$(mac_launchagents_dir)"
-  mkdir -p "$dir" "$INSTANCE_DIR/LOGS"
+  mkdir -p "$dir" "$SERVICE_LOG_DIR"
 
   local run_plist="$dir/$RUN_LABEL.plist"
   local heartbeat_plist="$dir/$HEARTBEAT_LABEL.plist"
@@ -298,6 +380,7 @@ mac_install() {
   mac_bootstrap_plist "$reflection_plist"
 
   echo "installed launchd agents in $dir"
+  echo "instance key: $INSTANCE_KEY"
 }
 
 mac_start() {
@@ -349,8 +432,14 @@ main() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --instance)
+        INSTANCE="${2:-}"
+        INSTANCE_SPECIFIED=1
+        shift 2
+        ;;
       --instance-dir)
         INSTANCE_DIR="${2:-.}"
+        INSTANCE_DIR_SPECIFIED=1
         shift 2
         ;;
       --heartbeat)
@@ -380,11 +469,22 @@ main() {
   validate_hhmm "$HEARTBEAT_TIME"
   validate_hhmm "$REFLECTION_TIME"
 
-  if [[ "$INSTANCE_DIR" != /* ]]; then
-    INSTANCE_DIR="$(cd "$ROOT_DIR" && mkdir -p "$INSTANCE_DIR" && cd "$INSTANCE_DIR" && pwd)"
-  else
-    mkdir -p "$INSTANCE_DIR"
+  if [[ "$INSTANCE_SPECIFIED" -eq 1 && "$INSTANCE_DIR_SPECIFIED" -eq 1 ]]; then
+    echo "--instance and --instance-dir are mutually exclusive" >&2
+    exit 1
   fi
+
+  if [[ "$INSTANCE_SPECIFIED" -eq 1 ]]; then
+    validate_instance_name "$INSTANCE"
+  else
+    if [[ "$INSTANCE_DIR" != /* ]]; then
+      INSTANCE_DIR="$(cd "$ROOT_DIR" && mkdir -p "$INSTANCE_DIR" && cd "$INSTANCE_DIR" && pwd)"
+    else
+      mkdir -p "$INSTANCE_DIR"
+    fi
+  fi
+
+  configure_service_names
 
   case "$(uname -s)" in
     Linux*)

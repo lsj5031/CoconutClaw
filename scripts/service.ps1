@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateSet("install", "start", "stop", "status", "uninstall")]
     [string]$Command,
+    [string]$Instance,
     [string]$InstanceDir = ".",
     [ValidatePattern("^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
     [string]$HeartbeatTime = "09:00",
@@ -18,23 +19,92 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-$instanceAbs = if ([System.IO.Path]::IsPathRooted($InstanceDir)) {
-    $InstanceDir
-} else {
-    Join-Path $repoRoot $InstanceDir
-}
-
-[System.IO.Directory]::CreateDirectory($instanceAbs) | Out-Null
-
 $runScript = Join-Path $repoRoot "scripts\run.ps1"
 $psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
 if (-not $psExe) {
     throw "powershell.exe not found in PATH"
 }
 
-$taskRun = "CoconutClaw-Run"
-$taskHeartbeat = "CoconutClaw-Heartbeat"
-$taskReflection = "CoconutClaw-NightlyReflection"
+function Convert-ToSafeId {
+    param([string]$Value)
+    $safe = [regex]::Replace($Value.ToLowerInvariant(), "[^a-z0-9_.-]+", "-").Trim("-")
+    if ([string]::IsNullOrWhiteSpace($safe)) {
+        return "instance"
+    }
+    return $safe
+}
+
+function Get-StringHash {
+    param([string]$Value)
+    $sha1 = [System.Security.Cryptography.SHA1]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        $hash = $sha1.ComputeHash($bytes)
+    } finally {
+        $sha1.Dispose()
+    }
+    return (-join ($hash | ForEach-Object { $_.ToString("x2") })).Substring(0, 8)
+}
+
+function Normalize-Path {
+    param([string]$PathValue)
+    return [System.IO.Path]::GetFullPath($PathValue).TrimEnd('\', '/')
+}
+
+function Get-DefaultDataDir {
+    if ($env:COCONUTCLAW_DATA_DIR) {
+        if ([System.IO.Path]::IsPathRooted($env:COCONUTCLAW_DATA_DIR)) {
+            return $env:COCONUTCLAW_DATA_DIR
+        }
+        return Join-Path (Get-Location).Path $env:COCONUTCLAW_DATA_DIR
+    }
+    if ($env:LOCALAPPDATA) {
+        return Join-Path $env:LOCALAPPDATA "CoconutClaw"
+    }
+    return Join-Path (Get-Location).Path ".coconutclaw\state"
+}
+
+$instanceSpecified = $PSBoundParameters.ContainsKey("Instance")
+$instanceDirSpecified = $PSBoundParameters.ContainsKey("InstanceDir")
+if ($instanceSpecified -and $instanceDirSpecified) {
+    throw "-Instance and -InstanceDir are mutually exclusive"
+}
+if ($instanceSpecified -and $Instance -notmatch "^[a-zA-Z0-9_.-]+$") {
+    throw "invalid instance: $Instance (expected [a-zA-Z0-9_.-])"
+}
+
+$instanceAbs = if ($instanceSpecified) {
+    Join-Path (Get-DefaultDataDir) $Instance
+} elseif ([System.IO.Path]::IsPathRooted($InstanceDir)) {
+    $InstanceDir
+} else {
+    Join-Path $repoRoot $InstanceDir
+}
+[System.IO.Directory]::CreateDirectory($instanceAbs) | Out-Null
+
+$instanceKey = "default"
+$repoRootNorm = Normalize-Path $repoRoot
+$instanceAbsNorm = Normalize-Path $instanceAbs
+if ($instanceSpecified) {
+    $normalized = Convert-ToSafeId $Instance
+    if ($normalized -ne "default") {
+        $instanceKey = $normalized
+    }
+} elseif (-not [string]::Equals($instanceAbsNorm, $repoRootNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $base = Convert-ToSafeId ([System.IO.Path]::GetFileName($instanceAbsNorm))
+    $hash = Get-StringHash $instanceAbsNorm
+    $instanceKey = "dir-$base-$hash"
+}
+
+if ($instanceKey -eq "default") {
+    $taskRun = "CoconutClaw-Run"
+    $taskHeartbeat = "CoconutClaw-Heartbeat"
+    $taskReflection = "CoconutClaw-NightlyReflection"
+} else {
+    $taskRun = "CoconutClaw-Run-$instanceKey"
+    $taskHeartbeat = "CoconutClaw-Heartbeat-$instanceKey"
+    $taskReflection = "CoconutClaw-NightlyReflection-$instanceKey"
+}
 $allTasks = @($taskRun, $taskHeartbeat, $taskReflection)
 
 function New-TaskCommand {
@@ -46,9 +116,13 @@ function New-TaskCommand {
     $parts = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-File", "`"$runScript`"",
-        "-InstanceDir", "`"$instanceAbs`""
+        "-File", "`"$runScript`""
     )
+    if ($instanceSpecified) {
+        $parts += @("-Instance", "`"$Instance`"")
+    } else {
+        $parts += @("-InstanceDir", "`"$instanceAbs`"")
+    }
     if ($UseCargo) {
         $parts += "-UseCargo"
     }
@@ -92,6 +166,7 @@ function Install-Tasks {
 
     Write-Host "installed tasks:"
     $allTasks | ForEach-Object { Write-Host "  $_" }
+    Write-Host "instance key: $instanceKey"
     Write-Host "next: run .\scripts\start.ps1"
 }
 

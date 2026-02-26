@@ -168,6 +168,47 @@ Linux/macOS:
 bash scripts/install.sh --heartbeat 10:00 --reflection 23:00
 ```
 
+## Multi-Instance Service Commands
+
+Service scripts now support instance-scoped install/start/stop/status/uninstall.
+
+Use named instance:
+
+Windows:
+
+```powershell
+.\scripts\install.ps1 -Instance work
+.\scripts\start.ps1 -Instance work
+.\scripts\status.ps1 -Instance work
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/install.sh --instance work
+bash scripts/start.sh --instance work
+bash scripts/status.sh --instance work
+```
+
+Use explicit instance directory:
+
+Windows:
+
+```powershell
+.\scripts\install.ps1 -InstanceDir .\instances\work
+```
+
+Linux/macOS:
+
+```bash
+bash scripts/install.sh --instance-dir ./instances/work
+```
+
+Notes:
+
+- `--instance` and `--instance-dir` are mutually exclusive.
+- Omit both to keep default single-instance behavior (`default`).
+
 ## Legacy Compatibility Shims
 
 - `./agent.sh`
