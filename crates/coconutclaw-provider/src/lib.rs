@@ -3,7 +3,7 @@ use coconutclaw_config::{AgentProvider, RuntimeConfig};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{
     Arc,
@@ -84,85 +84,37 @@ fn run_codex(
             .write_all(context.as_bytes())
             .context("failed to write context to codex stdin")?;
     }
+    let run_result = run_child_process(
+        child,
+        cancel_flag,
+        progress_tx,
+        Some(parse_codex_progress_line),
+        "failed waiting for codex command",
+        "failed waiting after codex kill",
+    )?;
 
-    let progress_sender = progress_tx.cloned();
-    let stdout_handle = child.stdout.take().map(|stdout| {
-        thread::spawn(move || -> String {
-            let mut collected = String::new();
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let Ok(line) = line else {
-                    break;
-                };
-                if !line.is_empty() {
-                    collected.push_str(&line);
-                    collected.push('\n');
-                }
-                if let Some(status) = parse_codex_progress_line(&line)
-                    && let Some(sender) = progress_sender.as_ref()
-                {
-                    let _ = sender.send(status);
-                }
-            }
-            collected
-        })
-    });
-    let stderr_handle = child.stderr.take().map(|mut stderr| {
-        thread::spawn(move || -> String {
-            let mut stderr_buf = Vec::new();
-            let _ = stderr.read_to_end(&mut stderr_buf);
-            String::from_utf8_lossy(&stderr_buf).to_string()
-        })
-    });
-
-    let mut cancelled = false;
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .context("failed waiting for codex command")?
-        {
-            break status;
-        }
-        if let Some(cancel_flag) = cancel_flag
-            && cancel_flag.load(Ordering::SeqCst)
-        {
-            cancelled = true;
-            let _ = child.kill();
-            let status = child.wait().context("failed waiting after codex kill")?;
-            break status;
-        }
-        thread::sleep(Duration::from_millis(200));
-    };
-
-    let stdout_text = stdout_handle
-        .map(|handle| handle.join().unwrap_or_default())
-        .unwrap_or_default();
-    let stderr_text = stderr_handle
-        .map(|handle| handle.join().unwrap_or_default())
-        .unwrap_or_default();
-
-    let exit_code = if cancelled {
+    let exit_code = if run_result.cancelled {
         130
     } else {
-        status.code().unwrap_or(1)
+        run_result.status.code().unwrap_or(1)
     };
 
     let final_message = fs::read_to_string(&out_file).unwrap_or_default();
     let _ = fs::remove_file(&out_file);
 
-    let raw_output = if cancelled {
+    let raw_output = if run_result.cancelled {
         "cancelled".to_string()
-    } else if status.success() && !final_message.trim().is_empty() {
+    } else if run_result.status.success() && !final_message.trim().is_empty() {
         final_message
-    } else if !stdout_text.trim().is_empty() {
-        stdout_text
+    } else if !run_result.stdout_text.trim().is_empty() {
+        run_result.stdout_text
     } else {
-        stderr_text
+        run_result.stderr_text
     };
 
     Ok(ProviderOutput {
         raw_output,
-        success: !cancelled && status.success(),
+        success: !run_result.cancelled && run_result.status.success(),
         exit_code,
     })
 }
@@ -199,10 +151,62 @@ fn run_pi(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd
+    let child = cmd
         .spawn()
         .with_context(|| format!("failed to start {}", config.pi.bin))?;
+    let run_result = run_child_process(
+        child,
+        cancel_flag,
+        progress_tx,
+        Some(parse_pi_progress_line),
+        "failed waiting for pi command",
+        "failed waiting after pi kill",
+    )?;
 
+    let exit_code = if run_result.cancelled {
+        130
+    } else {
+        run_result.status.code().unwrap_or(1)
+    };
+
+    let raw_output = if run_result.cancelled {
+        "cancelled".to_string()
+    } else if run_result.status.success() && pi_mode == "json" {
+        extract_pi_json_final(&run_result.stdout_text).unwrap_or_else(|| {
+            if !run_result.stdout_text.trim().is_empty() {
+                run_result.stdout_text.clone()
+            } else {
+                run_result.stderr_text.clone()
+            }
+        })
+    } else if !run_result.stdout_text.trim().is_empty() {
+        run_result.stdout_text
+    } else {
+        run_result.stderr_text
+    };
+
+    Ok(ProviderOutput {
+        raw_output,
+        success: !run_result.cancelled && run_result.status.success(),
+        exit_code,
+    })
+}
+
+struct ProcessRunResult {
+    status: ExitStatus,
+    cancelled: bool,
+    stdout_text: String,
+    stderr_text: String,
+}
+
+fn run_child_process(
+    mut child: Child,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+    progress_tx: Option<&Sender<String>>,
+    parse_progress: Option<fn(&str) -> Option<String>>,
+    wait_context: &'static str,
+    kill_wait_context: &'static str,
+) -> Result<ProcessRunResult> {
     let progress_sender = progress_tx.cloned();
     let stdout_handle = child.stdout.take().map(|stdout| {
         thread::spawn(move || -> String {
@@ -216,7 +220,8 @@ fn run_pi(
                     collected.push_str(&line);
                     collected.push('\n');
                 }
-                if let Some(status) = parse_pi_progress_line(&line)
+                if let Some(parser) = parse_progress
+                    && let Some(status) = parser(&line)
                     && let Some(sender) = progress_sender.as_ref()
                 {
                     let _ = sender.send(status);
@@ -235,7 +240,7 @@ fn run_pi(
 
     let mut cancelled = false;
     let status = loop {
-        if let Some(status) = child.try_wait().context("failed waiting for pi command")? {
+        if let Some(status) = child.try_wait().context(wait_context)? {
             break status;
         }
         if let Some(cancel_flag) = cancel_flag
@@ -243,16 +248,10 @@ fn run_pi(
         {
             cancelled = true;
             let _ = child.kill();
-            let status = child.wait().context("failed waiting after pi kill")?;
+            let status = child.wait().context(kill_wait_context)?;
             break status;
         }
         thread::sleep(Duration::from_millis(200));
-    };
-
-    let exit_code = if cancelled {
-        130
-    } else {
-        status.code().unwrap_or(1)
     };
 
     let stdout_text = stdout_handle
@@ -262,26 +261,11 @@ fn run_pi(
         .map(|handle| handle.join().unwrap_or_default())
         .unwrap_or_default();
 
-    let raw_output = if cancelled {
-        "cancelled".to_string()
-    } else if status.success() && pi_mode == "json" {
-        extract_pi_json_final(&stdout_text).unwrap_or_else(|| {
-            if !stdout_text.trim().is_empty() {
-                stdout_text.clone()
-            } else {
-                stderr_text.clone()
-            }
-        })
-    } else if !stdout_text.trim().is_empty() {
-        stdout_text
-    } else {
-        stderr_text
-    };
-
-    Ok(ProviderOutput {
-        raw_output,
-        success: !cancelled && status.success(),
-        exit_code,
+    Ok(ProcessRunResult {
+        status,
+        cancelled,
+        stdout_text,
+        stderr_text,
     })
 }
 

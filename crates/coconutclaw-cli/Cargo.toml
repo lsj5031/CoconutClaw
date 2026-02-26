@@ -20,5 +20,7 @@ reqwest.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 telegram-markdown-v2.workspace = true
+axum.workspace = true
+tokio.workspace = true
 coconutclaw-config = { path = "../coconutclaw-config" }
 coconutclaw-provider = { path = "../coconutclaw-provider" }
