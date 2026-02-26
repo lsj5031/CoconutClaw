@@ -97,20 +97,20 @@ Send a voice note to your bot, and it can reply with voice too.
 
 These tools are developed by the same author as CoconutClaw and integrate smoothly:
 
-- **[glm-asr](https://github.com/lsj5031/glm-asr)** - Fast ASR (speech-to-text) with Docker deployment
-- **tts-cli** - TTS (text-to-speech) command-line tool
+- **[GlmAsrDocker](https://github.com/lsj5031/GlmAsrDocker)** - Fast ASR (speech-to-text) with Docker deployment
+- **[kitten-tts-rs](https://github.com/lsj5031/kitten-tts-rs)** - TTS (text-to-speech) command-line tool
 
 #### Setup
 
 ```toml
-# ASR: Use glm-asr
+# ASR: Use GlmAsrDocker
 ASR_CMD_TEMPLATE = "glm-asr transcribe --audio {AUDIO_INPUT_PREP} --lang en"
 
 # Or use an HTTP endpoint
 ASR_URL = "http://localhost:8080/asr"
 
-# TTS: Use tts-cli
-TTS_CMD_TEMPLATE = "tts-cli --text '{text}' --output {output}"
+# TTS: Use kitten-tts-rs
+TTS_CMD_TEMPLATE = "kitten-tts --text '{text}' --output {output}"
 ```
 
 Voice is optional — text works perfectly without it.
