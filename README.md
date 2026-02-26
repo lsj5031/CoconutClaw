@@ -194,20 +194,41 @@ Customize when installing:
 
 ## How It Works
 
-```
-┌─────────────┐      ┌──────────────────┐      ┌─────────────┐
-│  Telegram   │ ◄──► │  CoconutClaw     │ ◄──► │   AI Model  │
-│   (your     │      │  (your computer) │      │  (local or  │
-│    phone)   │      │                  │      │   cloud)    │
-└─────────────┘      └──────────────────┘      └─────────────┘
+```mermaid
+flowchart LR
+    subgraph User["Your Devices"]
+        A[📱 Telegram App]
+    end
+
+    subgraph Local["Your Computer"]
+        B[🦀 CoconutClaw]
+        C[(📊 SQLite)]
+    end
+
+    subgraph AI["AI Provider"]
+        D{{Codex / Pi}}
+    end
+
+    A -->|"1\. Send message"| B
+    B -->|"2\. Store context"| C
+    B -->|"3\. Request"| D
+    D -->|"4\. Response"| B
+    B -->|"5\. Reply"| A
+
+    style A fill:#e1f5fe
+    style B fill:#fff3e0
+    style D fill:#f3e5f5
 ```
 
-1. You send a message on Telegram
-2. CoconutClaw receives it on your computer
-3. AI processes your request locally
-4. Response comes back to Telegram
+### Message Flow
 
-**Your data flows through your machine, not a third-party service.**
+1. **You message** your bot on Telegram
+2. **CoconutClaw** receives it via webhook/polling on your machine
+3. **Context** is loaded from local SQLite (memory, conversation history)
+4. **AI provider** processes your request (Codex or Pi)
+5. **Response** is sent back to Telegram
+
+All processing happens on *your* computer. The AI provider sees only the message content — your files, memory, and history stay local.
 
 ---
 
