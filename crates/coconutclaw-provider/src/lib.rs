@@ -3,6 +3,7 @@ use coconutclaw_config::{AgentProvider, RuntimeConfig};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::Sender;
@@ -11,7 +12,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
@@ -73,11 +76,12 @@ fn run_codex(
         cmd.arg("--json");
     }
 
-    let mut child = cmd
-        .stdin(Stdio::piped())
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
+        .stderr(Stdio::piped());
+    configure_child_command(&mut cmd);
+
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to start {}", config.codex.bin))?;
 
@@ -151,8 +155,8 @@ fn run_pi(
     cmd.arg(context)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .stderr(Stdio::piped());
+    configure_child_command(&mut cmd);
 
     let child = cmd
         .spawn()
@@ -242,7 +246,6 @@ fn run_child_process(
     });
 
     let mut cancelled = false;
-    let pgid = child.id() as libc::pid_t;
     let status = 'outer: loop {
         if let Some(status) = child.try_wait().context(wait_context)? {
             break status;
@@ -251,19 +254,7 @@ fn run_child_process(
             && cancel_flag.load(Ordering::SeqCst)
         {
             cancelled = true;
-            unsafe { libc::kill(-pgid, libc::SIGTERM) };
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if let Some(status) = child.try_wait().context(wait_context)? {
-                    break 'outer status;
-                }
-                if Instant::now() >= deadline {
-                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
-                    let status = child.wait().context(kill_wait_context)?;
-                    break 'outer status;
-                }
-                thread::sleep(Duration::from_millis(200));
-            }
+            break 'outer terminate_cancelled_child(&mut child, wait_context, kill_wait_context)?;
         }
         thread::sleep(Duration::from_millis(200));
     };
@@ -281,6 +272,46 @@ fn run_child_process(
         stdout_text,
         stderr_text,
     })
+}
+
+#[cfg(unix)]
+fn configure_child_command(cmd: &mut Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_child_command(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+fn terminate_cancelled_child(
+    child: &mut Child,
+    wait_context: &'static str,
+    kill_wait_context: &'static str,
+) -> Result<ExitStatus> {
+    let pgid = child.id() as libc::pid_t;
+    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(5);
+
+    loop {
+        if let Some(status) = child.try_wait().context(wait_context)? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            return child.wait().context(kill_wait_context);
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_cancelled_child(
+    child: &mut Child,
+    wait_context: &'static str,
+    _kill_wait_context: &'static str,
+) -> Result<ExitStatus> {
+    child.kill().context("failed to kill cancelled process")?;
+    child.wait().context(wait_context)
 }
 
 fn parse_codex_progress_line(line: &str) -> Option<String> {
