@@ -74,9 +74,16 @@ pub(crate) fn recover_unstructured_reply(raw_output: &str) -> Option<String> {
 }
 
 pub(crate) fn should_retry_provider_failure(raw_output: &str) -> bool {
-    let summary = extract_error_summary(raw_output)
-        .unwrap_or_else(|| raw_output.to_ascii_lowercase())
-        .to_ascii_lowercase();
+    let summary = if let Some(summary) = extract_error_summary(raw_output) {
+        summary
+    } else if looks_like_json_event_stream(raw_output) {
+        // Avoid false positives from large JSON event streams that may contain words like
+        // "timeout" in tool output even when the final error is non-retryable.
+        String::new()
+    } else {
+        raw_output.to_string()
+    }
+    .to_ascii_lowercase();
     [
         "network failure",
         "connection reset",
@@ -108,6 +115,14 @@ pub(crate) fn extract_error_summary(payload: &str) -> Option<String> {
             "agent_end" => value
                 .get("error")
                 .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            "turn.failed" => value
+                .get("error")
+                .and_then(|node| {
+                    node.get("message")
+                        .and_then(Value::as_str)
+                        .or_else(|| node.as_str())
+                })
                 .map(ToOwned::to_owned),
             "turn_end" => value
                 .get("message")
