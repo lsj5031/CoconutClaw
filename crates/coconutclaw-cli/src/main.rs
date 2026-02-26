@@ -152,6 +152,7 @@ enum SourceMode {
 enum WebhookAction {
     Ignore {
         update_id: Option<String>,
+        reason: String,
     },
     Fresh {
         update_id: Option<String>,
@@ -160,7 +161,7 @@ enum WebhookAction {
     Cancel {
         update_id: Option<String>,
     },
-    Turn(WebhookTurn),
+    Turn(Box<WebhookTurn>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -850,7 +851,20 @@ fn process_webhook_line(
     let action = parse_webhook_action(cfg, line)?;
 
     match action {
-        WebhookAction::Ignore { update_id } => {
+        WebhookAction::Ignore { update_id, reason } => {
+            let update_id_text = update_id.as_deref().unwrap_or_default().to_string();
+            let ignored_at = iso_now(&cfg.timezone);
+            store.kv_set("last_ignored_update_id", &update_id_text)?;
+            store.kv_set("last_ignored_reason", &reason)?;
+            store.kv_set("last_ignored_at", &ignored_at)?;
+            eprintln!(
+                "info: ignored telegram update_id={} reason={reason}",
+                if update_id_text.trim().is_empty() {
+                    "unknown"
+                } else {
+                    update_id_text.as_str()
+                }
+            );
             if let Some(update_id) = update_id.as_ref() {
                 store.kv_set("last_update_id", update_id)?;
             }
@@ -1379,10 +1393,10 @@ fn dispatch_telegram_output(
 
     if let Some(voice_reply) = markers.voice_reply.as_deref() {
         let voice_reply = voice_reply.trim();
-        if !voice_reply.is_empty() {
-            if let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply) {
-                eprintln!("warn: failed to send voice reply: {err:#}");
-            }
+        if !voice_reply.is_empty()
+            && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)
+        {
+            eprintln!("warn: failed to send voice reply: {err:#}");
         }
     }
 
@@ -1534,10 +1548,10 @@ fn send_or_edit_text(
     }
 
     let mut first_done = false;
-    if let Some(message_id) = progress_message_id {
-        if telegram_edit_message_text(client, cfg, chat_id, message_id, &chunks[0], false).is_ok() {
-            first_done = true;
-        }
+    if let Some(message_id) = progress_message_id
+        && telegram_edit_message_text(client, cfg, chat_id, message_id, &chunks[0], false).is_ok()
+    {
+        first_done = true;
     }
 
     if !first_done {
@@ -1809,6 +1823,7 @@ fn parse_telegram_response(response: reqwest::blocking::Response, action: &str) 
 fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction> {
     let value: Value = serde_json::from_str(line).context("invalid webhook JSON payload")?;
     let update_id = extract_update_id_from_value(&value);
+    let configured_chat = cfg.telegram_chat_id.as_deref().unwrap_or("<any>");
 
     if let Some(callback_query) = value.get("callback_query") {
         let data = callback_query
@@ -1824,12 +1839,28 @@ fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction
             if is_allowed_chat(cfg, chat_id.as_deref()) {
                 return Ok(WebhookAction::Cancel { update_id });
             }
+            let actual_chat = chat_id.unwrap_or_else(|| "<missing>".to_string());
+            return Ok(WebhookAction::Ignore {
+                update_id,
+                reason: format!(
+                    "callback_cancel_chat_id_mismatch actual={actual_chat} configured={configured_chat}"
+                ),
+            });
         }
-        return Ok(WebhookAction::Ignore { update_id });
+        return Ok(WebhookAction::Ignore {
+            update_id,
+            reason: format!(
+                "callback_query_ignored data={}",
+                shorten_log_text(data.trim(), 64)
+            ),
+        });
     }
 
     let Some(message) = value.get("message") else {
-        return Ok(WebhookAction::Ignore { update_id });
+        return Ok(WebhookAction::Ignore {
+            update_id,
+            reason: "missing_message_payload".to_string(),
+        });
     };
 
     let chat_id = message
@@ -1837,8 +1868,17 @@ fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction
         .and_then(|node| node.get("id"))
         .map(value_to_string)
         .unwrap_or_default();
-    if chat_id.trim().is_empty() || !is_allowed_chat(cfg, Some(&chat_id)) {
-        return Ok(WebhookAction::Ignore { update_id });
+    if chat_id.trim().is_empty() {
+        return Ok(WebhookAction::Ignore {
+            update_id,
+            reason: "missing_chat_id".to_string(),
+        });
+    }
+    if !is_allowed_chat(cfg, Some(&chat_id)) {
+        return Ok(WebhookAction::Ignore {
+            update_id,
+            reason: format!("chat_id_mismatch actual={chat_id} configured={configured_chat}"),
+        });
     }
 
     let message_text = message
@@ -1902,7 +1942,7 @@ fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction
         attachment_owned: false,
     };
 
-    Ok(WebhookAction::Turn(WebhookTurn {
+    Ok(WebhookAction::Turn(Box::new(WebhookTurn {
         update_id,
         chat_id,
         input,
@@ -1911,7 +1951,21 @@ fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction
             reply_from,
             reply_text,
         },
-    }))
+    })))
+}
+
+fn shorten_log_text(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    let mut out: String = chars[..keep].iter().collect();
+    out.push_str("...");
+    out
 }
 
 fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {
@@ -1942,22 +1996,21 @@ fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {
         }
     }
 
-    if let Some(document) = message.get("document") {
-        if let Some(file_id) = document
+    if let Some(document) = message.get("document")
+        && let Some(file_id) = document
             .get("file_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-        {
-            let file_name = document
-                .get("file_name")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-            return Some(IncomingMedia::Document {
-                file_id: file_id.to_string(),
-                file_name,
-            });
-        }
+    {
+        let file_name = document
+            .get("file_name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        return Some(IncomingMedia::Document {
+            file_id: file_id.to_string(),
+            file_name,
+        });
     }
 
     if let Some(file_id) = message
