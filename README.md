@@ -264,6 +264,7 @@ make dev        # Debug build
 make release    # Optimized build
 make test       # Run tests
 make lint       # Clippy checks
+make hooks      # Install git pre-commit hook
 ```
 
 ---

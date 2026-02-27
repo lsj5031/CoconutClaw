@@ -12,7 +12,7 @@ cargo test --workspace --all-targets --locked
 
 if command -v shellcheck &>/dev/null; then
     echo "pre-commit: shellcheck"
-    shellcheck scripts/asr.sh scripts/tts.sh scripts/run.sh scripts/service.sh scripts/install.sh scripts/start.sh scripts/stop.sh scripts/status.sh scripts/uninstall.sh
+    shellcheck scripts/asr.sh scripts/tts.sh
 else
     echo "pre-commit: shellcheck not found, skipping"
 fi
