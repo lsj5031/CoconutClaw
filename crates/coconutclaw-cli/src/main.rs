@@ -2444,9 +2444,11 @@ fn process_turn(
             break;
         }
         retries += 1;
-        tracing::warn!(attempt = retries + 1, "provider failed with retryable error, retrying");
-        provider_result =
-            run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
+        tracing::warn!(
+            attempt = retries + 1,
+            "provider failed with retryable error, retrying"
+        );
+        provider_result = run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
     }
     cancel_watcher_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = cancel_watcher {
