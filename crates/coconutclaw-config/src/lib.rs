@@ -673,15 +673,23 @@ fn find_project_root(start: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        std::env::temp_dir().join(format!("coconutclaw_cfg_test_{unique}"))
+        let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "coconutclaw_cfg_test_{}_{}_{}",
+            std::process::id(),
+            unique,
+            sequence
+        ))
     }
 
     fn write_config(instance_dir: &Path, body: &str) {
