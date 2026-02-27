@@ -1572,12 +1572,7 @@ fn dispatch_telegram_output(
     if let Some(reply) = markers.telegram_reply.as_deref() {
         let reply = reply.trim();
         if !reply.is_empty() {
-            let rendered_reply = if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2)
-            {
-                render_markdown_v2_reply(reply)
-            } else {
-                reply.to_string()
-            };
+            let rendered_reply = render_telegram_reply_text(cfg, reply);
             send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
         } else if let Some(message_id) = progress_message_id {
             let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
@@ -1721,8 +1716,15 @@ fn spawn_progress_updater(
 
             if (elapsed_tick || saw_event) && last_edit.elapsed() >= Duration::from_secs(1) {
                 let text = progress_status_with_events(elapsed, &statuses);
-                let _ =
-                    telegram_edit_message_text(&client, &cfg, &chat_id, &message_id, &text, true);
+                let rendered = render_telegram_reply_text(&cfg, &text);
+                let _ = telegram_edit_message_text(
+                    &client,
+                    &cfg,
+                    &chat_id,
+                    &message_id,
+                    &rendered,
+                    true,
+                );
                 saw_event = false;
                 last_edit = Instant::now();
             }
@@ -1846,6 +1848,14 @@ fn render_markdown_v2_reply(text: &str) -> String {
     }
 }
 
+fn render_telegram_reply_text(cfg: &RuntimeConfig, text: &str) -> String {
+    if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2) {
+        render_markdown_v2_reply(text)
+    } else {
+        text.to_string()
+    }
+}
+
 fn telegram_edit_message_text(
     client: &Client,
     cfg: &RuntimeConfig,
@@ -1863,8 +1873,15 @@ fn telegram_edit_message_text(
     let params =
         telegram_text_form_params(cfg, chat_id, Some(message_id), text, Some(reply_markup));
     let url = format!("{base}/editMessageText");
-    let plain_params = strip_parse_mode_param(&params);
-    telegram_post_form(client, &url, &plain_params, "editMessageText").map(|_| ())
+    match telegram_post_form(client, &url, &params, "editMessageText") {
+        Ok(_) => Ok(()),
+        Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
+            tracing::warn!("editMessageText markdown parse failed, retrying plain text: {err:#}");
+            let retry = strip_parse_mode_param(&params);
+            telegram_post_form(client, &url, &retry, "editMessageText").map(|_| ())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn telegram_remove_keyboard(
@@ -3242,6 +3259,23 @@ mod tests {
         assert!(!rendered.is_empty());
         assert!(rendered.contains("item"));
         assert!(rendered.contains("test"));
+    }
+
+    #[test]
+    fn render_telegram_reply_text_escapes_progress_for_markdown_v2() {
+        let mut cfg = test_config();
+        cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
+        let rendered = render_telegram_reply_text(&cfg, &progress_status_text(3));
+        assert!(rendered.contains("Thinking\\.\\.\\."));
+        assert!(rendered.contains("stop\\."));
+    }
+
+    #[test]
+    fn render_telegram_reply_text_keeps_plain_when_parse_mode_off() {
+        let cfg = test_config();
+        let text = progress_status_text(3);
+        let rendered = render_telegram_reply_text(&cfg, &text);
+        assert_eq!(rendered, text);
     }
 
     #[test]
