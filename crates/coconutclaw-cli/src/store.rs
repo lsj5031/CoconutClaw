@@ -18,6 +18,7 @@ pub(crate) struct TurnRecord {
     pub(crate) voice_reply: String,
     pub(crate) status: String,
     pub(crate) update_id: Option<String>,
+    pub(crate) duration_ms: Option<i64>,
 }
 
 pub(crate) struct Store {
@@ -34,20 +35,21 @@ impl Store {
             .with_context(|| format!("failed to open {}", cfg.sqlite_db_path.display()))?;
         conn.execute_batch(SCHEMA_SQL)
             .context("failed to apply sqlite schema")?;
+        let _ = conn.execute("ALTER TABLE turns ADD COLUMN duration_ms INTEGER", []);
         Ok(Self { conn })
     }
 
-    pub(crate) fn recent_turns_snippet(&self) -> Result<Vec<String>> {
+    pub(crate) fn recent_turns_snippet(&self, limit: u32) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT ts || ' | in=' || COALESCE(REPLACE(user_text, char(10), ' '), '') || ' | out=' || COALESCE(REPLACE(COALESCE(telegram_reply, voice_reply), char(10), ' '), '')
              FROM turns
              WHERE status != 'boundary'
                AND id > COALESCE((SELECT MAX(id) FROM turns WHERE user_text = '---CONTEXT_BOUNDARY---'), 0)
              ORDER BY id DESC
-             LIMIT 8",
+             LIMIT ?1",
         )?;
 
-        let mut rows = stmt.query([])?;
+        let mut rows = stmt.query(params![limit])?;
         let mut lines = Vec::new();
         while let Some(row) = rows.next()? {
             lines.push(row.get::<_, String>(0)?);
@@ -57,8 +59,8 @@ impl Store {
 
     pub(crate) fn insert_turn(&self, turn: &TurnRecord) -> Result<bool> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, codex_raw, telegram_reply, voice_reply, status, update_id)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, codex_raw, telegram_reply, voice_reply, status, update_id, duration_ms)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 turn.ts,
                 turn.chat_id,
@@ -70,6 +72,7 @@ impl Store {
                 turn.voice_reply,
                 turn.status,
                 turn.update_id,
+                turn.duration_ms,
             ],
         )?;
         Ok(self.conn.changes() > 0)

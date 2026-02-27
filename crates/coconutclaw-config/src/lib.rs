@@ -89,6 +89,9 @@ pub struct RuntimeConfig {
     pub nightly_reflection_file: PathBuf,
     pub nightly_reflection_skip_agent: bool,
     pub nightly_reflection_prompt: Option<String>,
+    pub context_turns: u32,
+    pub provider_max_retries: u32,
+    pub progress_update_interval_secs: u64,
     pub codex: CodexConfig,
     pub pi: PiConfig,
     pub config_file_path: PathBuf,
@@ -131,6 +134,9 @@ TTS_MAX_CHARS = 260
 NIGHTLY_REFLECTION_FILE = "./LOGS/nightly_reflection.md"
 NIGHTLY_REFLECTION_SKIP_AGENT = "off"
 NIGHTLY_REFLECTION_PROMPT = ""
+CONTEXT_TURNS = 8
+PROVIDER_MAX_RETRIES = 1
+PROGRESS_UPDATE_INTERVAL = 3
 "#;
 
 const MIGRATABLE_ENV_KEYS: &[&str] = &[
@@ -170,6 +176,9 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "NIGHTLY_REFLECTION_FILE",
     "NIGHTLY_REFLECTION_SKIP_AGENT",
     "NIGHTLY_REFLECTION_PROMPT",
+    "CONTEXT_TURNS",
+    "PROVIDER_MAX_RETRIES",
+    "PROGRESS_UPDATE_INTERVAL",
 ];
 
 impl RuntimeConfig {
@@ -307,6 +316,17 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
     );
     let nightly_reflection_prompt =
         normalize_optional(pick_value("NIGHTLY_REFLECTION_PROMPT", &config_file));
+    let context_turns = pick_value("CONTEXT_TURNS", &config_file)
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8);
+    let provider_max_retries = pick_value("PROVIDER_MAX_RETRIES", &config_file)
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(1);
+    let progress_update_interval_secs = pick_value("PROGRESS_UPDATE_INTERVAL", &config_file)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(3);
 
     let cfg = RuntimeConfig {
         root_dir,
@@ -344,6 +364,9 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         nightly_reflection_file,
         nightly_reflection_skip_agent,
         nightly_reflection_prompt,
+        context_turns,
+        provider_max_retries,
+        progress_update_interval_secs,
         codex: CodexConfig {
             bin: pick_value("CODEX_BIN", &config_file).unwrap_or_else(|| "codex".to_string()),
             model: pick_value("CODEX_MODEL", &config_file)

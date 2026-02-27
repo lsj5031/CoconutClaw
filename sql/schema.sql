@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS turns (
   telegram_reply TEXT,
   voice_reply TEXT,
   status TEXT NOT NULL,
-  update_id TEXT
+  update_id TEXT,
+  duration_ms INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_update_id_unique ON turns(update_id);
 

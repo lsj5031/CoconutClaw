@@ -57,8 +57,14 @@ enum Commands {
     Run(TurnArgs),
     Heartbeat,
     NightlyReflection,
-    Doctor,
+    Doctor(DoctorArgs),
     Service(ServiceArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct DoctorArgs {
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -195,7 +201,7 @@ fn main() -> Result<()> {
         Commands::Run(args) => run_run(&cfg, &store, &args),
         Commands::Heartbeat => run_heartbeat(&cfg, &store),
         Commands::NightlyReflection => run_nightly_reflection(&cfg, &store),
-        Commands::Doctor => run_doctor(&cfg),
+        Commands::Doctor(args) => run_doctor(&cfg, &args),
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
     }
 }
@@ -371,52 +377,7 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
     Ok(())
 }
 
-fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
-    println!("CoconutClaw doctor");
-    println!("instance_name={}", cfg.instance_name);
-    println!("instance_dir={}", cfg.instance_dir.display());
-    println!("data_dir={}", cfg.data_dir.display());
-    println!("sqlite_db_path={}", cfg.sqlite_db_path.display());
-    println!("provider={}", cfg.provider.as_str());
-    println!("timezone={}", cfg.timezone);
-    println!(
-        "webhook_mode={}",
-        if cfg.webhook_mode { "on" } else { "off" }
-    );
-    println!("webhook_bind={}", cfg.webhook_bind);
-    println!("webhook_path={}", webhook_request_path(cfg));
-    println!(
-        "webhook_public_url={}",
-        cfg.webhook_public_url.as_deref().unwrap_or("")
-    );
-    println!(
-        "webhook_secret_set={}",
-        if cfg
-            .webhook_secret
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
-        {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    println!(
-        "telegram_parse_mode={}",
-        cfg.telegram_parse_mode.as_api_value().unwrap_or("off")
-    );
-    println!(
-        "telegram_parse_fallback={}",
-        match cfg.telegram_parse_fallback {
-            TelegramParseFallback::Plain => "plain",
-            TelegramParseFallback::None => "none",
-        }
-    );
-    println!("poll_interval_seconds={}", cfg.poll_interval_seconds);
-    println!("config_file={}", cfg.config_file_path.display());
-
+fn run_doctor(cfg: &RuntimeConfig, args: &DoctorArgs) -> Result<()> {
     let codex_ok = command_exists(&cfg.codex.bin);
     let pi_ok = command_exists(&cfg.pi.bin);
     let ffmpeg_ok = command_exists("ffmpeg");
@@ -438,6 +399,100 @@ fn run_doctor(cfg: &RuntimeConfig) -> Result<()> {
     let asr_uses_http = cfg.asr_cmd_template.is_none() && cfg.asr_url.is_some();
     let asr_preprocess = parse_on_like(cfg.asr_preprocess.as_deref(), true);
     let tts_enabled = cfg.tts_cmd_template.is_some();
+
+    let webhook_secret_set = cfg
+        .webhook_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some();
+
+    if args.json {
+        let report = serde_json::json!({
+            "instance_name": cfg.instance_name,
+            "instance_dir": cfg.instance_dir.display().to_string(),
+            "data_dir": cfg.data_dir.display().to_string(),
+            "sqlite_db_path": cfg.sqlite_db_path.display().to_string(),
+            "provider": cfg.provider.as_str(),
+            "timezone": cfg.timezone,
+            "webhook_mode": cfg.webhook_mode,
+            "webhook_bind": cfg.webhook_bind,
+            "webhook_path": webhook_request_path(cfg),
+            "webhook_public_url": cfg.webhook_public_url.as_deref().unwrap_or(""),
+            "webhook_secret_set": webhook_secret_set,
+            "telegram_parse_mode": cfg.telegram_parse_mode.as_api_value().unwrap_or("off"),
+            "telegram_parse_fallback": match cfg.telegram_parse_fallback {
+                TelegramParseFallback::Plain => "plain",
+                TelegramParseFallback::None => "none",
+            },
+            "poll_interval_seconds": cfg.poll_interval_seconds,
+            "context_turns": cfg.context_turns,
+            "provider_max_retries": cfg.provider_max_retries,
+            "progress_update_interval_secs": cfg.progress_update_interval_secs,
+            "config_file": cfg.config_file_path.display().to_string(),
+            "features": {
+                "asr": asr_enabled,
+                "tts": tts_enabled,
+            },
+            "checks": {
+                "codex_bin": { "ok": codex_ok, "path": cfg.codex.bin },
+                "pi_bin": { "ok": pi_ok, "path": cfg.pi.bin },
+                "telegram_token": telegram_token_ok,
+                "telegram_chat_id": telegram_chat_id_ok,
+                "webhook_bind": webhook_bind_ok,
+                "webhook_public_url": webhook_public_url_ok,
+                "asr_script": asr_script_ok,
+                "tts_script": tts_script_ok,
+                "bash": bash_ok,
+                "ffmpeg": ffmpeg_ok,
+                "curl": curl_ok,
+                "jq": jq_ok,
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    println!("CoconutClaw doctor");
+    println!("instance_name={}", cfg.instance_name);
+    println!("instance_dir={}", cfg.instance_dir.display());
+    println!("data_dir={}", cfg.data_dir.display());
+    println!("sqlite_db_path={}", cfg.sqlite_db_path.display());
+    println!("provider={}", cfg.provider.as_str());
+    println!("timezone={}", cfg.timezone);
+    println!(
+        "webhook_mode={}",
+        if cfg.webhook_mode { "on" } else { "off" }
+    );
+    println!("webhook_bind={}", cfg.webhook_bind);
+    println!("webhook_path={}", webhook_request_path(cfg));
+    println!(
+        "webhook_public_url={}",
+        cfg.webhook_public_url.as_deref().unwrap_or("")
+    );
+    println!(
+        "webhook_secret_set={}",
+        if webhook_secret_set { "yes" } else { "no" }
+    );
+    println!(
+        "telegram_parse_mode={}",
+        cfg.telegram_parse_mode.as_api_value().unwrap_or("off")
+    );
+    println!(
+        "telegram_parse_fallback={}",
+        match cfg.telegram_parse_fallback {
+            TelegramParseFallback::Plain => "plain",
+            TelegramParseFallback::None => "none",
+        }
+    );
+    println!("poll_interval_seconds={}", cfg.poll_interval_seconds);
+    println!("context_turns={}", cfg.context_turns);
+    println!("provider_max_retries={}", cfg.provider_max_retries);
+    println!(
+        "progress_update_interval_secs={}",
+        cfg.progress_update_interval_secs
+    );
+    println!("config_file={}", cfg.config_file_path.display());
 
     println!("check_codex_bin={} ({})", yes_no(codex_ok), cfg.codex.bin);
     println!("check_pi_bin={} ({})", yes_no(pi_ok), cfg.pi.bin);
@@ -1157,6 +1212,7 @@ fn hydrate_turn_input(
 }
 
 fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
+    let _span = tracing::info_span!("asr", path = %audio_path.display()).entered();
     let script = cfg.root_dir.join("scripts/asr.sh");
     if !script.is_file() {
         bail!("ASR script not found: {}", script.display());
@@ -1502,6 +1558,7 @@ fn dispatch_telegram_output(
     output: &str,
     progress_message_id: Option<&str>,
 ) -> Result<()> {
+    let _span = tracing::info_span!("dispatch_telegram").entered();
     let Some(chat_id) = chat_id_override
         .or(cfg.telegram_chat_id.as_deref())
         .map(str::trim)
@@ -1619,6 +1676,7 @@ fn spawn_progress_updater(
     progress_rx: mpsc::Receiver<String>,
     stop_flag: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
+    let interval_secs = cfg.progress_update_interval_secs.max(1);
     thread::spawn(move || {
         let client = match build_telegram_client(&cfg) {
             Ok(client) => client,
@@ -1655,7 +1713,7 @@ fn spawn_progress_updater(
             }
 
             let elapsed = started.elapsed().as_secs();
-            let bucket = elapsed / 3;
+            let bucket = elapsed / interval_secs;
             let elapsed_tick = bucket > last_bucket;
             if elapsed_tick {
                 last_bucket = bucket;
@@ -1685,15 +1743,33 @@ fn send_or_edit_text(
 ) -> Result<()> {
     let chunks = split_text_chunks(text, 4096);
     if chunks.is_empty() {
+        if let Some(message_id) = progress_message_id {
+            let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
+        }
         return Ok(());
     }
 
+    let mut chunks_iter = chunks.into_iter();
+    let first_chunk = chunks_iter.next().unwrap();
+
     if let Some(message_id) = progress_message_id {
-        let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
+        if let Err(err) =
+            telegram_edit_message_text(client, cfg, chat_id, message_id, &first_chunk, false)
+        {
+            tracing::warn!("failed to edit progress message with reply, sending new: {err:#}");
+            let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
+            if let Err(err) = telegram_send_message(client, cfg, chat_id, &first_chunk) {
+                tracing::warn!("failed to send text chunk: {err:#}");
+                return Err(err);
+            }
+        }
+    } else if let Err(err) = telegram_send_message(client, cfg, chat_id, &first_chunk) {
+        tracing::warn!("failed to send text chunk: {err:#}");
+        return Err(err);
     }
 
     let mut last_err: Option<anyhow::Error> = None;
-    for chunk in chunks {
+    for chunk in chunks_iter {
         if let Err(err) = telegram_send_message(client, cfg, chat_id, &chunk) {
             tracing::warn!("failed to send text chunk: {err:#}");
             last_err = Some(err);
@@ -1830,6 +1906,7 @@ fn telegram_answer_callback(
 }
 
 fn send_voice_reply(client: &Client, cfg: &RuntimeConfig, chat_id: &str, text: &str) -> Result<()> {
+    let _span = tracing::info_span!("tts").entered();
     let script = cfg.root_dir.join("scripts/tts.sh");
     if !script.is_file() {
         bail!("TTS script not found: {}", script.display());
@@ -2303,6 +2380,14 @@ fn process_turn(
     progress_message_id: Option<&str>,
     quoted: &QuotedMessage,
 ) -> Result<String> {
+    let turn_start = Instant::now();
+    let _span = tracing::info_span!(
+        "process_turn",
+        input_type = %input.input_type,
+        provider = %cfg.provider.as_str(),
+    )
+    .entered();
+
     clear_cancel_marker(cfg);
     let ts = iso_now(&cfg.timezone);
     let chat_id = chat_id_override
@@ -2345,13 +2430,23 @@ fn process_turn(
 
     let mut provider_result =
         run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
-    if let Ok(result) = &provider_result
-        && !result.success
-        && !cancel_flag.load(Ordering::SeqCst)
-        && should_retry_provider_failure(&result.raw_output)
-    {
-        tracing::warn!("provider failed with retryable error, retrying once");
-        provider_result = run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
+    let mut retries = 0u32;
+    while retries < cfg.provider_max_retries {
+        let should_retry = match &provider_result {
+            Ok(result) => {
+                !result.success
+                    && !cancel_flag.load(Ordering::SeqCst)
+                    && should_retry_provider_failure(&result.raw_output)
+            }
+            _ => false,
+        };
+        if !should_retry {
+            break;
+        }
+        retries += 1;
+        tracing::warn!(attempt = retries + 1, "provider failed with retryable error, retrying");
+        provider_result =
+            run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
     }
     cancel_watcher_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = cancel_watcher {
@@ -2367,12 +2462,20 @@ fn process_turn(
         Ok(result) => (result.raw_output, result.success, result.exit_code),
         Err(err) => (format!("{err:#}"), false, 1),
     };
+    let duration_ms = turn_start.elapsed().as_millis() as i64;
     let cancelled = cancel_flag.load(Ordering::SeqCst) || exit_code == 130;
     let turn_result = resolve_turn_result(&raw_output, provider_success, cancelled);
     let markers = turn_result.markers;
     let telegram_reply = turn_result.telegram_reply;
     let voice_reply = turn_result.voice_reply;
     let status = turn_result.status;
+
+    tracing::info!(
+        duration_ms,
+        status = %status,
+        retries,
+        "turn completed"
+    );
 
     let inserted = store.insert_turn(&TurnRecord {
         ts: ts.clone(),
@@ -2385,6 +2488,7 @@ fn process_turn(
         voice_reply: voice_reply.clone(),
         status: status.clone(),
         update_id,
+        duration_ms: Some(duration_ms),
     })?;
 
     if inserted && status != "cancelled" {
@@ -2614,7 +2718,7 @@ fn build_context(
     }
 
     text.push_str("\n## Recent turns\n");
-    for line in store.recent_turns_snippet()? {
+    for line in store.recent_turns_snippet(cfg.context_turns)? {
         text.push_str(&line);
         text.push('\n');
     }
@@ -2801,6 +2905,9 @@ mod tests {
             nightly_reflection_file: root.join("LOGS/nightly_reflection.md"),
             nightly_reflection_skip_agent: false,
             nightly_reflection_prompt: None,
+            context_turns: 8,
+            provider_max_retries: 1,
+            progress_update_interval_secs: 3,
             codex: CodexConfig {
                 bin: "codex".to_string(),
                 model: None,
@@ -2850,6 +2957,7 @@ mod tests {
                 voice_reply: String::new(),
                 status: "ok".to_string(),
                 update_id: Some("42".to_string()),
+                duration_ms: None,
             })
             .expect("insert turn");
         assert!(inserted);
