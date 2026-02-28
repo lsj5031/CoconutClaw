@@ -1,41 +1,47 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use clap::{Args, Parser, Subcommand};
 use coconutclaw_config::{
-    CliOverrides, RuntimeConfig, TelegramParseFallback, TelegramParseMode, load_runtime_config,
+    CliOverrides, RuntimeConfig, TelegramParseFallback, load_runtime_config,
 };
-use coconutclaw_provider::run_provider;
-use reqwest::blocking::{Client, multipart};
+use reqwest::blocking::Client;
 use serde_json::Value;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
-use telegram_markdown_v2::{UnsupportedTagsStrategy, convert_with_strategy};
+use std::time::Duration;
 
+mod context;
 mod markers;
 mod service;
 mod store;
+mod telegram;
+mod turn;
 mod webhook;
 
 use crate::markers::{
-    ParsedMarkers, extract_assistant_text_from_json_stream, extract_error_summary, parse_markers,
-    recover_unstructured_reply, render_output, should_retry_provider_failure,
+    ParsedMarkers, render_output,
 };
-use crate::store::{Store, TurnRecord};
+use crate::store::Store;
+use crate::telegram::{
+    build_telegram_client, dispatch_telegram_output, fetch_cancel_updates, fetch_poll_updates, register_bot_commands, register_telegram_webhook,
+    send_progress_message,
+    telegram_answer_callback, valid_telegram_chat_id, valid_telegram_token,
+};
+use crate::turn::{
+    hydrate_turn_input, process_turn, resolve_turn_input,
+};
 use crate::webhook::{
     AckStatus, ack_webhook_queue_line, ensure_webhook_queue_file, extract_update_id_from_json,
     extract_update_id_from_value, peek_webhook_queue_line, spawn_webhook_http_server,
-    value_to_string, webhook_public_endpoint, webhook_request_path, with_webhook_lock,
+    value_to_string, webhook_request_path, with_webhook_lock,
 };
 
 #[derive(Parser, Debug)]
@@ -709,49 +715,6 @@ fn run_webhook_loop(
     Ok(())
 }
 
-fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Result<()> {
-    let base = telegram_api_base(cfg)?;
-    let commands = serde_json::json!([
-        {"command": "fresh", "description": "Start a fresh conversation"},
-        {"command": "cancel", "description": "Cancel the current task"},
-    ]);
-    let params = vec![("commands".to_string(), commands.to_string())];
-    telegram_post_form(
-        client,
-        &format!("{base}/setMyCommands"),
-        &params,
-        "setMyCommands",
-    )?;
-    Ok(())
-}
-
-fn register_telegram_webhook(client: &Client, cfg: &RuntimeConfig) -> Result<()> {
-    let webhook_url = webhook_public_endpoint(cfg)?;
-    let base = telegram_api_base(cfg)?;
-
-    let mut params: Vec<(String, String)> = vec![
-        ("url".to_string(), webhook_url),
-        (
-            "allowed_updates".to_string(),
-            r#"["message","callback_query"]"#.to_string(),
-        ),
-        ("drop_pending_updates".to_string(), "false".to_string()),
-    ];
-    if let Some(secret) = cfg.webhook_secret.as_deref().map(str::trim)
-        && !secret.is_empty()
-    {
-        params.push(("secret_token".to_string(), secret.to_string()));
-    }
-
-    let response = client
-        .post(format!("{base}/setWebhook"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram setWebhook")?;
-    parse_telegram_response(response, "setWebhook")?;
-    Ok(())
-}
-
 fn restore_inflight_update(
     cfg: &RuntimeConfig,
     store: &Store,
@@ -1080,11 +1043,11 @@ fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Resul
     }
 }
 
-fn cancel_marker_path(cfg: &RuntimeConfig) -> PathBuf {
+pub(crate) fn cancel_marker_path(cfg: &RuntimeConfig) -> PathBuf {
     cfg.runtime_dir.join("cancel")
 }
 
-fn signal_cancel_marker(cfg: &RuntimeConfig) -> Result<()> {
+pub(crate) fn signal_cancel_marker(cfg: &RuntimeConfig) -> Result<()> {
     let path = cancel_marker_path(cfg);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1094,303 +1057,13 @@ fn signal_cancel_marker(cfg: &RuntimeConfig) -> Result<()> {
     Ok(())
 }
 
-fn clear_cancel_marker(cfg: &RuntimeConfig) {
+pub(crate) fn clear_cancel_marker(cfg: &RuntimeConfig) {
     let path = cancel_marker_path(cfg);
     let _ = fs::remove_file(path);
 }
 
-fn hydrate_turn_input(
-    cfg: &RuntimeConfig,
-    update_id: Option<&str>,
-    mut input: TurnInput,
-    media: Option<IncomingMedia>,
-) -> Result<(TurnInput, Option<PathBuf>)> {
-    let Some(media) = media else {
-        return Ok((input, None));
-    };
 
-    let client = match build_telegram_client(cfg) {
-        Ok(client) => client,
-        Err(err) => {
-            tracing::warn!("telegram media fetch disabled: {err:#}");
-            return Ok((input, None));
-        }
-    };
-
-    let suffix = update_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("0")
-        .to_string();
-
-    match media {
-        IncomingMedia::Voice { file_id } => {
-            let voice_path = cfg.tmp_dir.join(format!("in_{suffix}.oga"));
-            if let Err(err) = telegram_download_file(&client, cfg, &file_id, &voice_path) {
-                tracing::warn!("failed to download voice attachment: {err:#}");
-                return Ok((input, None));
-            }
-
-            input.input_type = "voice".to_string();
-            input.attachment_type = None;
-            input.attachment_path = None;
-            input.attachment_owned = false;
-
-            if asr_feature_enabled(cfg) {
-                match run_asr_script(cfg, &voice_path) {
-                    Ok(asr_text) => {
-                        let asr_text = asr_text.trim().to_string();
-                        if !asr_text.is_empty() {
-                            input.asr_text = asr_text.clone();
-                            input.user_text = asr_text;
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!("ASR failed for voice attachment: {err:#}");
-                    }
-                }
-            } else {
-                tracing::info!("voice attachment received but ASR is disabled in config.toml");
-            }
-
-            let _ = fs::remove_file(voice_path);
-            Ok((input, None))
-        }
-        IncomingMedia::Photo { file_id } => {
-            let path = cfg.tmp_dir.join(format!("photo_{suffix}.jpg"));
-            if let Err(err) = telegram_download_file(&client, cfg, &file_id, &path) {
-                tracing::warn!("failed to download photo attachment: {err:#}");
-                return Ok((input, None));
-            }
-            input.input_type = "photo".to_string();
-            input.attachment_type = Some("photo".to_string());
-            input.attachment_path = Some(path.clone());
-            input.attachment_owned = true;
-            Ok((input, Some(path)))
-        }
-        IncomingMedia::Document { file_id, file_name } => {
-            let ext = file_name
-                .as_deref()
-                .and_then(|name| Path::new(name).extension().and_then(|ext| ext.to_str()))
-                .unwrap_or("bin");
-            let path = cfg.tmp_dir.join(format!("doc_{suffix}.{ext}"));
-            if let Err(err) = telegram_download_file(&client, cfg, &file_id, &path) {
-                tracing::warn!("failed to download document attachment: {err:#}");
-                return Ok((input, None));
-            }
-            input.input_type = "document".to_string();
-            input.attachment_type = Some("document".to_string());
-            input.attachment_path = Some(path.clone());
-            input.attachment_owned = true;
-            Ok((input, Some(path)))
-        }
-        IncomingMedia::Video { file_id } => {
-            let path = cfg.tmp_dir.join(format!("video_{suffix}.mp4"));
-            if let Err(err) = telegram_download_file(&client, cfg, &file_id, &path) {
-                tracing::warn!("failed to download video attachment: {err:#}");
-                return Ok((input, None));
-            }
-            input.input_type = "video".to_string();
-            input.attachment_type = Some("video".to_string());
-            input.attachment_path = Some(path.clone());
-            input.attachment_owned = true;
-            Ok((input, Some(path)))
-        }
-        IncomingMedia::VideoNote { file_id } => {
-            let path = cfg.tmp_dir.join(format!("video_note_{suffix}.mp4"));
-            if let Err(err) = telegram_download_file(&client, cfg, &file_id, &path) {
-                tracing::warn!("failed to download video_note attachment: {err:#}");
-                return Ok((input, None));
-            }
-            input.input_type = "video_note".to_string();
-            input.attachment_type = Some("video_note".to_string());
-            input.attachment_path = Some(path.clone());
-            input.attachment_owned = true;
-            Ok((input, Some(path)))
-        }
-    }
-}
-
-fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
-    let _span = tracing::info_span!("asr", path = %audio_path.display()).entered();
-    let script = cfg.root_dir.join("scripts/asr.sh");
-    if !script.is_file() {
-        bail!("ASR script not found: {}", script.display());
-    }
-    if !command_exists("bash") {
-        bail!("bash not found; cannot run ASR script");
-    }
-
-    let mut cmd = Command::new("bash");
-    cmd.arg(script)
-        .arg(audio_path)
-        .current_dir(&cfg.root_dir)
-        .env("INSTANCE_DIR", &cfg.instance_dir);
-    if let Some(value) = cfg.asr_url.as_deref() {
-        cmd.env("ASR_URL", value);
-    }
-    if let Some(value) = cfg.asr_cmd_template.as_deref() {
-        cmd.env("ASR_CMD_TEMPLATE", value);
-    }
-    if let Some(value) = cfg.asr_file_field.as_deref() {
-        cmd.env("ASR_FILE_FIELD", value);
-    }
-    if let Some(value) = cfg.asr_text_jq.as_deref() {
-        cmd.env("ASR_TEXT_JQ", value);
-    }
-    if let Some(value) = cfg.asr_preprocess.as_deref() {
-        cmd.env("ASR_PREPROCESS", value);
-    }
-    if let Some(value) = cfg.asr_sample_rate.as_deref() {
-        cmd.env("ASR_SAMPLE_RATE", value);
-    }
-
-    let output = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to execute ASR script")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        bail!("ASR script failed: {stderr}");
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    Ok(text.trim().to_string())
-}
-
-fn telegram_file_base(cfg: &RuntimeConfig) -> Result<String> {
-    let token = valid_telegram_token(cfg).ok_or_else(|| {
-        anyhow::anyhow!("TELEGRAM_BOT_TOKEN is missing; set it in instance config.toml")
-    })?;
-    Ok(format!("https://api.telegram.org/file/bot{token}"))
-}
-
-fn telegram_download_file(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    file_id: &str,
-    out_path: &Path,
-) -> Result<()> {
-    let base = telegram_api_base(cfg)?;
-    let file_base = telegram_file_base(cfg)?;
-    let response = client
-        .post(format!("{base}/getFile"))
-        .form(&[("file_id", file_id)])
-        .send()
-        .context("failed to call telegram getFile")?;
-    let value = parse_telegram_response(response, "getFile")?;
-    let file_path = value
-        .get("result")
-        .and_then(|node| node.get("file_path"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("telegram getFile returned empty file_path"))?;
-
-    if let Some(parent) = out_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let response = client
-        .get(format!("{file_base}/{file_path}"))
-        .send()
-        .context("failed to download telegram file")?;
-    if !response.status().is_success() {
-        bail!("telegram file download HTTP {}", response.status().as_u16());
-    }
-    let bytes = response
-        .bytes()
-        .context("failed to read downloaded telegram file")?;
-    fs::write(out_path, &bytes)
-        .with_context(|| format!("failed to write {}", out_path.display()))?;
-    Ok(())
-}
-
-fn valid_telegram_token(cfg: &RuntimeConfig) -> Option<&str> {
-    cfg.telegram_bot_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|token| !token.is_empty() && *token != "replace_me")
-}
-
-fn valid_telegram_chat_id(cfg: &RuntimeConfig) -> Option<&str> {
-    cfg.telegram_chat_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|chat_id| !chat_id.is_empty() && *chat_id != "replace_me")
-}
-
-fn telegram_api_base(cfg: &RuntimeConfig) -> Result<String> {
-    let token = valid_telegram_token(cfg).ok_or_else(|| {
-        anyhow::anyhow!("TELEGRAM_BOT_TOKEN is missing; set it in instance config.toml")
-    })?;
-    Ok(format!("https://api.telegram.org/bot{token}"))
-}
-
-fn build_telegram_client(cfg: &RuntimeConfig) -> Result<Client> {
-    let _ = telegram_api_base(cfg)?;
-    let _ = valid_telegram_chat_id(cfg).ok_or_else(|| {
-        anyhow::anyhow!("TELEGRAM_CHAT_ID is missing; set it in instance config.toml")
-    })?;
-    Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .context("failed to build telegram HTTP client")
-}
-
-fn fetch_poll_updates(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    offset: Option<u64>,
-) -> Result<Vec<Value>> {
-    fetch_updates(client, cfg, offset, 25, r#"["message","callback_query"]"#)
-}
-
-fn fetch_cancel_updates(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    offset: Option<u64>,
-) -> Result<Vec<Value>> {
-    fetch_updates(client, cfg, offset, 0, r#"["message","callback_query"]"#)
-}
-
-fn fetch_updates(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    offset: Option<u64>,
-    timeout_seconds: u64,
-    allowed_updates: &str,
-) -> Result<Vec<Value>> {
-    let base = telegram_api_base(cfg)?;
-    let url = format!("{base}/getUpdates");
-
-    let mut query: Vec<(&str, String)> = vec![
-        ("timeout", timeout_seconds.to_string()),
-        ("allowed_updates", allowed_updates.to_string()),
-    ];
-    if let Some(offset) = offset {
-        query.push(("offset", offset.to_string()));
-    }
-
-    let response = client
-        .get(url)
-        .query(&query)
-        .send()
-        .context("failed to call telegram getUpdates")?;
-    let value = parse_telegram_response(response, "getUpdates")?;
-    let updates = value
-        .get("result")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    Ok(updates)
-}
-
-fn cancel_signal_from_update(value: &Value, expected_chat_id: &str) -> Option<CancelSignal> {
+pub(crate) fn cancel_signal_from_update(value: &Value, expected_chat_id: &str) -> Option<CancelSignal> {
     if let Some(callback_query) = value.get("callback_query") {
         let data = callback_query
             .get("data")
@@ -1431,7 +1104,7 @@ fn cancel_signal_from_update(value: &Value, expected_chat_id: &str) -> Option<Ca
     None
 }
 
-fn maybe_spawn_cancel_watcher(
+pub(crate) fn maybe_spawn_cancel_watcher(
     cfg: &RuntimeConfig,
     store: &Store,
     active_update_id: Option<String>,
@@ -1516,7 +1189,7 @@ fn maybe_spawn_cancel_watcher(
     Ok(Some(handle))
 }
 
-fn scan_webhook_queue_for_cancel(
+pub(crate) fn scan_webhook_queue_for_cancel(
     cfg: &RuntimeConfig,
     expected_chat_id: &str,
     active_update_id: Option<&str>,
@@ -1551,605 +1224,8 @@ fn scan_webhook_queue_for_cancel(
     })
 }
 
-fn dispatch_telegram_output(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id_override: Option<&str>,
-    output: &str,
-    progress_message_id: Option<&str>,
-) -> Result<()> {
-    let _span = tracing::info_span!("dispatch_telegram").entered();
-    let Some(chat_id) = chat_id_override
-        .or(cfg.telegram_chat_id.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        tracing::warn!("cannot dispatch telegram output: no chat_id available");
-        return Ok(());
-    };
 
-    let markers = parse_markers(output);
-    if let Some(reply) = markers.telegram_reply.as_deref() {
-        let reply = reply.trim();
-        if !reply.is_empty() {
-            let rendered_reply = render_telegram_reply_text(cfg, reply);
-            send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
-        } else if let Some(message_id) = progress_message_id {
-            let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
-        }
-    } else if let Some(message_id) = progress_message_id {
-        let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
-    }
-
-    if let Some(voice_reply) = markers.voice_reply.as_deref() {
-        let voice_reply = voice_reply.trim();
-        if !voice_reply.is_empty()
-            && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)
-        {
-            tracing::warn!("failed to send voice reply: {err:#}");
-        }
-    }
-
-    for item in markers.send_photo {
-        let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
-        if let Err(err) =
-            telegram_send_media_file(client, cfg, chat_id, "sendPhoto", "photo", &path)
-        {
-            tracing::warn!("failed to send photo {}: {err:#}", path.display());
-        }
-    }
-    for item in markers.send_document {
-        let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
-        if let Err(err) =
-            telegram_send_media_file(client, cfg, chat_id, "sendDocument", "document", &path)
-        {
-            tracing::warn!("failed to send document {}: {err:#}", path.display());
-        }
-    }
-    for item in markers.send_video {
-        let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
-        if let Err(err) =
-            telegram_send_media_file(client, cfg, chat_id, "sendVideo", "video", &path)
-        {
-            tracing::warn!("failed to send video {}: {err:#}", path.display());
-        }
-    }
-
-    Ok(())
-}
-
-fn send_progress_message(cfg: &RuntimeConfig, chat_id: &str) -> Result<Option<String>> {
-    let client = build_telegram_client(cfg)?;
-    let base = telegram_api_base(cfg)?;
-    let reply_markup = progress_reply_markup();
-    let params = [
-        ("chat_id", chat_id.to_string()),
-        ("text", "Thinking...".to_string()),
-        ("reply_markup", reply_markup.to_string()),
-    ];
-    let response = client
-        .post(format!("{base}/sendMessage"))
-        .form(&params)
-        .send()
-        .context("failed to send progress message")?;
-    let value = parse_telegram_response(response, "sendMessage")?;
-    let message_id = value
-        .get("result")
-        .and_then(|node| node.get("message_id"))
-        .map(value_to_string)
-        .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty());
-    Ok(message_id)
-}
-
-fn progress_reply_markup() -> &'static str {
-    r#"{"inline_keyboard":[[{"text":"Cancel","callback_data":"cancel"}]]}"#
-}
-
-fn progress_status_text(elapsed_secs: u64) -> String {
-    format!("Thinking...\nElapsed: {elapsed_secs}s\nTap Cancel to stop.")
-}
-
-fn progress_status_with_events(elapsed_secs: u64, statuses: &[String]) -> String {
-    let mut text = progress_status_text(elapsed_secs);
-    if statuses.is_empty() {
-        return text;
-    }
-    text.push_str("\n\n");
-    for status in statuses {
-        text.push_str("- ");
-        text.push_str(status);
-        text.push('\n');
-    }
-    text.trim_end().to_string()
-}
-
-fn spawn_progress_updater(
-    cfg: RuntimeConfig,
-    chat_id: String,
-    message_id: String,
-    progress_rx: mpsc::Receiver<String>,
-    stop_flag: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
-    let interval_secs = cfg.progress_update_interval_secs.max(1);
-    thread::spawn(move || {
-        let client = match build_telegram_client(&cfg) {
-            Ok(client) => client,
-            Err(_) => return,
-        };
-        let started = Instant::now();
-        let mut last_bucket = 0u64;
-        let mut last_edit = Instant::now()
-            .checked_sub(Duration::from_secs(5))
-            .unwrap_or_else(Instant::now);
-        let mut statuses: Vec<String> = Vec::new();
-        let mut saw_event = false;
-        let mut channel_closed = false;
-
-        loop {
-            match progress_rx.recv_timeout(Duration::from_millis(400)) {
-                Ok(status) => {
-                    let status = status.trim().to_string();
-                    if !status.is_empty() {
-                        if let Some(existing) = statuses.iter().position(|item| item == &status) {
-                            statuses.remove(existing);
-                        }
-                        statuses.push(status);
-                        if statuses.len() > 5 {
-                            statuses.remove(0);
-                        }
-                        saw_event = true;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    channel_closed = true;
-                }
-            }
-
-            let elapsed = started.elapsed().as_secs();
-            let bucket = elapsed / interval_secs;
-            let elapsed_tick = bucket > last_bucket;
-            if elapsed_tick {
-                last_bucket = bucket;
-            }
-
-            if (elapsed_tick || saw_event) && last_edit.elapsed() >= Duration::from_secs(1) {
-                let text = progress_status_with_events(elapsed, &statuses);
-                let rendered = render_telegram_reply_text(&cfg, &text);
-                let _ = telegram_edit_message_text(
-                    &client,
-                    &cfg,
-                    &chat_id,
-                    &message_id,
-                    &rendered,
-                    true,
-                );
-                saw_event = false;
-                last_edit = Instant::now();
-            }
-
-            if stop_flag.load(Ordering::SeqCst) && channel_closed {
-                break;
-            }
-        }
-    })
-}
-
-fn send_or_edit_text(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id: &str,
-    text: &str,
-    progress_message_id: Option<&str>,
-) -> Result<()> {
-    let chunks = split_text_chunks(text, 4096);
-    if chunks.is_empty() {
-        if let Some(message_id) = progress_message_id {
-            let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
-        }
-        return Ok(());
-    }
-
-    let mut chunks_iter = chunks.into_iter();
-    let first_chunk = chunks_iter.next().unwrap();
-
-    if let Some(message_id) = progress_message_id {
-        if let Err(err) =
-            telegram_edit_message_text(client, cfg, chat_id, message_id, &first_chunk, false)
-        {
-            tracing::warn!("failed to edit progress message with reply, sending new: {err:#}");
-            let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
-            if let Err(err) = telegram_send_message(client, cfg, chat_id, &first_chunk) {
-                tracing::warn!("failed to send text chunk: {err:#}");
-                return Err(err);
-            }
-        }
-    } else if let Err(err) = telegram_send_message(client, cfg, chat_id, &first_chunk) {
-        tracing::warn!("failed to send text chunk: {err:#}");
-        return Err(err);
-    }
-
-    let mut last_err: Option<anyhow::Error> = None;
-    for chunk in chunks_iter {
-        if let Err(err) = telegram_send_message(client, cfg, chat_id, &chunk) {
-            tracing::warn!("failed to send text chunk: {err:#}");
-            last_err = Some(err);
-        }
-    }
-
-    match last_err {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
-}
-
-fn split_text_chunks(text: &str, max_chars: usize) -> Vec<String> {
-    if max_chars == 0 {
-        return vec![text.to_string()];
-    }
-    if text.is_empty() {
-        return Vec::new();
-    }
-    if text.chars().count() <= max_chars {
-        return vec![text.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-
-    for line in text.split('\n') {
-        let line_len = line.chars().count();
-        if line_len > max_chars {
-            // Finalize current chunk before handling the oversized line.
-            if !current.is_empty() {
-                chunks.push(current);
-                current = String::new();
-            }
-            // Fall back to character-boundary splitting for this single line.
-            let chars: Vec<char> = line.chars().collect();
-            let mut start = 0usize;
-            while start < chars.len() {
-                let end = (start + max_chars).min(chars.len());
-                chunks.push(chars[start..end].iter().collect());
-                start = end;
-            }
-            continue;
-        }
-
-        let sep = if current.is_empty() { 0 } else { 1 }; // for '\n'
-        if current.chars().count() + sep + line_len > max_chars {
-            // Adding this line would exceed the limit; finalize current chunk.
-            if !current.is_empty() {
-                chunks.push(current);
-            }
-            current = line.to_string();
-        } else {
-            if !current.is_empty() {
-                current.push('\n');
-            }
-            current.push_str(line);
-        }
-    }
-
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
-}
-
-fn render_markdown_v2_reply(text: &str) -> String {
-    match convert_with_strategy(text, UnsupportedTagsStrategy::Escape) {
-        Ok(rendered) => rendered.trim_end_matches('\n').to_string(),
-        Err(err) => {
-            tracing::warn!("markdown conversion failed, sending original text: {err:#}");
-            text.to_string()
-        }
-    }
-}
-
-fn render_telegram_reply_text(cfg: &RuntimeConfig, text: &str) -> String {
-    if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2) {
-        render_markdown_v2_reply(text)
-    } else {
-        text.to_string()
-    }
-}
-
-fn telegram_edit_message_text(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id: &str,
-    message_id: &str,
-    text: &str,
-    keep_cancel_button: bool,
-) -> Result<()> {
-    let base = telegram_api_base(cfg)?;
-    let reply_markup = if keep_cancel_button {
-        progress_reply_markup()
-    } else {
-        r#"{"inline_keyboard":[]}"#
-    };
-    let params =
-        telegram_text_form_params(cfg, chat_id, Some(message_id), text, Some(reply_markup));
-    let url = format!("{base}/editMessageText");
-    match telegram_post_form(client, &url, &params, "editMessageText") {
-        Ok(_) => Ok(()),
-        Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
-            tracing::warn!("editMessageText markdown parse failed, retrying plain text: {err:#}");
-            let retry = strip_parse_mode_param(&params);
-            telegram_post_form(client, &url, &retry, "editMessageText").map(|_| ())
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn telegram_remove_keyboard(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id: &str,
-    message_id: &str,
-) -> Result<()> {
-    let base = telegram_api_base(cfg)?;
-    let reply_markup = r#"{"inline_keyboard":[]}"#;
-    let params = [
-        ("chat_id", chat_id.to_string()),
-        ("message_id", message_id.to_string()),
-        ("reply_markup", reply_markup.to_string()),
-    ];
-    let response = client
-        .post(format!("{base}/editMessageReplyMarkup"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram editMessageReplyMarkup")?;
-    parse_telegram_response(response, "editMessageReplyMarkup")?;
-    Ok(())
-}
-
-fn telegram_answer_callback(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    callback_query_id: &str,
-) -> Result<()> {
-    let base = telegram_api_base(cfg)?;
-    let params = [("callback_query_id", callback_query_id.to_string())];
-    let response = client
-        .post(format!("{base}/answerCallbackQuery"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram answerCallbackQuery")?;
-    parse_telegram_response(response, "answerCallbackQuery")?;
-    Ok(())
-}
-
-fn send_voice_reply(client: &Client, cfg: &RuntimeConfig, chat_id: &str, text: &str) -> Result<()> {
-    let _span = tracing::info_span!("tts").entered();
-    let script = cfg.root_dir.join("scripts/tts.sh");
-    if !script.is_file() {
-        bail!("TTS script not found: {}", script.display());
-    }
-    if !command_exists("bash") {
-        bail!("bash not found; cannot run TTS script");
-    }
-
-    let output_voice = cfg.tmp_dir.join(format!(
-        "reply_{}.ogg",
-        chrono::Utc::now().timestamp_millis()
-    ));
-    if let Some(parent) = output_voice.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let mut cmd = Command::new("bash");
-    cmd.arg(script)
-        .arg(text)
-        .arg(&output_voice)
-        .current_dir(&cfg.root_dir)
-        .env("INSTANCE_DIR", &cfg.instance_dir);
-    if let Some(value) = cfg.tts_cmd_template.as_deref() {
-        cmd.env("TTS_CMD_TEMPLATE", value);
-    }
-    if let Some(value) = cfg.voice_bitrate.as_deref() {
-        cmd.env("VOICE_BITRATE", value);
-    }
-    if let Some(value) = cfg.tts_max_chars.as_deref() {
-        cmd.env("TTS_MAX_CHARS", value);
-    }
-
-    let output = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to execute TTS script")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let _ = fs::remove_file(&output_voice);
-        bail!("TTS script failed: {stderr}");
-    }
-
-    let result =
-        telegram_send_media_file(client, cfg, chat_id, "sendVoice", "voice", &output_voice);
-    let _ = fs::remove_file(&output_voice);
-    result
-}
-
-fn telegram_send_message(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id: &str,
-    text: &str,
-) -> Result<Option<String>> {
-    let base = telegram_api_base(cfg)?;
-    let params = telegram_text_form_params(cfg, chat_id, None, text, None);
-    let url = format!("{base}/sendMessage");
-    let value = match telegram_post_form(client, &url, &params, "sendMessage") {
-        Ok(value) => value,
-        Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
-            tracing::warn!("sendMessage markdown parse failed, retrying plain text: {err:#}");
-            let retry = strip_parse_mode_param(&params);
-            telegram_post_form(client, &url, &retry, "sendMessage")?
-        }
-        Err(err) => return Err(err),
-    };
-    let message_id = value
-        .get("result")
-        .and_then(|node| node.get("message_id"))
-        .map(value_to_string)
-        .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty());
-    Ok(message_id)
-}
-
-fn telegram_text_form_params(
-    cfg: &RuntimeConfig,
-    chat_id: &str,
-    message_id: Option<&str>,
-    text: &str,
-    reply_markup: Option<&str>,
-) -> Vec<(String, String)> {
-    let mut params = Vec::new();
-    params.push(("chat_id".to_string(), chat_id.to_string()));
-    if let Some(message_id) = message_id {
-        params.push(("message_id".to_string(), message_id.to_string()));
-    }
-    params.push(("text".to_string(), text.to_string()));
-    if let Some(reply_markup) = reply_markup {
-        params.push(("reply_markup".to_string(), reply_markup.to_string()));
-    }
-    if let Some(parse_mode) = cfg.telegram_parse_mode.as_api_value() {
-        params.push(("parse_mode".to_string(), parse_mode.to_string()));
-    }
-    params
-}
-
-fn strip_parse_mode_param(params: &[(String, String)]) -> Vec<(String, String)> {
-    params
-        .iter()
-        .filter(|(key, _)| key != "parse_mode")
-        .cloned()
-        .collect()
-}
-
-fn should_retry_plain_text(cfg: &RuntimeConfig) -> bool {
-    matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2)
-        && matches!(cfg.telegram_parse_fallback, TelegramParseFallback::Plain)
-}
-
-fn should_fallback_plain_for_error(err: &anyhow::Error) -> bool {
-    let text = format!("{err:#}").to_ascii_lowercase();
-    text.contains("can't parse entities")
-        || text.contains("can't find end of")
-        || text.contains("character '-' is reserved")
-        || text.contains("character '.' is reserved")
-        || text.contains("character '!' is reserved")
-}
-
-fn telegram_post_form(
-    client: &Client,
-    url: &str,
-    params: &[(String, String)],
-    action: &str,
-) -> Result<Value> {
-    const MAX_429_RETRY_ATTEMPTS: usize = 1;
-    const MAX_429_SLEEP_SECS: u64 = 60;
-
-    let mut attempts = 0usize;
-    loop {
-        let response = client
-            .post(url)
-            .form(params)
-            .send()
-            .with_context(|| format!("failed to call telegram {action}"))?;
-
-        if response.status().as_u16() == 429 {
-            let body = response
-                .text()
-                .with_context(|| format!("failed to read telegram {action} response body"))?;
-            if attempts < MAX_429_RETRY_ATTEMPTS
-                && let Some(retry_after) = telegram_retry_after_seconds(&body)
-            {
-                let sleep_secs = retry_after.clamp(1, MAX_429_SLEEP_SECS);
-                attempts += 1;
-                tracing::warn!("telegram {action} rate limited, retrying in {sleep_secs}s");
-                thread::sleep(Duration::from_secs(sleep_secs));
-                continue;
-            }
-            bail!("telegram {action} HTTP 429: {body}");
-        }
-
-        return parse_telegram_response(response, action);
-    }
-}
-
-fn telegram_retry_after_seconds(body: &str) -> Option<u64> {
-    let value: Value = serde_json::from_str(body).ok()?;
-    value
-        .get("parameters")
-        .and_then(|node| node.get("retry_after"))
-        .and_then(|node| {
-            node.as_u64()
-                .or_else(|| node.as_i64().and_then(|value| u64::try_from(value).ok()))
-                .or_else(|| node.as_str().and_then(|value| value.parse::<u64>().ok()))
-        })
-}
-
-fn telegram_send_media_file(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id: &str,
-    method: &str,
-    field: &str,
-    path: &Path,
-) -> Result<()> {
-    if !path.is_file() {
-        bail!(
-            "{} marker path not found: {}",
-            field.to_ascii_uppercase(),
-            path.display()
-        );
-    }
-
-    let base = telegram_api_base(cfg)?;
-    let form = multipart::Form::new()
-        .text("chat_id", chat_id.to_string())
-        .file(field.to_string(), path)
-        .with_context(|| format!("failed to prepare multipart upload for {}", path.display()))?;
-
-    let response = client
-        .post(format!("{base}/{method}"))
-        .multipart(form)
-        .send()
-        .with_context(|| format!("failed to call telegram {method}"))?;
-    parse_telegram_response(response, method)?;
-    Ok(())
-}
-
-fn parse_telegram_response(response: reqwest::blocking::Response, action: &str) -> Result<Value> {
-    let status = response.status();
-    let body = response
-        .text()
-        .with_context(|| format!("failed to read telegram {action} response body"))?;
-    if !status.is_success() {
-        bail!("telegram {action} HTTP {}: {body}", status.as_u16());
-    }
-
-    let value: Value = serde_json::from_str(&body)
-        .with_context(|| format!("telegram {action} returned invalid JSON: {body}"))?;
-    let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
-    if !ok {
-        let description = value
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown telegram error");
-        bail!("telegram {action} failed: {description}");
-    }
-
-    Ok(value)
-}
-
-fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction> {
+pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction> {
     let value: Value = serde_json::from_str(line).context("invalid webhook JSON payload")?;
     let update_id = extract_update_id_from_value(&value);
     let configured_chat = cfg.telegram_chat_id.as_deref().unwrap_or("<any>");
@@ -2283,7 +1359,7 @@ fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction
     })))
 }
 
-fn shorten_log_text(text: &str, max_chars: usize) -> String {
+pub(crate) fn shorten_log_text(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
     }
@@ -2297,7 +1373,7 @@ fn shorten_log_text(text: &str, max_chars: usize) -> String {
     out
 }
 
-fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {
+pub(crate) fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {
     if let Some(file_id) = message
         .get("voice")
         .and_then(|node| node.get("file_id"))
@@ -2369,14 +1445,14 @@ fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {
     None
 }
 
-fn is_allowed_chat(cfg: &RuntimeConfig, chat_id: Option<&str>) -> bool {
+pub(crate) fn is_allowed_chat(cfg: &RuntimeConfig, chat_id: Option<&str>) -> bool {
     match (cfg.telegram_chat_id.as_deref(), chat_id) {
         (None, _) | (Some(_), None) => false,
         (Some(expected), Some(actual)) => expected == actual,
     }
 }
 
-fn set_inflight_update(
+pub(crate) fn set_inflight_update(
     store: &Store,
     update_id: &str,
     payload_json: &str,
@@ -2388,258 +1464,8 @@ fn set_inflight_update(
     Ok(())
 }
 
-fn process_turn(
-    cfg: &RuntimeConfig,
-    store: &Store,
-    input: TurnInput,
-    chat_id_override: Option<String>,
-    update_id: Option<String>,
-    progress_message_id: Option<&str>,
-    quoted: &QuotedMessage,
-) -> Result<String> {
-    let turn_start = Instant::now();
-    let _span = tracing::info_span!(
-        "process_turn",
-        input_type = %input.input_type,
-        provider = %cfg.provider.as_str(),
-    )
-    .entered();
 
-    clear_cancel_marker(cfg);
-    let ts = iso_now(&cfg.timezone);
-    let chat_id = chat_id_override
-        .or_else(|| cfg.telegram_chat_id.clone())
-        .unwrap_or_else(|| "local".to_string());
-
-    let context = build_context(cfg, store, &input, &ts, quoted)?;
-
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let cancel_watcher_stop = Arc::new(AtomicBool::new(false));
-    let cancel_watcher = if update_id.is_some() {
-        maybe_spawn_cancel_watcher(
-            cfg,
-            store,
-            update_id.clone(),
-            Arc::clone(&cancel_flag),
-            Arc::clone(&cancel_watcher_stop),
-        )
-        .ok()
-        .flatten()
-    } else {
-        None
-    };
-    let progress_updater_stop = Arc::new(AtomicBool::new(false));
-    let (progress_sender, progress_updater) = if let Some(message_id) = progress_message_id {
-        let (progress_tx, progress_rx) = mpsc::channel::<String>();
-        (
-            Some(progress_tx),
-            Some(spawn_progress_updater(
-                cfg.clone(),
-                chat_id.clone(),
-                message_id.to_string(),
-                progress_rx,
-                Arc::clone(&progress_updater_stop),
-            )),
-        )
-    } else {
-        (None, None)
-    };
-
-    let mut provider_result =
-        run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
-    let mut retries = 0u32;
-    while retries < cfg.provider_max_retries {
-        let should_retry = match &provider_result {
-            Ok(result) => {
-                !result.success
-                    && !cancel_flag.load(Ordering::SeqCst)
-                    && should_retry_provider_failure(&result.raw_output)
-            }
-            _ => false,
-        };
-        if !should_retry {
-            break;
-        }
-        retries += 1;
-        tracing::warn!(
-            attempt = retries + 1,
-            "provider failed with retryable error, retrying"
-        );
-        provider_result = run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
-    }
-    cancel_watcher_stop.store(true, Ordering::SeqCst);
-    if let Some(handle) = cancel_watcher {
-        let _ = handle.join();
-    }
-    drop(progress_sender);
-    progress_updater_stop.store(true, Ordering::SeqCst);
-    if let Some(handle) = progress_updater {
-        let _ = handle.join();
-    }
-
-    let (raw_output, provider_success, exit_code) = match provider_result {
-        Ok(result) => (result.raw_output, result.success, result.exit_code),
-        Err(err) => (format!("{err:#}"), false, 1),
-    };
-    let duration_ms = turn_start.elapsed().as_millis() as i64;
-    let cancelled = cancel_flag.load(Ordering::SeqCst) || exit_code == 130;
-    let turn_result = resolve_turn_result(&raw_output, provider_success, cancelled);
-    let markers = turn_result.markers;
-    let telegram_reply = turn_result.telegram_reply;
-    let voice_reply = turn_result.voice_reply;
-    let status = turn_result.status;
-
-    tracing::info!(
-        duration_ms,
-        status = %status,
-        retries,
-        "turn completed"
-    );
-
-    let inserted = store.insert_turn(&TurnRecord {
-        ts: ts.clone(),
-        chat_id,
-        input_type: input.input_type,
-        user_text: input.user_text,
-        asr_text: input.asr_text,
-        provider_raw: raw_output,
-        telegram_reply: telegram_reply.clone(),
-        voice_reply: voice_reply.clone(),
-        status: status.clone(),
-        update_id,
-        duration_ms: Some(duration_ms),
-    })?;
-
-    if inserted && status != "cancelled" {
-        append_memory_and_tasks(cfg, store, &ts, &markers)?;
-    }
-
-    clear_cancel_marker(cfg);
-    Ok(render_output(&telegram_reply, &voice_reply, &markers))
-}
-
-fn resolve_turn_result(raw_output: &str, provider_success: bool, cancelled: bool) -> TurnResult {
-    if cancelled {
-        return TurnResult {
-            markers: ParsedMarkers::default(),
-            telegram_reply: "❌ Cancelled.".to_string(),
-            voice_reply: String::new(),
-            status: "cancelled".to_string(),
-        };
-    }
-
-    let markers = parse_markers(raw_output);
-    let telegram_reply = markers.telegram_reply.clone().unwrap_or_default();
-    let voice_reply = markers.voice_reply.clone().unwrap_or_default();
-    if !telegram_reply.trim().is_empty() || !voice_reply.trim().is_empty() {
-        return TurnResult {
-            markers,
-            telegram_reply,
-            voice_reply,
-            status: if provider_success {
-                "ok".to_string()
-            } else {
-                "agent_error".to_string()
-            },
-        };
-    }
-
-    if provider_success {
-        if let Some(recovered) = recover_unstructured_reply(raw_output) {
-            return TurnResult {
-                markers,
-                telegram_reply: recovered,
-                voice_reply: String::new(),
-                status: "parse_recovered".to_string(),
-            };
-        }
-        return TurnResult {
-            markers,
-            telegram_reply: "I could not parse structured markers from the model output."
-                .to_string(),
-            voice_reply: String::new(),
-            status: "parse_fallback".to_string(),
-        };
-    }
-
-    if let Some(recovered) = extract_assistant_text_from_json_stream(raw_output) {
-        return TurnResult {
-            markers,
-            telegram_reply: recovered,
-            voice_reply: String::new(),
-            status: "agent_error_recovered".to_string(),
-        };
-    }
-
-    let err_line = extract_error_summary(raw_output)
-        .or_else(|| {
-            raw_output
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .map(|line| line.to_string())
-        })
-        .unwrap_or_else(|| "Please check local logs and retry.".to_string());
-    TurnResult {
-        markers,
-        telegram_reply: format!("Agent execution failed locally. {err_line}"),
-        voice_reply: String::new(),
-        status: "agent_error".to_string(),
-    }
-}
-
-fn resolve_turn_input(
-    inject_text: Option<String>,
-    inject_file: Option<PathBuf>,
-    cfg: &RuntimeConfig,
-) -> Result<TurnInput> {
-    let user_text = inject_text
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "(empty message)".to_string());
-
-    if let Some(path) = inject_file {
-        let resolved = resolve_instance_path(&cfg.instance_dir, path);
-        if !resolved.exists() {
-            bail!("inject file not found: {}", resolved.display());
-        }
-
-        let lower = resolved
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-
-        let (input_type, attachment_type) = match lower.as_str() {
-            "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => {
-                ("photo".to_string(), Some("photo".to_string()))
-            }
-            "mp4" | "mkv" | "avi" | "mov" | "webm" => {
-                ("video".to_string(), Some("video".to_string()))
-            }
-            _ => ("document".to_string(), Some("document".to_string())),
-        };
-
-        return Ok(TurnInput {
-            input_type,
-            user_text,
-            asr_text: String::new(),
-            attachment_type,
-            attachment_path: Some(resolved),
-            attachment_owned: false,
-        });
-    }
-
-    Ok(TurnInput {
-        input_type: "text".to_string(),
-        user_text,
-        asr_text: String::new(),
-        attachment_type: None,
-        attachment_path: None,
-        attachment_owned: false,
-    })
-}
-
-fn resolve_instance_path(instance_dir: &Path, raw: PathBuf) -> PathBuf {
+pub(crate) fn resolve_instance_path(instance_dir: &Path, raw: PathBuf) -> PathBuf {
     if raw.is_absolute() {
         raw
     } else {
@@ -2647,158 +1473,8 @@ fn resolve_instance_path(instance_dir: &Path, raw: PathBuf) -> PathBuf {
     }
 }
 
-fn append_memory_and_tasks(
-    cfg: &RuntimeConfig,
-    store: &Store,
-    ts: &str,
-    markers: &ParsedMarkers,
-) -> Result<()> {
-    if !markers.memory_append.is_empty() {
-        let memory_path = cfg.instance_dir.join("MEMORY.md");
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&memory_path)
-            .with_context(|| format!("failed to open {}", memory_path.display()))?;
 
-        for line in &markers.memory_append {
-            writeln!(file, "- {ts} | {line}")?;
-        }
-    }
-
-    if !markers.task_append.is_empty() {
-        let task_path = cfg.instance_dir.join("TASKS/pending.md");
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&task_path)
-            .with_context(|| format!("failed to open {}", task_path.display()))?;
-
-        for line in &markers.task_append {
-            writeln!(file, "- [ ] {line}")?;
-            store.insert_task(ts, cfg.provider.as_str(), line)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn build_context(
-    cfg: &RuntimeConfig,
-    store: &Store,
-    input: &TurnInput,
-    ts: &str,
-    quoted: &QuotedMessage,
-) -> Result<String> {
-    let soul = read_or_default(
-        &cfg.instance_dir.join("SOUL.md"),
-        "You are CoconutClaw, a calm and practical local agent.\n",
-    );
-    let user = read_or_default(&cfg.instance_dir.join("USER.md"), "(missing USER.md)\n");
-    let memory = read_or_default(&cfg.instance_dir.join("MEMORY.md"), "# Long-Term Memory\n");
-    let tasks = read_or_default(
-        &cfg.instance_dir.join("TASKS/pending.md"),
-        "# Pending Tasks\n",
-    );
-
-    let mut text = String::new();
-    text.push_str("# CoconutClaw Runtime Context\n\n");
-    text.push_str(&format!("Timestamp: {ts}\n"));
-    text.push_str(&format!("Input type: {}\n", input.input_type));
-    text.push_str(&format!("Agent provider: {}\n", cfg.provider.as_str()));
-    text.push_str(&format!("Exec policy: {}\n", cfg.exec_policy));
-    text.push_str(&format!(
-        "Allowlist path: {}\n\n",
-        cfg.allowlist_path.display()
-    ));
-
-    text.push_str("## SOUL.md\n");
-    text.push_str(&soul);
-    if !soul.ends_with('\n') {
-        text.push('\n');
-    }
-
-    text.push_str("\n## USER.md\n");
-    text.push_str(&user);
-    if !user.ends_with('\n') {
-        text.push('\n');
-    }
-
-    text.push_str("\n## MEMORY.md\n");
-    text.push_str(&memory);
-    if !memory.ends_with('\n') {
-        text.push('\n');
-    }
-
-    text.push_str("\n## TASKS/pending.md\n");
-    text.push_str(&tasks);
-    if !tasks.ends_with('\n') {
-        text.push('\n');
-    }
-
-    text.push_str("\n## Recent turns\n");
-    for line in store.recent_turns_snippet(cfg.context_turns)? {
-        text.push_str(&line);
-        text.push('\n');
-    }
-
-    if let Some(reply_text) = quoted.reply_text.as_ref()
-        && !reply_text.trim().is_empty()
-    {
-        text.push_str("\n## Quoted/replied-to message\n");
-        let reply_from = quoted.reply_from.as_deref().unwrap_or("someone");
-        text.push_str(&format!("REPLY_FROM: {reply_from}\n"));
-        text.push_str(&format!("REPLY_TEXT: {reply_text}\n"));
-        text.push_str(
-            "The user is replying to the above message. Use it as context for understanding their intent.\n",
-        );
-    }
-
-    text.push_str("\n## Current user input\n");
-    text.push_str(&format!("USER_TEXT: {}\n", input.user_text));
-    if !input.asr_text.trim().is_empty() {
-        text.push_str(&format!("ASR_TEXT: {}\n", input.asr_text));
-    }
-    if let (Some(attachment_type), Some(attachment_path)) =
-        (&input.attachment_type, &input.attachment_path)
-    {
-        text.push_str(&format!("ATTACHMENT_TYPE: {attachment_type}\n"));
-        text.push_str(&format!("ATTACHMENT_PATH: {}\n", attachment_path.display()));
-        text.push_str(&format!(
-            "The user sent a {attachment_type}. The file has been downloaded to the path above. You can access and analyze it using your tools.\n"
-        ));
-    }
-
-    text.push_str("\n## Output requirements\n");
-    text.push_str("Return only plain text marker lines. No prose before or after markers.\n");
-    text.push_str("Required first line format:\n");
-    text.push_str("TELEGRAM_REPLY: <reply text>\n");
-    text.push_str("Optional additional lines:\n");
-    text.push_str("VOICE_REPLY: <spoken reply text>\n");
-    text.push_str("SEND_PHOTO: <absolute file path>\n");
-    text.push_str("SEND_DOCUMENT: <absolute file path>\n");
-    text.push_str("SEND_VIDEO: <absolute file path>\n");
-    text.push_str("MEMORY_APPEND: <single memory line>\n");
-    text.push_str("TASK_APPEND: <single task line>\n");
-    if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2) {
-        text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
-        text.push_str("Use Telegram MarkdownV2 formatting only inside marker values.\n");
-        text.push_str("Use `*bold*`, `_italic_`, and `` `code` `` syntax.\n");
-        text.push_str("Do not use CommonMark syntax like `**bold**` or fenced code blocks.\n");
-        text.push_str("Keep marker prefixes plain and unchanged.\n");
-        text.push_str("Do not use code fences or extra prefixes.\n");
-    } else {
-        text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
-    }
-
-    Ok(text)
-}
-
-fn read_or_default(path: &Path, fallback: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|_| fallback.to_string())
-}
-
-fn local_day(timezone: &str) -> String {
+pub(crate) fn local_day(timezone: &str) -> String {
     let now: DateTime<Utc> = Utc::now();
     if let Ok(tz) = timezone.parse::<Tz>() {
         return now.with_timezone(&tz).format("%Y-%m-%d").to_string();
@@ -2806,7 +1482,7 @@ fn local_day(timezone: &str) -> String {
     now.format("%Y-%m-%d").to_string()
 }
 
-fn iso_now(timezone: &str) -> String {
+pub(crate) fn iso_now(timezone: &str) -> String {
     let now: DateTime<Utc> = Utc::now();
     if let Ok(tz) = timezone.parse::<Tz>() {
         return now
@@ -2817,21 +1493,21 @@ fn iso_now(timezone: &str) -> String {
     now.format("%Y-%m-%dT%H:%M:%S%z").to_string()
 }
 
-fn nightly_reflection_marker(day: &str) -> String {
+pub(crate) fn nightly_reflection_marker(day: &str) -> String {
     format!("<!-- nightly-reflection:{day} -->")
 }
 
-fn nightly_reflection_prompt(cfg: &RuntimeConfig) -> String {
+pub(crate) fn nightly_reflection_prompt(cfg: &RuntimeConfig) -> String {
     cfg.nightly_reflection_prompt.clone().unwrap_or_else(|| {
         "Do a brief nightly reflection in first person: include today outcomes, today lessons, and the single most important thing for tomorrow in under 120 words.".to_string()
     })
 }
 
-fn nightly_reflection_file_path(cfg: &RuntimeConfig) -> PathBuf {
+pub(crate) fn nightly_reflection_file_path(cfg: &RuntimeConfig) -> PathBuf {
     cfg.nightly_reflection_file.clone()
 }
 
-fn command_exists(bin: &str) -> bool {
+pub(crate) fn command_exists(bin: &str) -> bool {
     let candidate = Path::new(bin);
     if candidate.is_absolute() || bin.contains('/') || bin.contains('\\') {
         return candidate.is_file();
@@ -2857,15 +1533,15 @@ fn command_exists(bin: &str) -> bool {
     false
 }
 
-fn yes_no(value: bool) -> &'static str {
+pub(crate) fn yes_no(value: bool) -> &'static str {
     if value { "ok" } else { "missing" }
 }
 
-fn asr_feature_enabled(cfg: &RuntimeConfig) -> bool {
+pub(crate) fn asr_feature_enabled(cfg: &RuntimeConfig) -> bool {
     cfg.asr_cmd_template.is_some() || cfg.asr_url.is_some()
 }
 
-fn parse_on_like(value: Option<&str>, default: bool) -> bool {
+pub(crate) fn parse_on_like(value: Option<&str>, default: bool) -> bool {
     let Some(value) = value else {
         return default;
     };
@@ -2879,7 +1555,22 @@ fn parse_on_like(value: Option<&str>, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coconutclaw_config::{AgentProvider, CodexConfig, PiConfig, RuntimeConfig};
+    use crate::context::build_context;
+    use crate::markers::{
+        extract_error_summary, parse_markers, recover_unstructured_reply,
+        should_retry_provider_failure,
+    };
+    use crate::store::TurnRecord;
+    use crate::telegram::{
+        progress_status_text, progress_status_with_events, render_markdown_v2_reply,
+        render_telegram_reply_text, should_fallback_plain_for_error,
+        telegram_retry_after_seconds, telegram_text_form_params,
+    };
+    use crate::turn::resolve_turn_result;
+    use crate::webhook::webhook_public_endpoint;
+    use coconutclaw_config::{
+        AgentProvider, CodexConfig, PiConfig, RuntimeConfig, TelegramParseMode,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_config() -> RuntimeConfig {
