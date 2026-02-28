@@ -897,6 +897,19 @@ mod tests {
     }
 
     #[test]
+    fn telegram_parse_mode_accepts_html() {
+        let instance_dir = unique_dir();
+        write_config(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_PARSE_MODE = \"Html\"\n",
+        );
+
+        let cfg = load_runtime_config_isolated(instance_dir).expect("config");
+
+        assert_eq!(cfg.telegram_parse_mode, TelegramParseMode::Html);
+    }
+
+    #[test]
     fn telegram_parse_mode_rejects_invalid_value() {
         let instance_dir = unique_dir();
         write_config(
@@ -1013,6 +1026,7 @@ WEBHOOK_PATH = \"/telegram/webhook\"\n",
 pub enum TelegramParseMode {
     Off,
     MarkdownV2,
+    Html,
 }
 
 impl TelegramParseMode {
@@ -1020,7 +1034,10 @@ impl TelegramParseMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "off" => Ok(Self::Off),
             "markdownv2" => Ok(Self::MarkdownV2),
-            other => bail!("invalid TELEGRAM_PARSE_MODE: {other} (expected off or MarkdownV2)"),
+            "html" => Ok(Self::Html),
+            other => {
+                bail!("invalid TELEGRAM_PARSE_MODE: {other} (expected off, MarkdownV2, or Html)")
+            }
         }
     }
 
@@ -1028,6 +1045,7 @@ impl TelegramParseMode {
         match self {
             Self::Off => None,
             Self::MarkdownV2 => Some("MarkdownV2"),
+            Self::Html => Some("HTML"),
         }
     }
 }

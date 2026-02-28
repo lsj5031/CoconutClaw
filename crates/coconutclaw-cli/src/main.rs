@@ -2012,11 +2012,12 @@ mod tests {
     }
 
     #[test]
-    fn render_markdown_v2_keeps_commonmark_bold_inside_code() {
+    fn render_markdown_v2_escapes_all_special_chars() {
         let text = "`**not bold**` then **bold**";
         let rendered = render_markdown_v2_reply(text);
-        assert!(rendered.contains("`**not bold**`"));
-        assert!(rendered.contains("*bold*"));
+        // The simple escaper escapes all special chars uniformly
+        assert!(rendered.contains("\\`"));
+        assert!(rendered.contains("\\*\\*bold\\*\\*"));
     }
 
     #[test]
@@ -2046,10 +2047,11 @@ mod tests {
     }
 
     #[test]
-    fn render_markdown_v2_leaves_already_valid_snippet_reasonable() {
+    fn render_markdown_v2_escapes_backticks() {
         let text = "*标题* and `main.rs`";
         let rendered = render_markdown_v2_reply(text);
-        assert!(rendered.contains("`main.rs`"));
+        // The simple escaper escapes backticks too
+        assert!(rendered.contains("\\`main\\.rs\\`"));
     }
 
     #[test]

@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use coconutclaw_config::RuntimeConfig;
 use coconutclaw_config::{TelegramParseFallback, TelegramParseMode};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use reqwest::blocking::{Client, multipart};
 use serde_json::Value;
-use telegram_markdown_v2::{UnsupportedTagsStrategy, convert_with_strategy};
 
 use crate::markers::parse_markers;
 use crate::webhook::{value_to_string, webhook_public_endpoint};
@@ -482,21 +482,109 @@ pub(crate) fn split_text_chunks(text: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
+/// Simple MarkdownV2 escaper for backward compatibility.
+/// Escapes all Telegram MarkdownV2 special characters.
 pub(crate) fn render_markdown_v2_reply(text: &str) -> String {
-    match convert_with_strategy(text, UnsupportedTagsStrategy::Escape) {
-        Ok(rendered) => rendered.trim_end_matches('\n').to_string(),
-        Err(err) => {
-            tracing::warn!("markdown conversion failed, sending original text: {err:#}");
-            text.to_string()
+    const SPECIAL: &[char] = &[
+        '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
+    ];
+    let mut out = String::with_capacity(text.len() * 2);
+    for ch in text.chars() {
+        if SPECIAL.contains(&ch) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+pub(crate) fn render_html_reply(text: &str) -> String {
+    let options = Options::empty();
+    let parser = Parser::new_ext(text, options);
+    let mut html = String::new();
+    let mut list_index: Option<u64> = None;
+
+    for event in parser {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Paragraph => {}
+                Tag::Heading { .. } => html.push_str("<b>"),
+                Tag::Strong => html.push_str("<b>"),
+                Tag::Emphasis => html.push_str("<i>"),
+                Tag::Strikethrough => html.push_str("<s>"),
+                Tag::CodeBlock(kind) => match kind {
+                    CodeBlockKind::Fenced(lang) if !lang.is_empty() => {
+                        html.push_str(&format!(
+                            "<pre><code class=\"language-{}\">",
+                            html_escape(&lang)
+                        ));
+                    }
+                    _ => html.push_str("<pre><code>"),
+                },
+                Tag::Link { dest_url, .. } => {
+                    html.push_str(&format!("<a href=\"{}\">", html_escape(&dest_url)));
+                }
+                Tag::List(start) => {
+                    list_index = start;
+                }
+                Tag::Item => {
+                    if let Some(idx) = list_index.as_mut() {
+                        html.push_str(&format!("{}. ", idx));
+                        *idx += 1;
+                    } else {
+                        html.push_str("• ");
+                    }
+                }
+                Tag::BlockQuote(_) => html.push_str("<blockquote>"),
+                _ => {}
+            },
+            Event::End(tag_end) => match tag_end {
+                TagEnd::Paragraph => html.push_str("\n\n"),
+                TagEnd::Heading(_) => html.push_str("</b>\n\n"),
+                TagEnd::Strong => html.push_str("</b>"),
+                TagEnd::Emphasis => html.push_str("</i>"),
+                TagEnd::Strikethrough => html.push_str("</s>"),
+                TagEnd::CodeBlock => {
+                    html.push_str("</code></pre>\n");
+                }
+                TagEnd::Link => html.push_str("</a>"),
+                TagEnd::Item => html.push('\n'),
+                TagEnd::List(_) => {
+                    list_index = None;
+                    html.push('\n');
+                }
+                TagEnd::BlockQuote(_) => html.push_str("</blockquote>\n"),
+                _ => {}
+            },
+            Event::Text(text) => {
+                html.push_str(&html_escape(&text));
+            }
+            Event::Code(code) => {
+                html.push_str("<code>");
+                html.push_str(&html_escape(&code));
+                html.push_str("</code>");
+            }
+            Event::SoftBreak => html.push('\n'),
+            Event::HardBreak => html.push('\n'),
+            Event::Rule => html.push_str("---\n"),
+            _ => {}
         }
     }
+
+    html.trim_end().to_string()
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 pub(crate) fn render_telegram_reply_text(cfg: &RuntimeConfig, text: &str) -> String {
-    if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2) {
-        render_markdown_v2_reply(text)
-    } else {
-        text.to_string()
+    match cfg.telegram_parse_mode {
+        TelegramParseMode::Html => render_html_reply(text),
+        TelegramParseMode::MarkdownV2 => render_markdown_v2_reply(text),
+        TelegramParseMode::Off => text.to_string(),
     }
 }
 
@@ -682,8 +770,10 @@ pub(crate) fn strip_parse_mode_param(params: &[(String, String)]) -> Vec<(String
 }
 
 pub(crate) fn should_retry_plain_text(cfg: &RuntimeConfig) -> bool {
-    matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2)
-        && matches!(cfg.telegram_parse_fallback, TelegramParseFallback::Plain)
+    matches!(
+        cfg.telegram_parse_mode,
+        TelegramParseMode::MarkdownV2 | TelegramParseMode::Html
+    ) && matches!(cfg.telegram_parse_fallback, TelegramParseFallback::Plain)
 }
 
 pub(crate) fn should_fallback_plain_for_error(err: &anyhow::Error) -> bool {
@@ -799,4 +889,86 @@ pub(crate) fn parse_telegram_response(
     }
 
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_bold_and_italic() {
+        let text = "This is **bold** and *italic* text.";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("<b>bold</b>"));
+        assert!(rendered.contains("<i>italic</i>"));
+    }
+
+    #[test]
+    fn html_inline_code() {
+        let text = "Run `echo hello` in the terminal.";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("<code>echo hello</code>"));
+    }
+
+    #[test]
+    fn html_code_block_with_language() {
+        let text = "```rust\nfn main() {}\n```";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("<pre><code class=\"language-rust\">"));
+        assert!(rendered.contains("fn main() {}"));
+        assert!(rendered.contains("</code></pre>"));
+    }
+
+    #[test]
+    fn html_escapes_special_chars() {
+        let text = "x < 10 & y > 5";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("x &lt; 10 &amp; y &gt; 5"));
+    }
+
+    #[test]
+    fn html_unclosed_bold_does_not_crash() {
+        let text = "This is **unclosed bold";
+        let rendered = render_html_reply(text);
+        // pulldown-cmark handles unclosed tags gracefully
+        assert!(!rendered.is_empty());
+    }
+
+    #[test]
+    fn html_link() {
+        let text = "Visit [example](https://example.com) now.";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("<a href=\"https://example.com\">example</a>"));
+    }
+
+    #[test]
+    fn html_unordered_list() {
+        let text = "Items:\n- apple\n- banana";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("• apple"));
+        assert!(rendered.contains("• banana"));
+    }
+
+    #[test]
+    fn html_ordered_list() {
+        let text = "Steps:\n1. first\n2. second";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("1. first"));
+        assert!(rendered.contains("2. second"));
+    }
+
+    #[test]
+    fn html_heading_renders_as_bold() {
+        let text = "# Hello World";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("<b>Hello World</b>"));
+    }
+
+    #[test]
+    fn html_cjk_with_markdown() {
+        let text = "使用 **gemini** 的 `cli` 工具";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("<b>gemini</b>"));
+        assert!(rendered.contains("<code>cli</code>"));
+    }
 }

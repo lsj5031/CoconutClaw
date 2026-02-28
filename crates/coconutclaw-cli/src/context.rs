@@ -113,15 +113,26 @@ pub(crate) fn build_context(
     text.push_str("SEND_VIDEO: <absolute file path>\n");
     text.push_str("MEMORY_APPEND: <single memory line>\n");
     text.push_str("TASK_APPEND: <single task line>\n");
-    if matches!(cfg.telegram_parse_mode, TelegramParseMode::MarkdownV2) {
-        text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
-        text.push_str("Use Telegram MarkdownV2 formatting only inside marker values.\n");
-        text.push_str("Use `*bold*`, `_italic_`, and `` `code` `` syntax.\n");
-        text.push_str("Do not use CommonMark syntax like `**bold**` or fenced code blocks.\n");
-        text.push_str("Keep marker prefixes plain and unchanged.\n");
-        text.push_str("Do not use code fences or extra prefixes.\n");
-    } else {
-        text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
+    match cfg.telegram_parse_mode {
+        TelegramParseMode::Html => {
+            text.push_str("Rich formatting is enabled for Telegram replies.\n");
+            text.push_str("Use standard Markdown formatting inside marker values (e.g. **bold**, *italic*, `code`, ```code blocks```, [links](url)).\n");
+            text.push_str(
+                "CoconutClaw will automatically convert Markdown to the appropriate format.\n",
+            );
+            text.push_str("Keep marker prefixes plain and unchanged.\n");
+        }
+        TelegramParseMode::MarkdownV2 => {
+            text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
+            text.push_str("Use Telegram MarkdownV2 formatting only inside marker values.\n");
+            text.push_str("Use `*bold*`, `_italic_`, and `` `code` `` syntax.\n");
+            text.push_str("Do not use CommonMark syntax like `**bold**` or fenced code blocks.\n");
+            text.push_str("Keep marker prefixes plain and unchanged.\n");
+            text.push_str("Do not use code fences or extra prefixes.\n");
+        }
+        TelegramParseMode::Off => {
+            text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
+        }
     }
 
     Ok(text)

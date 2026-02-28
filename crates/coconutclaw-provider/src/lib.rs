@@ -343,6 +343,9 @@ fn run_gemini(
     if let Some(model) = &config.gemini.model {
         cmd.arg("--model").arg(model);
     }
+    if progress_tx.is_some() {
+        cmd.arg("-o").arg("stream-json");
+    }
 
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -357,7 +360,7 @@ fn run_gemini(
         child,
         cancel_flag,
         progress_tx,
-        Some(parse_generic_progress_line),
+        Some(parse_gemini_progress_line),
         "failed waiting for gemini command",
         "failed waiting after gemini kill",
     )?;
@@ -369,6 +372,15 @@ fn run_gemini(
     };
     let raw_output = if run_result.cancelled {
         "cancelled".to_string()
+    } else if progress_tx.is_some() && run_result.status.success() {
+        // In stream-json mode, extract the final assistant message from the JSON stream.
+        extract_gemini_json_final(&run_result.stdout_text).unwrap_or_else(|| {
+            if !run_result.stdout_text.trim().is_empty() {
+                run_result.stdout_text.clone()
+            } else {
+                run_result.stderr_text.clone()
+            }
+        })
     } else if !run_result.stdout_text.trim().is_empty() {
         run_result.stdout_text
     } else {
@@ -879,9 +891,89 @@ fn now_nanos() -> u128 {
     }
 }
 
+fn parse_gemini_progress_line(line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let event_type = value.get("type").and_then(Value::as_str)?;
+
+    match event_type {
+        "init" => Some("Processing...".to_string()),
+        "tool_use" => {
+            let tool = value
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
+            let detail = value
+                .get("parameters")
+                .and_then(|p| p.get("command"))
+                .and_then(Value::as_str)
+                .map(|c| shorten_status_text(c.trim(), 100));
+            if let Some(detail) = detail {
+                Some(format!("Running: {tool} {detail}"))
+            } else {
+                Some(format!("Running: {tool}"))
+            }
+        }
+        "tool_result" => {
+            let tool_name = value
+                .get("tool_id")
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
+            let is_error = value.get("status").and_then(Value::as_str) == Some("error");
+            if is_error {
+                Some(format!("Failed: {tool_name}"))
+            } else {
+                Some(format!("Completed: {tool_name}"))
+            }
+        }
+        "message" => {
+            let role = value.get("role").and_then(Value::as_str)?;
+            if role == "assistant" {
+                Some("Drafting response...".to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn extract_gemini_json_final(payload: &str) -> Option<String> {
+    let mut final_text: Option<String> = None;
+
+    for line in payload.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        if event_type == "message"
+            && let Some(role) = value.get("role").and_then(Value::as_str)
+            && role == "assistant"
+            && let Some(content) = value.get("content").and_then(Value::as_str)
+            && !content.trim().is_empty()
+        {
+            match &mut final_text {
+                Some(existing) => {
+                    existing.push_str(content);
+                }
+                None => {
+                    final_text = Some(content.to_string());
+                }
+            }
+        }
+    }
+
+    final_text
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_codex_progress_line, parse_pi_progress_line};
+    use super::{
+        extract_gemini_json_final, parse_codex_progress_line, parse_gemini_progress_line,
+        parse_pi_progress_line,
+    };
 
     #[test]
     fn parses_codex_turn_started_progress() {
@@ -994,5 +1086,84 @@ mod tests {
             parse_pi_progress_line(line),
             Some("Completed: bash pwd".to_string())
         );
+    }
+
+    #[test]
+    fn parses_gemini_init_progress() {
+        let line = r#"{"type":"init","timestamp":"2026-02-28T05:42:13.283Z","session_id":"abc","model":"auto-gemini-3"}"#;
+        assert_eq!(
+            parse_gemini_progress_line(line),
+            Some("Processing...".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_gemini_tool_use_progress() {
+        let line = r#"{"type":"tool_use","tool_name":"read_file","tool_id":"read_file_123","parameters":{"path":"/tmp/foo"}}"#;
+        assert_eq!(
+            parse_gemini_progress_line(line),
+            Some("Running: read_file".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_gemini_tool_use_with_command_progress() {
+        let line = r#"{"type":"tool_use","tool_name":"run_shell_command","tool_id":"cmd_123","parameters":{"command":"ls /tmp"}}"#;
+        assert_eq!(
+            parse_gemini_progress_line(line),
+            Some("Running: run_shell_command ls /tmp".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_gemini_tool_result_success_progress() {
+        let line = r#"{"type":"tool_result","tool_id":"read_file_123","status":"success","output":"file contents"}"#;
+        assert_eq!(
+            parse_gemini_progress_line(line),
+            Some("Completed: read_file_123".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_gemini_tool_result_error_progress() {
+        let line =
+            r#"{"type":"tool_result","tool_id":"cmd_123","status":"error","output":"not found"}"#;
+        assert_eq!(
+            parse_gemini_progress_line(line),
+            Some("Failed: cmd_123".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_gemini_assistant_message_progress() {
+        let line = r#"{"type":"message","role":"assistant","content":"Hello!","delta":true}"#;
+        assert_eq!(
+            parse_gemini_progress_line(line),
+            Some("Drafting response...".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_gemini_user_message() {
+        let line = r#"{"type":"message","role":"user","content":"hello"}"#;
+        assert_eq!(parse_gemini_progress_line(line), None);
+    }
+
+    #[test]
+    fn extracts_gemini_final_assistant_text() {
+        let payload = r#"{"type":"init","session_id":"abc","model":"auto-gemini-3"}
+{"type":"message","role":"user","content":"Say hello"}
+{"type":"message","role":"assistant","content":"Hello! How can I help?","delta":true}
+{"type":"result","status":"success","stats":{"total_tokens":100}}"#;
+        let text = extract_gemini_json_final(payload);
+        assert_eq!(text.as_deref(), Some("Hello! How can I help?"));
+    }
+
+    #[test]
+    fn extracts_gemini_final_concatenates_deltas() {
+        let payload = r#"{"type":"message","role":"assistant","content":"Hello ","delta":true}
+{"type":"message","role":"assistant","content":"World!","delta":true}"#;
+        let text = extract_gemini_json_final(payload);
+        assert_eq!(text.as_deref(), Some("Hello World!"));
     }
 }
