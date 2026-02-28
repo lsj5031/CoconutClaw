@@ -129,16 +129,33 @@ TELEGRAM_CHAT_ID = "your-chat-id"
 Optional extras:
 
 ```toml
-# Choose AI provider (codex or pi)
+# Choose AI provider (codex, pi, claude, opencode, gemini, or factory)
 AGENT_PROVIDER = "codex"
 
 # How much the AI thinks before responding
 CODEX_REASONING_EFFORT = "xhigh"  # low, medium, high, or xhigh
 
-# Message formatting
+# Message formatting: off | MarkdownV2 | Html
 TELEGRAM_PARSE_MODE = "MarkdownV2"
 TELEGRAM_PARSE_FALLBACK = "plain"
 ```
+
+---
+
+## AI Providers
+
+CoconutClaw supports multiple AI backends. Configure your preference in `config.toml`:
+
+| Provider | `AGENT_PROVIDER` | Description |
+|----------|-----------------|-------------|
+| **Codex** | `codex` | Powered by the `codex` CLI tool. Excellent for advanced coding and automation. |
+| **Pi** | `pi` | Powered by the `pi` CLI. Great for general purpose and reasoning. |
+| **Claude** | `claude` | Integration with `claude` code CLI. |
+| **OpenCode** | `opencode` | Support for OpenCode CLI tools. |
+| **Gemini** | `gemini` | Integration with Gemini CLI. |
+| **Factory** | `factory` | Powered by Factory.ai's `droid` CLI. |
+
+Each provider has its own configuration block in `config.toml` to specify the binary path, model, and reasoning effort.
 
 ---
 
@@ -206,7 +223,7 @@ flowchart LR
     end
 
     subgraph AI["AI Provider"]
-        D{{Codex / Pi}}
+        D{{Codex / Pi / Claude / ...}}
     end
 
     A -->|"1\. Send message"| B
@@ -225,7 +242,7 @@ flowchart LR
 1. **You message** your bot on Telegram
 2. **CoconutClaw** receives it via webhook/polling on your machine
 3. **Context** is loaded from local SQLite (memory, conversation history)
-4. **AI provider** processes your request (Codex or Pi)
+4. **AI provider** processes your request (e.g., Codex, Pi, or Claude)
 5. **Response** is sent back to Telegram
 
 All processing happens on *your* computer. The AI provider sees only the message content — your files, memory, and history stay local.
