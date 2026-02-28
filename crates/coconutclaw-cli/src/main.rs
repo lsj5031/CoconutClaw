@@ -2,9 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use clap::{Args, Parser, Subcommand};
-use coconutclaw_config::{
-    CliOverrides, RuntimeConfig, TelegramParseFallback, load_runtime_config,
-};
+use coconutclaw_config::{CliOverrides, RuntimeConfig, TelegramParseFallback, load_runtime_config};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::env;
@@ -26,18 +24,14 @@ mod telegram;
 mod turn;
 mod webhook;
 
-use crate::markers::{
-    ParsedMarkers, render_output,
-};
+use crate::markers::{ParsedMarkers, render_output};
 use crate::store::Store;
 use crate::telegram::{
-    build_telegram_client, dispatch_telegram_output, fetch_cancel_updates, fetch_poll_updates, register_bot_commands, register_telegram_webhook,
-    send_progress_message,
+    build_telegram_client, dispatch_telegram_output, fetch_cancel_updates, fetch_poll_updates,
+    register_bot_commands, register_telegram_webhook, send_progress_message,
     telegram_answer_callback, valid_telegram_chat_id, valid_telegram_token,
 };
-use crate::turn::{
-    hydrate_turn_input, process_turn, resolve_turn_input,
-};
+use crate::turn::{hydrate_turn_input, process_turn, resolve_turn_input};
 use crate::webhook::{
     AckStatus, ack_webhook_queue_line, ensure_webhook_queue_file, extract_update_id_from_json,
     extract_update_id_from_value, peek_webhook_queue_line, spawn_webhook_http_server,
@@ -111,6 +105,7 @@ pub(crate) enum InputType {
     Video,
     Document,
     VideoNote,
+    #[allow(dead_code)]
     System,
 }
 
@@ -142,6 +137,7 @@ pub(crate) enum TurnStatus {
     ParseRecovered,
     ParseFallback,
     AgentErrorRecovered,
+    #[allow(dead_code)]
     Boundary,
 }
 
@@ -1124,8 +1120,10 @@ pub(crate) fn clear_cancel_marker(cfg: &RuntimeConfig) {
     let _ = fs::remove_file(path);
 }
 
-
-pub(crate) fn cancel_signal_from_update(value: &Value, expected_chat_id: &str) -> Option<CancelSignal> {
+pub(crate) fn cancel_signal_from_update(
+    value: &Value,
+    expected_chat_id: &str,
+) -> Option<CancelSignal> {
     if let Some(callback_query) = value.get("callback_query") {
         let data = callback_query
             .get("data")
@@ -1286,7 +1284,6 @@ pub(crate) fn scan_webhook_queue_for_cancel(
     })
 }
 
-
 pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction> {
     let value: Value = serde_json::from_str(line).context("invalid webhook JSON payload")?;
     let update_id = extract_update_id_from_value(&value);
@@ -1383,9 +1380,7 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
     let (input_type, attachment_type) = match media.as_ref() {
         Some(IncomingMedia::Voice { .. }) => (InputType::Voice, None),
         Some(IncomingMedia::Photo { .. }) => (InputType::Photo, Some("photo".to_string())),
-        Some(IncomingMedia::Document { .. }) => {
-            (InputType::Document, Some("document".to_string()))
-        }
+        Some(IncomingMedia::Document { .. }) => (InputType::Document, Some("document".to_string())),
         Some(IncomingMedia::Video { .. }) => (InputType::Video, Some("video".to_string())),
         Some(IncomingMedia::VideoNote { .. }) => {
             (InputType::VideoNote, Some("video_note".to_string()))
@@ -1526,7 +1521,6 @@ pub(crate) fn set_inflight_update(
     Ok(())
 }
 
-
 pub(crate) fn resolve_instance_path(instance_dir: &Path, raw: PathBuf) -> PathBuf {
     if raw.is_absolute() {
         raw
@@ -1534,7 +1528,6 @@ pub(crate) fn resolve_instance_path(instance_dir: &Path, raw: PathBuf) -> PathBu
         instance_dir.join(raw)
     }
 }
-
 
 pub(crate) fn local_day(timezone: &str) -> String {
     let now: DateTime<Utc> = Utc::now();
@@ -1625,8 +1618,8 @@ mod tests {
     use crate::store::TurnRecord;
     use crate::telegram::{
         progress_status_text, progress_status_with_events, render_markdown_v2_reply,
-        render_telegram_reply_text, should_fallback_plain_for_error,
-        telegram_retry_after_seconds, telegram_text_form_params,
+        render_telegram_reply_text, should_fallback_plain_for_error, telegram_retry_after_seconds,
+        telegram_text_form_params,
     };
     use crate::turn::resolve_turn_result;
     use crate::webhook::webhook_public_endpoint;

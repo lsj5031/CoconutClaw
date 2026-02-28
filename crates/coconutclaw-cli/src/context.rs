@@ -14,7 +14,7 @@ use coconutclaw_config::TelegramParseMode;
 
 use crate::markers::ParsedMarkers;
 use crate::store::Store;
-use crate::{TurnInput, QuotedMessage};
+use crate::{QuotedMessage, TurnInput};
 
 pub(crate) fn build_context(
     cfg: &RuntimeConfig,
@@ -166,4 +166,3 @@ pub(crate) fn append_memory_and_tasks(
 
     Ok(())
 }
-

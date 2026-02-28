@@ -36,7 +36,10 @@ impl Store {
         conn.execute_batch(SCHEMA_SQL)
             .context("failed to apply sqlite schema")?;
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN duration_ms INTEGER", []);
-        let _ = conn.execute("ALTER TABLE turns RENAME COLUMN codex_raw TO provider_raw", []);
+        let _ = conn.execute(
+            "ALTER TABLE turns RENAME COLUMN codex_raw TO provider_raw",
+            [],
+        );
         Ok(Self { conn })
     }
 

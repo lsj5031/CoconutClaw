@@ -20,10 +20,8 @@ use serde_json::Value;
 use telegram_markdown_v2::{UnsupportedTagsStrategy, convert_with_strategy};
 
 use crate::markers::parse_markers;
+use crate::webhook::{value_to_string, webhook_public_endpoint};
 use crate::{command_exists, resolve_instance_path};
-use crate::webhook::{
-    value_to_string, webhook_public_endpoint,
-};
 
 pub(crate) fn valid_telegram_token(cfg: &RuntimeConfig) -> Option<&str> {
     cfg.telegram_bot_token
@@ -568,7 +566,12 @@ pub(crate) fn telegram_answer_callback(
     Ok(())
 }
 
-pub(crate) fn send_voice_reply(client: &Client, cfg: &RuntimeConfig, chat_id: &str, text: &str) -> Result<()> {
+pub(crate) fn send_voice_reply(
+    client: &Client,
+    cfg: &RuntimeConfig,
+    chat_id: &str,
+    text: &str,
+) -> Result<()> {
     let _span = tracing::info_span!("tts").entered();
     let script = cfg.root_dir.join("scripts/tts.sh");
     if !script.is_file() {
@@ -772,7 +775,10 @@ pub(crate) fn telegram_send_media_file(
     Ok(())
 }
 
-pub(crate) fn parse_telegram_response(response: reqwest::blocking::Response, action: &str) -> Result<Value> {
+pub(crate) fn parse_telegram_response(
+    response: reqwest::blocking::Response,
+    action: &str,
+) -> Result<Value> {
     let status = response.status();
     let body = response
         .text()
@@ -794,4 +800,3 @@ pub(crate) fn parse_telegram_response(response: reqwest::blocking::Response, act
 
     Ok(value)
 }
-

@@ -15,20 +15,17 @@ use anyhow::{Context, Result, bail};
 use coconutclaw_config::RuntimeConfig;
 use coconutclaw_provider::run_provider;
 
-
 use crate::context::{append_memory_and_tasks, build_context};
 use crate::markers::{
     ParsedMarkers, extract_assistant_text_from_json_stream, extract_error_summary, parse_markers,
     recover_unstructured_reply, render_output, should_retry_provider_failure,
 };
 use crate::store::{Store, TurnRecord};
-use crate::telegram::{
-    build_telegram_client, spawn_progress_updater, telegram_download_file,
-};
+use crate::telegram::{build_telegram_client, spawn_progress_updater, telegram_download_file};
 use crate::{
-    InputType, TurnInput, QuotedMessage, TurnResult, TurnStatus, IncomingMedia,
-    clear_cancel_marker, command_exists, iso_now,
-    maybe_spawn_cancel_watcher, resolve_instance_path, asr_feature_enabled,
+    IncomingMedia, InputType, QuotedMessage, TurnInput, TurnResult, TurnStatus,
+    asr_feature_enabled, clear_cancel_marker, command_exists, iso_now, maybe_spawn_cancel_watcher,
+    resolve_instance_path,
 };
 
 pub(crate) fn process_turn(
@@ -161,7 +158,11 @@ pub(crate) fn process_turn(
     Ok(render_output(&telegram_reply, &voice_reply, &markers))
 }
 
-pub(crate) fn resolve_turn_result(raw_output: &str, provider_success: bool, cancelled: bool) -> TurnResult {
+pub(crate) fn resolve_turn_result(
+    raw_output: &str,
+    provider_success: bool,
+    cancelled: bool,
+) -> TurnResult {
     if cancelled {
         return TurnResult {
             markers: ParsedMarkers::default(),
@@ -252,15 +253,13 @@ pub(crate) fn resolve_turn_input(
             .unwrap_or_default()
             .to_ascii_lowercase();
 
-            let (input_type, attachment_type) = match lower.as_str() {
-                "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => {
-                    (InputType::Photo, Some("photo".to_string()))
-                }
-                "mp4" | "mkv" | "avi" | "mov" | "webm" => {
-                    (InputType::Video, Some("video".to_string()))
-                }
-                _ => (InputType::Document, Some("document".to_string())),
-            };
+        let (input_type, attachment_type) = match lower.as_str() {
+            "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => {
+                (InputType::Photo, Some("photo".to_string()))
+            }
+            "mp4" | "mkv" | "avi" | "mov" | "webm" => (InputType::Video, Some("video".to_string())),
+            _ => (InputType::Document, Some("document".to_string())),
+        };
 
         return Ok(TurnInput {
             input_type,
@@ -443,4 +442,3 @@ pub(crate) fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<S
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     Ok(text.trim().to_string())
 }
-
