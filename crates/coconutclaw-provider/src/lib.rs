@@ -212,6 +212,14 @@ fn run_claude(
     let mut cmd = Command::new(&config.claude.bin);
     cmd.arg("-p"); // print mode
 
+    match config.exec_policy.as_str() {
+        "yolo" => {
+            cmd.arg("--dangerously-skip-permissions");
+        }
+        "allowlist" | "strict" => {}
+        other => bail!("invalid EXEC_POLICY: {other}"),
+    }
+
     if let Some(model) = &config.claude.model {
         cmd.arg("--model").arg(model);
     }
@@ -279,6 +287,14 @@ fn run_opencode(
     let mut cmd = Command::new(&config.opencode.bin);
     cmd.arg("run");
 
+    match config.exec_policy.as_str() {
+        "yolo" => {
+            cmd.arg("--yolo");
+        }
+        "allowlist" | "strict" => {}
+        other => bail!("invalid EXEC_POLICY: {other}"),
+    }
+
     if let Some(model) = &config.opencode.model {
         cmd.arg("--model").arg(model);
     }
@@ -339,6 +355,14 @@ fn run_gemini(
 ) -> Result<ProviderOutput> {
     let mut cmd = Command::new(&config.gemini.bin);
     cmd.arg("--prompt").arg(context);
+
+    match config.exec_policy.as_str() {
+        "yolo" => {
+            cmd.arg("--yolo");
+        }
+        "allowlist" | "strict" => {}
+        other => bail!("invalid EXEC_POLICY: {other}"),
+    }
 
     if let Some(model) = &config.gemini.model {
         cmd.arg("--model").arg(model);
@@ -402,6 +426,14 @@ fn run_factory(
 ) -> Result<ProviderOutput> {
     let mut cmd = Command::new(&config.factory.bin);
     cmd.arg("exec");
+
+    match config.exec_policy.as_str() {
+        "yolo" => {
+            cmd.arg("--skip-permissions-unsafe");
+        }
+        "allowlist" | "strict" => {}
+        other => bail!("invalid EXEC_POLICY: {other}"),
+    }
 
     if let Some(model) = &config.factory.model {
         cmd.arg("--model").arg(model);
