@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 pub enum AgentProvider {
     Codex,
     Pi,
+    Claude,
+    OpenCode,
+    Gemini,
+    Factory,
 }
 
 impl AgentProvider {
@@ -17,7 +21,13 @@ impl AgentProvider {
         match raw.trim().to_ascii_lowercase().as_str() {
             "codex" => Ok(Self::Codex),
             "pi" => Ok(Self::Pi),
-            other => bail!("invalid AGENT_PROVIDER: {other} (expected codex or pi)"),
+            "claude" => Ok(Self::Claude),
+            "opencode" => Ok(Self::OpenCode),
+            "gemini" => Ok(Self::Gemini),
+            "factory" => Ok(Self::Factory),
+            other => bail!(
+                "invalid AGENT_PROVIDER: {other} (expected codex, pi, claude, opencode, gemini, or factory)"
+            ),
         }
     }
 
@@ -25,6 +35,10 @@ impl AgentProvider {
         match self {
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Claude => "claude",
+            Self::OpenCode => "opencode",
+            Self::Gemini => "gemini",
+            Self::Factory => "factory",
         }
     }
 }
@@ -50,6 +64,34 @@ pub struct PiConfig {
     pub model: Option<String>,
     pub mode: String,
     pub extra_args: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaudeConfig {
+    pub bin: String,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenCodeConfig {
+    pub bin: String,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeminiConfig {
+    pub bin: String,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FactoryConfig {
+    pub bin: String,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +136,10 @@ pub struct RuntimeConfig {
     pub progress_update_interval_secs: u64,
     pub codex: CodexConfig,
     pub pi: PiConfig,
+    pub claude: ClaudeConfig,
+    pub opencode: OpenCodeConfig,
+    pub gemini: GeminiConfig,
+    pub factory: FactoryConfig,
     pub config_file_path: PathBuf,
 }
 
@@ -137,6 +183,11 @@ NIGHTLY_REFLECTION_PROMPT = ""
 CONTEXT_TURNS = 8
 PROVIDER_MAX_RETRIES = 1
 PROGRESS_UPDATE_INTERVAL = 3
+
+CLAUDE_BIN = "claude"
+OPENCODE_BIN = "opencode"
+GEMINI_BIN = "gemini"
+FACTORY_BIN = "droid"
 "#;
 
 const MIGRATABLE_ENV_KEYS: &[&str] = &[
@@ -164,6 +215,18 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "PI_MODEL",
     "PI_MODE",
     "PI_EXTRA_ARGS",
+    "CLAUDE_BIN",
+    "CLAUDE_MODEL",
+    "CLAUDE_REASONING_EFFORT",
+    "OPENCODE_BIN",
+    "OPENCODE_MODEL",
+    "OPENCODE_REASONING_EFFORT",
+    "GEMINI_BIN",
+    "GEMINI_MODEL",
+    "GEMINI_REASONING_EFFORT",
+    "FACTORY_BIN",
+    "FACTORY_MODEL",
+    "FACTORY_REASONING_EFFORT",
     "ASR_URL",
     "ASR_CMD_TEMPLATE",
     "ASR_FILE_FIELD",
@@ -394,6 +457,58 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
                 .map(ToOwned::to_owned),
             mode: pi_mode,
             extra_args: pick_value("PI_EXTRA_ARGS", &config_file)
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+        },
+        claude: ClaudeConfig {
+            bin: pick_value("CLAUDE_BIN", &config_file).unwrap_or_else(|| "claude".to_string()),
+            model: pick_value("CLAUDE_MODEL", &config_file)
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            reasoning_effort: pick_value("CLAUDE_REASONING_EFFORT", &config_file)
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+        },
+        opencode: OpenCodeConfig {
+            bin: pick_value("OPENCODE_BIN", &config_file).unwrap_or_else(|| "opencode".to_string()),
+            model: pick_value("OPENCODE_MODEL", &config_file)
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            reasoning_effort: pick_value("OPENCODE_REASONING_EFFORT", &config_file)
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+        },
+        gemini: GeminiConfig {
+            bin: pick_value("GEMINI_BIN", &config_file).unwrap_or_else(|| "gemini".to_string()),
+            model: pick_value("GEMINI_MODEL", &config_file)
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            reasoning_effort: pick_value("GEMINI_REASONING_EFFORT", &config_file)
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+        },
+        factory: FactoryConfig {
+            bin: pick_value("FACTORY_BIN", &config_file).unwrap_or_else(|| "droid".to_string()),
+            model: pick_value("FACTORY_MODEL", &config_file)
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            reasoning_effort: pick_value("FACTORY_REASONING_EFFORT", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())

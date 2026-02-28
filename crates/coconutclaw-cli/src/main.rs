@@ -1624,7 +1624,8 @@ mod tests {
     use crate::turn::resolve_turn_result;
     use crate::webhook::webhook_public_endpoint;
     use coconutclaw_config::{
-        AgentProvider, CodexConfig, PiConfig, RuntimeConfig, TelegramParseMode,
+        AgentProvider, ClaudeConfig, CodexConfig, FactoryConfig, GeminiConfig, OpenCodeConfig,
+        PiConfig, RuntimeConfig, TelegramParseMode,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1684,6 +1685,26 @@ mod tests {
                 model: None,
                 mode: "text".to_string(),
                 extra_args: None,
+            },
+            claude: ClaudeConfig {
+                bin: "claude".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+            opencode: OpenCodeConfig {
+                bin: "opencode".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+            gemini: GeminiConfig {
+                bin: "gemini".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+            factory: FactoryConfig {
+                bin: "droid".to_string(),
+                model: None,
+                reasoning_effort: None,
             },
             config_file_path: root.join("config.toml"),
         };

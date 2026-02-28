@@ -33,6 +33,10 @@ pub fn run_provider(
     match config.provider {
         AgentProvider::Codex => run_codex(config, context, cancel_flag, progress_tx),
         AgentProvider::Pi => run_pi(config, context, cancel_flag, progress_tx),
+        AgentProvider::Claude => run_claude(config, context, cancel_flag, progress_tx),
+        AgentProvider::OpenCode => run_opencode(config, context, cancel_flag, progress_tx),
+        AgentProvider::Gemini => run_gemini(config, context, cancel_flag, progress_tx),
+        AgentProvider::Factory => run_factory(config, context, cancel_flag, progress_tx),
     }
 }
 
@@ -186,6 +190,247 @@ fn run_pi(
                 run_result.stderr_text.clone()
             }
         })
+    } else if !run_result.stdout_text.trim().is_empty() {
+        run_result.stdout_text
+    } else {
+        run_result.stderr_text
+    };
+
+    Ok(ProviderOutput {
+        raw_output,
+        success: !run_result.cancelled && run_result.status.success(),
+        exit_code,
+    })
+}
+
+fn run_claude(
+    config: &RuntimeConfig,
+    context: &str,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+    progress_tx: Option<&Sender<String>>,
+) -> Result<ProviderOutput> {
+    let mut cmd = Command::new(&config.claude.bin);
+    cmd.arg("-p"); // print mode
+
+    if let Some(model) = &config.claude.model {
+        cmd.arg("--model").arg(model);
+    }
+
+    if let Some(effort) = &config.claude.reasoning_effort {
+        cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort);
+    }
+
+    if progress_tx.is_some() {
+        // Assume claude code supports some json stream, or parse stderr/stdout
+        // Actually Claude Code might not formally support --output-format stream-json yet,
+        // but we'll try to parse generic messages or fallback to default
+    }
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_child_command(&mut cmd);
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to start {}", config.claude.bin))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(context.as_bytes())
+            .context("failed to write context to claude stdin")?;
+    }
+
+    let run_result = run_child_process(
+        child,
+        cancel_flag,
+        progress_tx,
+        Some(parse_generic_progress_line),
+        "failed waiting for claude command",
+        "failed waiting after claude kill",
+    )?;
+
+    let exit_code = if run_result.cancelled {
+        130
+    } else {
+        run_result.status.code().unwrap_or(1)
+    };
+    let raw_output = if run_result.cancelled {
+        "cancelled".to_string()
+    } else if !run_result.stdout_text.trim().is_empty() {
+        run_result.stdout_text
+    } else {
+        run_result.stderr_text
+    };
+
+    Ok(ProviderOutput {
+        raw_output,
+        success: !run_result.cancelled && run_result.status.success(),
+        exit_code,
+    })
+}
+
+fn run_opencode(
+    config: &RuntimeConfig,
+    context: &str,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+    progress_tx: Option<&Sender<String>>,
+) -> Result<ProviderOutput> {
+    let mut cmd = Command::new(&config.opencode.bin);
+    cmd.arg("run");
+
+    if let Some(model) = &config.opencode.model {
+        cmd.arg("--model").arg(model);
+    }
+
+    if let Some(effort) = &config.opencode.reasoning_effort {
+        cmd.arg("--variant").arg(effort);
+    }
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_child_command(&mut cmd);
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to start {}", config.opencode.bin))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(context.as_bytes())
+            .context("failed to write context to opencode stdin")?;
+    }
+
+    let run_result = run_child_process(
+        child,
+        cancel_flag,
+        progress_tx,
+        Some(parse_generic_progress_line),
+        "failed waiting for opencode command",
+        "failed waiting after opencode kill",
+    )?;
+
+    let exit_code = if run_result.cancelled {
+        130
+    } else {
+        run_result.status.code().unwrap_or(1)
+    };
+    let raw_output = if run_result.cancelled {
+        "cancelled".to_string()
+    } else if !run_result.stdout_text.trim().is_empty() {
+        run_result.stdout_text
+    } else {
+        run_result.stderr_text
+    };
+
+    Ok(ProviderOutput {
+        raw_output,
+        success: !run_result.cancelled && run_result.status.success(),
+        exit_code,
+    })
+}
+
+fn run_gemini(
+    config: &RuntimeConfig,
+    context: &str,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+    progress_tx: Option<&Sender<String>>,
+) -> Result<ProviderOutput> {
+    let mut cmd = Command::new(&config.gemini.bin);
+    cmd.arg("--prompt").arg(context);
+
+    if let Some(model) = &config.gemini.model {
+        cmd.arg("--model").arg(model);
+    }
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_child_command(&mut cmd);
+
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("failed to start {}", config.gemini.bin))?;
+
+    let run_result = run_child_process(
+        child,
+        cancel_flag,
+        progress_tx,
+        Some(parse_generic_progress_line),
+        "failed waiting for gemini command",
+        "failed waiting after gemini kill",
+    )?;
+
+    let exit_code = if run_result.cancelled {
+        130
+    } else {
+        run_result.status.code().unwrap_or(1)
+    };
+    let raw_output = if run_result.cancelled {
+        "cancelled".to_string()
+    } else if !run_result.stdout_text.trim().is_empty() {
+        run_result.stdout_text
+    } else {
+        run_result.stderr_text
+    };
+
+    Ok(ProviderOutput {
+        raw_output,
+        success: !run_result.cancelled && run_result.status.success(),
+        exit_code,
+    })
+}
+
+fn run_factory(
+    config: &RuntimeConfig,
+    context: &str,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+    progress_tx: Option<&Sender<String>>,
+) -> Result<ProviderOutput> {
+    let mut cmd = Command::new(&config.factory.bin);
+    cmd.arg("exec");
+
+    if let Some(model) = &config.factory.model {
+        cmd.arg("--model").arg(model);
+    }
+
+    if let Some(effort) = &config.factory.reasoning_effort {
+        cmd.arg("--reasoning-effort").arg(effort);
+    }
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_child_command(&mut cmd);
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to start {}", config.factory.bin))?;
+
+    // Droid exec supports piped stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(context.as_bytes())
+            .context("failed to write context to factory droid stdin")?;
+    }
+
+    let run_result = run_child_process(
+        child,
+        cancel_flag,
+        progress_tx,
+        Some(parse_generic_progress_line),
+        "failed waiting for factory command",
+        "failed waiting after factory kill",
+    )?;
+
+    let exit_code = if run_result.cancelled {
+        130
+    } else {
+        run_result.status.code().unwrap_or(1)
+    };
+    let raw_output = if run_result.cancelled {
+        "cancelled".to_string()
     } else if !run_result.stdout_text.trim().is_empty() {
         run_result.stdout_text
     } else {
@@ -381,6 +626,25 @@ fn parse_pi_progress_line(line: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn parse_generic_progress_line(line: &str) -> Option<String> {
+    // A simple heuristic for CLI providers that don't have strictly defined SSE JSON logs
+    // but might output JSON logs
+    if let Ok(value) = serde_json::from_str::<Value>(line)
+        && let Some(event_type) = value.get("type").and_then(Value::as_str)
+    {
+        match event_type {
+            "started" | "start" => return Some("Processing...".to_string()),
+            "thinking" | "reasoning" | "thought" => return Some("Reasoning...".to_string()),
+            "tool_call" | "action" => return Some("Running tool...".to_string()),
+            "message" | "chunk" | "assistant_chunk" => {
+                return Some("Drafting response...".to_string());
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn pi_tool_label_from_exec_event(value: &Value) -> Option<String> {
