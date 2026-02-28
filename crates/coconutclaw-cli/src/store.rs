@@ -36,6 +36,7 @@ impl Store {
         conn.execute_batch(SCHEMA_SQL)
             .context("failed to apply sqlite schema")?;
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN duration_ms INTEGER", []);
+        let _ = conn.execute("ALTER TABLE turns RENAME COLUMN codex_raw TO provider_raw", []);
         Ok(Self { conn })
     }
 
@@ -59,7 +60,7 @@ impl Store {
 
     pub(crate) fn insert_turn(&self, turn: &TurnRecord) -> Result<bool> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, codex_raw, telegram_reply, voice_reply, status, update_id, duration_ms)
+            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 turn.ts,
@@ -93,7 +94,7 @@ impl Store {
         update_id: Option<&str>,
     ) -> Result<bool> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, codex_raw, telegram_reply, voice_reply, status, update_id)
+            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id)
              VALUES(?1, ?2, 'system', '---CONTEXT_BOUNDARY---', '', '', '', '', 'boundary', ?3)",
             params![ts, chat_id, update_id],
         )?;
@@ -110,7 +111,7 @@ impl Store {
 
     pub(crate) fn rendered_output_for_update_id(&self, update_id: &str) -> Result<Option<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT codex_raw, telegram_reply, voice_reply
+            "SELECT provider_raw, telegram_reply, voice_reply
              FROM turns
              WHERE update_id = ?1
              ORDER BY id DESC
@@ -121,10 +122,10 @@ impl Store {
             return Ok(None);
         };
 
-        let codex_raw: String = row.get(0)?;
+        let provider_raw: String = row.get(0)?;
         let telegram_reply: String = row.get(1)?;
         let voice_reply: String = row.get(2)?;
-        let mut markers = parse_markers(&codex_raw);
+        let mut markers = parse_markers(&provider_raw);
         if !telegram_reply.trim().is_empty() {
             markers.telegram_reply = Some(telegram_reply.clone());
         }
