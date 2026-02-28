@@ -23,6 +23,8 @@ use crate::markers::parse_markers;
 use crate::webhook::{value_to_string, webhook_public_endpoint};
 use crate::{command_exists, resolve_instance_path};
 
+const TELEGRAM_TEXT_CHAR_LIMIT: usize = 4096;
+
 pub(crate) fn valid_telegram_token(cfg: &RuntimeConfig) -> Option<&str> {
     cfg.telegram_bot_token
         .as_deref()
@@ -217,7 +219,18 @@ pub(crate) fn dispatch_telegram_output(
         let reply = reply.trim();
         if !reply.is_empty() {
             let rendered_reply = render_telegram_reply_text(cfg, reply);
-            send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
+            if should_send_reply_as_document(&rendered_reply) {
+                if let Err(err) =
+                    send_markdown_reply_document(client, cfg, chat_id, reply, progress_message_id)
+                {
+                    tracing::warn!(
+                        "failed to send long reply as markdown document, falling back to text: {err:#}"
+                    );
+                    send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
+                }
+            } else {
+                send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
+            }
         } else if let Some(message_id) = progress_message_id {
             let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
         }
@@ -387,7 +400,7 @@ pub(crate) fn send_or_edit_text(
     text: &str,
     progress_message_id: Option<&str>,
 ) -> Result<()> {
-    let chunks = split_text_chunks(text, 4096);
+    let chunks = split_text_chunks(text, TELEGRAM_TEXT_CHAR_LIMIT);
     if chunks.is_empty() {
         if let Some(message_id) = progress_message_id {
             let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
@@ -426,6 +439,48 @@ pub(crate) fn send_or_edit_text(
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+pub(crate) fn should_send_reply_as_document(text: &str) -> bool {
+    text.chars().count() > TELEGRAM_TEXT_CHAR_LIMIT
+}
+
+fn send_markdown_reply_document(
+    client: &Client,
+    cfg: &RuntimeConfig,
+    chat_id: &str,
+    markdown_text: &str,
+    progress_message_id: Option<&str>,
+) -> Result<()> {
+    let path = cfg.tmp_dir.join(format!(
+        "telegram_reply_{}.md",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let mut content = markdown_text.to_string();
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
+
+    if let Some(message_id) = progress_message_id {
+        let notice = "Reply is long; sent as markdown document.";
+        if let Err(err) =
+            telegram_edit_message_text(client, cfg, chat_id, message_id, notice, false)
+        {
+            tracing::warn!("failed to edit progress message for long reply: {err:#}");
+            let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
+        }
+    }
+
+    let send_result =
+        telegram_send_media_file(client, cfg, chat_id, "sendDocument", "document", &path);
+    let _ = fs::remove_file(&path);
+    send_result
 }
 
 pub(crate) fn split_text_chunks(text: &str, max_chars: usize) -> Vec<String> {

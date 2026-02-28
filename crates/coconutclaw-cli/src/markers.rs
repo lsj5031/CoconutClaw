@@ -269,7 +269,7 @@ fn first_marker_block(marker: &str, payload: &str) -> Option<String> {
                 block.push_str(tail);
             }
 
-            return Some(block.trim_end().to_string());
+            return Some(normalize_inline_escapes(block.trim_end()));
         }
     }
     None
@@ -308,4 +308,51 @@ fn is_marker_line(line: &str) -> bool {
     ]
     .iter()
     .any(|marker| strip_marker(marker, line).is_some())
+}
+
+fn normalize_inline_escapes(input: &str) -> String {
+    if input.contains('\n')
+        || (!input.contains("\\n") && !input.contains("\\r") && !input.contains("\\t"))
+    {
+        return input.to_string();
+    }
+
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    let mut changed = false;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            let prev_is_backslash = i > 0 && bytes[i - 1] == b'\\';
+            if !prev_is_backslash {
+                match bytes[i + 1] {
+                    b'n' => {
+                        out.push('\n');
+                        i += 2;
+                        changed = true;
+                        continue;
+                    }
+                    b'r' => {
+                        out.push('\r');
+                        i += 2;
+                        changed = true;
+                        continue;
+                    }
+                    b't' => {
+                        out.push('\t');
+                        i += 2;
+                        changed = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    if changed { out } else { input.to_string() }
 }

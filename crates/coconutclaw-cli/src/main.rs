@@ -1618,8 +1618,8 @@ mod tests {
     use crate::store::TurnRecord;
     use crate::telegram::{
         progress_status_text, progress_status_with_events, render_markdown_v2_reply,
-        render_telegram_reply_text, should_fallback_plain_for_error, telegram_retry_after_seconds,
-        telegram_text_form_params,
+        render_telegram_reply_text, should_fallback_plain_for_error, should_send_reply_as_document,
+        telegram_retry_after_seconds, telegram_text_form_params,
     };
     use crate::turn::resolve_turn_result;
     use crate::webhook::webhook_public_endpoint;
@@ -1867,6 +1867,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_markers_unescapes_inline_newlines() {
+        let payload = "TELEGRAM_REPLY: line one\\n\\nline two\\nline three";
+        let markers = parse_markers(payload);
+        assert_eq!(
+            markers.telegram_reply.as_deref(),
+            Some("line one\n\nline two\nline three")
+        );
+    }
+
+    #[test]
+    fn parse_markers_keeps_double_escaped_newline_literal() {
+        let payload = r"TELEGRAM_REPLY: keep \\n literal";
+        let markers = parse_markers(payload);
+        assert_eq!(markers.telegram_reply.as_deref(), Some(r"keep \\n literal"));
+    }
+
+    #[test]
     fn recover_unstructured_reply_prefers_json_assistant_text() {
         let payload = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello from JSON"}]}}"#;
         let recovered = recover_unstructured_reply(payload);
@@ -2044,6 +2061,15 @@ mod tests {
         let text = progress_status_text(3);
         let rendered = render_telegram_reply_text(&cfg, &text);
         assert_eq!(rendered, text);
+    }
+
+    #[test]
+    fn long_reply_document_fallback_respects_telegram_limit() {
+        let exact = "a".repeat(4096);
+        assert!(!should_send_reply_as_document(&exact));
+
+        let oversized = "a".repeat(4097);
+        assert!(should_send_reply_as_document(&oversized));
     }
 
     #[test]
