@@ -26,7 +26,7 @@ use crate::telegram::{
     build_telegram_client, spawn_progress_updater, telegram_download_file,
 };
 use crate::{
-    TurnInput, QuotedMessage, TurnResult, IncomingMedia,
+    InputType, TurnInput, QuotedMessage, TurnResult, TurnStatus, IncomingMedia,
     clear_cancel_marker, command_exists, iso_now,
     maybe_spawn_cancel_watcher, resolve_instance_path, asr_feature_enabled,
 };
@@ -142,18 +142,18 @@ pub(crate) fn process_turn(
     let inserted = store.insert_turn(&TurnRecord {
         ts: ts.clone(),
         chat_id,
-        input_type: input.input_type,
+        input_type: input.input_type.to_string(),
         user_text: input.user_text,
         asr_text: input.asr_text,
         provider_raw: raw_output,
         telegram_reply: telegram_reply.clone(),
         voice_reply: voice_reply.clone(),
-        status: status.clone(),
+        status: status.to_string(),
         update_id,
         duration_ms: Some(duration_ms),
     })?;
 
-    if inserted && status != "cancelled" {
+    if inserted && status != TurnStatus::Cancelled {
         append_memory_and_tasks(cfg, store, &ts, &markers)?;
     }
 
@@ -167,7 +167,7 @@ pub(crate) fn resolve_turn_result(raw_output: &str, provider_success: bool, canc
             markers: ParsedMarkers::default(),
             telegram_reply: "❌ Cancelled.".to_string(),
             voice_reply: String::new(),
-            status: "cancelled".to_string(),
+            status: TurnStatus::Cancelled,
         };
     }
 
@@ -180,9 +180,9 @@ pub(crate) fn resolve_turn_result(raw_output: &str, provider_success: bool, canc
             telegram_reply,
             voice_reply,
             status: if provider_success {
-                "ok".to_string()
+                TurnStatus::Ok
             } else {
-                "agent_error".to_string()
+                TurnStatus::AgentError
             },
         };
     }
@@ -193,7 +193,7 @@ pub(crate) fn resolve_turn_result(raw_output: &str, provider_success: bool, canc
                 markers,
                 telegram_reply: recovered,
                 voice_reply: String::new(),
-                status: "parse_recovered".to_string(),
+                status: TurnStatus::ParseRecovered,
             };
         }
         return TurnResult {
@@ -201,7 +201,7 @@ pub(crate) fn resolve_turn_result(raw_output: &str, provider_success: bool, canc
             telegram_reply: "I could not parse structured markers from the model output."
                 .to_string(),
             voice_reply: String::new(),
-            status: "parse_fallback".to_string(),
+            status: TurnStatus::ParseFallback,
         };
     }
 
@@ -210,7 +210,7 @@ pub(crate) fn resolve_turn_result(raw_output: &str, provider_success: bool, canc
             markers,
             telegram_reply: recovered,
             voice_reply: String::new(),
-            status: "agent_error_recovered".to_string(),
+            status: TurnStatus::AgentErrorRecovered,
         };
     }
 
@@ -226,7 +226,7 @@ pub(crate) fn resolve_turn_result(raw_output: &str, provider_success: bool, canc
         markers,
         telegram_reply: format!("Agent execution failed locally. {err_line}"),
         voice_reply: String::new(),
-        status: "agent_error".to_string(),
+        status: TurnStatus::AgentError,
     }
 }
 
@@ -252,15 +252,15 @@ pub(crate) fn resolve_turn_input(
             .unwrap_or_default()
             .to_ascii_lowercase();
 
-        let (input_type, attachment_type) = match lower.as_str() {
-            "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => {
-                ("photo".to_string(), Some("photo".to_string()))
-            }
-            "mp4" | "mkv" | "avi" | "mov" | "webm" => {
-                ("video".to_string(), Some("video".to_string()))
-            }
-            _ => ("document".to_string(), Some("document".to_string())),
-        };
+            let (input_type, attachment_type) = match lower.as_str() {
+                "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => {
+                    (InputType::Photo, Some("photo".to_string()))
+                }
+                "mp4" | "mkv" | "avi" | "mov" | "webm" => {
+                    (InputType::Video, Some("video".to_string()))
+                }
+                _ => (InputType::Document, Some("document".to_string())),
+            };
 
         return Ok(TurnInput {
             input_type,
@@ -273,7 +273,7 @@ pub(crate) fn resolve_turn_input(
     }
 
     Ok(TurnInput {
-        input_type: "text".to_string(),
+        input_type: InputType::Text,
         user_text,
         asr_text: String::new(),
         attachment_type: None,
@@ -314,7 +314,7 @@ pub(crate) fn hydrate_turn_input(
                 return Ok((input, None));
             }
 
-            input.input_type = "voice".to_string();
+            input.input_type = InputType::Voice;
             input.attachment_type = None;
             input.attachment_path = None;
             input.attachment_owned = false;
@@ -345,7 +345,7 @@ pub(crate) fn hydrate_turn_input(
                 tracing::warn!("failed to download photo attachment: {err:#}");
                 return Ok((input, None));
             }
-            input.input_type = "photo".to_string();
+            input.input_type = InputType::Photo;
             input.attachment_type = Some("photo".to_string());
             input.attachment_path = Some(path.clone());
             input.attachment_owned = true;
@@ -361,7 +361,7 @@ pub(crate) fn hydrate_turn_input(
                 tracing::warn!("failed to download document attachment: {err:#}");
                 return Ok((input, None));
             }
-            input.input_type = "document".to_string();
+            input.input_type = InputType::Document;
             input.attachment_type = Some("document".to_string());
             input.attachment_path = Some(path.clone());
             input.attachment_owned = true;
@@ -373,7 +373,7 @@ pub(crate) fn hydrate_turn_input(
                 tracing::warn!("failed to download video attachment: {err:#}");
                 return Ok((input, None));
             }
-            input.input_type = "video".to_string();
+            input.input_type = InputType::Video;
             input.attachment_type = Some("video".to_string());
             input.attachment_path = Some(path.clone());
             input.attachment_owned = true;
@@ -385,7 +385,7 @@ pub(crate) fn hydrate_turn_input(
                 tracing::warn!("failed to download video_note attachment: {err:#}");
                 return Ok((input, None));
             }
-            input.input_type = "video_note".to_string();
+            input.input_type = InputType::VideoNote;
             input.attachment_type = Some("video_note".to_string());
             input.attachment_path = Some(path.clone());
             input.attachment_owned = true;

@@ -103,9 +103,71 @@ enum ServiceAction {
     Uninstall,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputType {
+    Text,
+    Voice,
+    Photo,
+    Video,
+    Document,
+    VideoNote,
+    System,
+}
+
+impl InputType {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Voice => "voice",
+            Self::Photo => "photo",
+            Self::Video => "video",
+            Self::Document => "document",
+            Self::VideoNote => "video_note",
+            Self::System => "system",
+        }
+    }
+}
+
+impl std::fmt::Display for InputType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnStatus {
+    Ok,
+    Cancelled,
+    AgentError,
+    ParseRecovered,
+    ParseFallback,
+    AgentErrorRecovered,
+    Boundary,
+}
+
+impl TurnStatus {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Cancelled => "cancelled",
+            Self::AgentError => "agent_error",
+            Self::ParseRecovered => "parse_recovered",
+            Self::ParseFallback => "parse_fallback",
+            Self::AgentErrorRecovered => "agent_error_recovered",
+            Self::Boundary => "boundary",
+        }
+    }
+}
+
+impl std::fmt::Display for TurnStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TurnInput {
-    input_type: String,
+    input_type: InputType,
     user_text: String,
     asr_text: String,
     attachment_type: Option<String>,
@@ -173,7 +235,7 @@ struct TurnResult {
     markers: ParsedMarkers,
     telegram_reply: String,
     voice_reply: String,
-    status: String,
+    status: TurnStatus,
 }
 
 fn main() -> Result<()> {
@@ -272,7 +334,7 @@ fn run_heartbeat(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
         cfg,
         store,
         TurnInput {
-            input_type: "text".to_string(),
+            input_type: InputType::Text,
             user_text: prompt.to_string(),
             asr_text: String::new(),
             attachment_type: None,
@@ -325,7 +387,7 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
             cfg,
             store,
             TurnInput {
-                input_type: "text".to_string(),
+                input_type: InputType::Text,
                 user_text: prompt.clone(),
                 asr_text: String::new(),
                 attachment_type: None,
@@ -1319,16 +1381,16 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
         .map(ToOwned::to_owned);
 
     let (input_type, attachment_type) = match media.as_ref() {
-        Some(IncomingMedia::Voice { .. }) => ("voice".to_string(), None),
-        Some(IncomingMedia::Photo { .. }) => ("photo".to_string(), Some("photo".to_string())),
+        Some(IncomingMedia::Voice { .. }) => (InputType::Voice, None),
+        Some(IncomingMedia::Photo { .. }) => (InputType::Photo, Some("photo".to_string())),
         Some(IncomingMedia::Document { .. }) => {
-            ("document".to_string(), Some("document".to_string()))
+            (InputType::Document, Some("document".to_string()))
         }
-        Some(IncomingMedia::Video { .. }) => ("video".to_string(), Some("video".to_string())),
+        Some(IncomingMedia::Video { .. }) => (InputType::Video, Some("video".to_string())),
         Some(IncomingMedia::VideoNote { .. }) => {
-            ("video_note".to_string(), Some("video_note".to_string()))
+            (InputType::VideoNote, Some("video_note".to_string()))
         }
-        None => ("text".to_string(), None),
+        None => (InputType::Text, None),
     };
 
     let input = TurnInput {
@@ -1700,7 +1762,7 @@ mod tests {
         let WebhookAction::Turn(turn) = action else {
             panic!("expected turn action");
         };
-        assert_eq!(turn.input.input_type, "voice");
+        assert_eq!(turn.input.input_type, InputType::Voice);
     }
 
     #[test]
@@ -1712,7 +1774,7 @@ mod tests {
         let WebhookAction::Turn(turn) = action else {
             panic!("expected turn action");
         };
-        assert_eq!(turn.input.input_type, "photo");
+        assert_eq!(turn.input.input_type, InputType::Photo);
         assert_eq!(turn.input.attachment_type.as_deref(), Some("photo"));
     }
 
@@ -1840,7 +1902,7 @@ mod tests {
     #[test]
     fn resolve_turn_result_marks_cancelled() {
         let result = resolve_turn_result("TELEGRAM_REPLY: hi", true, true);
-        assert_eq!(result.status, "cancelled");
+        assert_eq!(result.status, TurnStatus::Cancelled);
         assert_eq!(result.telegram_reply, "❌ Cancelled.");
         assert!(result.markers.telegram_reply.is_none());
     }
@@ -1848,7 +1910,7 @@ mod tests {
     #[test]
     fn resolve_turn_result_marks_parse_recovered() {
         let result = resolve_turn_result("plain reply", true, false);
-        assert_eq!(result.status, "parse_recovered");
+        assert_eq!(result.status, TurnStatus::ParseRecovered);
         assert_eq!(result.telegram_reply, "plain reply");
     }
 
@@ -1856,14 +1918,14 @@ mod tests {
     fn resolve_turn_result_marks_agent_error_recovered() {
         let payload = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Recovered"}]}}"#;
         let result = resolve_turn_result(payload, false, false);
-        assert_eq!(result.status, "agent_error_recovered");
+        assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
         assert_eq!(result.telegram_reply, "Recovered");
     }
 
     #[test]
     fn resolve_turn_result_marks_agent_error_when_unrecoverable() {
         let result = resolve_turn_result("network timeout", false, false);
-        assert_eq!(result.status, "agent_error");
+        assert_eq!(result.status, TurnStatus::AgentError);
         assert!(
             result
                 .telegram_reply
@@ -1876,7 +1938,7 @@ mod tests {
         let payload = r#"{"type":"thread.started","thread_id":"abc"}
 {"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window."}}"#;
         let result = resolve_turn_result(payload, false, false);
-        assert_eq!(result.status, "agent_error");
+        assert_eq!(result.status, TurnStatus::AgentError);
         assert!(result.telegram_reply.contains("context window"));
         assert!(
             !result
@@ -1981,7 +2043,7 @@ mod tests {
         let cfg = test_config();
         let store = Store::open(&cfg).expect("store");
         let input = TurnInput {
-            input_type: "text".to_string(),
+            input_type: InputType::Text,
             user_text: "hello".to_string(),
             asr_text: String::new(),
             attachment_type: None,
@@ -2008,7 +2070,7 @@ mod tests {
         cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
         let store = Store::open(&cfg).expect("store");
         let input = TurnInput {
-            input_type: "text".to_string(),
+            input_type: InputType::Text,
             user_text: "hello".to_string(),
             asr_text: String::new(),
             attachment_type: None,
