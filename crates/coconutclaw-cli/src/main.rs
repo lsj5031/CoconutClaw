@@ -316,6 +316,11 @@ fn run_run(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
         tracing::warn!("failed to register bot menu commands: {err:#}");
     }
 
+    // Attempt to recover any in-flight update from a previous crash before entering loops
+    if let Err(err) = restore_inflight_update(cfg, store, &telegram_client) {
+        tracing::warn!("failed to restore inflight update on startup: {err:#}");
+    }
+
     if cfg.webhook_mode {
         run_webhook_loop(cfg, store, &telegram_client, &shutdown)?;
         return Ok(());
@@ -752,10 +757,6 @@ fn run_webhook_loop(
     register_telegram_webhook(telegram_client, cfg)?;
     let _http_server = spawn_webhook_http_server(cfg.clone(), Arc::clone(shutdown))?;
 
-    if let Err(err) = restore_inflight_update(cfg, store, telegram_client) {
-        tracing::warn!("failed to restore inflight webhook update: {err:#}");
-    }
-
     while !shutdown.load(Ordering::SeqCst) {
         let progressed = match drain_webhook_queue(cfg, store, telegram_client, shutdown) {
             Ok(progressed) => progressed,
@@ -855,6 +856,22 @@ fn restore_inflight_update(
                 tracing::warn!("inflight restore ack skipped due queue head mismatch");
             }
             AckStatus::Empty => {
+                if let Some(output) = outcome.output {
+                    if let Err(err) = dispatch_telegram_output(
+                        telegram_client,
+                        cfg,
+                        outcome.chat_id.as_deref(),
+                        &output,
+                        outcome.progress_message_id.as_deref(),
+                    ) {
+                        tracing::warn!(
+                            "failed to dispatch restored inflight output (empty queue): {err:#}"
+                        );
+                    } else {
+                        println!("{output}");
+                        io::stdout().flush().ok();
+                    }
+                }
                 store.clear_inflight()?;
             }
         }

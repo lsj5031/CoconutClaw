@@ -43,14 +43,99 @@ pub(crate) fn render_output(
 }
 
 pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
-    ParsedMarkers {
-        telegram_reply: first_marker_block("TELEGRAM_REPLY", payload),
-        voice_reply: first_marker_block("VOICE_REPLY", payload),
-        send_photo: all_markers("SEND_PHOTO", payload),
-        send_document: all_markers("SEND_DOCUMENT", payload),
-        send_video: all_markers("SEND_VIDEO", payload),
-        memory_append: all_markers("MEMORY_APPEND", payload),
-        task_append: all_markers("TASK_APPEND", payload),
+    let mut markers = ParsedMarkers::default();
+    let mut telegram_blocks = Vec::new();
+    let mut voice_blocks = Vec::new();
+
+    let mut current_marker: Option<&str> = None;
+    let mut current_block = String::new();
+
+    for line in payload.lines() {
+        let line_trimmed = line.trim_start();
+
+        if let Some((marker, content)) = detect_any_marker(line_trimmed) {
+            // Commit previous block
+            commit_block(
+                &mut markers,
+                &mut telegram_blocks,
+                &mut voice_blocks,
+                current_marker,
+                &current_block,
+            );
+
+            // Start new block
+            current_marker = Some(marker);
+            current_block = content.to_string();
+        } else if current_marker.is_some() {
+            // Append to current block
+            if !current_block.is_empty() {
+                current_block.push('\n');
+            }
+            current_block.push_str(line);
+        }
+    }
+
+    // Final commit
+    commit_block(
+        &mut markers,
+        &mut telegram_blocks,
+        &mut voice_blocks,
+        current_marker,
+        &current_block,
+    );
+
+    // Merge multi-block text fields
+    if !telegram_blocks.is_empty() {
+        markers.telegram_reply = Some(normalize_inline_escapes(&telegram_blocks.join("\n\n")));
+    }
+    if !voice_blocks.is_empty() {
+        markers.voice_reply = Some(normalize_inline_escapes(&voice_blocks.join("\n\n")));
+    }
+
+    markers
+}
+
+fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
+    const MARKERS: &[(&str, &str)] = &[
+        ("TELEGRAM_REPLY", "TELEGRAM_REPLY:"),
+        ("VOICE_REPLY", "VOICE_REPLY:"),
+        ("SEND_PHOTO", "SEND_PHOTO:"),
+        ("SEND_DOCUMENT", "SEND_DOCUMENT:"),
+        ("SEND_VIDEO", "SEND_VIDEO:"),
+        ("MEMORY_APPEND", "MEMORY_APPEND:"),
+        ("TASK_APPEND", "TASK_APPEND:"),
+    ];
+
+    for &(name, prefix) in MARKERS {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return Some((name, rest.trim_start()));
+        }
+    }
+    None
+}
+
+fn commit_block(
+    markers: &mut ParsedMarkers,
+    telegram_blocks: &mut Vec<String>,
+    voice_blocks: &mut Vec<String>,
+    marker: Option<&str>,
+    block: &str,
+) {
+    let Some(m) = marker else { return };
+    let content = block.trim();
+    if content.is_empty() {
+        return;
+    }
+
+    match m {
+        "TELEGRAM_REPLY" => telegram_blocks.push(content.to_string()),
+        "VOICE_REPLY" => voice_blocks.push(content.to_string()),
+        "SEND_PHOTO" => markers.send_photo.push(content.to_string()),
+        "SEND_DOCUMENT" => markers.send_document.push(content.to_string()),
+        "SEND_VIDEO" => markers.send_video.push(content.to_string()),
+        "MEMORY_APPEND" => markers.memory_append.push(content.to_string()),
+        "TASK_APPEND" => markers.task_append.push(content.to_string()),
+        _ => {}
     }
 }
 
@@ -77,8 +162,6 @@ pub(crate) fn should_retry_provider_failure(raw_output: &str) -> bool {
     let summary = if let Some(summary) = extract_error_summary(raw_output) {
         summary
     } else if looks_like_json_event_stream(raw_output) {
-        // Avoid false positives from large JSON event streams that may contain words like
-        // "timeout" in tool output even when the final error is non-retryable.
         String::new()
     } else {
         raw_output.to_string()
@@ -252,62 +335,6 @@ fn join_text_blocks(node: &Value) -> Option<String> {
     } else {
         Some(chunks.join("\n"))
     }
-}
-
-fn first_marker_block(marker: &str, payload: &str) -> Option<String> {
-    let lines: Vec<&str> = payload.lines().collect();
-    for (idx, line) in lines.iter().enumerate() {
-        if let Some(value) = strip_marker(marker, line) {
-            let mut block = String::new();
-            block.push_str(value);
-
-            for tail in lines.iter().skip(idx + 1) {
-                if is_marker_line(tail) {
-                    break;
-                }
-                block.push('\n');
-                block.push_str(tail);
-            }
-
-            return Some(normalize_inline_escapes(block.trim_end()));
-        }
-    }
-    None
-}
-
-fn all_markers(marker: &str, payload: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in payload.lines() {
-        if let Some(value) = strip_marker(marker, line)
-            && !value.trim().is_empty()
-        {
-            out.push(value.to_string());
-        }
-    }
-    out
-}
-
-fn strip_marker<'a>(marker: &str, line: &'a str) -> Option<&'a str> {
-    let prefix = format!("{marker}:");
-    let line = line.trim_start();
-    if let Some(rest) = line.strip_prefix(&prefix) {
-        return Some(rest.trim_start());
-    }
-    None
-}
-
-fn is_marker_line(line: &str) -> bool {
-    [
-        "TELEGRAM_REPLY",
-        "VOICE_REPLY",
-        "SEND_PHOTO",
-        "SEND_DOCUMENT",
-        "SEND_VIDEO",
-        "MEMORY_APPEND",
-        "TASK_APPEND",
-    ]
-    .iter()
-    .any(|marker| strip_marker(marker, line).is_some())
 }
 
 fn normalize_inline_escapes(input: &str) -> String {
