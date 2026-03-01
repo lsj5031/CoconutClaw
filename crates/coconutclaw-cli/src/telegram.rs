@@ -614,6 +614,9 @@ pub(crate) fn render_html_reply(text: &str) -> String {
             Event::Text(text) => {
                 html.push_str(&html_escape(&text));
             }
+            Event::Html(raw) | Event::InlineHtml(raw) => {
+                html.push_str(&html_escape(&raw));
+            }
             Event::Code(code) => {
                 html.push_str("<code>");
                 html.push_str(&html_escape(&code));
@@ -1025,5 +1028,16 @@ mod tests {
         let rendered = render_html_reply(text);
         assert!(rendered.contains("<b>gemini</b>"));
         assert!(rendered.contains("<code>cli</code>"));
+    }
+
+    #[test]
+    fn html_preserves_xml_tags() {
+        let text =
+            "Here is some <boltArtifact>content</boltArtifact> and <thinking>stuff</thinking>";
+        let rendered = render_html_reply(text);
+        assert!(rendered.contains("&lt;boltArtifact&gt;"));
+        assert!(rendered.contains("&lt;/boltArtifact&gt;"));
+        assert!(rendered.contains("&lt;thinking&gt;"));
+        assert!(rendered.contains("&lt;/thinking&gt;"));
     }
 }
