@@ -816,6 +816,10 @@ fn parse_claude_progress_line(line: &str) -> Option<String> {
                 for item in content {
                     if item.get("type").and_then(Value::as_str) == Some("tool_use") {
                         let tool_name = item.get("name").and_then(Value::as_str).unwrap_or("tool");
+                        let detail = item.get("input").and_then(claude_tool_input_detail);
+                        if let Some(detail) = detail {
+                            return Some(format!("Running: {tool_name} {detail}"));
+                        }
                         return Some(format!("Running: {tool_name}"));
                     }
                 }
@@ -824,7 +828,12 @@ fn parse_claude_progress_line(line: &str) -> Option<String> {
         }
         "tool_use" => {
             let tool_name = value.get("name").and_then(Value::as_str).unwrap_or("tool");
-            Some(format!("Running: {tool_name}"))
+            let detail = value.get("input").and_then(claude_tool_input_detail);
+            if let Some(detail) = detail {
+                Some(format!("Running: {tool_name} {detail}"))
+            } else {
+                Some(format!("Running: {tool_name}"))
+            }
         }
         "result" => Some("Completed.".to_string()),
         _ => None,
@@ -911,6 +920,24 @@ fn pi_tool_args_detail(args: &Value) -> Option<String> {
         return Some(shorten_status_text(path, 100));
     }
 
+    None
+}
+
+/// Extracts a detail string from Claude tool input (e.g., file path, command).
+fn claude_tool_input_detail(input: &Value) -> Option<String> {
+    // Common tool input fields in order of priority
+    // Pattern/query first for search tools, then paths, then commands
+    let fields = ["pattern", "query", "command", "file_path", "path", "url"];
+    for field in fields {
+        if let Some(value) = input
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return Some(shorten_status_text(value, 100));
+        }
+    }
     None
 }
 
@@ -1107,11 +1134,7 @@ fn parse_gemini_progress_line(line: &str) -> Option<String> {
                 .get("tool_name")
                 .and_then(Value::as_str)
                 .unwrap_or("tool");
-            let detail = value
-                .get("parameters")
-                .and_then(|p| p.get("command"))
-                .and_then(Value::as_str)
-                .map(|c| shorten_status_text(c.trim(), 100));
+            let detail = value.get("parameters").and_then(claude_tool_input_detail);
             if let Some(detail) = detail {
                 Some(format!("Running: {tool} {detail}"))
             } else {
@@ -1308,8 +1331,8 @@ fn extract_opencode_json_final(payload: &str) -> Option<String> {
 mod tests {
     use super::{
         extract_factory_json_final, extract_gemini_json_final, extract_opencode_json_final,
-        parse_codex_progress_line, parse_factory_progress_line, parse_gemini_progress_line,
-        parse_pi_progress_line,
+        parse_claude_progress_line, parse_codex_progress_line, parse_factory_progress_line,
+        parse_gemini_progress_line, parse_pi_progress_line,
     };
 
     #[test]
@@ -1439,7 +1462,7 @@ mod tests {
         let line = r#"{"type":"tool_use","tool_name":"read_file","tool_id":"read_file_123","parameters":{"path":"/tmp/foo"}}"#;
         assert_eq!(
             parse_gemini_progress_line(line),
-            Some("Running: read_file".to_string())
+            Some("Running: read_file /tmp/foo".to_string())
         );
     }
 
@@ -1502,6 +1525,35 @@ mod tests {
 {"type":"message","role":"assistant","content":"World!","delta":true}"#;
         let text = extract_gemini_json_final(payload);
         assert_eq!(text.as_deref(), Some("Hello World!"));
+    }
+
+    // Claude tests
+    #[test]
+    fn parses_claude_tool_use_with_command() {
+        let line = r#"{"type":"tool_use","name":"Bash","input":{"command":"ls -la /tmp"}}"#;
+        assert_eq!(
+            parse_claude_progress_line(line),
+            Some("Running: Bash ls -la /tmp".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_claude_tool_use_with_file_path() {
+        let line =
+            r#"{"type":"tool_use","name":"Read","input":{"file_path":"/home/user/src/main.rs"}}"#;
+        assert_eq!(
+            parse_claude_progress_line(line),
+            Some("Running: Read /home/user/src/main.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_claude_assistant_tool_use_with_detail() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"fn main","path":"src/"}}]}}"#;
+        assert_eq!(
+            parse_claude_progress_line(line),
+            Some("Running: Grep fn main".to_string())
+        );
     }
 
     // Factory/Droid tests
