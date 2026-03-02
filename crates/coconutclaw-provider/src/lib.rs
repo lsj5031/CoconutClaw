@@ -15,6 +15,36 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Parses a bin string that may contain environment variables.
+/// Format: `[KEY=value ...] /path/to/binary`
+/// Returns (env_vars, binary_path) where env_vars is a Vec of (key, value) pairs.
+fn parse_bin_with_env(bin: &str) -> (Vec<(String, String)>, &str) {
+    let mut env_vars = Vec::new();
+    let mut remaining = bin.trim();
+
+    while let Some(space_pos) = remaining.find(' ') {
+        let part = &remaining[..space_pos];
+        // Check if this looks like an env var (contains = but doesn't start with / or .)
+        if part.contains('=')
+            && !part.starts_with('/')
+            && !part.starts_with('.')
+            && !part.starts_with('~')
+        {
+            if let Some(eq_pos) = part.find('=') {
+                let key = &part[..eq_pos];
+                let value = &part[eq_pos + 1..];
+                env_vars.push((key.to_string(), value.to_string()));
+            }
+            remaining = remaining[space_pos + 1..].trim_start();
+        } else {
+            // Not an env var, the rest is the binary path
+            break;
+        }
+    }
+
+    (env_vars, remaining)
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderOutput {
     pub raw_output: String,
@@ -225,7 +255,11 @@ fn run_claude(
     progress_tx: Option<&Sender<String>>,
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
-    let mut cmd = Command::new(&config.claude.bin);
+    let (env_vars, bin_path) = parse_bin_with_env(&config.claude.bin);
+    let mut cmd = Command::new(bin_path);
+    for (key, value) in env_vars {
+        cmd.env(&key, &value);
+    }
     cmd.arg("-p"); // print mode
 
     match config.exec_policy.as_str() {
@@ -245,9 +279,7 @@ fn run_claude(
     }
 
     if progress_tx.is_some() {
-        // Assume claude code supports some json stream, or parse stderr/stdout
-        // Actually Claude Code might not formally support --output-format stream-json yet,
-        // but we'll try to parse generic messages or fallback to default
+        cmd.arg("--output-format").arg("stream-json");
     }
 
     cmd.stdin(Stdio::piped())
@@ -257,7 +289,7 @@ fn run_claude(
 
     let mut child = cmd
         .spawn()
-        .with_context(|| format!("failed to start {}", config.claude.bin))?;
+        .with_context(|| format!("failed to start {}", bin_path))?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -269,7 +301,7 @@ fn run_claude(
         child,
         cancel_flag,
         progress_tx,
-        Some(parse_generic_progress_line),
+        Some(parse_claude_progress_line),
         "failed waiting for claude command",
         "failed waiting after claude kill",
         timeout_secs,
@@ -284,6 +316,15 @@ fn run_claude(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
+    } else if progress_tx.is_some() && run_result.status.success() {
+        // In stream-json mode, extract the final assistant message from the JSON stream.
+        extract_claude_json_final(&run_result.stdout_text).unwrap_or_else(|| {
+            if !run_result.stdout_text.trim().is_empty() {
+                run_result.stdout_text.clone()
+            } else {
+                run_result.stderr_text.clone()
+            }
+        })
     } else if !run_result.stdout_text.trim().is_empty() {
         run_result.stdout_text
     } else {
@@ -322,6 +363,9 @@ fn run_opencode(
     if let Some(effort) = &config.opencode.reasoning_effort {
         cmd.arg("--variant").arg(effort);
     }
+    if progress_tx.is_some() {
+        cmd.arg("--output-format").arg("stream-json");
+    }
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -357,6 +401,15 @@ fn run_opencode(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
+    } else if progress_tx.is_some() && run_result.status.success() {
+        // In stream-json mode, extract the final message from the JSON stream.
+        extract_opencode_json_final(&run_result.stdout_text).unwrap_or_else(|| {
+            if !run_result.stdout_text.trim().is_empty() {
+                run_result.stdout_text.clone()
+            } else {
+                run_result.stderr_text.clone()
+            }
+        })
     } else if !run_result.stdout_text.trim().is_empty() {
         run_result.stdout_text
     } else {
@@ -470,6 +523,9 @@ fn run_factory(
     if let Some(effort) = &config.factory.reasoning_effort {
         cmd.arg("--reasoning-effort").arg(effort);
     }
+    if progress_tx.is_some() {
+        cmd.arg("-o").arg("stream-json");
+    }
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -491,7 +547,7 @@ fn run_factory(
         child,
         cancel_flag,
         progress_tx,
-        Some(parse_generic_progress_line),
+        Some(parse_factory_progress_line),
         "failed waiting for factory command",
         "failed waiting after factory kill",
         timeout_secs,
@@ -506,6 +562,15 @@ fn run_factory(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
+    } else if progress_tx.is_some() && run_result.status.success() {
+        // In stream-json mode, extract the finalText from completion event.
+        extract_factory_json_final(&run_result.stdout_text).unwrap_or_else(|| {
+            if !run_result.stdout_text.trim().is_empty() {
+                run_result.stdout_text.clone()
+            } else {
+                run_result.stderr_text.clone()
+            }
+        })
     } else if !run_result.stdout_text.trim().is_empty() {
         run_result.stdout_text
     } else {
@@ -733,6 +798,70 @@ fn parse_generic_progress_line(line: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn parse_claude_progress_line(line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let event_type = value.get("type").and_then(Value::as_str)?;
+
+    match event_type {
+        "system" => Some("Processing...".to_string()),
+        "assistant" => {
+            // Check for tool use in the message
+            if let Some(content) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(Value::as_array)
+            {
+                for item in content {
+                    if item.get("type").and_then(Value::as_str) == Some("tool_use") {
+                        let tool_name = item.get("name").and_then(Value::as_str).unwrap_or("tool");
+                        return Some(format!("Running: {tool_name}"));
+                    }
+                }
+            }
+            Some("Drafting response...".to_string())
+        }
+        "tool_use" => {
+            let tool_name = value.get("name").and_then(Value::as_str).unwrap_or("tool");
+            Some(format!("Running: {tool_name}"))
+        }
+        "result" => Some("Completed.".to_string()),
+        _ => None,
+    }
+}
+
+fn extract_claude_json_final(payload: &str) -> Option<String> {
+    let mut final_text: Option<String> = None;
+
+    for line in payload.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        if event_type == "assistant"
+            && let Some(content) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(Value::as_array)
+        {
+            for item in content {
+                if item.get("type").and_then(Value::as_str) == Some("text")
+                    && let Some(text) = item.get("text").and_then(Value::as_str)
+                {
+                    match &mut final_text {
+                        Some(existing) => existing.push_str(text),
+                        None => final_text = Some(text.to_string()),
+                    }
+                }
+            }
+        }
+    }
+
+    final_text
 }
 
 fn pi_tool_label_from_exec_event(value: &Value) -> Option<String> {
@@ -1044,10 +1173,142 @@ fn extract_gemini_json_final(payload: &str) -> Option<String> {
     final_text
 }
 
+/// Parses Factory/Droid stream-json progress lines.
+/// Format: {"type":"system|message|tool_call|tool_result|completion",...}
+fn parse_factory_progress_line(line: &str) -> Option<String> {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return None;
+    };
+
+    let event_type = value.get("type").and_then(Value::as_str)?;
+
+    match event_type {
+        "system" => {
+            let model = value
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            Some(format!("[Factory] Initialized with {}", model))
+        }
+        "message" => {
+            let role = value.get("role").and_then(Value::as_str).unwrap_or("");
+            if role == "assistant" {
+                let text = value.get("text").and_then(Value::as_str).unwrap_or("");
+                if !text.is_empty() {
+                    Some(format!("[Factory] {}", text))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        "tool_call" => {
+            let tool_name = value
+                .get("toolName")
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
+            let params = value.get("parameters");
+            let detail = if let Some(p) = params {
+                if let Some(cmd) = p.get("command").and_then(Value::as_str) {
+                    format!(": {}", cmd)
+                } else if let Some(path) = p.get("file_path").and_then(Value::as_str) {
+                    format!(": {}", path)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+            Some(format!("[Factory] Tool: {}{}", tool_name, detail))
+        }
+        "tool_result" => {
+            // Skip tool results, they can be verbose
+            None
+        }
+        "completion" => {
+            let duration = value.get("durationMs").and_then(Value::as_u64).unwrap_or(0);
+            let turns = value.get("numTurns").and_then(Value::as_u64).unwrap_or(0);
+            Some(format!(
+                "[Factory] Completed in {}ms, {} turns",
+                duration, turns
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Extracts final text from Factory/Droid stream-json completion event.
+fn extract_factory_json_final(payload: &str) -> Option<String> {
+    for line in payload.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        if event_type == "completion"
+            && let Some(final_text) = value.get("finalText").and_then(Value::as_str)
+            && !final_text.trim().is_empty()
+        {
+            return Some(final_text.to_string());
+        }
+    }
+    None
+}
+
+/// Extracts final output from OpenCode stream-json format.
+/// OpenCode uses similar format to Codex with result events.
+fn extract_opencode_json_final(payload: &str) -> Option<String> {
+    let mut final_text: Option<String> = None;
+
+    for line in payload.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+
+        // Check for result type (similar to Codex)
+        if let Some(event_type) = value.get("type").and_then(Value::as_str) {
+            if event_type == "result"
+                && let Some(result) = value.get("result").and_then(Value::as_str)
+                && !result.trim().is_empty()
+            {
+                return Some(result.to_string());
+            }
+            // Also check for assistant messages with content
+            if event_type == "message"
+                && value.get("role").and_then(Value::as_str) == Some("assistant")
+                && let Some(content) = value.get("content").and_then(Value::as_str)
+                && !content.trim().is_empty()
+            {
+                match &mut final_text {
+                    Some(existing) => {
+                        existing.push_str(content);
+                    }
+                    None => {
+                        final_text = Some(content.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fallback: check for output field
+        if let Some(output) = value.get("output").and_then(Value::as_str)
+            && !output.trim().is_empty()
+        {
+            final_text = Some(output.to_string());
+        }
+    }
+
+    final_text
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_gemini_json_final, parse_codex_progress_line, parse_gemini_progress_line,
+        extract_factory_json_final, extract_gemini_json_final, extract_opencode_json_final,
+        parse_codex_progress_line, parse_factory_progress_line, parse_gemini_progress_line,
         parse_pi_progress_line,
     };
 
@@ -1241,5 +1502,80 @@ mod tests {
 {"type":"message","role":"assistant","content":"World!","delta":true}"#;
         let text = extract_gemini_json_final(payload);
         assert_eq!(text.as_deref(), Some("Hello World!"));
+    }
+
+    // Factory/Droid tests
+    #[test]
+    fn parses_factory_system_progress() {
+        let line = r#"{"type":"system","subtype":"init","cwd":"/path","session_id":"abc","model":"claude-sonnet-4-5-20250929"}"#;
+        assert_eq!(
+            parse_factory_progress_line(line),
+            Some("[Factory] Initialized with claude-sonnet-4-5-20250929".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_factory_message_progress() {
+        let line = r#"{"type":"message","role":"assistant","text":"I'll run the ls command"}"#;
+        assert_eq!(
+            parse_factory_progress_line(line),
+            Some("[Factory] I'll run the ls command".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_factory_tool_call_progress() {
+        let line = r#"{"type":"tool_call","toolName":"Execute","parameters":{"command":"ls -la"}}"#;
+        assert_eq!(
+            parse_factory_progress_line(line),
+            Some("[Factory] Tool: Execute: ls -la".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_factory_tool_call_read_progress() {
+        let line =
+            r#"{"type":"tool_call","toolName":"Read","parameters":{"file_path":"src/main.rs"}}"#;
+        assert_eq!(
+            parse_factory_progress_line(line),
+            Some("[Factory] Tool: Read: src/main.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_factory_completion_progress() {
+        let line = r#"{"type":"completion","finalText":"Done","numTurns":2,"durationMs":3000}"#;
+        assert_eq!(
+            parse_factory_progress_line(line),
+            Some("[Factory] Completed in 3000ms, 2 turns".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_factory_final_text() {
+        let payload = r#"{"type":"system","subtype":"init","session_id":"abc"}
+{"type":"message","role":"assistant","text":"Running command..."}
+{"type":"tool_call","toolName":"Execute","parameters":{"command":"ls"}}
+{"type":"completion","finalText":"The ls command completed successfully.","numTurns":1,"durationMs":1500}"#;
+        let text = extract_factory_json_final(payload);
+        assert_eq!(
+            text.as_deref(),
+            Some("The ls command completed successfully.")
+        );
+    }
+
+    // OpenCode tests
+    #[test]
+    fn extracts_opencode_final_from_result() {
+        let payload = r#"{"type":"result","result":"Task completed successfully"}"#;
+        let text = extract_opencode_json_final(payload);
+        assert_eq!(text.as_deref(), Some("Task completed successfully"));
+    }
+
+    #[test]
+    fn extracts_opencode_final_from_assistant_message() {
+        let payload = r#"{"type":"message","role":"assistant","content":"Here's the answer!"}"#;
+        let text = extract_opencode_json_final(payload);
+        assert_eq!(text.as_deref(), Some("Here's the answer!"));
     }
 }
