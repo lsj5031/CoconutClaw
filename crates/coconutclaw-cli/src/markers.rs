@@ -344,32 +344,30 @@ fn normalize_inline_escapes(input: &str) -> String {
         return input.to_string();
     }
 
-    let bytes = input.as_bytes();
+    // Scan for escape sequences. If any exist, we need to process them.
+    // Use character iteration to preserve UTF-8 multi-byte characters.
+    let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());
     let mut i = 0usize;
-    let mut changed = false;
 
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            let prev_is_backslash = i > 0 && bytes[i - 1] == b'\\';
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            let prev_is_backslash = i > 0 && chars[i - 1] == '\\';
             if !prev_is_backslash {
-                match bytes[i + 1] {
-                    b'n' => {
+                match chars[i + 1] {
+                    'n' => {
                         out.push('\n');
                         i += 2;
-                        changed = true;
                         continue;
                     }
-                    b'r' => {
+                    'r' => {
                         out.push('\r');
                         i += 2;
-                        changed = true;
                         continue;
                     }
-                    b't' => {
+                    't' => {
                         out.push('\t');
                         i += 2;
-                        changed = true;
                         continue;
                     }
                     _ => {}
@@ -377,9 +375,9 @@ fn normalize_inline_escapes(input: &str) -> String {
             }
         }
 
-        out.push(bytes[i] as char);
+        out.push(chars[i]);
         i += 1;
     }
 
-    if changed { out } else { input.to_string() }
+    out
 }
