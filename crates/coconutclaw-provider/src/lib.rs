@@ -12,9 +12,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
-use std::time::Duration;
-#[cfg(unix)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
@@ -29,14 +27,23 @@ pub fn run_provider(
     context: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
     progress_tx: Option<&Sender<String>>,
+    timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     match config.provider {
-        AgentProvider::Codex => run_codex(config, context, cancel_flag, progress_tx),
-        AgentProvider::Pi => run_pi(config, context, cancel_flag, progress_tx),
-        AgentProvider::Claude => run_claude(config, context, cancel_flag, progress_tx),
-        AgentProvider::OpenCode => run_opencode(config, context, cancel_flag, progress_tx),
-        AgentProvider::Gemini => run_gemini(config, context, cancel_flag, progress_tx),
-        AgentProvider::Factory => run_factory(config, context, cancel_flag, progress_tx),
+        AgentProvider::Codex => run_codex(config, context, cancel_flag, progress_tx, timeout_secs),
+        AgentProvider::Pi => run_pi(config, context, cancel_flag, progress_tx, timeout_secs),
+        AgentProvider::Claude => {
+            run_claude(config, context, cancel_flag, progress_tx, timeout_secs)
+        }
+        AgentProvider::OpenCode => {
+            run_opencode(config, context, cancel_flag, progress_tx, timeout_secs)
+        }
+        AgentProvider::Gemini => {
+            run_gemini(config, context, cancel_flag, progress_tx, timeout_secs)
+        }
+        AgentProvider::Factory => {
+            run_factory(config, context, cancel_flag, progress_tx, timeout_secs)
+        }
     }
 }
 
@@ -45,6 +52,7 @@ fn run_codex(
     context: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
     progress_tx: Option<&Sender<String>>,
+    timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     let out_file = config
         .tmp_dir
@@ -101,10 +109,11 @@ fn run_codex(
         Some(parse_codex_progress_line),
         "failed waiting for codex command",
         "failed waiting after codex kill",
+        timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled {
-        130
+    let exit_code = if run_result.cancelled || run_result.timed_out {
+        if run_result.timed_out { 124 } else { 130 }
     } else {
         run_result.status.code().unwrap_or(1)
     };
@@ -112,7 +121,9 @@ fn run_codex(
     let final_message = fs::read_to_string(&out_file).unwrap_or_default();
     let _ = fs::remove_file(&out_file);
 
-    let raw_output = if run_result.cancelled {
+    let raw_output = if run_result.timed_out {
+        "provider execution timed out".to_string()
+    } else if run_result.cancelled {
         "cancelled".to_string()
     } else if run_result.status.success() && !final_message.trim().is_empty() {
         final_message
@@ -134,6 +145,7 @@ fn run_pi(
     context: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
     progress_tx: Option<&Sender<String>>,
+    timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     let pi_mode = if progress_tx.is_some() {
         // JSON mode exposes structured streaming events we can forward as progress.
@@ -172,15 +184,18 @@ fn run_pi(
         Some(parse_pi_progress_line),
         "failed waiting for pi command",
         "failed waiting after pi kill",
+        timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled {
-        130
+    let exit_code = if run_result.cancelled || run_result.timed_out {
+        if run_result.timed_out { 124 } else { 130 }
     } else {
         run_result.status.code().unwrap_or(1)
     };
 
-    let raw_output = if run_result.cancelled {
+    let raw_output = if run_result.timed_out {
+        "provider execution timed out".to_string()
+    } else if run_result.cancelled {
         "cancelled".to_string()
     } else if run_result.status.success() && pi_mode == "json" {
         extract_pi_json_final(&run_result.stdout_text).unwrap_or_else(|| {
@@ -208,6 +223,7 @@ fn run_claude(
     context: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
     progress_tx: Option<&Sender<String>>,
+    timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     let mut cmd = Command::new(&config.claude.bin);
     cmd.arg("-p"); // print mode
@@ -256,14 +272,17 @@ fn run_claude(
         Some(parse_generic_progress_line),
         "failed waiting for claude command",
         "failed waiting after claude kill",
+        timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled {
-        130
+    let exit_code = if run_result.cancelled || run_result.timed_out {
+        if run_result.timed_out { 124 } else { 130 }
     } else {
         run_result.status.code().unwrap_or(1)
     };
-    let raw_output = if run_result.cancelled {
+    let raw_output = if run_result.timed_out {
+        "provider execution timed out".to_string()
+    } else if run_result.cancelled {
         "cancelled".to_string()
     } else if !run_result.stdout_text.trim().is_empty() {
         run_result.stdout_text
@@ -283,6 +302,7 @@ fn run_opencode(
     context: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
     progress_tx: Option<&Sender<String>>,
+    timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     let mut cmd = Command::new(&config.opencode.bin);
     cmd.arg("run");
@@ -325,14 +345,17 @@ fn run_opencode(
         Some(parse_generic_progress_line),
         "failed waiting for opencode command",
         "failed waiting after opencode kill",
+        timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled {
-        130
+    let exit_code = if run_result.cancelled || run_result.timed_out {
+        if run_result.timed_out { 124 } else { 130 }
     } else {
         run_result.status.code().unwrap_or(1)
     };
-    let raw_output = if run_result.cancelled {
+    let raw_output = if run_result.timed_out {
+        "provider execution timed out".to_string()
+    } else if run_result.cancelled {
         "cancelled".to_string()
     } else if !run_result.stdout_text.trim().is_empty() {
         run_result.stdout_text
@@ -352,6 +375,7 @@ fn run_gemini(
     context: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
     progress_tx: Option<&Sender<String>>,
+    timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     let mut cmd = Command::new(&config.gemini.bin);
     cmd.arg("--prompt").arg(context);
@@ -387,14 +411,17 @@ fn run_gemini(
         Some(parse_gemini_progress_line),
         "failed waiting for gemini command",
         "failed waiting after gemini kill",
+        timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled {
-        130
+    let exit_code = if run_result.cancelled || run_result.timed_out {
+        if run_result.timed_out { 124 } else { 130 }
     } else {
         run_result.status.code().unwrap_or(1)
     };
-    let raw_output = if run_result.cancelled {
+    let raw_output = if run_result.timed_out {
+        "provider execution timed out".to_string()
+    } else if run_result.cancelled {
         "cancelled".to_string()
     } else if progress_tx.is_some() && run_result.status.success() {
         // In stream-json mode, extract the final assistant message from the JSON stream.
@@ -423,6 +450,7 @@ fn run_factory(
     context: &str,
     cancel_flag: Option<&Arc<AtomicBool>>,
     progress_tx: Option<&Sender<String>>,
+    timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     let mut cmd = Command::new(&config.factory.bin);
     cmd.arg("exec");
@@ -466,14 +494,17 @@ fn run_factory(
         Some(parse_generic_progress_line),
         "failed waiting for factory command",
         "failed waiting after factory kill",
+        timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled {
-        130
+    let exit_code = if run_result.cancelled || run_result.timed_out {
+        if run_result.timed_out { 124 } else { 130 }
     } else {
         run_result.status.code().unwrap_or(1)
     };
-    let raw_output = if run_result.cancelled {
+    let raw_output = if run_result.timed_out {
+        "provider execution timed out".to_string()
+    } else if run_result.cancelled {
         "cancelled".to_string()
     } else if !run_result.stdout_text.trim().is_empty() {
         run_result.stdout_text
@@ -491,6 +522,7 @@ fn run_factory(
 struct ProcessRunResult {
     status: ExitStatus,
     cancelled: bool,
+    timed_out: bool,
     stdout_text: String,
     stderr_text: String,
 }
@@ -502,6 +534,7 @@ fn run_child_process(
     parse_progress: Option<fn(&str) -> Option<String>>,
     wait_context: &'static str,
     kill_wait_context: &'static str,
+    timeout_secs: Option<u64>,
 ) -> Result<ProcessRunResult> {
     let progress_sender = progress_tx.cloned();
     let stdout_handle = child.stdout.take().map(|stdout| {
@@ -534,7 +567,10 @@ fn run_child_process(
         })
     });
 
+    let start = Instant::now();
+    let timeout_duration = timeout_secs.map(Duration::from_secs);
     let mut cancelled = false;
+    let mut timed_out = false;
     let status = 'outer: loop {
         if let Some(status) = child.try_wait().context(wait_context)? {
             break status;
@@ -543,6 +579,13 @@ fn run_child_process(
             && cancel_flag.load(Ordering::SeqCst)
         {
             cancelled = true;
+            break 'outer terminate_cancelled_child(&mut child, wait_context, kill_wait_context)?;
+        }
+        if let Some(timeout) = timeout_duration
+            && start.elapsed() >= timeout
+        {
+            timed_out = true;
+            tracing::warn!("provider process timed out after {}s", timeout.as_secs());
             break 'outer terminate_cancelled_child(&mut child, wait_context, kill_wait_context)?;
         }
         thread::sleep(Duration::from_millis(200));
@@ -558,6 +601,7 @@ fn run_child_process(
     Ok(ProcessRunResult {
         status,
         cancelled,
+        timed_out,
         stdout_text,
         stderr_text,
     })

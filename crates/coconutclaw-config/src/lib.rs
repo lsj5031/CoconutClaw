@@ -134,6 +134,9 @@ pub struct RuntimeConfig {
     pub context_turns: u32,
     pub provider_max_retries: u32,
     pub progress_update_interval_secs: u64,
+    pub telegram_api_timeout_secs: u64,
+    pub telegram_api_retry_attempts: u32,
+    pub provider_timeout_secs: u64,
     pub codex: CodexConfig,
     pub pi: PiConfig,
     pub claude: ClaudeConfig,
@@ -183,6 +186,9 @@ NIGHTLY_REFLECTION_PROMPT = ""
 CONTEXT_TURNS = 8
 PROVIDER_MAX_RETRIES = 1
 PROGRESS_UPDATE_INTERVAL = 3
+TELEGRAM_API_TIMEOUT_SECS = 30
+TELEGRAM_API_RETRY_ATTEMPTS = 3
+PROVIDER_TIMEOUT_SECS = 300
 
 CLAUDE_BIN = "claude"
 OPENCODE_BIN = "opencode"
@@ -242,6 +248,9 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "CONTEXT_TURNS",
     "PROVIDER_MAX_RETRIES",
     "PROGRESS_UPDATE_INTERVAL",
+    "TELEGRAM_API_TIMEOUT_SECS",
+    "TELEGRAM_API_RETRY_ATTEMPTS",
+    "PROVIDER_TIMEOUT_SECS",
 ];
 
 impl RuntimeConfig {
@@ -390,6 +399,17 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(3);
+    let telegram_api_timeout_secs = pick_value("TELEGRAM_API_TIMEOUT_SECS", &config_file)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(30);
+    let telegram_api_retry_attempts = pick_value("TELEGRAM_API_RETRY_ATTEMPTS", &config_file)
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(3);
+    let provider_timeout_secs = pick_value("PROVIDER_TIMEOUT_SECS", &config_file)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(300);
 
     let cfg = RuntimeConfig {
         root_dir,
@@ -430,6 +450,9 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         context_turns,
         provider_max_retries,
         progress_update_interval_secs,
+        telegram_api_timeout_secs,
+        telegram_api_retry_attempts,
+        provider_timeout_secs,
         codex: CodexConfig {
             bin: pick_value("CODEX_BIN", &config_file).unwrap_or_else(|| "codex".to_string()),
             model: pick_value("CODEX_MODEL", &config_file)

@@ -85,8 +85,14 @@ pub(crate) fn process_turn(
         (None, None)
     };
 
-    let mut provider_result =
-        run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
+    let provider_timeout = Some(cfg.provider_timeout_secs);
+    let mut provider_result = run_provider(
+        cfg,
+        &context,
+        Some(&cancel_flag),
+        progress_sender.as_ref(),
+        provider_timeout,
+    );
     let mut retries = 0u32;
     while retries < cfg.provider_max_retries {
         let should_retry = match &provider_result {
@@ -105,7 +111,13 @@ pub(crate) fn process_turn(
             attempt = retries + 1,
             "provider failed with retryable error, retrying"
         );
-        provider_result = run_provider(cfg, &context, Some(&cancel_flag), progress_sender.as_ref());
+        provider_result = run_provider(
+            cfg,
+            &context,
+            Some(&cancel_flag),
+            progress_sender.as_ref(),
+            provider_timeout,
+        );
     }
     cancel_watcher_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = cancel_watcher {

@@ -11,3 +11,4 @@ serde_json.workspace = true
 shlex.workspace = true
 coconutclaw-config = { path = "../coconutclaw-config" }
 libc.workspace = true
+tracing.workspace = true

@@ -58,8 +58,9 @@ pub(crate) fn build_telegram_client(cfg: &RuntimeConfig) -> Result<Client> {
     let _ = valid_telegram_chat_id(cfg).ok_or_else(|| {
         anyhow::anyhow!("TELEGRAM_CHAT_ID is missing; set it in instance config.toml")
     })?;
+    let timeout_secs = cfg.telegram_api_timeout_secs.max(1);
     Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()
         .context("failed to build telegram HTTP client")
 }
@@ -409,7 +410,7 @@ pub(crate) fn send_or_edit_text(
     }
 
     let mut chunks_iter = chunks.into_iter();
-    let first_chunk = chunks_iter.next().unwrap();
+    let first_chunk = chunks_iter.next().expect("chunks verified non-empty above");
 
     if let Some(message_id) = progress_message_id {
         if let Err(err) =
@@ -851,16 +852,31 @@ pub(crate) fn telegram_post_form(
 ) -> Result<Value> {
     const MAX_429_RETRY_ATTEMPTS: usize = 1;
     const MAX_429_SLEEP_SECS: u64 = 60;
+    const TRANSIENT_RETRY_BASE_DELAY_MS: u64 = 500;
 
     let mut attempts = 0usize;
     loop {
-        let response = client
-            .post(url)
-            .form(params)
-            .send()
-            .with_context(|| format!("failed to call telegram {action}"))?;
+        let response = match client.post(url).form(params).send() {
+            Ok(resp) => resp,
+            Err(err) => {
+                // Network-level error (connection timeout, DNS failure, etc.)
+                if attempts < TRANSIENT_RETRY_BASE_DELAY_MS.count_ones() as usize {
+                    let delay_ms = TRANSIENT_RETRY_BASE_DELAY_MS * (1 << attempts);
+                    attempts += 1;
+                    tracing::warn!(
+                        "telegram {action} network error, retrying in {delay_ms}ms: {err:#}"
+                    );
+                    thread::sleep(Duration::from_millis(delay_ms));
+                    continue;
+                }
+                bail!("telegram {action} network error after {attempts} retries: {err:#}");
+            }
+        };
 
-        if response.status().as_u16() == 429 {
+        let status = response.status().as_u16();
+
+        // Rate limiting - honor retry-after header
+        if status == 429 {
             let body = response
                 .text()
                 .with_context(|| format!("failed to read telegram {action} response body"))?;
@@ -874,6 +890,21 @@ pub(crate) fn telegram_post_form(
                 continue;
             }
             bail!("telegram {action} HTTP 429: {body}");
+        }
+
+        // Server errors (5xx) - retry with exponential backoff
+        if (500..600).contains(&status) {
+            let body = response.text().unwrap_or_default();
+            if attempts < 3 {
+                let delay_ms = TRANSIENT_RETRY_BASE_DELAY_MS * (1 << attempts);
+                attempts += 1;
+                tracing::warn!(
+                    "telegram {action} server error HTTP {status}, retrying in {delay_ms}ms"
+                );
+                thread::sleep(Duration::from_millis(delay_ms));
+                continue;
+            }
+            bail!("telegram {action} HTTP {status} after {attempts} retries: {body}");
         }
 
         return parse_telegram_response(response, action);

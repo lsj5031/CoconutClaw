@@ -697,6 +697,15 @@ fn run_poll_loop(
                     continue;
                 }
             };
+            // Set inflight checkpoint before processing for crash recovery
+            if let Err(err) = set_inflight_update(
+                store,
+                update_id.map(|id| id.to_string()).as_deref().unwrap_or(""),
+                &line,
+                &cfg.timezone,
+            ) {
+                tracing::warn!("failed to set inflight checkpoint: {err:#}");
+            }
             let outcome = match process_webhook_line(cfg, store, &line) {
                 Ok(outcome) => outcome,
                 Err(err) => {
@@ -1691,6 +1700,9 @@ mod tests {
             context_turns: 8,
             provider_max_retries: 1,
             progress_update_interval_secs: 3,
+            telegram_api_timeout_secs: 30,
+            telegram_api_retry_attempts: 3,
+            provider_timeout_secs: 300,
             codex: CodexConfig {
                 bin: "codex".to_string(),
                 model: None,

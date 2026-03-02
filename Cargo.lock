@@ -299,6 +299,7 @@ dependencies = [
  "libc",
  "serde_json",
  "shlex",
+ "tracing",
 ]
 
 [[package]]
