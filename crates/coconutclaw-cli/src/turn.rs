@@ -28,6 +28,56 @@ use crate::{
     resolve_instance_path,
 };
 
+fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
+    let _span = tracing::info_span!("asr", path = %audio_path.display()).entered();
+    let script = cfg.root_dir.join("scripts/asr.sh");
+    if !script.is_file() {
+        bail!("ASR script not found: {}", script.display());
+    }
+    if !command_exists("bash") {
+        bail!("bash not found; cannot run ASR script");
+    }
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(script)
+        .arg(audio_path)
+        .current_dir(&cfg.root_dir)
+        .env("INSTANCE_DIR", &cfg.instance_dir);
+    if let Some(value) = cfg.asr_url.as_deref() {
+        cmd.env("ASR_URL", value);
+    }
+    if let Some(value) = cfg.asr_cmd_template.as_deref() {
+        cmd.env("ASR_CMD_TEMPLATE", value);
+    }
+    if let Some(value) = cfg.asr_file_field.as_deref() {
+        cmd.env("ASR_FILE_FIELD", value);
+    }
+    if let Some(value) = cfg.asr_text_jq.as_deref() {
+        cmd.env("ASR_TEXT_JQ", value);
+    }
+    if let Some(value) = cfg.asr_preprocess.as_deref() {
+        cmd.env("ASR_PREPROCESS", value);
+    }
+    if let Some(value) = cfg.asr_sample_rate.as_deref() {
+        cmd.env("ASR_SAMPLE_RATE", value);
+    }
+
+    let output = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to execute ASR script")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        bail!("ASR script failed: {stderr}");
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(text.trim().to_string())
+}
+
 pub(crate) fn process_turn(
     cfg: &RuntimeConfig,
     store: &Store,
@@ -87,6 +137,7 @@ pub(crate) fn process_turn(
 
     let provider_timeout = Some(cfg.provider_timeout_secs);
     let mut provider_result = run_provider(
+        input.attachment_path.as_ref(),
         cfg,
         &context,
         Some(&cancel_flag),
@@ -112,6 +163,7 @@ pub(crate) fn process_turn(
             "provider failed with retryable error, retrying"
         );
         provider_result = run_provider(
+            input.attachment_path.as_ref(),
             cfg,
             &context,
             Some(&cancel_flag),
@@ -184,6 +236,16 @@ pub(crate) fn resolve_turn_result(
         };
     }
 
+    // Strip <think>...</think> blocks emitted by reasoning models (e.g. Qwen3.5).
+    let cleaned;
+    let raw_output = if let Some(end) = raw_output.find("</think>") {
+        cleaned = raw_output[end + "</think>".len()..]
+            .trim_start()
+            .to_string();
+        &cleaned
+    } else {
+        raw_output
+    };
     let markers = parse_markers(raw_output);
     let telegram_reply = markers.telegram_reply.clone().unwrap_or_default();
     let voice_reply = markers.voice_reply.clone().unwrap_or_default();
@@ -244,16 +306,13 @@ pub(crate) fn resolve_turn_result(
 }
 
 pub(crate) fn resolve_turn_input(
-    inject_text: Option<String>,
-    inject_file: Option<PathBuf>,
     cfg: &RuntimeConfig,
+    _store: &Store,
+    _update_id: Option<String>,
+    text: Option<String>,
+    file: Option<PathBuf>,
 ) -> Result<TurnInput> {
-    let user_text = inject_text
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "(empty message)".to_string());
-
-    if let Some(path) = inject_file {
+    if let Some(path) = file {
         let resolved = resolve_instance_path(&cfg.instance_dir, path);
         if !resolved.exists() {
             bail!("inject file not found: {}", resolved.display());
@@ -264,7 +323,6 @@ pub(crate) fn resolve_turn_input(
             .and_then(|ext| ext.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-
         let (input_type, attachment_type) = match lower.as_str() {
             "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => {
                 (InputType::Photo, Some("photo".to_string()))
@@ -272,6 +330,11 @@ pub(crate) fn resolve_turn_input(
             "mp4" | "mkv" | "avi" | "mov" | "webm" => (InputType::Video, Some("video".to_string())),
             _ => (InputType::Document, Some("document".to_string())),
         };
+
+        let user_text = text
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "(empty message)".to_string());
 
         return Ok(TurnInput {
             input_type,
@@ -282,6 +345,11 @@ pub(crate) fn resolve_turn_input(
             attachment_owned: false,
         });
     }
+
+    let user_text = text
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "(empty message)".to_string());
 
     Ok(TurnInput {
         input_type: InputType::Text,
@@ -343,8 +411,6 @@ pub(crate) fn hydrate_turn_input(
                         tracing::warn!("ASR failed for voice attachment: {err:#}");
                     }
                 }
-            } else {
-                tracing::info!("voice attachment received but ASR is disabled in config.toml");
             }
 
             let _ = fs::remove_file(voice_path);
@@ -403,54 +469,4 @@ pub(crate) fn hydrate_turn_input(
             Ok((input, Some(path)))
         }
     }
-}
-
-pub(crate) fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
-    let _span = tracing::info_span!("asr", path = %audio_path.display()).entered();
-    let script = cfg.root_dir.join("scripts/asr.sh");
-    if !script.is_file() {
-        bail!("ASR script not found: {}", script.display());
-    }
-    if !command_exists("bash") {
-        bail!("bash not found; cannot run ASR script");
-    }
-
-    let mut cmd = Command::new("bash");
-    cmd.arg(script)
-        .arg(audio_path)
-        .current_dir(&cfg.root_dir)
-        .env("INSTANCE_DIR", &cfg.instance_dir);
-    if let Some(value) = cfg.asr_url.as_deref() {
-        cmd.env("ASR_URL", value);
-    }
-    if let Some(value) = cfg.asr_cmd_template.as_deref() {
-        cmd.env("ASR_CMD_TEMPLATE", value);
-    }
-    if let Some(value) = cfg.asr_file_field.as_deref() {
-        cmd.env("ASR_FILE_FIELD", value);
-    }
-    if let Some(value) = cfg.asr_text_jq.as_deref() {
-        cmd.env("ASR_TEXT_JQ", value);
-    }
-    if let Some(value) = cfg.asr_preprocess.as_deref() {
-        cmd.env("ASR_PREPROCESS", value);
-    }
-    if let Some(value) = cfg.asr_sample_rate.as_deref() {
-        cmd.env("ASR_SAMPLE_RATE", value);
-    }
-
-    let output = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to execute ASR script")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        bail!("ASR script failed: {stderr}");
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    Ok(text.trim().to_string())
 }

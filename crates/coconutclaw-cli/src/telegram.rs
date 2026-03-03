@@ -239,7 +239,10 @@ pub(crate) fn dispatch_telegram_output(
         let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
     }
 
-    if let Some(voice_reply) = markers.voice_reply.as_deref() {
+    // Only attempt voice reply if TTS is configured (tts_cmd_template is set)
+    if cfg.tts_cmd_template.is_some()
+        && let Some(voice_reply) = markers.voice_reply.as_deref()
+    {
         let voice_reply = voice_reply.trim();
         if !voice_reply.is_empty()
             && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)

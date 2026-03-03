@@ -73,6 +73,7 @@ pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
             }
             current_block.push_str(line);
         }
+        // Note: lines before any marker are ignored (not prepended to marker content)
     }
 
     // Final commit

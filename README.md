@@ -15,6 +15,7 @@ CoconutClaw helps you with everyday tasks through Telegram:
 - 📁 **Manage files** - Organize, search, and work with local files
 - 🔧 **Run commands** - Execute shell tasks safely on your machine
 - 🧠 **Remember things** - Persistent memory across conversations
+- 📸 **See images** - Send photos, get accurate descriptions (local vision via llama.cpp)
 - 🗣️ **Voice support** - Send voice notes, get voice replies (optional)
 
 Everything runs **locally on your computer**. Your data stays with you.
@@ -149,13 +150,126 @@ CoconutClaw supports multiple AI backends. Configure your preference in `config.
 | Provider | `AGENT_PROVIDER` | Description |
 |----------|-----------------|-------------|
 | **Codex** | `codex` | Powered by the `codex` CLI tool. Excellent for advanced coding and automation. |
-| **Pi** | `pi` | Powered by the `pi` CLI. Great for general purpose and reasoning. |
+| **Pi** | `pi` | Powered by the `pi-rust` CLI. Great for general purpose and reasoning. Supports vision via `@file` attachments. |
 | **Claude** | `claude` | Integration with `claude` code CLI. |
 | **OpenCode** | `opencode` | Support for OpenCode CLI tools. |
 | **Gemini** | `gemini` | Integration with Gemini CLI. |
 | **Factory** | `factory` | Powered by Factory.ai's `droid` CLI. |
 
 Each provider has its own configuration block in `config.toml` to specify the binary path, model, and reasoning effort.
+
+### Local Vision Stack (Fully Offline)
+
+CoconutClaw can run a **completely local multi-modal pipeline** — no cloud, no API costs. Send a photo on Telegram and get an accurate description powered by your own GPU.
+
+#### What You Need
+
+- An NVIDIA GPU (tested on RTX 3070 8GB)
+- Docker with NVIDIA Container Toolkit
+- A GGUF vision model (e.g., Qwen3.5-4B-Q8_0)
+- `pi-rust` CLI as the agent runner (configured as `PI_BIN`)
+
+#### How It Works
+
+```
+Telegram Photo → CoconutClaw → pi-rust (@image.jpg) → llama-server → Qwen3.5 Vision
+                                  ↓                        ↓
+                            OpenAI Chat API          ChatML + mmproj
+                            (base64 image_url)       (native vision tokens)
+```
+
+1. CoconutClaw downloads the photo from Telegram
+2. Passes it to `pi-rust` via the `@path` convention
+3. `pi-rust` base64-encodes the image into an OpenAI-compatible `image_url` content block
+4. `llama-server` processes it through the multimodal projection model (`mmproj`) alongside the text prompt
+5. The model sees actual pixels and responds accurately
+
+#### Setup
+
+**1. Start llama-server with Docker:**
+
+```yaml
+# docker-compose.yml
+services:
+  qwen3.5-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    entrypoint: /app/llama-server
+    command:
+      - -m
+      - /models/Qwen3.5-4B-Q8_0.gguf
+      - --mmproj
+      - /models/qwen3.5-mmproj-f16.gguf
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "65536"
+      - --n-gpu-layers
+      - "99"
+      - --chat-template
+      - "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+      - --reasoning-format
+      - none
+      - --jinja
+      - --parallel
+      - "4"
+    volumes:
+      - ./:/models
+    ports:
+      - "11234:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+```
+
+**2. Configure the provider in `models.json`:**
+
+```json
+{
+  "providers": {
+    "qwen3.5-local": {
+      "baseUrl": "http://localhost:11234/v1",
+      "apiKey": "dummy",
+      "api": "openai-completions",
+      "models": [{
+        "id": "Qwen3.5-4B-Q8_0.gguf",
+        "name": "Qwen 3.5 4B (Local)",
+        "reasoning": false,
+        "input": ["text", "image"],
+        "contextWindow": 32768,
+        "maxTokens": 32768
+      }]
+    }
+  }
+}
+```
+
+**3. Configure the instance:**
+
+```toml
+AGENT_PROVIDER = "pi"
+PI_BIN = "pi-rust"
+PI_MODEL = "qwen3.5-local/Qwen3.5-4B-Q8_0.gguf"
+PI_NO_EXTENSIONS = "on"  # Disables tools/extensions for llama.cpp compatibility
+```
+
+#### Lessons Learned
+
+| Problem | Symptom | Fix |
+|---------|---------|-----|
+| **Wrong API format** | Model hallucinates image content (never sees pixels) | Set `"api": "openai-completions"` — not `"anthropic-messages"`. llama-server only speaks OpenAI format. |
+| **Missing `/v1` path** | Connection errors or silent failures | Use `"baseUrl": "http://localhost:11234/v1"` — the OpenAI-compatible endpoint requires the `/v1` prefix. |
+| **Generic chat template** | Model ignores visual data | Hardcode the ChatML Jinja template via `--chat-template`. Auto-detection may fall back to "Generic". |
+| **"Use your tools" prompt** | Model tries to `cat` the image file | Tell the model the image is embedded in its input — don't mention file paths or tools. |
+| **`<think>` tag noise** | Empty reasoning blocks in output | Add `/no_think` to SOUL.md; strip `<think>...</think>` in output parsing. |
+| **JSON streaming mismatch** | Raw JSON dumped as Telegram reply | `pi-rust --mode json` uses a different event format than legacy `pi`. Update `extract_pi_json_final` to parse `turn_end`/`agent_end` events. |
+| **Binary context explosions** | 22k+ token context, server hangs | Prevent agents from reading image files as text. Pass images via native `@path` vision pipeline only. |
+| **Slot deadlocks** | Server hangs with `--parallel 1` | Use `--parallel 4` so the main agent and tool calls don't compete for the same slot. |
 
 ---
 

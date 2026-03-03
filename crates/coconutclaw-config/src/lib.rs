@@ -58,15 +58,6 @@ pub struct CodexConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct PiConfig {
-    pub bin: String,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub mode: String,
-    pub extra_args: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 pub struct ClaudeConfig {
     pub bin: String,
     pub model: Option<String>,
@@ -94,6 +85,13 @@ pub struct FactoryConfig {
     pub reasoning_effort: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PiConfig {
+    pub bin: String,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub no_extensions: bool,
+}
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub root_dir: PathBuf,
@@ -361,13 +359,6 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         &pick_value("TELEGRAM_PARSE_FALLBACK", &config_file).unwrap_or_else(|| "plain".to_string()),
     )?;
 
-    let pi_mode = pick_value("PI_MODE", &config_file)
-        .unwrap_or_else(|| "text".to_string())
-        .to_ascii_lowercase();
-    if pi_mode != "text" && pi_mode != "json" {
-        bail!("invalid PI_MODE: {pi_mode} (expected text or json)");
-    }
-
     let asr_url = normalize_optional(pick_value("ASR_URL", &config_file));
     let asr_cmd_template = normalize_optional(pick_value("ASR_CMD_TEMPLATE", &config_file));
     let asr_file_field = normalize_optional(pick_value("ASR_FILE_FIELD", &config_file));
@@ -467,23 +458,21 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
                 .map(ToOwned::to_owned),
         },
         pi: PiConfig {
-            bin: pick_value("PI_BIN", &config_file).unwrap_or_else(|| "pi".to_string()),
-            provider: pick_value("PI_PROVIDER", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
+            bin: pick_value("PI_BIN", &config_file).unwrap_or_else(|| "pi-rust".to_string()),
             model: pick_value("PI_MODEL", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
-            mode: pi_mode,
-            extra_args: pick_value("PI_EXTRA_ARGS", &config_file)
+            reasoning_effort: pick_value("PI_REASONING_EFFORT", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
+            no_extensions: parse_on_off(
+                pick_value("PI_NO_EXTENSIONS", &config_file).as_deref(),
+                false,
+            ),
         },
         claude: ClaudeConfig {
             bin: pick_value("CLAUDE_BIN", &config_file).unwrap_or_else(|| "claude".to_string()),

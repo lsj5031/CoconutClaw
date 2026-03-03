@@ -271,7 +271,13 @@ fn main() -> Result<()> {
 }
 
 fn run_once(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
-    let input = resolve_turn_input(args.inject_text.clone(), args.inject_file.clone(), cfg)?;
+    let input = resolve_turn_input(
+        cfg,
+        store,
+        None,
+        args.inject_text.clone(),
+        args.inject_file.clone(),
+    )?;
     let output = process_turn(
         cfg,
         store,
@@ -291,7 +297,13 @@ fn run_once(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
 
 fn run_run(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
     if args.inject_text.is_some() || args.inject_file.is_some() {
-        let input = resolve_turn_input(args.inject_text.clone(), args.inject_file.clone(), cfg)?;
+        let input = resolve_turn_input(
+            cfg,
+            store,
+            None,
+            args.inject_text.clone(),
+            args.inject_file.clone(),
+        )?;
         let output = process_turn(
             cfg,
             store,
@@ -1709,11 +1721,10 @@ mod tests {
                 reasoning_effort: None,
             },
             pi: PiConfig {
-                bin: "pi".to_string(),
-                provider: None,
+                bin: "pi-rust".to_string(),
                 model: None,
-                mode: "text".to_string(),
-                extra_args: None,
+                reasoning_effort: None,
+                no_extensions: false,
             },
             claude: ClaudeConfig {
                 bin: "claude".to_string(),

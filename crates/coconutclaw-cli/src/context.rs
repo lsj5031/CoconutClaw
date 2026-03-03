@@ -9,8 +9,7 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use coconutclaw_config::RuntimeConfig;
-use coconutclaw_config::TelegramParseMode;
+use coconutclaw_config::{AgentProvider, RuntimeConfig, TelegramParseMode};
 
 use crate::markers::ParsedMarkers;
 use crate::store::Store;
@@ -23,6 +22,8 @@ pub(crate) fn build_context(
     ts: &str,
     quoted: &QuotedMessage,
 ) -> Result<String> {
+    let local_visual_mode = cfg.provider == AgentProvider::Pi && cfg.pi.no_extensions;
+
     let soul = read_or_default(
         &cfg.instance_dir.join("SOUL.md"),
         "You are CoconutClaw, a calm and practical local agent.\n",
@@ -33,6 +34,26 @@ pub(crate) fn build_context(
         &cfg.instance_dir.join("TASKS/pending.md"),
         "# Pending Tasks\n",
     );
+    let soul = if local_visual_mode {
+        truncate_chars(&soul, 1600)
+    } else {
+        soul
+    };
+    let user = if local_visual_mode {
+        truncate_chars(&user, 900)
+    } else {
+        user
+    };
+    let memory = if local_visual_mode {
+        truncate_chars(&memory, 900)
+    } else {
+        memory
+    };
+    let tasks = if local_visual_mode {
+        truncate_chars(&tasks, 900)
+    } else {
+        tasks
+    };
 
     let mut text = String::new();
     text.push_str("# CoconutClaw Runtime Context\n\n");
@@ -70,7 +91,17 @@ pub(crate) fn build_context(
     }
 
     text.push_str("\n## Recent turns\n");
-    for line in store.recent_turns_snippet(cfg.context_turns)? {
+    let recent_limit = if local_visual_mode {
+        cfg.context_turns.min(2)
+    } else {
+        cfg.context_turns
+    };
+    for line in store.recent_turns_snippet(recent_limit)? {
+        let line = if local_visual_mode {
+            truncate_chars(&line, 240)
+        } else {
+            line
+        };
         text.push_str(&line);
         text.push('\n');
     }
@@ -88,18 +119,35 @@ pub(crate) fn build_context(
     }
 
     text.push_str("\n## Current user input\n");
-    text.push_str(&format!("USER_TEXT: {}\n", input.user_text));
+    let user_text = if local_visual_mode {
+        truncate_chars(&input.user_text, 1200)
+    } else {
+        input.user_text.clone()
+    };
+    text.push_str(&format!("USER_TEXT: {}\n", user_text));
     if !input.asr_text.trim().is_empty() {
-        text.push_str(&format!("ASR_TEXT: {}\n", input.asr_text));
+        let asr_text = if local_visual_mode {
+            truncate_chars(&input.asr_text, 1200)
+        } else {
+            input.asr_text.clone()
+        };
+        text.push_str(&format!("ASR_TEXT: {}\n", asr_text));
     }
     if let (Some(attachment_type), Some(attachment_path)) =
         (&input.attachment_type, &input.attachment_path)
     {
         text.push_str(&format!("ATTACHMENT_TYPE: {attachment_type}\n"));
-        text.push_str(&format!("ATTACHMENT_PATH: {}\n", attachment_path.display()));
-        text.push_str(&format!(
-            "The user sent a {attachment_type}. The file has been downloaded to the path above. You can access and analyze it using your tools.\n"
-        ));
+        let local_visual_mode = cfg.provider == AgentProvider::Pi && cfg.pi.no_extensions;
+        if local_visual_mode {
+            text.push_str(&format!(
+                "The user sent a {attachment_type}. It is included in your input as visual data. Analyze it directly and do not read the file with tools.\n"
+            ));
+        } else {
+            text.push_str(&format!("ATTACHMENT_PATH: {}\n", attachment_path.display()));
+            text.push_str(&format!(
+                "The user sent a {attachment_type}. The file is available at the path above. Use tools to inspect or process it when needed.\n"
+            ));
+        }
     }
 
     text.push_str("\n## Output requirements\n");
@@ -140,6 +188,21 @@ pub(crate) fn build_context(
 
 pub(crate) fn read_or_default(path: &Path, fallback: &str) -> String {
     fs::read_to_string(path).unwrap_or_else(|_| fallback.to_string())
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 pub(crate) fn append_memory_and_tasks(
