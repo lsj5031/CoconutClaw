@@ -95,43 +95,58 @@ fn run_codex(
         .tmp_dir
         .join(format!("codex_last_{}.txt", now_nanos()));
 
-    let mut cmd = Command::new(&config.codex.bin);
-    cmd.arg("exec")
-        .arg("--cd")
-        .arg(&config.instance_dir)
-        .arg("--skip-git-repo-check")
-        .arg("--output-last-message")
-        .arg(&out_file);
+    let run_once = |include_dangerous_flag: bool| -> Result<RunResult> {
+        let mut cmd = Command::new(&config.codex.bin);
+        cmd.arg("exec")
+            .arg("--cd")
+            .arg(&config.instance_dir)
+            .arg("--skip-git-repo-check")
+            .arg("--output-last-message")
+            .arg(&out_file);
 
-    if let Some(model) = &config.codex.model {
-        cmd.arg("--model").arg(model);
+        if let Some(model) = &config.codex.model {
+            cmd.arg("--model").arg(model);
+        }
+        if let Some(effort) = &config.codex.reasoning_effort {
+            cmd.arg("--reasoning-effort").arg(effort);
+        }
+        if include_dangerous_flag {
+            cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+        }
+
+        cmd.arg(context)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_child_command(&mut cmd);
+
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("failed to start {}", config.codex.bin))?;
+        run_child_process(
+            child,
+            cancel_flag,
+            progress_tx.cloned(),
+            None,
+            "failed waiting for codex command".to_string(),
+            "failed waiting after codex kill".to_string(),
+            timeout_secs,
+        )
+    };
+
+    let yolo_mode = config.exec_policy.eq_ignore_ascii_case("yolo");
+    let mut run_result = run_once(yolo_mode)?;
+    if yolo_mode
+        && !run_result.status.success()
+        && !run_result.cancelled
+        && !run_result.timed_out
+        && should_retry_without_dangerous_flag(&run_result.stdout_text, &run_result.stderr_text)
+    {
+        tracing::warn!(
+            "codex CLI rejected dangerous permission flag; retrying without it for compatibility"
+        );
+        run_result = run_once(false)?;
     }
-    if let Some(effort) = &config.codex.reasoning_effort {
-        cmd.arg("--reasoning-effort").arg(effort);
-    }
-
-    if config.exec_policy.eq_ignore_ascii_case("yolo") {
-        cmd.arg("--dangerously-skip-permissions");
-    }
-
-    cmd.arg(context)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_child_command(&mut cmd);
-
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("failed to start {}", config.codex.bin))?;
-    let run_result = run_child_process(
-        child,
-        cancel_flag,
-        progress_tx.cloned(),
-        None,
-        "failed waiting for codex command".to_string(),
-        "failed waiting after codex kill".to_string(),
-        timeout_secs,
-    )?;
 
     let exit_code = if run_result.cancelled || run_result.timed_out {
         if run_result.timed_out { 124 } else { 130 }
@@ -252,41 +267,56 @@ fn run_claude(
     progress_tx: Option<&Sender<String>>,
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
-    let (env_vars, bin_path) = parse_bin_with_env(&config.claude.bin);
-    let mut cmd = Command::new(bin_path);
-    for (key, value) in env_vars {
-        cmd.env(&key, &value);
+    let run_once = |include_dangerous_flag: bool| -> Result<RunResult> {
+        let (env_vars, bin_path) = parse_bin_with_env(&config.claude.bin);
+        let mut cmd = Command::new(bin_path);
+        for (key, value) in env_vars {
+            cmd.env(&key, &value);
+        }
+        cmd.arg("-p");
+
+        if include_dangerous_flag {
+            cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+        }
+        if let Some(model) = &config.claude.model {
+            cmd.arg("--model").arg(model);
+        }
+
+        cmd.arg("--output-format")
+            .arg("stream-json")
+            .arg(context)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_child_command(&mut cmd);
+
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("failed to start {}", config.claude.bin))?;
+        run_child_process(
+            child,
+            cancel_flag,
+            progress_tx.cloned(),
+            Some(parse_claude_json_line),
+            "failed waiting for claude command".to_string(),
+            "failed waiting after claude kill".to_string(),
+            timeout_secs,
+        )
+    };
+
+    let yolo_mode = config.exec_policy.eq_ignore_ascii_case("yolo");
+    let mut run_result = run_once(yolo_mode)?;
+    if yolo_mode
+        && !run_result.status.success()
+        && !run_result.cancelled
+        && !run_result.timed_out
+        && should_retry_without_dangerous_flag(&run_result.stdout_text, &run_result.stderr_text)
+    {
+        tracing::warn!(
+            "claude CLI rejected dangerous permission flag; retrying without it for compatibility"
+        );
+        run_result = run_once(false)?;
     }
-    cmd.arg("-p");
-
-    if config.exec_policy.eq_ignore_ascii_case("yolo") {
-        cmd.arg("--dangerously-skip-permissions");
-    }
-
-    if let Some(model) = &config.claude.model {
-        cmd.arg("--model").arg(model);
-    }
-
-    cmd.arg("--output-format")
-        .arg("stream-json")
-        .arg(context)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_child_command(&mut cmd);
-
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("failed to start {}", config.claude.bin))?;
-    let run_result = run_child_process(
-        child,
-        cancel_flag,
-        progress_tx.cloned(),
-        Some(parse_claude_json_line),
-        "failed waiting for claude command".to_string(),
-        "failed waiting after claude kill".to_string(),
-        timeout_secs,
-    )?;
 
     let exit_code = if run_result.cancelled || run_result.timed_out {
         if run_result.timed_out { 124 } else { 130 }
@@ -643,13 +673,8 @@ fn parse_pi_progress_line(line: &str) -> Option<String> {
     if typ == "progress" {
         return Some(value.get("content")?.as_str()?.to_string());
     }
-    // pi-rust --mode json: streaming text deltas
-    if typ == "message_update" {
-        let evt = value.get("assistantMessageEvent")?;
-        if evt.get("type")?.as_str()? == "text_delta" {
-            return Some(evt.get("delta")?.as_str()?.to_string());
-        }
-    }
+    // pi-rust --mode json streams text_delta token-by-token. Do not surface token
+    // deltas as progress events, otherwise Telegram "Thinking..." becomes word-by-word.
     None
 }
 
@@ -702,18 +727,74 @@ fn parse_claude_json_line(line: &str) -> Option<String> {
 }
 
 fn extract_claude_json_final(raw: &str) -> Option<String> {
-    let mut final_text = String::new();
+    let mut result_text: Option<String> = None;
+    let mut assistant_text: Option<String> = None;
+    let mut legacy_text = String::new();
+
     for line in raw.lines() {
-        if let Ok(value) = serde_json::from_str::<Value>(line)
-            && value.get("type")?.as_str()? == "text"
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        if event_type == "result" {
+            if let Some(text) = value
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                result_text = Some(text.to_string());
+            }
+            continue;
+        }
+
+        if event_type == "assistant" {
+            if let Some(text) = extract_claude_assistant_text(&value) {
+                assistant_text = Some(text);
+            }
+            continue;
+        }
+
+        if event_type == "text"
+            && let Some(text) = value.get("content").and_then(Value::as_str)
         {
-            final_text.push_str(value.get("content")?.as_str()?);
+            legacy_text.push_str(text);
         }
     }
-    if final_text.is_empty() {
+
+    if let Some(text) = result_text {
+        return Some(text);
+    }
+    if let Some(text) = assistant_text {
+        return Some(text);
+    }
+    if legacy_text.is_empty() {
+        return None;
+    }
+    Some(legacy_text)
+}
+
+fn extract_claude_assistant_text(event: &Value) -> Option<String> {
+    let message = event.get("message")?;
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let content = message.get("content").and_then(Value::as_array)?;
+    let mut text = String::new();
+    for block in content {
+        if block.get("type").and_then(Value::as_str) == Some("text")
+            && let Some(chunk) = block.get("text").and_then(Value::as_str)
+        {
+            text.push_str(chunk);
+        }
+    }
+    if text.trim().is_empty() {
         None
     } else {
-        Some(final_text)
+        Some(text)
     }
 }
 
@@ -767,6 +848,16 @@ fn parse_bin_with_env(raw: &str) -> (HashMap<String, String>, String) {
     (env_vars, bin_path)
 }
 
+fn should_retry_without_dangerous_flag(stdout: &str, stderr: &str) -> bool {
+    let text = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    let mentions_flag = text.contains("--dangerously-skip-permissions")
+        || text.contains("--dangerously-bypass-approvals-and-sandbox");
+    let argument_error = text.contains("unexpected argument")
+        || text.contains("unrecognized option")
+        || text.contains("unknown option");
+    mentions_flag && argument_error
+}
+
 fn now_nanos() -> u128 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_nanos(),
@@ -778,5 +869,42 @@ fn configure_child_command(cmd: &mut Command) {
     #[cfg(unix)]
     {
         cmd.process_group(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_claude_json_final, parse_pi_progress_line};
+
+    #[test]
+    fn parse_pi_progress_line_ignores_text_deltas() {
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}"#;
+        assert!(parse_pi_progress_line(line).is_none());
+    }
+
+    #[test]
+    fn parse_pi_progress_line_keeps_legacy_progress_events() {
+        let line = r#"{"type":"progress","content":"running task"}"#;
+        assert_eq!(
+            parse_pi_progress_line(line).as_deref(),
+            Some("running task")
+        );
+    }
+
+    #[test]
+    fn extract_claude_json_final_prefers_result_event() {
+        let raw = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"not-final"}]}}
+{"type":"result","subtype":"success","result":"TELEGRAM_REPLY: final reply"}
+"#;
+        let text = extract_claude_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: final reply"));
+    }
+
+    #[test]
+    fn extract_claude_json_final_reads_assistant_text_blocks() {
+        let raw = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"t"},{"type":"text","text":"TELEGRAM_REPLY: hello"}]}}
+"#;
+        let text = extract_claude_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: hello"));
     }
 }
