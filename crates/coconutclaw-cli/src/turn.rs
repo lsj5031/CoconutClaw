@@ -135,14 +135,13 @@ pub(crate) fn process_turn(
         (None, None)
     };
 
-    let provider_timeout = Some(cfg.provider_timeout_secs);
     let mut provider_result = run_provider(
         input.attachment_path.as_ref(),
         cfg,
         &context,
         Some(&cancel_flag),
         progress_sender.as_ref(),
-        provider_timeout,
+        None,
     );
     let mut retries = 0u32;
     while retries < cfg.provider_max_retries {
@@ -168,7 +167,7 @@ pub(crate) fn process_turn(
             &context,
             Some(&cancel_flag),
             progress_sender.as_ref(),
-            provider_timeout,
+            None,
         );
     }
     cancel_watcher_stop.store(true, Ordering::SeqCst);
