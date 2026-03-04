@@ -352,11 +352,22 @@ pub(crate) fn spawn_progress_updater(
                 Ok(status) => {
                     let status = status.trim().to_string();
                     if !status.is_empty() {
+                        // For completion markers (✓/✗), remove matching start (▶) for same tool
+                        if status.starts_with("✓ ") || status.starts_with("✗ ") {
+                            let tool_prefix = status
+                                .trim_start_matches("✓ ")
+                                .trim_start_matches("✗ ")
+                                .split(':')
+                                .next()
+                                .unwrap_or("");
+                            let start_prefix = format!("▶ {tool_prefix}");
+                            statuses.retain(|s| !s.starts_with(&start_prefix));
+                        }
                         if let Some(existing) = statuses.iter().position(|item| item == &status) {
                             statuses.remove(existing);
                         }
                         statuses.push(status);
-                        if statuses.len() > 5 {
+                        if statuses.len() > 8 {
                             statuses.remove(0);
                         }
                         saw_event = true;

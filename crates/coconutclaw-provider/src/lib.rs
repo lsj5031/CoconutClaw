@@ -756,6 +756,41 @@ fn shorten_status_text(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// Extract a short human-readable summary from tool args for progress display.
+/// Returns an empty string when no meaningful detail can be extracted.
+fn tool_arg_summary(tool_name: &str, args: Option<&Value>) -> String {
+    const MAX_LEN: usize = 60;
+    let args = match args {
+        Some(v) => v,
+        None => return String::new(),
+    };
+    // Pick the most informative field per tool
+    let raw = match tool_name {
+        "bash" | "Bash" => args.get("cmd").or_else(|| args.get("command")),
+        "read_file" | "Read" | "read" => args.get("path").or_else(|| args.get("file")),
+        "edit_file" | "write_file" | "create_file" => args.get("path").or_else(|| args.get("file")),
+        "glob" => args.get("filePattern").or_else(|| args.get("pattern")),
+        "Grep" | "grep" => args.get("pattern"),
+        "web_search" => args.get("objective").or_else(|| args.get("query")),
+        "read_web_page" => args.get("url"),
+        _ => {
+            // Generic: try common keys
+            args.get("path")
+                .or_else(|| args.get("cmd"))
+                .or_else(|| args.get("query"))
+        }
+    };
+    let text = match raw.and_then(Value::as_str) {
+        Some(s) if !s.is_empty() => s,
+        _ => return String::new(),
+    };
+    if text.len() <= MAX_LEN {
+        text.to_string()
+    } else {
+        format!("{}…", &text[..MAX_LEN])
+    }
+}
+
 fn parse_pi_progress_line(line: &str) -> Option<String> {
     let value: Value = serde_json::from_str(line).ok()?;
     let typ = value.get("type")?.as_str()?;
@@ -769,7 +804,12 @@ fn parse_pi_progress_line(line: &str) -> Option<String> {
             .get("toolName")
             .and_then(|v| v.as_str())
             .unwrap_or("tool");
-        return Some(format!("▶ {name}"));
+        let detail = tool_arg_summary(name, value.get("args"));
+        return if detail.is_empty() {
+            Some(format!("▶ {name}"))
+        } else {
+            Some(format!("▶ {name}: {detail}"))
+        };
     }
     if typ == "tool_execution_end" {
         let name = value
@@ -1022,10 +1062,10 @@ fn now_nanos() -> u128 {
     }
 }
 
-fn configure_child_command(cmd: &mut Command) {
+fn configure_child_command(_cmd: &mut Command) {
     #[cfg(unix)]
     {
-        cmd.process_group(0);
+        _cmd.process_group(0);
     }
 }
 
@@ -1033,8 +1073,9 @@ fn configure_child_command(cmd: &mut Command) {
 mod tests {
     use super::{
         extract_claude_json_final, extract_pi_json_final, parse_codex_progress_line,
-        parse_pi_progress_line,
+        parse_pi_progress_line, tool_arg_summary,
     };
+    use serde_json::Value;
 
     #[test]
     fn parse_codex_turn_started() {
@@ -1103,6 +1144,32 @@ mod tests {
         let line =
             r#"{"type":"tool_execution_start","toolCallId":"t1","toolName":"bash","args":{}}"#;
         assert_eq!(parse_pi_progress_line(line).as_deref(), Some("▶ bash"));
+    }
+
+    #[test]
+    fn parse_pi_progress_line_tool_execution_start_with_args() {
+        let line = r#"{"type":"tool_execution_start","toolCallId":"t1","toolName":"bash","args":{"cmd":"cargo test"}}"#;
+        assert_eq!(
+            parse_pi_progress_line(line).as_deref(),
+            Some("▶ bash: cargo test")
+        );
+    }
+
+    #[test]
+    fn parse_pi_progress_line_tool_execution_start_read() {
+        let line = r#"{"type":"tool_execution_start","toolCallId":"t2","toolName":"Read","args":{"path":"src/main.rs"}}"#;
+        assert_eq!(
+            parse_pi_progress_line(line).as_deref(),
+            Some("▶ Read: src/main.rs")
+        );
+    }
+
+    #[test]
+    fn tool_arg_summary_truncates_long_args() {
+        let args: Value = serde_json::json!({"cmd": "a]".repeat(50)});
+        let result = tool_arg_summary("bash", Some(&args));
+        assert!(result.len() <= 64); // 60 chars + "…"
+        assert!(result.ends_with('…'));
     }
 
     #[test]
