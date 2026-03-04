@@ -352,8 +352,32 @@ pub(crate) fn spawn_progress_updater(
                 Ok(status) => {
                     let status = status.trim().to_string();
                     if !status.is_empty() {
-                        // For completion markers (✓/✗), remove matching start (▶) for same tool
-                        if status.starts_with("✓ ") || status.starts_with("✗ ") {
+                        // Phase labels are transient: each replaces the previous one
+                        const PHASE_LABELS: &[&str] = &[
+                            "Processing...",
+                            "Reasoning...",
+                            "Preparing tool call...",
+                            "Compacting context...",
+                            "Context compacted",
+                        ];
+                        let is_phase = PHASE_LABELS.contains(&status.as_str())
+                            || status.starts_with("turn ")
+                            || status.starts_with("Retrying ");
+                        if is_phase {
+                            statuses.retain(|s| {
+                                !PHASE_LABELS.contains(&s.as_str())
+                                    && !s.starts_with("turn ")
+                                    && !s.starts_with("Retrying ")
+                            });
+                        }
+                        // For completion markers (✓/✗), replace matching start (▶)
+                        // and carry forward the detail from the start entry
+                        let status = if status.starts_with("✓ ") || status.starts_with("✗ ") {
+                            let marker = if status.starts_with("✓ ") {
+                                "✓"
+                            } else {
+                                "✗"
+                            };
                             let tool_prefix = status
                                 .trim_start_matches("✓ ")
                                 .trim_start_matches("✗ ")
@@ -361,8 +385,22 @@ pub(crate) fn spawn_progress_updater(
                                 .next()
                                 .unwrap_or("");
                             let start_prefix = format!("▶ {tool_prefix}");
+                            // If completion has no detail, inherit from start entry
+                            let has_detail = status.contains(':');
+                            let inherited = if !has_detail {
+                                statuses
+                                    .iter()
+                                    .find(|s| s.starts_with(&start_prefix))
+                                    .and_then(|s| s.split_once(':'))
+                                    .map(|(_, detail)| format!("{marker} {tool_prefix}:{detail}"))
+                            } else {
+                                None
+                            };
                             statuses.retain(|s| !s.starts_with(&start_prefix));
-                        }
+                            inherited.unwrap_or(status)
+                        } else {
+                            status
+                        };
                         if let Some(existing) = statuses.iter().position(|item| item == &status) {
                             statuses.remove(existing);
                         }

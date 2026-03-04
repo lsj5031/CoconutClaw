@@ -827,6 +827,39 @@ fn parse_pi_progress_line(line: &str) -> Option<String> {
         if idx > 0 {
             return Some(format!("turn {}", idx + 1));
         }
+        return Some("Processing...".to_string());
+    }
+    // Streaming assistant message events
+    if typ == "message_update" {
+        let event = value.get("assistantMessageEvent")?;
+        let event_type = event.get("type")?.as_str()?;
+        match event_type {
+            "thinking_start" => return Some("Reasoning...".to_string()),
+            "toolcall_start" => return Some("Preparing tool call...".to_string()),
+            "toolcall_end" => {
+                let tc = event.get("toolCall")?;
+                let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                let args = tc.get("arguments").and_then(|v| v.as_str());
+                let parsed_args: Option<Value> = args.and_then(|a| serde_json::from_str(a).ok());
+                let detail = tool_arg_summary(name, parsed_args.as_ref());
+                return if detail.is_empty() {
+                    Some(format!("✓ {name}"))
+                } else {
+                    Some(format!("✓ {name}: {detail}"))
+                };
+            }
+            _ => {}
+        }
+    }
+    if typ == "auto_compaction_start" {
+        return Some("Compacting context...".to_string());
+    }
+    if typ == "auto_compaction_end" {
+        return Some("Context compacted".to_string());
+    }
+    if typ == "auto_retry_start" {
+        let attempt = value.get("attempt").and_then(|v| v.as_u64()).unwrap_or(1);
+        return Some(format!("Retrying (attempt {attempt})..."));
     }
     None
 }
@@ -1185,15 +1218,54 @@ mod tests {
     }
 
     #[test]
-    fn parse_pi_progress_line_turn_start_first_ignored() {
+    fn parse_pi_progress_line_turn_start_first() {
         let line = r#"{"type":"turn_start","sessionId":"s1","turnIndex":0,"timestamp":0}"#;
-        assert!(parse_pi_progress_line(line).is_none());
+        assert_eq!(
+            parse_pi_progress_line(line).as_deref(),
+            Some("Processing...")
+        );
     }
 
     #[test]
     fn parse_pi_progress_line_turn_start_subsequent() {
         let line = r#"{"type":"turn_start","sessionId":"s1","turnIndex":2,"timestamp":0}"#;
         assert_eq!(parse_pi_progress_line(line).as_deref(), Some("turn 3"));
+    }
+
+    #[test]
+    fn parse_pi_progress_line_thinking_start() {
+        let line = r#"{"type":"message_update","message":{},"assistantMessageEvent":{"type":"thinking_start","contentIndex":0,"partial":{}}}"#;
+        assert_eq!(
+            parse_pi_progress_line(line).as_deref(),
+            Some("Reasoning...")
+        );
+    }
+
+    #[test]
+    fn parse_pi_progress_line_toolcall_end() {
+        let line = r#"{"type":"message_update","message":{},"assistantMessageEvent":{"type":"toolcall_end","contentIndex":0,"toolCall":{"id":"tc1","name":"bash","arguments":"{\"cmd\":\"cargo test\"}"},"partial":{}}}"#;
+        assert_eq!(
+            parse_pi_progress_line(line).as_deref(),
+            Some("✓ bash: cargo test")
+        );
+    }
+
+    #[test]
+    fn parse_pi_progress_line_auto_compaction_start() {
+        let line = r#"{"type":"auto_compaction_start","reason":"context too long"}"#;
+        assert_eq!(
+            parse_pi_progress_line(line).as_deref(),
+            Some("Compacting context...")
+        );
+    }
+
+    #[test]
+    fn parse_pi_progress_line_auto_retry_start() {
+        let line = r#"{"type":"auto_retry_start","attempt":2,"maxAttempts":3,"delayMs":1000,"errorMessage":"rate limit"}"#;
+        assert_eq!(
+            parse_pi_progress_line(line).as_deref(),
+            Some("Retrying (attempt 2)...")
+        );
     }
 
     #[test]
