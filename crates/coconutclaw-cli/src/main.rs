@@ -1946,6 +1946,17 @@ mod tests {
     }
 
     #[test]
+    fn recover_unstructured_reply_surfaces_agent_end_error() {
+        let payload = r#"{"type":"session","id":"abc"}
+{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"bash","arguments":{}}]}],"error":"Maximum tool iterations (50) exceeded"}"#;
+        let recovered = recover_unstructured_reply(payload);
+        assert_eq!(
+            recovered.as_deref(),
+            Some("⚠️ Agent stopped: Maximum tool iterations (50) exceeded")
+        );
+    }
+
+    #[test]
     fn extract_error_summary_prefers_structured_event_error() {
         let payload = r#"{"type":"session","id":"abc"}
 {"type":"turn_end","message":{"errorMessage":"internal timeout"}}

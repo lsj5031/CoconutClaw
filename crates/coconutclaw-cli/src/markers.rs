@@ -271,26 +271,38 @@ pub(crate) fn extract_assistant_text_from_json_stream(payload: &str) -> Option<S
                     None
                 }
             }
-            "agent_end" => value
-                .get("messages")
-                .and_then(Value::as_array)
-                .and_then(|messages| {
-                    let mut chunks = Vec::new();
-                    for message in messages {
-                        let role = message.get("role").and_then(Value::as_str);
-                        if role != Some("assistant") {
-                            continue;
-                        }
-                        if let Some(content) = message.get("content").and_then(join_text_blocks) {
-                            chunks.push(content);
-                        }
-                    }
-                    if chunks.is_empty() {
-                        None
-                    } else {
-                        Some(chunks.join("\n"))
-                    }
-                }),
+            "agent_end" => {
+                let text_from_messages =
+                    value
+                        .get("messages")
+                        .and_then(Value::as_array)
+                        .and_then(|messages| {
+                            let mut chunks = Vec::new();
+                            for message in messages {
+                                let role = message.get("role").and_then(Value::as_str);
+                                if role != Some("assistant") {
+                                    continue;
+                                }
+                                if let Some(content) =
+                                    message.get("content").and_then(join_text_blocks)
+                                {
+                                    chunks.push(content);
+                                }
+                            }
+                            if chunks.is_empty() {
+                                None
+                            } else {
+                                Some(chunks.join("\n"))
+                            }
+                        });
+                text_from_messages.or_else(|| {
+                    value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .filter(|e| !e.trim().is_empty())
+                        .map(|e| format!("⚠️ Agent stopped: {e}"))
+                })
+            }
             _ => None,
         };
 

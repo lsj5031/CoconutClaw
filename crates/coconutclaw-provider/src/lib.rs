@@ -874,16 +874,22 @@ fn extract_pi_json_final(raw: &str) -> Option<String> {
         let typ = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         // agent_end carries the full messages array (plural)
-        if typ == "agent_end"
-            && let Some(messages) = value.get("messages").and_then(|v| v.as_array())
-        {
-            for msg in messages.iter().rev() {
-                if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-                    continue;
+        if typ == "agent_end" {
+            if let Some(messages) = value.get("messages").and_then(|v| v.as_array()) {
+                for msg in messages.iter().rev() {
+                    if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+                        continue;
+                    }
+                    if let Some(text) = join_content_text_blocks(msg) {
+                        return Some(text);
+                    }
                 }
-                if let Some(text) = join_content_text_blocks(msg) {
-                    return Some(text);
-                }
+            }
+            // No assistant text found; surface agent_end error if present
+            if let Some(err) = value.get("error").and_then(|v| v.as_str())
+                && !err.trim().is_empty()
+            {
+                return Some(format!("⚠️ Agent stopped: {err}"));
             }
         }
 
@@ -1306,6 +1312,19 @@ mod tests {
 "#;
         let text = extract_pi_json_final(raw);
         assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: plain string"));
+    }
+
+    #[test]
+    fn extract_pi_json_final_agent_end_error_no_text() {
+        let raw = r#"{"type":"session","version":3,"id":"s1"}
+{"type":"agent_start","sessionId":"s1"}
+{"type":"agent_end","sessionId":"s1","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"tc1","name":"bash","arguments":{"cmd":"ls"}}]}],"error":"Maximum tool iterations (50) exceeded"}
+"#;
+        let text = extract_pi_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some("⚠️ Agent stopped: Maximum tool iterations (50) exceeded")
+        );
     }
 
     #[test]
