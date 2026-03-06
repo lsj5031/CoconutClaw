@@ -22,7 +22,7 @@ pub(crate) struct TurnRecord {
 }
 
 pub(crate) struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Store {
@@ -87,6 +87,28 @@ impl Store {
             "INSERT INTO tasks(ts, source, content, done) VALUES(?1, ?2, ?3, 0)",
             params![ts, source, content],
         )?;
+        Ok(())
+    }
+
+    pub(crate) fn insert_tasks(&mut self, ts: &str, source: &str, lines: &[String]) -> Result<()> {
+        if lines.is_empty() {
+            return Ok(());
+        }
+
+        let tx = self.conn.transaction()?;
+
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO tasks(ts, source, content, done) VALUES(?1, ?2, ?3, 0)",
+            )?;
+
+            for line in lines {
+                stmt.execute(params![ts, source, line])?;
+            }
+        }
+
+        tx.commit()?;
+
         Ok(())
     }
 

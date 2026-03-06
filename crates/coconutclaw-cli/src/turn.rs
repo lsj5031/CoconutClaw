@@ -80,7 +80,7 @@ fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
 
 pub(crate) fn process_turn(
     cfg: &RuntimeConfig,
-    store: &Store,
+    store: &mut Store,
     input: TurnInput,
     chat_id_override: Option<String>,
     update_id: Option<String>,
