@@ -22,7 +22,7 @@ pub(crate) struct TurnRecord {
 }
 
 pub(crate) struct Store {
-    pub(crate) conn: Connection,
+    conn: Connection,
 }
 
 impl Store {
@@ -80,14 +80,6 @@ impl Store {
             ],
         )?;
         Ok(self.conn.changes() > 0)
-    }
-
-    pub(crate) fn insert_task(&self, ts: &str, source: &str, content: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO tasks(ts, source, content, done) VALUES(?1, ?2, ?3, 0)",
-            params![ts, source, content],
-        )?;
-        Ok(())
     }
 
     pub(crate) fn insert_tasks(&mut self, ts: &str, source: &str, lines: &[String]) -> Result<()> {

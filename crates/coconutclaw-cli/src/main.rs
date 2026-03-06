@@ -1005,7 +1005,11 @@ struct ProcessOutcome {
     progress_message_id: Option<String>,
 }
 
-fn process_webhook_line(cfg: &RuntimeConfig, store: &mut Store, line: &str) -> Result<ProcessOutcome> {
+fn process_webhook_line(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    line: &str,
+) -> Result<ProcessOutcome> {
     let action = parse_webhook_action(cfg, line)?;
 
     match action {
@@ -2134,7 +2138,7 @@ mod tests {
     #[test]
     fn context_requires_plain_text_when_parse_mode_off() {
         let cfg = test_config();
-        let mut store = Store::open(&cfg).expect("store");
+        let store = Store::open(&cfg).expect("store");
         let input = TurnInput {
             input_type: InputType::Text,
             user_text: "hello".to_string(),
@@ -2161,7 +2165,7 @@ mod tests {
     fn context_allows_markdown_v2_when_parse_mode_enabled() {
         let mut cfg = test_config();
         cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
-        let mut store = Store::open(&cfg).expect("store");
+        let store = Store::open(&cfg).expect("store");
         let input = TurnInput {
             input_type: InputType::Text,
             user_text: "hello".to_string(),
@@ -2280,7 +2284,7 @@ mod tests {
         fs::write(&queue_path, "{\"update_id\":9003,\n").expect("write malformed queue line");
 
         let progressed =
-            drain_webhook_queue(&cfg, &store, &client, &shutdown).expect("drain webhook queue");
+            drain_webhook_queue(&cfg, &mut store, &client, &shutdown).expect("drain webhook queue");
         assert!(progressed);
 
         let content = fs::read_to_string(queue_path).expect("queue content");
