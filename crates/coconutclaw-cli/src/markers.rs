@@ -453,4 +453,87 @@ It has some { curly braces }
             Some(not_json_stream.trim().to_string())
         );
     }
+
+    #[test]
+    fn extract_error_summary_empty_payload() {
+        assert_eq!(extract_error_summary(""), None);
+    }
+
+    #[test]
+    fn extract_error_summary_non_json_lines() {
+        let payload = "not json\nstill not json";
+        assert_eq!(extract_error_summary(payload), None);
+    }
+
+    #[test]
+    fn extract_error_summary_json_missing_type() {
+        let payload = r#"{"no_type":"here"}"#;
+        assert_eq!(extract_error_summary(payload), None);
+    }
+
+    #[test]
+    fn extract_error_summary_agent_end() {
+        let payload = r#"{"type":"agent_end","error":"something went wrong"}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("something went wrong")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_turn_failed_object() {
+        let payload = r#"{"type":"turn.failed","error":{"message":"turn failed message"}}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("turn failed message")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_turn_failed_string() {
+        let payload = r#"{"type":"turn.failed","error":"direct error string"}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("direct error string")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_turn_end() {
+        let payload = r#"{"type":"turn_end","message":{"errorMessage":"turn end error"}}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("turn end error")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_prefers_last_valid_event() {
+        let payload = r#"{"type":"turn_end","message":{"errorMessage":"first error"}}
+{"type":"agent_end","error":"second error"}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("second error")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_ignores_whitespace_errors() {
+        let payload = r#"{"type":"agent_end","error":"   "}"#;
+        assert_eq!(extract_error_summary(payload), None);
+    }
+
+    #[test]
+    fn extract_error_summary_complex_mix() {
+        let payload = r#"{"type":"other"}
+not json
+{"type":"turn.failed","error":{"no_message":"here"}}
+{"type":"turn_end","message":{"errorMessage":"actual error"}}
+{"type":"agent_end","error":""}
+{"type":"agent_end","no_error":"field"}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("actual error")
+        );
+    }
 }

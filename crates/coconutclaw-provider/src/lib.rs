@@ -241,7 +241,9 @@ fn run_pi(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
-    } else if run_result.status.success() && pi_mode == "json" {
+    } else if run_result.status.success() {
+        // Always try JSON extraction first — pi may emit JSON even in text mode
+        // (e.g. when auto-retry events are present).
         extract_pi_json_final(&run_result.stdout_text).unwrap_or_else(|| {
             if !run_result.stdout_text.trim().is_empty() {
                 run_result.stdout_text.clone()
@@ -255,9 +257,13 @@ fn run_pi(
         run_result.stderr_text
     };
 
+    let success = !run_result.cancelled
+        && run_result.status.success()
+        && !raw_output.starts_with("⚠️ Agent stopped:");
+
     Ok(ProviderOutput {
         raw_output,
-        success: !run_result.cancelled && run_result.status.success(),
+        success,
         exit_code,
     })
 }
@@ -880,6 +886,12 @@ fn extract_pi_json_final(raw: &str) -> Option<String> {
                     if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
                         continue;
                     }
+                    // Skip messages with non-terminal stopReason (e.g. "toolUse",
+                    // "error") — their text is mid-execution thinking, not a final reply.
+                    let stop = msg.get("stopReason").and_then(|v| v.as_str());
+                    if matches!(stop, Some("toolUse") | Some("tool_use") | Some("error")) {
+                        continue;
+                    }
                     if let Some(text) = join_content_text_blocks(msg) {
                         return Some(text);
                     }
@@ -896,6 +908,10 @@ fn extract_pi_json_final(raw: &str) -> Option<String> {
         // turn_end carries a single message
         if typ == "turn_end"
             && let Some(msg) = value.get("message")
+            && !matches!(
+                msg.get("stopReason").and_then(|v| v.as_str()),
+                Some("toolUse") | Some("tool_use") | Some("error")
+            )
             && let Some(text) = join_content_text_blocks(msg)
         {
             return Some(text);
@@ -905,6 +921,10 @@ fn extract_pi_json_final(raw: &str) -> Option<String> {
         if typ == "message_end"
             && let Some(msg) = value.get("message")
             && msg.get("role").and_then(|v| v.as_str()) == Some("assistant")
+            && !matches!(
+                msg.get("stopReason").and_then(|v| v.as_str()),
+                Some("toolUse") | Some("tool_use") | Some("error")
+            )
             && let Some(text) = join_content_text_blocks(msg)
         {
             return Some(text);
@@ -1324,6 +1344,65 @@ mod tests {
         assert_eq!(
             text.as_deref(),
             Some("⚠️ Agent stopped: Maximum tool iterations (50) exceeded")
+        );
+    }
+
+    #[test]
+    fn extract_pi_json_final_skips_tool_use_stop_reason() {
+        let raw = r#"{"type":"session","version":3,"id":"s1"}
+{"type":"agent_start","sessionId":"s1"}
+{"type":"agent_end","sessionId":"s1","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"text","text":"Now I need to find where the response is processed:"}],"stopReason":"toolUse"}],"error":"API error: service overloaded"}
+"#;
+        let text = extract_pi_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some("⚠️ Agent stopped: API error: service overloaded")
+        );
+    }
+
+    #[test]
+    fn extract_pi_json_final_skips_error_stop_reason_with_text() {
+        let raw = r#"{"type":"agent_end","sessionId":"s1","messages":[{"role":"assistant","content":[{"type":"text","text":"Let me check the logs:"}],"stopReason":"error","errorMessage":"connection reset"}],"error":"connection reset"}
+"#;
+        let text = extract_pi_json_final(raw);
+        assert_eq!(text.as_deref(), Some("⚠️ Agent stopped: connection reset"));
+    }
+
+    #[test]
+    fn extract_pi_json_final_accepts_end_turn_stop_reason() {
+        let raw = r#"{"type":"agent_end","sessionId":"s1","messages":[{"role":"assistant","content":[{"type":"text","text":"TELEGRAM_REPLY: done"}],"stopReason":"end_turn"}]}
+"#;
+        let text = extract_pi_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: done"));
+    }
+
+    #[test]
+    fn extract_pi_json_final_accepts_stop_stop_reason() {
+        let raw = r#"{"type":"agent_end","sessionId":"s1","messages":[{"role":"assistant","content":[{"type":"text","text":"TELEGRAM_REPLY: finished"}],"stopReason":"stop"}]}
+"#;
+        let text = extract_pi_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: finished"));
+    }
+
+    #[test]
+    fn extract_pi_json_final_accepts_no_stop_reason() {
+        let raw = r#"{"type":"agent_end","sessionId":"s1","messages":[{"role":"assistant","content":[{"type":"text","text":"TELEGRAM_REPLY: hello"}]}]}
+"#;
+        let text = extract_pi_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: hello"));
+    }
+
+    #[test]
+    fn extract_pi_json_final_rate_limit_empty_content() {
+        let raw = r#"{"type":"session","version":3,"id":"s1"}
+{"type":"agent_start","sessionId":"s1"}
+{"type":"agent_end","sessionId":"s1","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":[],"stopReason":"error","errorMessage":"API error: Rate limit reached"}],"error":"API error: Rate limit reached"}
+{"type":"auto_retry_end","success":false,"attempt":3,"finalError":"API error: Rate limit reached"}
+"#;
+        let text = extract_pi_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some("⚠️ Agent stopped: API error: Rate limit reached")
         );
     }
 
