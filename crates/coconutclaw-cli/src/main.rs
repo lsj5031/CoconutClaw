@@ -258,19 +258,19 @@ fn main() -> Result<()> {
     }
 
     let _instance_lock = cfg.acquire_instance_lock()?;
-    let store = Store::open(&cfg)?;
+    let mut store = Store::open(&cfg)?;
 
     match command {
-        Commands::Once(args) => run_once(&cfg, &store, &args),
-        Commands::Run(args) => run_run(&cfg, &store, &args),
-        Commands::Heartbeat => run_heartbeat(&cfg, &store),
-        Commands::NightlyReflection => run_nightly_reflection(&cfg, &store),
+        Commands::Once(args) => run_once(&cfg, &mut store, &args),
+        Commands::Run(args) => run_run(&cfg, &mut store, &args),
+        Commands::Heartbeat => run_heartbeat(&cfg, &mut store),
+        Commands::NightlyReflection => run_nightly_reflection(&cfg, &mut store),
         Commands::Doctor(args) => run_doctor(&cfg, &args),
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
     }
 }
 
-fn run_once(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
+fn run_once(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()> {
     let input = resolve_turn_input(
         cfg,
         store,
@@ -295,7 +295,7 @@ fn run_once(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_run(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
+fn run_run(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()> {
     if args.inject_text.is_some() || args.inject_file.is_some() {
         let input = resolve_turn_input(
             cfg,
@@ -341,7 +341,7 @@ fn run_run(cfg: &RuntimeConfig, store: &Store, args: &TurnArgs) -> Result<()> {
     run_poll_loop(cfg, store, &telegram_client, &shutdown)
 }
 
-fn run_heartbeat(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
     let prompt = "Daily heartbeat for CoconutClaw. Summarize today, surface urgent tasks from TASKS/pending.md, and suggest next 1-3 actions.";
     let output = process_turn(
         cfg,
@@ -370,7 +370,7 @@ fn run_heartbeat(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
     Ok(())
 }
 
-fn run_nightly_reflection(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+fn run_nightly_reflection(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
     let reflection_path = nightly_reflection_file_path(cfg);
     let local_day = local_day(&cfg.timezone);
     let marker = nightly_reflection_marker(&local_day);
@@ -668,7 +668,7 @@ fn install_shutdown_handler() -> Result<Arc<AtomicBool>> {
 
 fn run_poll_loop(
     cfg: &RuntimeConfig,
-    store: &Store,
+    store: &mut Store,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
@@ -769,7 +769,7 @@ fn run_poll_loop(
 
 fn run_webhook_loop(
     cfg: &RuntimeConfig,
-    store: &Store,
+    store: &mut Store,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
@@ -797,7 +797,7 @@ fn run_webhook_loop(
 
 fn restore_inflight_update(
     cfg: &RuntimeConfig,
-    store: &Store,
+    store: &mut Store,
     telegram_client: &Client,
 ) -> Result<()> {
     let Some(inflight_json) = store.kv_get("inflight_update_json")? else {
@@ -903,7 +903,7 @@ fn restore_inflight_update(
 
 fn drain_webhook_queue(
     cfg: &RuntimeConfig,
-    store: &Store,
+    store: &mut Store,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<bool> {
@@ -1005,7 +1005,11 @@ struct ProcessOutcome {
     progress_message_id: Option<String>,
 }
 
-fn process_webhook_line(cfg: &RuntimeConfig, store: &Store, line: &str) -> Result<ProcessOutcome> {
+fn process_webhook_line(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    line: &str,
+) -> Result<ProcessOutcome> {
     let action = parse_webhook_action(cfg, line)?;
 
     match action {
@@ -1204,7 +1208,7 @@ pub(crate) fn cancel_signal_from_update(
 
 pub(crate) fn maybe_spawn_cancel_watcher(
     cfg: &RuntimeConfig,
-    store: &Store,
+    store: &mut Store,
     active_update_id: Option<String>,
     cancel_flag: Arc<AtomicBool>,
     stop_flag: Arc<AtomicBool>,
@@ -1755,10 +1759,10 @@ mod tests {
     #[test]
     fn fresh_command_returns_confirmation_output() {
         let cfg = test_config();
-        let store = Store::open(&cfg).expect("store");
+        let mut store = Store::open(&cfg).expect("store");
         let update = r#"{"update_id":100,"message":{"chat":{"id":"321"},"text":"/fresh"}}"#;
 
-        let outcome = process_webhook_line(&cfg, &store, update).expect("process");
+        let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
         assert!(output.contains("TELEGRAM_REPLY:"));
@@ -1768,7 +1772,7 @@ mod tests {
     #[test]
     fn dedup_replays_previous_output_from_store() {
         let cfg = test_config();
-        let store = Store::open(&cfg).expect("store");
+        let mut store = Store::open(&cfg).expect("store");
 
         let inserted = store
             .insert_turn(&TurnRecord {
@@ -1789,7 +1793,7 @@ mod tests {
         assert!(inserted);
 
         let update = r#"{"update_id":42,"message":{"chat":{"id":"321"},"text":"hello again"}}"#;
-        let outcome = process_webhook_line(&cfg, &store, update).expect("process");
+        let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
         assert!(output.contains("TELEGRAM_REPLY: Old reply"));
@@ -1835,14 +1839,14 @@ mod tests {
     #[test]
     fn cancel_command_sets_runtime_cancel_marker() {
         let cfg = test_config();
-        let store = Store::open(&cfg).expect("store");
+        let mut store = Store::open(&cfg).expect("store");
         let update = r#"{"update_id":202,"message":{"chat":{"id":"321"},"text":"/cancel"}}"#;
         let marker_path = cfg.runtime_dir.join("cancel");
         if marker_path.exists() {
             fs::remove_file(&marker_path).expect("cleanup stale marker");
         }
 
-        let _ = process_webhook_line(&cfg, &store, update).expect("process");
+        let _ = process_webhook_line(&cfg, &mut store, update).expect("process");
 
         assert!(marker_path.exists());
     }
@@ -2272,7 +2276,7 @@ mod tests {
     #[test]
     fn drain_webhook_queue_drops_malformed_head_entry() {
         let cfg = test_config();
-        let store = Store::open(&cfg).expect("store");
+        let mut store = Store::open(&cfg).expect("store");
         let client = Client::builder().build().expect("client");
         let shutdown = Arc::new(AtomicBool::new(false));
         let queue_path = cfg.runtime_dir.join("webhook_updates.jsonl");
@@ -2280,7 +2284,7 @@ mod tests {
         fs::write(&queue_path, "{\"update_id\":9003,\n").expect("write malformed queue line");
 
         let progressed =
-            drain_webhook_queue(&cfg, &store, &client, &shutdown).expect("drain webhook queue");
+            drain_webhook_queue(&cfg, &mut store, &client, &shutdown).expect("drain webhook queue");
         assert!(progressed);
 
         let content = fs::read_to_string(queue_path).expect("queue content");

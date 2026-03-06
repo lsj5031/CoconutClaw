@@ -207,7 +207,7 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 
 pub(crate) fn append_memory_and_tasks(
     cfg: &RuntimeConfig,
-    store: &Store,
+    store: &mut Store,
     ts: &str,
     markers: &ParsedMarkers,
 ) -> Result<()> {
@@ -234,8 +234,8 @@ pub(crate) fn append_memory_and_tasks(
 
         for line in &markers.task_append {
             writeln!(file, "- [ ] {line}")?;
-            store.insert_task(ts, cfg.provider.as_str(), line)?;
         }
+        store.insert_tasks(ts, cfg.provider.as_str(), &markers.task_append)?;
     }
 
     Ok(())

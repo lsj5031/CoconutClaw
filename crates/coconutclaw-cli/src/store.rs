@@ -82,11 +82,25 @@ impl Store {
         Ok(self.conn.changes() > 0)
     }
 
-    pub(crate) fn insert_task(&self, ts: &str, source: &str, content: &str) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO tasks(ts, source, content, done) VALUES(?1, ?2, ?3, 0)",
-            params![ts, source, content],
-        )?;
+    pub(crate) fn insert_tasks(&mut self, ts: &str, source: &str, lines: &[String]) -> Result<()> {
+        if lines.is_empty() {
+            return Ok(());
+        }
+
+        let tx = self.conn.transaction()?;
+
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO tasks(ts, source, content, done) VALUES(?1, ?2, ?3, 0)",
+            )?;
+
+            for line in lines {
+                stmt.execute(params![ts, source, line])?;
+            }
+        }
+
+        tx.commit()?;
+
         Ok(())
     }
 
