@@ -27,10 +27,13 @@ ASR_TEXT_JQ = ".text // .result // .data.text // .data.result // empty"
 ASR_PREPROCESS = "on"
 ASR_SAMPLE_RATE = 16000
 # Optional command-mode ASR (if set, this takes precedence over ASR_URL)
+# The command is evaluated with $1=AUDIO_INPUT and $2=AUDIO_INPUT_PREP.
+# These variables are also exported for backward compatibility.
 ASR_CMD_TEMPLATE = ""
 
 # TTS contract (optional, default off)
-# The command is evaluated with TEXT and WAV_OUTPUT exported.
+# The command is evaluated with $1=TEXT and $2=WAV_OUTPUT.
+# These variables are also exported for backward compatibility.
 TTS_CMD_TEMPLATE = ""
 VOICE_BITRATE = "32k"
 TTS_MAX_CHARS = 260

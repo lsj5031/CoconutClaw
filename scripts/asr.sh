@@ -56,7 +56,7 @@ if [[ -n "$(trim "$ASR_CMD_TEMPLATE")" ]]; then
   export AUDIO_INPUT="$audio_file"
   export AUDIO_INPUT_PREP="$asr_input"
   set +e
-  cmd_output="$(bash -lc "$ASR_CMD_TEMPLATE" 2>"$tmp_asr_stderr")"
+  cmd_output="$(bash -c -- "$ASR_CMD_TEMPLATE" bash "$AUDIO_INPUT" "$AUDIO_INPUT_PREP" 2>"$tmp_asr_stderr")"
   rc=$?
   set -e
   if [[ $rc -ne 0 ]]; then
