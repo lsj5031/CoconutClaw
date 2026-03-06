@@ -563,7 +563,8 @@ mod tests {
 
     #[test]
     fn resolve_turn_result_think_tag_unclosed() {
-        let raw_output = "<think> thought 1 </think> some text <think> thought 2 TELEGRAM_REPLY: Hello";
+        let raw_output =
+            "<think> thought 1 </think> some text <think> thought 2 TELEGRAM_REPLY: Hello";
         let result = resolve_turn_result(raw_output, true, false);
         assert_eq!(result.status, TurnStatus::ParseRecovered);
         assert_eq!(result.telegram_reply, "some text");
@@ -581,7 +582,11 @@ mod tests {
     fn resolve_turn_result_agent_error_blank_output() {
         let result = resolve_turn_result("   \n  \t", false, false);
         assert_eq!(result.status, TurnStatus::AgentError);
-        assert!(result.telegram_reply.contains("Agent execution failed locally. Please check local logs and retry."));
+        assert!(
+            result
+                .telegram_reply
+                .contains("Agent execution failed locally. Please check local logs and retry.")
+        );
     }
 
     #[test]
