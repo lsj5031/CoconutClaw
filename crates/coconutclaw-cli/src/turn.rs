@@ -236,14 +236,26 @@ pub(crate) fn resolve_turn_result(
     }
 
     // Strip <think>...</think> blocks emitted by reasoning models (e.g. Qwen3.5).
-    let cleaned;
-    let raw_output = if let Some(end) = raw_output.find("</think>") {
-        cleaned = raw_output[end + "</think>".len()..]
-            .trim_start()
-            .to_string();
-        &cleaned
-    } else {
+    let mut cleaned = String::new();
+    let mut current = raw_output;
+    while let Some(start) = current.find("<think>") {
+        cleaned.push_str(&current[..start]);
+        if let Some(end) = current[start + "<think>".len()..].find("</think>") {
+            let skip_index = start + "<think>".len() + end + "</think>".len();
+            current = &current[skip_index..];
+        } else {
+            // Unclosed think tag: assume the rest of the output is thought process.
+            current = "";
+            break;
+        }
+    }
+    cleaned.push_str(current);
+    let cleaned = cleaned.trim().to_string();
+    let raw_output = if cleaned.is_empty() && !raw_output.trim().is_empty() {
+        // If the entire output was inside <think>, fallback to original text.
         raw_output
+    } else {
+        &cleaned
     };
     let markers = parse_markers(raw_output);
     let telegram_reply = markers.telegram_reply.clone().unwrap_or_default();
@@ -467,5 +479,116 @@ pub(crate) fn hydrate_turn_input(
             input.attachment_owned = true;
             Ok((input, Some(path)))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TurnStatus;
+
+    #[test]
+    fn resolve_turn_result_marks_cancelled() {
+        let result = resolve_turn_result("TELEGRAM_REPLY: hi", true, true);
+        assert_eq!(result.status, TurnStatus::Cancelled);
+        assert_eq!(result.telegram_reply, "❌ Cancelled.");
+        assert!(result.markers.telegram_reply.is_none());
+    }
+
+    #[test]
+    fn resolve_turn_result_marks_parse_recovered() {
+        let result = resolve_turn_result("plain reply", true, false);
+        assert_eq!(result.status, TurnStatus::ParseRecovered);
+        assert_eq!(result.telegram_reply, "plain reply");
+    }
+
+    #[test]
+    fn resolve_turn_result_marks_agent_error_recovered() {
+        let payload = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Recovered"}]}}"#;
+        let result = resolve_turn_result(payload, false, false);
+        assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
+        assert_eq!(result.telegram_reply, "Recovered");
+    }
+
+    #[test]
+    fn resolve_turn_result_marks_agent_error_when_unrecoverable() {
+        let result = resolve_turn_result("network timeout", false, false);
+        assert_eq!(result.status, TurnStatus::AgentError);
+        assert!(
+            result
+                .telegram_reply
+                .contains("Agent execution failed locally")
+        );
+    }
+
+    #[test]
+    fn resolve_turn_result_uses_turn_failed_error_message() {
+        let payload = r#"{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window."}}"#;
+        let result = resolve_turn_result(payload, false, false);
+        assert_eq!(result.status, TurnStatus::AgentError);
+        assert!(result.telegram_reply.contains("context window"));
+        assert!(
+            !result
+                .telegram_reply
+                .contains(r#"{"type":"thread.started""#)
+        );
+    }
+
+    #[test]
+    fn resolve_turn_result_empty_raw_output() {
+        let result = resolve_turn_result("", true, false);
+        assert_eq!(result.status, TurnStatus::ParseFallback);
+        assert_eq!(
+            result.telegram_reply,
+            "I could not parse structured markers from the model output."
+        );
+    }
+
+    #[test]
+    fn resolve_turn_result_think_tag_strip_after() {
+        let raw_output = "<think> I am thinking about </think> TELEGRAM_REPLY: Hello";
+        let result = resolve_turn_result(raw_output, true, false);
+        assert_eq!(result.status, TurnStatus::Ok);
+        assert_eq!(result.telegram_reply, "Hello");
+    }
+
+    #[test]
+    fn resolve_turn_result_think_tag_multiple() {
+        let raw_output = "<think> thought 1 </think> TELEGRAM_REPLY: some text \n<think> thought 2 </think> TELEGRAM_REPLY: Hello";
+        let result = resolve_turn_result(raw_output, true, false);
+        assert_eq!(result.status, TurnStatus::Ok);
+        assert_eq!(result.telegram_reply, "some text\n\nHello");
+    }
+
+    #[test]
+    fn resolve_turn_result_think_tag_unclosed() {
+        let raw_output = "<think> thought 1 </think> some text <think> thought 2 TELEGRAM_REPLY: Hello";
+        let result = resolve_turn_result(raw_output, true, false);
+        assert_eq!(result.status, TurnStatus::ParseRecovered);
+        assert_eq!(result.telegram_reply, "some text");
+    }
+
+    #[test]
+    fn resolve_turn_result_valid_markers_but_provider_failed() {
+        let raw_output = "TELEGRAM_REPLY: I crashed but here is a reply";
+        let result = resolve_turn_result(raw_output, false, false);
+        assert_eq!(result.status, TurnStatus::AgentError);
+        assert_eq!(result.telegram_reply, "I crashed but here is a reply");
+    }
+
+    #[test]
+    fn resolve_turn_result_agent_error_blank_output() {
+        let result = resolve_turn_result("   \n  \t", false, false);
+        assert_eq!(result.status, TurnStatus::AgentError);
+        assert!(result.telegram_reply.contains("Agent execution failed locally. Please check local logs and retry."));
+    }
+
+    #[test]
+    fn resolve_turn_result_agent_error_skips_blank_lines() {
+        let raw_output = "\n   \n\nReal error message here\nMore details";
+        let result = resolve_turn_result(raw_output, false, false);
+        assert_eq!(result.status, TurnStatus::AgentError);
+        assert!(result.telegram_reply.contains("Real error message here"));
     }
 }
