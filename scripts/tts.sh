@@ -56,7 +56,7 @@ run_tts_once() {
   export WAV_OUTPUT="$out_wav"
 
   set +e
-  bash -lc "$TTS_CMD_TEMPLATE"
+  bash -c -- "$TTS_CMD_TEMPLATE" bash "$TEXT" "$WAV_OUTPUT"
   tts_rc=$?
   set -e
   if [[ $tts_rc -ne 0 ]]; then
