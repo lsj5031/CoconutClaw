@@ -394,3 +394,63 @@ fn normalize_inline_escapes(input: &str) -> String {
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_recover_unstructured_reply_empty() {
+        assert_eq!(recover_unstructured_reply(""), None);
+        assert_eq!(recover_unstructured_reply("   "), None);
+        assert_eq!(recover_unstructured_reply("\n\n"), None);
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_plain_text() {
+        assert_eq!(
+            recover_unstructured_reply("Hello, world!"),
+            Some("Hello, world!".to_string())
+        );
+        assert_eq!(
+            recover_unstructured_reply("  Hello, world!  \n"),
+            Some("Hello, world!".to_string())
+        );
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_json_assistant() {
+        let json_stream = r#"
+{"type":"message_start"}
+{"type":"message","message":{"role":"assistant","content":"I am an assistant"}}
+{"type":"message_end","message":{"role":"assistant","content":"I am an assistant"}}
+"#;
+        assert_eq!(
+            recover_unstructured_reply(json_stream),
+            Some("I am an assistant".to_string())
+        );
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_json_stream_no_assistant() {
+        let json_stream = r#"
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"progress"}
+"#;
+        assert_eq!(recover_unstructured_reply(json_stream), None);
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_not_json_stream() {
+        let not_json_stream = r#"
+This is just some text.
+It has some { curly braces }
+{"but": "it's not a valid json stream of typed events"}
+"#;
+        assert_eq!(
+            recover_unstructured_reply(not_json_stream),
+            Some(not_json_stream.trim().to_string())
+        );
+    }
+}
