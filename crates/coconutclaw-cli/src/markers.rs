@@ -218,15 +218,7 @@ pub(crate) fn recover_unstructured_reply(raw_output: &str) -> Option<String> {
 }
 
 pub(crate) fn should_retry_provider_failure(raw_output: &str) -> bool {
-    let summary = if let Some(summary) = extract_error_summary(raw_output) {
-        summary
-    } else if looks_like_json_event_stream(raw_output) {
-        String::new()
-    } else {
-        raw_output.to_string()
-    }
-    .to_ascii_lowercase();
-    [
+    let needles = [
         "network failure",
         "connection reset",
         "connection refused",
@@ -237,13 +229,31 @@ pub(crate) fn should_retry_provider_failure(raw_output: &str) -> bool {
         "too many requests",
         "rate limit",
         "api error: json parse error",
-    ]
-    .iter()
-    .any(|needle| summary.contains(needle))
+    ];
+
+    // Check all JSON errors first
+    let json_errors = extract_error_summaries(raw_output);
+    for summary in &json_errors {
+        let lower = summary.to_ascii_lowercase();
+        if needles.iter().any(|needle| lower.contains(needle)) {
+            return true;
+        }
+    }
+
+    // If no JSON errors matched (or none were found), we only fall back to raw output
+    // if there were no JSON error events found at all. This prevents us from matching
+    // retryable keywords in non-error JSON output (like tool outputs) when a non-retryable
+    // error caused the failure.
+    if json_errors.is_empty() {
+        let lower_raw = raw_output.to_ascii_lowercase();
+        needles.iter().any(|needle| lower_raw.contains(needle))
+    } else {
+        false
+    }
 }
 
-pub(crate) fn extract_error_summary(payload: &str) -> Option<String> {
-    let mut found: Option<String> = None;
+pub(crate) fn extract_error_summaries(payload: &str) -> Vec<String> {
+    let mut found = Vec::new();
 
     for line in payload.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -277,11 +287,15 @@ pub(crate) fn extract_error_summary(payload: &str) -> Option<String> {
         if let Some(text) = candidate
             && !text.trim().is_empty()
         {
-            found = Some(text);
+            found.push(text);
         }
     }
 
     found
+}
+
+pub(crate) fn extract_error_summary(payload: &str) -> Option<String> {
+    extract_error_summaries(payload).into_iter().last()
 }
 
 fn looks_like_json_event_stream(payload: &str) -> bool {
@@ -456,6 +470,67 @@ fn normalize_inline_escapes(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_should_retry_provider_failure_plain_text() {
+        assert!(should_retry_provider_failure("network failure"));
+        assert!(should_retry_provider_failure("connection reset by peer"));
+        assert!(should_retry_provider_failure("timed out"));
+        assert!(should_retry_provider_failure("temporarily unavailable"));
+        assert!(should_retry_provider_failure("rate limit exceeded"));
+    }
+
+    #[test]
+    fn test_should_not_retry_plain_text() {
+        assert!(!should_retry_provider_failure("invalid credentials"));
+        assert!(!should_retry_provider_failure("bad request"));
+        assert!(!should_retry_provider_failure("syntax error"));
+    }
+
+    #[test]
+    fn test_should_retry_provider_failure_json_agent_end() {
+        let json = r#"{"type": "agent_end", "error": "network failure"}"#;
+        assert!(should_retry_provider_failure(json));
+    }
+
+    #[test]
+    fn test_should_retry_provider_failure_json_turn_failed() {
+        let json = r#"{"type": "turn.failed", "error": {"message": "connection reset"}}"#;
+        assert!(should_retry_provider_failure(json));
+    }
+
+    #[test]
+    fn test_should_retry_provider_failure_json_turn_end() {
+        let json = r#"{"type": "turn_end", "message": {"errorMessage": "timed out"}}"#;
+        assert!(should_retry_provider_failure(json));
+    }
+
+    #[test]
+    fn test_should_retry_mixed_json_and_plain_text() {
+        let output = "{\"type\": \"progress\", \"content\": \"Thinking...\"}\nError: connection reset by peer";
+        assert!(
+            should_retry_provider_failure(output),
+            "Should fall back to raw output and find 'connection reset' despite being a JSON stream initially"
+        );
+    }
+
+    #[test]
+    fn test_should_retry_unrecognized_json_error() {
+        let output = r#"{"type": "fatal_error", "message": "network failure"}"#;
+        assert!(
+            should_retry_provider_failure(output),
+            "Should fall back to raw output for unrecognized JSON error types"
+        );
+    }
+
+    #[test]
+    fn test_should_retry_multiple_errors_in_stream() {
+        let output = "{\"type\": \"turn.failed\", \"error\": {\"message\": \"connection reset\"}}\n{\"type\": \"agent_end\", \"error\": \"unknown error\"}";
+        assert!(
+            should_retry_provider_failure(output),
+            "Should retry if ANY error in the stream is retryable"
+        );
+    }
 
     #[test]
     fn test_recover_unstructured_reply_empty() {
