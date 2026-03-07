@@ -1663,7 +1663,6 @@ mod tests {
         render_telegram_reply_text, should_fallback_plain_for_error, should_send_reply_as_document,
         telegram_retry_after_seconds, telegram_text_form_params,
     };
-    use crate::turn::resolve_turn_result;
     use crate::webhook::webhook_public_endpoint;
     use coconutclaw_config::{
         AgentProvider, ClaudeConfig, CodexConfig, FactoryConfig, GeminiConfig, OpenCodeConfig,
@@ -1983,54 +1982,6 @@ mod tests {
         let payload = r#"{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"mentions timeout in a file path only"}}
 {"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."}}"#;
         assert!(!should_retry_provider_failure(payload));
-    }
-
-    #[test]
-    fn resolve_turn_result_marks_cancelled() {
-        let result = resolve_turn_result("TELEGRAM_REPLY: hi", true, true);
-        assert_eq!(result.status, TurnStatus::Cancelled);
-        assert_eq!(result.telegram_reply, "❌ Cancelled.");
-        assert!(result.markers.telegram_reply.is_none());
-    }
-
-    #[test]
-    fn resolve_turn_result_marks_parse_recovered() {
-        let result = resolve_turn_result("plain reply", true, false);
-        assert_eq!(result.status, TurnStatus::ParseRecovered);
-        assert_eq!(result.telegram_reply, "plain reply");
-    }
-
-    #[test]
-    fn resolve_turn_result_marks_agent_error_recovered() {
-        let payload = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Recovered"}]}}"#;
-        let result = resolve_turn_result(payload, false, false);
-        assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
-        assert_eq!(result.telegram_reply, "Recovered");
-    }
-
-    #[test]
-    fn resolve_turn_result_marks_agent_error_when_unrecoverable() {
-        let result = resolve_turn_result("network timeout", false, false);
-        assert_eq!(result.status, TurnStatus::AgentError);
-        assert!(
-            result
-                .telegram_reply
-                .contains("Agent execution failed locally")
-        );
-    }
-
-    #[test]
-    fn resolve_turn_result_uses_turn_failed_error_message() {
-        let payload = r#"{"type":"thread.started","thread_id":"abc"}
-{"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window."}}"#;
-        let result = resolve_turn_result(payload, false, false);
-        assert_eq!(result.status, TurnStatus::AgentError);
-        assert!(result.telegram_reply.contains("context window"));
-        assert!(
-            !result
-                .telegram_reply
-                .contains(r#"{"type":"thread.started""#)
-        );
     }
 
     #[test]

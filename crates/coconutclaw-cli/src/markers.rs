@@ -43,6 +43,22 @@ pub(crate) fn render_output(
 }
 
 pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
+    let markers = parse_markers_line_anchored(payload);
+    if markers.telegram_reply.is_some() || markers.voice_reply.is_some() {
+        return markers;
+    }
+
+    if let Some(recovered_payload) = recover_embedded_marker_payload(payload) {
+        let recovered = parse_markers_line_anchored(recovered_payload);
+        if recovered.telegram_reply.is_some() || recovered.voice_reply.is_some() {
+            return recovered;
+        }
+    }
+
+    markers
+}
+
+fn parse_markers_line_anchored(payload: &str) -> ParsedMarkers {
     let mut markers = ParsedMarkers::default();
     let mut telegram_blocks = Vec::new();
     let mut voice_blocks = Vec::new();
@@ -94,6 +110,48 @@ pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
     }
 
     markers
+}
+
+fn recover_embedded_marker_payload(payload: &str) -> Option<&str> {
+    let first_line = payload.lines().next()?;
+    let first_line_trimmed = first_line.trim_start();
+    if detect_any_marker(first_line_trimmed).is_some() {
+        return None;
+    }
+    if !starts_with_wrapper(first_line_trimmed) {
+        return None;
+    }
+
+    let first_line_end = payload.find('\n').unwrap_or(payload.len());
+    let head = &payload[..first_line_end];
+    let start = marker_prefixes()
+        .iter()
+        .filter_map(|prefix| head.find(prefix))
+        .min()?;
+
+    if start == 0 {
+        None
+    } else {
+        Some(&payload[start..])
+    }
+}
+
+fn starts_with_wrapper(line: &str) -> bool {
+    ["\"\"\"", "'''", "```", "\"", "'", "`"]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+}
+
+fn marker_prefixes() -> &'static [&'static str] {
+    &[
+        "TELEGRAM_REPLY:",
+        "VOICE_REPLY:",
+        "SEND_PHOTO:",
+        "SEND_DOCUMENT:",
+        "SEND_VIDEO:",
+        "MEMORY_APPEND:",
+        "TASK_APPEND:",
+    ]
 }
 
 fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
@@ -160,15 +218,7 @@ pub(crate) fn recover_unstructured_reply(raw_output: &str) -> Option<String> {
 }
 
 pub(crate) fn should_retry_provider_failure(raw_output: &str) -> bool {
-    let summary = if let Some(summary) = extract_error_summary(raw_output) {
-        summary
-    } else if looks_like_json_event_stream(raw_output) {
-        String::new()
-    } else {
-        raw_output.to_string()
-    }
-    .to_ascii_lowercase();
-    [
+    let needles = [
         "network failure",
         "connection reset",
         "connection refused",
@@ -179,13 +229,31 @@ pub(crate) fn should_retry_provider_failure(raw_output: &str) -> bool {
         "too many requests",
         "rate limit",
         "api error: json parse error",
-    ]
-    .iter()
-    .any(|needle| summary.contains(needle))
+    ];
+
+    // Check all JSON errors first
+    let json_errors = extract_error_summaries(raw_output);
+    for summary in &json_errors {
+        let lower = summary.to_ascii_lowercase();
+        if needles.iter().any(|needle| lower.contains(needle)) {
+            return true;
+        }
+    }
+
+    // If no JSON errors matched (or none were found), we only fall back to raw output
+    // if there were no JSON error events found at all. This prevents us from matching
+    // retryable keywords in non-error JSON output (like tool outputs) when a non-retryable
+    // error caused the failure.
+    if json_errors.is_empty() {
+        let lower_raw = raw_output.to_ascii_lowercase();
+        needles.iter().any(|needle| lower_raw.contains(needle))
+    } else {
+        false
+    }
 }
 
-pub(crate) fn extract_error_summary(payload: &str) -> Option<String> {
-    let mut found: Option<String> = None;
+pub(crate) fn extract_error_summaries(payload: &str) -> Vec<String> {
+    let mut found = Vec::new();
 
     for line in payload.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -219,11 +287,15 @@ pub(crate) fn extract_error_summary(payload: &str) -> Option<String> {
         if let Some(text) = candidate
             && !text.trim().is_empty()
         {
-            found = Some(text);
+            found.push(text);
         }
     }
 
     found
+}
+
+pub(crate) fn extract_error_summary(payload: &str) -> Option<String> {
+    extract_error_summaries(payload).into_iter().last()
 }
 
 fn looks_like_json_event_stream(payload: &str) -> bool {
@@ -393,4 +465,237 @@ fn normalize_inline_escapes(input: &str) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_should_retry_provider_failure_plain_text() {
+        assert!(should_retry_provider_failure("network failure"));
+        assert!(should_retry_provider_failure("connection reset by peer"));
+        assert!(should_retry_provider_failure("timed out"));
+        assert!(should_retry_provider_failure("temporarily unavailable"));
+        assert!(should_retry_provider_failure("rate limit exceeded"));
+    }
+
+    #[test]
+    fn test_should_not_retry_plain_text() {
+        assert!(!should_retry_provider_failure("invalid credentials"));
+        assert!(!should_retry_provider_failure("bad request"));
+        assert!(!should_retry_provider_failure("syntax error"));
+    }
+
+    #[test]
+    fn test_should_retry_provider_failure_json_agent_end() {
+        let json = r#"{"type": "agent_end", "error": "network failure"}"#;
+        assert!(should_retry_provider_failure(json));
+    }
+
+    #[test]
+    fn test_should_retry_provider_failure_json_turn_failed() {
+        let json = r#"{"type": "turn.failed", "error": {"message": "connection reset"}}"#;
+        assert!(should_retry_provider_failure(json));
+    }
+
+    #[test]
+    fn test_should_retry_provider_failure_json_turn_end() {
+        let json = r#"{"type": "turn_end", "message": {"errorMessage": "timed out"}}"#;
+        assert!(should_retry_provider_failure(json));
+    }
+
+    #[test]
+    fn test_should_retry_mixed_json_and_plain_text() {
+        let output = "{\"type\": \"progress\", \"content\": \"Thinking...\"}\nError: connection reset by peer";
+        assert!(
+            should_retry_provider_failure(output),
+            "Should fall back to raw output and find 'connection reset' despite being a JSON stream initially"
+        );
+    }
+
+    #[test]
+    fn test_should_retry_unrecognized_json_error() {
+        let output = r#"{"type": "fatal_error", "message": "network failure"}"#;
+        assert!(
+            should_retry_provider_failure(output),
+            "Should fall back to raw output for unrecognized JSON error types"
+        );
+    }
+
+    #[test]
+    fn test_should_retry_multiple_errors_in_stream() {
+        let output = "{\"type\": \"turn.failed\", \"error\": {\"message\": \"connection reset\"}}\n{\"type\": \"agent_end\", \"error\": \"unknown error\"}";
+        assert!(
+            should_retry_provider_failure(output),
+            "Should retry if ANY error in the stream is retryable"
+        );
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_empty() {
+        assert_eq!(recover_unstructured_reply(""), None);
+        assert_eq!(recover_unstructured_reply("   "), None);
+        assert_eq!(recover_unstructured_reply("\n\n"), None);
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_plain_text() {
+        assert_eq!(
+            recover_unstructured_reply("Hello, world!"),
+            Some("Hello, world!".to_string())
+        );
+        assert_eq!(
+            recover_unstructured_reply("  Hello, world!  \n"),
+            Some("Hello, world!".to_string())
+        );
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_json_assistant() {
+        let json_stream = r#"
+{"type":"message_start"}
+{"type":"message","message":{"role":"assistant","content":"I am an assistant"}}
+{"type":"message_end","message":{"role":"assistant","content":"I am an assistant"}}
+"#;
+        assert_eq!(
+            recover_unstructured_reply(json_stream),
+            Some("I am an assistant".to_string())
+        );
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_json_stream_no_assistant() {
+        let json_stream = r#"
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"progress"}
+"#;
+        assert_eq!(recover_unstructured_reply(json_stream), None);
+    }
+
+    #[test]
+    fn test_recover_unstructured_reply_not_json_stream() {
+        let not_json_stream = r#"
+This is just some text.
+It has some { curly braces }
+{"but": "it's not a valid json stream of typed events"}
+"#;
+        assert_eq!(
+            recover_unstructured_reply(not_json_stream),
+            Some(not_json_stream.trim().to_string())
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_empty_payload() {
+        assert_eq!(extract_error_summary(""), None);
+    }
+
+    #[test]
+    fn extract_error_summary_non_json_lines() {
+        let payload = "not json\nstill not json";
+        assert_eq!(extract_error_summary(payload), None);
+    }
+
+    #[test]
+    fn parse_markers_recovers_first_line_embedded_marker() {
+        let payload = concat!(
+            "\"\"\"I will research the details first.",
+            "TELEGRAM_REPLY: Parsed reply line one\n",
+            "line two\n",
+            "MEMORY_APPEND: saved item"
+        );
+
+        let markers = parse_markers(payload);
+
+        assert_eq!(
+            markers.telegram_reply.as_deref(),
+            Some("Parsed reply line one\nline two")
+        );
+        assert_eq!(markers.memory_append, vec!["saved item".to_string()]);
+    }
+
+    #[test]
+    fn parse_markers_does_not_recover_later_inline_marker_mentions() {
+        let payload =
+            "This plain reply mentions TELEGRAM_REPLY: literally, but it is not structured.";
+
+        let markers = parse_markers(payload);
+
+        assert!(markers.telegram_reply.is_none());
+        assert!(markers.memory_append.is_empty());
+    }
+
+    #[test]
+    fn extract_error_summary_json_missing_type() {
+        let payload = r#"{"no_type":"here"}"#;
+        assert_eq!(extract_error_summary(payload), None);
+    }
+
+    #[test]
+    fn extract_error_summary_agent_end() {
+        let payload = r#"{"type":"agent_end","error":"something went wrong"}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("something went wrong")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_turn_failed_object() {
+        let payload = r#"{"type":"turn.failed","error":{"message":"turn failed message"}}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("turn failed message")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_turn_failed_string() {
+        let payload = r#"{"type":"turn.failed","error":"direct error string"}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("direct error string")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_turn_end() {
+        let payload = r#"{"type":"turn_end","message":{"errorMessage":"turn end error"}}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("turn end error")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_prefers_last_valid_event() {
+        let payload = r#"{"type":"turn_end","message":{"errorMessage":"first error"}}
+{"type":"agent_end","error":"second error"}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("second error")
+        );
+    }
+
+    #[test]
+    fn extract_error_summary_ignores_whitespace_errors() {
+        let payload = r#"{"type":"agent_end","error":"   "}"#;
+        assert_eq!(extract_error_summary(payload), None);
+    }
+
+    #[test]
+    fn extract_error_summary_complex_mix() {
+        let payload = r#"{"type":"other"}
+not json
+{"type":"turn.failed","error":{"no_message":"here"}}
+{"type":"turn_end","message":{"errorMessage":"actual error"}}
+{"type":"agent_end","error":""}
+{"type":"agent_end","no_error":"field"}"#;
+        assert_eq!(
+            extract_error_summary(payload).as_deref(),
+            Some("actual error")
+        );
+    }
 }
