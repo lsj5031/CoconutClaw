@@ -274,7 +274,7 @@ pub(crate) fn resolve_turn_result(
     }
 
     if provider_success {
-        if let Some(recovered) = recover_unstructured_reply(raw_output) {
+        if let Some(recovered) = recover_unstructured_reply(&cleaned) {
             return TurnResult {
                 markers,
                 telegram_reply: recovered,
@@ -282,16 +282,25 @@ pub(crate) fn resolve_turn_result(
                 status: TurnStatus::ParseRecovered,
             };
         }
+        // If it's just raw text without markers, and no specific unstructured JSON format
+        // was found, return the text directly instead of an error message.
         return TurnResult {
             markers,
-            telegram_reply: "I could not parse structured markers from the model output."
-                .to_string(),
+            telegram_reply: if cleaned.is_empty() {
+                "I could not parse structured markers from the model output.".to_string()
+            } else {
+                cleaned.clone()
+            },
             voice_reply: String::new(),
-            status: TurnStatus::ParseFallback,
+            status: if cleaned.is_empty() {
+                TurnStatus::ParseFallback
+            } else {
+                TurnStatus::ParseRecovered
+            },
         };
     }
 
-    if let Some(recovered) = extract_assistant_text_from_json_stream(raw_output) {
+    if let Some(recovered) = extract_assistant_text_from_json_stream(&cleaned) {
         return TurnResult {
             markers,
             telegram_reply: recovered,
