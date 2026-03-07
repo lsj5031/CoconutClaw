@@ -805,31 +805,132 @@ fn tool_arg_summary(tool_name: &str, args: Option<&Value>) -> String {
         Some(v) => v,
         None => return String::new(),
     };
-    // Pick the most informative field per tool
-    let raw = match tool_name {
-        "bash" | "Bash" => args.get("cmd").or_else(|| args.get("command")),
-        "read_file" | "Read" | "read" => args.get("path").or_else(|| args.get("file")),
-        "edit_file" | "write_file" | "create_file" => args.get("path").or_else(|| args.get("file")),
-        "glob" => args.get("filePattern").or_else(|| args.get("pattern")),
-        "Grep" | "grep" => args.get("pattern"),
-        "web_search" => args.get("objective").or_else(|| args.get("query")),
-        "read_web_page" => args.get("url"),
-        _ => {
-            // Generic: try common keys
-            args.get("path")
-                .or_else(|| args.get("cmd"))
-                .or_else(|| args.get("query"))
-        }
+
+    let tool_name = tool_name.trim().to_ascii_lowercase();
+    let candidate = if matches!(
+        tool_name.as_str(),
+        "bash" | "shell" | "execute" | "run_shell_command" | "run_command"
+    ) {
+        first_string_value(args, &["cmd", "command", "script"])
+    } else if matches!(
+        tool_name.as_str(),
+        "read"
+            | "read_file"
+            | "file_read"
+            | "open"
+            | "view"
+            | "edit_file"
+            | "write_file"
+            | "create_file"
+            | "replace"
+            | "patch"
+    ) {
+        first_string_value(args, &["path", "file", "file_path"])
+    } else if matches!(tool_name.as_str(), "glob" | "find") {
+        first_string_value(args, &["filePattern", "pattern", "glob"])
+    } else if matches!(tool_name.as_str(), "grep" | "search" | "search_files") {
+        first_string_value(args, &["pattern", "query"])
+    } else if matches!(tool_name.as_str(), "web_search" | "search_web") {
+        first_string_value(args, &["objective", "query", "prompt"])
+    } else if matches!(tool_name.as_str(), "read_web_page" | "fetch_url") {
+        first_string_value(args, &["url"])
+    } else {
+        first_string_value(
+            args,
+            &[
+                "path",
+                "file",
+                "file_path",
+                "cmd",
+                "command",
+                "query",
+                "pattern",
+                "url",
+                "directory_path",
+                "prompt",
+                "title",
+            ],
+        )
     };
-    let text = match raw.and_then(Value::as_str) {
+
+    let text = match candidate {
         Some(s) if !s.is_empty() => s,
         _ => return String::new(),
     };
-    if text.len() <= MAX_LEN {
-        text.to_string()
-    } else {
-        format!("{}…", &text[..MAX_LEN])
+    truncate_status_detail(&text, MAX_LEN)
+}
+
+fn truncate_status_detail(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
     }
+    let keep = max_chars.saturating_sub(1);
+    let mut out: String = chars[..keep].iter().collect();
+    out.push('…');
+    out
+}
+
+fn first_string_value(node: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = node.get(*key)
+            && let Some(text) = value_to_status_text(value)
+        {
+            return Some(text);
+        }
+    }
+    value_to_status_text(node)
+}
+
+fn value_to_status_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+        return None;
+    }
+
+    if let Some(array) = value.as_array() {
+        let mut parts = Vec::new();
+        for item in array {
+            if let Some(text) = value_to_status_text(item) {
+                parts.push(text);
+            }
+        }
+        if !parts.is_empty() {
+            return Some(parts.join(", "));
+        }
+        return None;
+    }
+
+    if let Some(object) = value.as_object() {
+        for key in [
+            "path",
+            "file",
+            "file_path",
+            "cmd",
+            "command",
+            "query",
+            "pattern",
+            "url",
+            "directory_path",
+            "title",
+        ] {
+            if let Some(child) = object.get(key)
+                && let Some(text) = value_to_status_text(child)
+            {
+                return Some(text);
+            }
+        }
+        for child in object.values() {
+            if let Some(text) = value_to_status_text(child) {
+                return Some(text);
+            }
+        }
+    }
+
+    None
 }
 
 fn parse_pi_progress_line(line: &str) -> Option<String> {
@@ -1254,11 +1355,16 @@ fn parse_opencode_json_line(line: &str) -> Option<String> {
         return Some("Processing...".to_string());
     }
 
-    // tool_use — tool invocation (emitted on completion)
+    // tool_use — tool invocation (often emitted with final state)
     if event_type == "tool_use" {
         let part = value.get("part")?;
         let tool = part.get("tool").and_then(Value::as_str).unwrap_or("tool");
         let state = part.get("state");
+        let status = state
+            .and_then(|s| s.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let is_started = matches!(status, "running" | "in_progress" | "started" | "pending");
         let is_error = state
             .and_then(|s| s.get("metadata"))
             .and_then(|m| m.get("exit"))
@@ -1269,8 +1375,21 @@ fn parse_opencode_json_line(line: &str) -> Option<String> {
             .and_then(|s| s.get("title"))
             .and_then(Value::as_str)
             .map(|t| shorten_status_text(t, 60))
+            .filter(|t| !t.is_empty())
+            .or_else(|| {
+                state
+                    .and_then(|s| s.get("input"))
+                    .map(|input| tool_arg_summary(tool, Some(input)))
+                    .filter(|text| !text.is_empty())
+            })
             .unwrap_or_default();
-        let marker = if is_error { "✗" } else { "✓" };
+        let marker = if is_started {
+            "▶"
+        } else if is_error {
+            "✗"
+        } else {
+            "✓"
+        };
         return if detail.is_empty() {
             Some(format!("{marker} {tool}"))
         } else {
@@ -1357,7 +1476,37 @@ fn parse_gemini_json_line(line: &str) -> Option<String> {
 
     // tool_result — tool finished executing
     if event_type == "tool_result" {
-        return Some("✓ tool completed".to_string());
+        let name = value
+            .get("name")
+            .or_else(|| value.get("tool"))
+            .or_else(|| value.get("tool_name"))
+            .and_then(Value::as_str)
+            .unwrap_or("tool");
+        let is_error = value
+            .get("is_error")
+            .or_else(|| value.get("isError"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let detail = value
+            .get("input")
+            .or_else(|| value.get("args"))
+            .map(|input| tool_arg_summary(name, Some(input)))
+            .filter(|text| !text.is_empty())
+            .or_else(|| {
+                value
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| shorten_status_text(text, 60))
+            })
+            .unwrap_or_default();
+        let marker = if is_error { "✗" } else { "✓" };
+        return if detail.is_empty() {
+            Some(format!("{marker} {name}"))
+        } else {
+            Some(format!("{marker} {name}: {detail}"))
+        };
     }
 
     // message — assistant message chunk (drafting response)
@@ -1622,6 +1771,21 @@ mod tests {
     }
 
     #[test]
+    fn tool_arg_summary_handles_generic_command_key() {
+        let args: Value = serde_json::json!({"command": "git status"});
+        assert_eq!(
+            tool_arg_summary("run_shell_command", Some(&args)),
+            "git status"
+        );
+    }
+
+    #[test]
+    fn tool_arg_summary_reads_nested_object_values() {
+        let args: Value = serde_json::json!({"target": {"path": "src/main.rs"}});
+        assert_eq!(tool_arg_summary("unknown_tool", Some(&args)), "src/main.rs");
+    }
+
+    #[test]
     fn parse_pi_progress_line_tool_execution_end() {
         let line = r#"{"type":"tool_execution_end","toolCallId":"t1","toolName":"bash","result":{},"isError":false}"#;
         assert_eq!(parse_pi_progress_line(line).as_deref(), Some("✓ bash"));
@@ -1856,7 +2020,10 @@ mod tests {
     #[test]
     fn parse_factory_tool_call() {
         let line = r#"{"type":"tool_call","id":"call_1","toolName":"LS","parameters":{"directory_path":"/home"},"timestamp":1}"#;
-        assert_eq!(parse_factory_json_line(line).as_deref(), Some("▶ LS"));
+        assert_eq!(
+            parse_factory_json_line(line).as_deref(),
+            Some("▶ LS: /home")
+        );
     }
 
     #[test]
@@ -1977,6 +2144,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_opencode_tool_use_falls_back_to_input_detail() {
+        let line = r#"{"type":"tool_use","timestamp":1767036061199,"sessionID":"ses_1","part":{"tool":"bash","state":{"status":"completed","input":{"command":"echo hello"},"metadata":{"exit":0}}}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("✓ bash: echo hello")
+        );
+    }
+
+    #[test]
+    fn parse_opencode_tool_use_started() {
+        let line = r#"{"type":"tool_use","timestamp":1767036061199,"sessionID":"ses_1","part":{"tool":"bash","state":{"status":"running","input":{"command":"cargo test"},"metadata":{}}}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("▶ bash: cargo test")
+        );
+    }
+
+    #[test]
     fn parse_opencode_tool_use_error() {
         let line = r#"{"type":"tool_use","timestamp":1767036061199,"sessionID":"ses_1","part":{"tool":"bash","state":{"status":"completed","input":{"command":"false"},"title":"Run false","metadata":{"exit":1}}}}"#;
         assert_eq!(
@@ -2028,7 +2213,16 @@ mod tests {
         let line = r#"{"type":"tool_result","output":"hello\n"}"#;
         assert_eq!(
             parse_gemini_json_line(line).as_deref(),
-            Some("✓ tool completed")
+            Some("✓ tool: hello")
+        );
+    }
+
+    #[test]
+    fn parse_gemini_tool_result_with_name_and_input() {
+        let line = r#"{"type":"tool_result","name":"run_shell_command","input":{"command":"ls -la"},"output":"done"}"#;
+        assert_eq!(
+            parse_gemini_json_line(line).as_deref(),
+            Some("✓ run_shell_command: ls -la")
         );
     }
 
