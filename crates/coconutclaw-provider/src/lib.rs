@@ -1247,7 +1247,7 @@ fn extract_factory_json_final(raw: &str) -> Option<String> {
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
             {
-                completion_text = Some(text.to_string());
+                completion_text = Some(trim_factory_final_text(text));
             }
             continue;
         }
@@ -1261,13 +1261,34 @@ fn extract_factory_json_final(raw: &str) -> Option<String> {
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
             {
-                assistant_text = Some(text.to_string());
+                assistant_text = Some(trim_factory_final_text(text));
             }
             continue;
         }
     }
 
     completion_text.or(assistant_text)
+}
+
+fn trim_factory_final_text(text: &str) -> String {
+    let trimmed = text.trim();
+    let start = [
+        "TELEGRAM_REPLY:",
+        "VOICE_REPLY:",
+        "SEND_PHOTO:",
+        "SEND_DOCUMENT:",
+        "SEND_VIDEO:",
+        "MEMORY_APPEND:",
+        "TASK_APPEND:",
+    ]
+    .iter()
+    .filter_map(|prefix| trimmed.find(prefix))
+    .min();
+
+    match start {
+        Some(index) if index > 0 => trimmed[index..].trim().to_string(),
+        _ => trimmed.to_string(),
+    }
 }
 
 fn extract_claude_assistant_text(event: &Value) -> Option<String> {
@@ -1997,6 +2018,17 @@ mod tests {
 "#;
         let text = extract_factory_json_final(raw);
         assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: hello from droid"));
+    }
+
+    #[test]
+    fn extract_factory_json_final_trims_prose_before_marker() {
+        let raw = r#"{"type":"completion","finalText":"I detect implementation intent. Build succeeded. TELEGRAM_REPLY: Built and restarted both services"}
+"#;
+        let text = extract_factory_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some("TELEGRAM_REPLY: Built and restarted both services")
+        );
     }
 
     #[test]
