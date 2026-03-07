@@ -3,7 +3,7 @@ use coconutclaw_config::{AgentProvider, RuntimeConfig};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -285,7 +285,7 @@ fn run_claude(
         cmd.arg("-p");
 
         if include_dangerous_flag {
-            cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+            cmd.arg("--dangerously-skip-permissions");
         }
         if let Some(model) = &config.claude.model {
             cmd.arg("--model").arg(model);
@@ -337,18 +337,16 @@ fn run_claude(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
-    } else if run_result.status.success() {
+    } else {
         extract_claude_json_final(&run_result.stdout_text).unwrap_or_else(|| {
-            if !run_result.stdout_text.trim().is_empty() {
+            if !run_result.stderr_text.trim().is_empty() {
+                run_result.stderr_text.clone()
+            } else if !run_result.stdout_text.trim().is_empty() {
                 run_result.stdout_text.clone()
             } else {
-                run_result.stderr_text.clone()
+                String::new()
             }
         })
-    } else if !run_result.stdout_text.trim().is_empty() {
-        run_result.stdout_text
-    } else {
-        run_result.stderr_text
     };
 
     Ok(ProviderOutput {
@@ -372,26 +370,26 @@ fn run_opencode(
         cmd.env(&key, &value);
     }
 
+    cmd.arg("run");
+
     if let Some(model) = &config.opencode.model {
         cmd.arg("--model").arg(model);
     }
+    if let Some(effort) = &config.opencode.reasoning_effort {
+        cmd.arg("--variant").arg(effort);
+    }
 
-    cmd.arg("--output-format")
-        .arg("stream-json")
-        .stdin(Stdio::piped())
+    cmd.arg("--format")
+        .arg("json")
+        .arg(context)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_child_command(&mut cmd);
 
-    let mut child = cmd
+    let child = cmd
         .spawn()
         .with_context(|| format!("failed to start {}", config.opencode.bin))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(context.as_bytes())
-            .context("failed to write context to opencode stdin")?;
-    }
 
     let run_result = run_child_process(
         child,
@@ -413,18 +411,16 @@ fn run_opencode(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
-    } else if run_result.status.success() {
+    } else {
         extract_opencode_json_final(&run_result.stdout_text).unwrap_or_else(|| {
-            if !run_result.stdout_text.trim().is_empty() {
+            if !run_result.stderr_text.trim().is_empty() {
+                run_result.stderr_text.clone()
+            } else if !run_result.stdout_text.trim().is_empty() {
                 run_result.stdout_text.clone()
             } else {
-                run_result.stderr_text.clone()
+                String::new()
             }
         })
-    } else if !run_result.stdout_text.trim().is_empty() {
-        run_result.stdout_text
-    } else {
-        run_result.stderr_text
     };
 
     Ok(ProviderOutput {
@@ -447,14 +443,20 @@ fn run_gemini(
     for (key, value) in env_vars {
         cmd.env(&key, &value);
     }
-    cmd.arg("-p");
+    cmd.arg("-p").arg(context);
 
+    if config.exec_policy.eq_ignore_ascii_case("yolo") {
+        cmd.arg("--yolo");
+    }
     if let Some(model) = &config.gemini.model {
         cmd.arg("--model").arg(model);
     }
 
-    cmd.arg(context)
-        .stdin(Stdio::null())
+    if progress_tx.is_some() {
+        cmd.arg("--output-format").arg("stream-json");
+    }
+
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_child_command(&mut cmd);
@@ -466,7 +468,7 @@ fn run_gemini(
         child,
         cancel_flag,
         progress_tx.cloned(),
-        None,
+        Some(parse_gemini_json_line),
         "failed waiting for gemini command".to_string(),
         "failed waiting after gemini kill".to_string(),
         timeout_secs,
@@ -482,10 +484,16 @@ fn run_gemini(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
-    } else if !run_result.stdout_text.trim().is_empty() {
-        run_result.stdout_text
     } else {
-        run_result.stderr_text
+        extract_gemini_json_final(&run_result.stdout_text).unwrap_or_else(|| {
+            if !run_result.stderr_text.trim().is_empty() {
+                run_result.stderr_text.clone()
+            } else if !run_result.stdout_text.trim().is_empty() {
+                run_result.stdout_text.clone()
+            } else {
+                String::new()
+            }
+        })
     };
 
     Ok(ProviderOutput {
@@ -503,35 +511,56 @@ fn run_factory(
     progress_tx: Option<&Sender<String>>,
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
-    let (env_vars, bin_path) = parse_bin_with_env(&config.factory.bin);
-    let mut cmd = Command::new(bin_path);
-    for (key, value) in env_vars {
-        cmd.env(&key, &value);
+    let run_once = |include_dangerous_flag: bool| -> Result<RunResult> {
+        let (env_vars, bin_path) = parse_bin_with_env(&config.factory.bin);
+        let mut cmd = Command::new(bin_path);
+        for (key, value) in env_vars {
+            cmd.env(&key, &value);
+        }
+        cmd.arg("exec");
+
+        if include_dangerous_flag {
+            cmd.arg("--skip-permissions-unsafe");
+        }
+        if let Some(model) = &config.factory.model {
+            cmd.arg("--model").arg(model);
+        }
+
+        cmd.arg("--output-format")
+            .arg("stream-json")
+            .arg(context)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_child_command(&mut cmd);
+
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("failed to start {}", config.factory.bin))?;
+        run_child_process(
+            child,
+            cancel_flag,
+            progress_tx.cloned(),
+            Some(parse_factory_json_line),
+            "failed waiting for factory command".to_string(),
+            "failed waiting after factory kill".to_string(),
+            timeout_secs,
+        )
+    };
+
+    let yolo_mode = config.exec_policy.eq_ignore_ascii_case("yolo");
+    let mut run_result = run_once(yolo_mode)?;
+    if yolo_mode
+        && !run_result.status.success()
+        && !run_result.cancelled
+        && !run_result.timed_out
+        && should_retry_without_dangerous_flag(&run_result.stdout_text, &run_result.stderr_text)
+    {
+        tracing::warn!(
+            "factory CLI rejected dangerous permission flag; retrying without it for compatibility"
+        );
+        run_result = run_once(false)?;
     }
-    cmd.arg("-p");
-
-    if let Some(model) = &config.factory.model {
-        cmd.arg("--model").arg(model);
-    }
-
-    cmd.arg(context)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_child_command(&mut cmd);
-
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("failed to start {}", config.factory.bin))?;
-    let run_result = run_child_process(
-        child,
-        cancel_flag,
-        progress_tx.cloned(),
-        None,
-        "failed waiting for factory command".to_string(),
-        "failed waiting after factory kill".to_string(),
-        timeout_secs,
-    )?;
 
     let exit_code = if run_result.cancelled || run_result.timed_out {
         if run_result.timed_out { 124 } else { 130 }
@@ -543,10 +572,16 @@ fn run_factory(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
-    } else if !run_result.stdout_text.trim().is_empty() {
-        run_result.stdout_text
     } else {
-        run_result.stderr_text
+        extract_factory_json_final(&run_result.stdout_text).unwrap_or_else(|| {
+            if !run_result.stderr_text.trim().is_empty() {
+                run_result.stderr_text.clone()
+            } else if !run_result.stdout_text.trim().is_empty() {
+                run_result.stdout_text.clone()
+            } else {
+                String::new()
+            }
+        })
     };
 
     Ok(ProviderOutput {
@@ -976,16 +1011,76 @@ fn join_content_text_blocks(msg: &Value) -> Option<String> {
 
 fn parse_claude_json_line(line: &str) -> Option<String> {
     let value: Value = serde_json::from_str(line).ok()?;
-    if value.get("type")?.as_str()? == "progress" {
+    let event_type = value.get("type")?.as_str()?;
+
+    // Legacy progress event
+    if event_type == "progress" {
         return Some(value.get("content")?.as_str()?.to_string());
     }
+
+    // system/init — session started
+    if event_type == "system" {
+        let subtype = value.get("subtype").and_then(Value::as_str).unwrap_or("");
+        if subtype == "init" {
+            return Some("Processing...".to_string());
+        }
+    }
+
+    // assistant message with tool_use content blocks
+    if event_type == "assistant" {
+        let message = value.get("message")?;
+        let content = message.get("content").and_then(Value::as_array)?;
+        for block in content {
+            let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
+            if block_type == "tool_use" {
+                let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                let detail = tool_arg_summary(name, block.get("input"));
+                return if detail.is_empty() {
+                    Some(format!("▶ {name}"))
+                } else {
+                    Some(format!("▶ {name}: {detail}"))
+                };
+            }
+            if block_type == "thinking" {
+                return Some("Reasoning...".to_string());
+            }
+        }
+        // Text-only assistant message means drafting response
+        if content
+            .iter()
+            .any(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        {
+            return Some("Drafting response...".to_string());
+        }
+    }
+
+    // user message with tool_result content blocks
+    if event_type == "user" {
+        let message = value.get("message")?;
+        let content = message.get("content").and_then(Value::as_array)?;
+        for block in content {
+            if block.get("type").and_then(Value::as_str) == Some("tool_result") {
+                let is_error = block
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                // Try to find the tool name from parent_tool_use_id context;
+                // fall back to generic marker
+                return Some(if is_error {
+                    "✗ tool completed".to_string()
+                } else {
+                    "✓ tool completed".to_string()
+                });
+            }
+        }
+    }
+
     None
 }
 
 fn extract_claude_json_final(raw: &str) -> Option<String> {
     let mut result_text: Option<String> = None;
     let mut assistant_text: Option<String> = None;
-    let mut legacy_text = String::new();
 
     for line in raw.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -995,6 +1090,7 @@ fn extract_claude_json_final(raw: &str) -> Option<String> {
             continue;
         };
 
+        // {"type":"result","result":"..."}
         if event_type == "result" {
             if let Some(text) = value
                 .get("result")
@@ -1007,17 +1103,12 @@ fn extract_claude_json_final(raw: &str) -> Option<String> {
             continue;
         }
 
+        // {"type":"assistant","message":{"role":"assistant","content":[...]}}
         if event_type == "assistant" {
             if let Some(text) = extract_claude_assistant_text(&value) {
                 assistant_text = Some(text);
             }
             continue;
-        }
-
-        if event_type == "text"
-            && let Some(text) = value.get("content").and_then(Value::as_str)
-        {
-            legacy_text.push_str(text);
         }
     }
 
@@ -1027,10 +1118,55 @@ fn extract_claude_json_final(raw: &str) -> Option<String> {
     if let Some(text) = assistant_text {
         return Some(text);
     }
-    if legacy_text.is_empty() {
-        return None;
+    None
+}
+
+/// Extract final response from Factory/Droid `--output-format stream-json` output.
+///
+/// Droid format:
+///   {"type":"completion","finalText":"..."}
+///   {"type":"message","role":"assistant","text":"..."}
+fn extract_factory_json_final(raw: &str) -> Option<String> {
+    let mut completion_text: Option<String> = None;
+    let mut assistant_text: Option<String> = None;
+
+    for line in raw.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        // {"type":"completion","finalText":"..."}
+        if event_type == "completion" {
+            if let Some(text) = value
+                .get("finalText")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                completion_text = Some(text.to_string());
+            }
+            continue;
+        }
+
+        // {"type":"message","role":"assistant","text":"..."}
+        if event_type == "message" && value.get("role").and_then(Value::as_str) == Some("assistant")
+        {
+            if let Some(text) = value
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                assistant_text = Some(text.to_string());
+            }
+            continue;
+        }
     }
-    Some(legacy_text)
+
+    completion_text.or(assistant_text)
 }
 
 fn extract_claude_assistant_text(event: &Value) -> Option<String> {
@@ -1054,27 +1190,269 @@ fn extract_claude_assistant_text(event: &Value) -> Option<String> {
     }
 }
 
+/// Parse a Factory/Droid `--output-format stream-json` JSONL line for progress.
+///
+/// Droid event types: system/init, tool_call, tool_result, message, completion.
+fn parse_factory_json_line(line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let event_type = value.get("type")?.as_str()?;
+
+    // system/init — session started
+    if event_type == "system" {
+        let subtype = value.get("subtype").and_then(Value::as_str).unwrap_or("");
+        if subtype == "init" {
+            return Some("Processing...".to_string());
+        }
+    }
+
+    // tool_call — tool invocation starting
+    if event_type == "tool_call" {
+        let name = value
+            .get("toolName")
+            .and_then(Value::as_str)
+            .unwrap_or("tool");
+        let detail = tool_arg_summary(name, value.get("parameters"));
+        return if detail.is_empty() {
+            Some(format!("▶ {name}"))
+        } else {
+            Some(format!("▶ {name}: {detail}"))
+        };
+    }
+
+    // tool_result — tool finished
+    if event_type == "tool_result" {
+        let name = value
+            .get("toolId")
+            .and_then(Value::as_str)
+            .unwrap_or("tool");
+        let is_error = value
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        return Some(format!("{} {name}", if is_error { "✗" } else { "✓" }));
+    }
+
+    // assistant message — drafting response
+    if event_type == "message" && value.get("role").and_then(Value::as_str) == Some("assistant") {
+        return Some("Drafting response...".to_string());
+    }
+
+    None
+}
+
 fn parse_opencode_json_line(line: &str) -> Option<String> {
     let value: Value = serde_json::from_str(line).ok()?;
-    if value.get("type")?.as_str()? == "progress" {
+    let event_type = value.get("type")?.as_str()?;
+
+    // Legacy progress event
+    if event_type == "progress" {
         return Some(value.get("content")?.as_str()?.to_string());
     }
+
+    // step_start — beginning of a processing step
+    if event_type == "step_start" {
+        return Some("Processing...".to_string());
+    }
+
+    // tool_use — tool invocation (emitted on completion)
+    if event_type == "tool_use" {
+        let part = value.get("part")?;
+        let tool = part.get("tool").and_then(Value::as_str).unwrap_or("tool");
+        let state = part.get("state");
+        let is_error = state
+            .and_then(|s| s.get("metadata"))
+            .and_then(|m| m.get("exit"))
+            .and_then(Value::as_i64)
+            .map(|c| c != 0)
+            .unwrap_or(false);
+        let detail = state
+            .and_then(|s| s.get("title"))
+            .and_then(Value::as_str)
+            .map(|t| shorten_status_text(t, 60))
+            .unwrap_or_default();
+        let marker = if is_error { "✗" } else { "✓" };
+        return if detail.is_empty() {
+            Some(format!("{marker} {tool}"))
+        } else {
+            Some(format!("{marker} {tool}: {detail}"))
+        };
+    }
+
+    // step_finish — end of a processing step
+    if event_type == "step_finish" {
+        let part = value.get("part")?;
+        let reason = part.get("reason").and_then(Value::as_str).unwrap_or("");
+        if reason == "tool-calls" {
+            return Some("Continuing...".to_string());
+        }
+    }
+
+    // error event
+    if event_type == "error" {
+        let msg = value
+            .get("error")
+            .and_then(|e| e.get("data"))
+            .and_then(|d| d.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("error");
+        return Some(format!("⚠ {msg}"));
+    }
+
     None
 }
 
 fn extract_opencode_json_final(raw: &str) -> Option<String> {
     let mut final_text = String::new();
     for line in raw.lines() {
-        if let Ok(value) = serde_json::from_str::<Value>(line)
-            && value.get("type")?.as_str()? == "text"
-        {
-            final_text.push_str(value.get("content")?.as_str()?);
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if event_type == "text" {
+            // Actual format: {"type":"text","part":{"type":"text","text":"..."}}
+            if let Some(text) = value
+                .get("part")
+                .and_then(|p| p.get("text"))
+                .and_then(Value::as_str)
+            {
+                final_text.push_str(text);
+            }
+            // Legacy format: {"type":"text","content":"..."}
+            else if let Some(text) = value.get("content").and_then(Value::as_str) {
+                final_text.push_str(text);
+            }
         }
     }
     if final_text.is_empty() {
         None
     } else {
         Some(final_text)
+    }
+}
+
+/// Parse a Gemini CLI `--output-format stream-json` JSONL line.
+///
+/// Event types: init, message, tool_use, tool_result, error, result.
+fn parse_gemini_json_line(line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let event_type = value.get("type")?.as_str()?;
+
+    // init — session started
+    if event_type == "init" {
+        return Some("Processing...".to_string());
+    }
+
+    // tool_use — tool call request with arguments
+    if event_type == "tool_use" {
+        let name = value.get("name").and_then(Value::as_str).unwrap_or("tool");
+        let detail = tool_arg_summary(name, value.get("input"));
+        return if detail.is_empty() {
+            Some(format!("▶ {name}"))
+        } else {
+            Some(format!("▶ {name}: {detail}"))
+        };
+    }
+
+    // tool_result — tool finished executing
+    if event_type == "tool_result" {
+        return Some("✓ tool completed".to_string());
+    }
+
+    // message — assistant message chunk (drafting response)
+    if event_type == "message" {
+        let role = value.get("role").and_then(Value::as_str).unwrap_or("");
+        if role == "assistant" {
+            return Some("Drafting response...".to_string());
+        }
+    }
+
+    // error — non-fatal warning or system error
+    if event_type == "error" {
+        let msg = value
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("error").and_then(Value::as_str))
+            .unwrap_or("error");
+        return Some(format!("⚠ {}", shorten_status_text(msg, 80)));
+    }
+
+    None
+}
+
+/// Extract the final response from Gemini CLI `--output-format stream-json` output.
+///
+/// Prefers the `result` event's `response` field, falls back to the last `message`
+/// event with role=assistant.
+fn extract_gemini_json_final(raw: &str) -> Option<String> {
+    let mut result_text: Option<String> = None;
+    let mut assistant_text = String::new();
+
+    for line in raw.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+
+        // result event may carry the final response
+        if event_type == "result" {
+            if let Some(text) = value
+                .get("response")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+            {
+                result_text = Some(text.to_string());
+            }
+            continue;
+        }
+
+        // Accumulate assistant message content (may be delta-streamed)
+        if event_type == "message"
+            && let Some(role) = value.get("role").and_then(Value::as_str)
+            && role == "assistant"
+        {
+            let is_delta = value.get("delta").and_then(Value::as_bool).unwrap_or(false);
+
+            if let Some(content) = value.get("content") {
+                if let Some(text) = content.as_str() {
+                    if is_delta {
+                        assistant_text.push_str(text);
+                    } else {
+                        // Non-delta replaces accumulated text
+                        assistant_text = text.to_string();
+                    }
+                } else if let Some(arr) = content.as_array() {
+                    let mut chunks = Vec::new();
+                    for block in arr {
+                        if block.get("type").and_then(Value::as_str) == Some("text")
+                            && let Some(t) = block.get("text").and_then(Value::as_str)
+                        {
+                            chunks.push(t);
+                        }
+                    }
+                    let joined = chunks.join("");
+                    if is_delta {
+                        assistant_text.push_str(&joined);
+                    } else {
+                        assistant_text = joined;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(text) = result_text {
+        return Some(text);
+    }
+    let trimmed = assistant_text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -1107,7 +1485,8 @@ fn parse_bin_with_env(raw: &str) -> (HashMap<String, String>, String) {
 fn should_retry_without_dangerous_flag(stdout: &str, stderr: &str) -> bool {
     let text = format!("{stdout}\n{stderr}").to_ascii_lowercase();
     let mentions_flag = text.contains("--dangerously-skip-permissions")
-        || text.contains("--dangerously-bypass-approvals-and-sandbox");
+        || text.contains("--dangerously-bypass-approvals-and-sandbox")
+        || text.contains("--skip-permissions-unsafe");
     let argument_error = text.contains("unexpected argument")
         || text.contains("unrecognized option")
         || text.contains("unknown option");
@@ -1121,7 +1500,16 @@ fn now_nanos() -> u128 {
     }
 }
 
+/// Environment variables that must be stripped from child provider processes.
+/// These are injected by Amp / Claude Code sessions and would poison nested
+/// CLI invocations (e.g. `CLAUDECODE=1` makes `claude` refuse to start,
+/// `ANTHROPIC_BASE_URL` redirects API calls to a local proxy).
+const POISONED_ENV_VARS: &[&str] = &["CLAUDECODE"];
+
 fn configure_child_command(_cmd: &mut Command) {
+    for key in POISONED_ENV_VARS {
+        _cmd.env_remove(key);
+    }
     #[cfg(unix)]
     {
         _cmd.process_group(0);
@@ -1131,8 +1519,10 @@ fn configure_child_command(_cmd: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_claude_json_final, extract_pi_json_final, parse_codex_progress_line,
-        parse_pi_progress_line, tool_arg_summary,
+        extract_claude_json_final, extract_factory_json_final, extract_gemini_json_final,
+        extract_opencode_json_final, extract_pi_json_final, parse_claude_json_line,
+        parse_codex_progress_line, parse_factory_json_line, parse_gemini_json_line,
+        parse_opencode_json_line, parse_pi_progress_line, tool_arg_summary,
     };
     use serde_json::Value;
 
@@ -1421,5 +1811,287 @@ mod tests {
 "#;
         let text = extract_claude_json_final(raw);
         assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: hello"));
+    }
+
+    // --- Factory/Droid extraction tests ---
+
+    #[test]
+    fn extract_factory_json_final_prefers_completion() {
+        let raw = r#"{"type":"system","subtype":"init","cwd":"/tmp","session_id":"s1","tools":[],"model":"m"}
+{"type":"message","role":"user","id":"u1","text":"hi","timestamp":1}
+{"type":"message","role":"assistant","id":"a1","text":"fallback text","timestamp":2}
+{"type":"completion","finalText":"TELEGRAM_REPLY: final","numTurns":1,"durationMs":100}
+"#;
+        let text = extract_factory_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: final"));
+    }
+
+    #[test]
+    fn extract_factory_json_final_falls_back_to_assistant_message() {
+        let raw = r#"{"type":"system","subtype":"init","cwd":"/tmp","session_id":"s1","tools":[],"model":"m"}
+{"type":"message","role":"assistant","id":"a1","text":"TELEGRAM_REPLY: hello from droid","timestamp":2}
+"#;
+        let text = extract_factory_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: hello from droid"));
+    }
+
+    #[test]
+    fn extract_factory_json_final_ignores_user_messages() {
+        let raw = r#"{"type":"message","role":"user","id":"u1","text":"user input","timestamp":1}
+"#;
+        assert!(extract_factory_json_final(raw).is_none());
+    }
+
+    // --- Factory/Droid progress parser tests ---
+
+    #[test]
+    fn parse_factory_system_init() {
+        let line = r#"{"type":"system","subtype":"init","cwd":"/tmp","session_id":"s1","tools":["Read"],"model":"claude-opus-4-6"}"#;
+        assert_eq!(
+            parse_factory_json_line(line).as_deref(),
+            Some("Processing...")
+        );
+    }
+
+    #[test]
+    fn parse_factory_tool_call() {
+        let line = r#"{"type":"tool_call","id":"call_1","toolName":"LS","parameters":{"directory_path":"/home"},"timestamp":1}"#;
+        assert_eq!(parse_factory_json_line(line).as_deref(), Some("▶ LS"));
+    }
+
+    #[test]
+    fn parse_factory_tool_result() {
+        let line = r#"{"type":"tool_result","id":"call_1","toolId":"LS","isError":false,"value":"file1\nfile2"}"#;
+        assert_eq!(parse_factory_json_line(line).as_deref(), Some("✓ LS"));
+    }
+
+    #[test]
+    fn parse_factory_tool_result_error() {
+        let line = r#"{"type":"tool_result","id":"call_1","toolId":"Execute","isError":true,"value":"command failed"}"#;
+        assert_eq!(parse_factory_json_line(line).as_deref(), Some("✗ Execute"));
+    }
+
+    #[test]
+    fn parse_factory_assistant_message() {
+        let line =
+            r#"{"type":"message","role":"assistant","id":"a1","text":"hello","timestamp":1}"#;
+        assert_eq!(
+            parse_factory_json_line(line).as_deref(),
+            Some("Drafting response...")
+        );
+    }
+
+    #[test]
+    fn parse_factory_ignores_user_message() {
+        let line = r#"{"type":"message","role":"user","id":"u1","text":"hello","timestamp":1}"#;
+        assert!(parse_factory_json_line(line).is_none());
+    }
+
+    // --- OpenCode extraction tests ---
+
+    #[test]
+    fn extract_opencode_json_final_reads_part_text() {
+        let raw = r#"{"type":"step_start","timestamp":1,"sessionID":"s1","part":{"type":"step-start"}}
+{"type":"text","timestamp":2,"sessionID":"s1","part":{"type":"text","text":"TELEGRAM_REPLY: hello from opencode"}}
+{"type":"step_finish","timestamp":3,"sessionID":"s1","part":{"type":"step-finish","reason":"stop"}}
+"#;
+        let text = extract_opencode_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: hello from opencode"));
+    }
+
+    // --- Claude progress parser tests ---
+
+    #[test]
+    fn parse_claude_system_init() {
+        let line =
+            r#"{"type":"system","subtype":"init","session_id":"s1","tools":["Bash","Read"]}"#;
+        assert_eq!(
+            parse_claude_json_line(line).as_deref(),
+            Some("Processing...")
+        );
+    }
+
+    #[test]
+    fn parse_claude_assistant_tool_use() {
+        let line = r#"{"type":"assistant","session_id":"s1","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"cargo test"}}]}}"#;
+        assert_eq!(
+            parse_claude_json_line(line).as_deref(),
+            Some("▶ Bash: cargo test")
+        );
+    }
+
+    #[test]
+    fn parse_claude_assistant_thinking() {
+        let line = r#"{"type":"assistant","session_id":"s1","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}"#;
+        assert_eq!(
+            parse_claude_json_line(line).as_deref(),
+            Some("Reasoning...")
+        );
+    }
+
+    #[test]
+    fn parse_claude_assistant_text_only() {
+        let line = r#"{"type":"assistant","session_id":"s1","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}]}}"#;
+        assert_eq!(
+            parse_claude_json_line(line).as_deref(),
+            Some("Drafting response...")
+        );
+    }
+
+    #[test]
+    fn parse_claude_user_tool_result() {
+        let line = r#"{"type":"user","session_id":"s1","message":{"id":"msg_2","type":"message","role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}"#;
+        assert_eq!(
+            parse_claude_json_line(line).as_deref(),
+            Some("✓ tool completed")
+        );
+    }
+
+    #[test]
+    fn parse_claude_user_tool_result_error() {
+        let line = r#"{"type":"user","session_id":"s1","message":{"id":"msg_2","type":"message","role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fail","is_error":true}]}}"#;
+        assert_eq!(
+            parse_claude_json_line(line).as_deref(),
+            Some("✗ tool completed")
+        );
+    }
+
+    // --- OpenCode progress parser tests ---
+
+    #[test]
+    fn parse_opencode_step_start() {
+        let line = r#"{"type":"step_start","timestamp":1767036059338,"sessionID":"ses_1","part":{"type":"step-start"}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("Processing...")
+        );
+    }
+
+    #[test]
+    fn parse_opencode_tool_use_success() {
+        let line = r#"{"type":"tool_use","timestamp":1767036061199,"sessionID":"ses_1","part":{"tool":"bash","state":{"status":"completed","input":{"command":"echo hello"},"title":"Print hello","metadata":{"exit":0}}}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("✓ bash: Print hello")
+        );
+    }
+
+    #[test]
+    fn parse_opencode_tool_use_error() {
+        let line = r#"{"type":"tool_use","timestamp":1767036061199,"sessionID":"ses_1","part":{"tool":"bash","state":{"status":"completed","input":{"command":"false"},"title":"Run false","metadata":{"exit":1}}}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("✗ bash: Run false")
+        );
+    }
+
+    #[test]
+    fn parse_opencode_step_finish_tool_calls() {
+        let line = r#"{"type":"step_finish","timestamp":1767036061205,"sessionID":"ses_1","part":{"type":"step-finish","reason":"tool-calls"}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("Continuing...")
+        );
+    }
+
+    #[test]
+    fn parse_opencode_error() {
+        let line = r#"{"type":"error","timestamp":1767036065000,"sessionID":"ses_1","error":{"name":"APIError","data":{"message":"Rate limit exceeded"}}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("⚠ Rate limit exceeded")
+        );
+    }
+
+    // --- Gemini progress parser tests ---
+
+    #[test]
+    fn parse_gemini_init() {
+        let line = r#"{"type":"init","session_id":"abc","model":"gemini-2.5-pro"}"#;
+        assert_eq!(
+            parse_gemini_json_line(line).as_deref(),
+            Some("Processing...")
+        );
+    }
+
+    #[test]
+    fn parse_gemini_tool_use() {
+        let line = r#"{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}"#;
+        assert_eq!(
+            parse_gemini_json_line(line).as_deref(),
+            Some("▶ Bash: ls -la")
+        );
+    }
+
+    #[test]
+    fn parse_gemini_tool_result() {
+        let line = r#"{"type":"tool_result","output":"hello\n"}"#;
+        assert_eq!(
+            parse_gemini_json_line(line).as_deref(),
+            Some("✓ tool completed")
+        );
+    }
+
+    #[test]
+    fn parse_gemini_assistant_message() {
+        let line =
+            r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"hello"}]}"#;
+        assert_eq!(
+            parse_gemini_json_line(line).as_deref(),
+            Some("Drafting response...")
+        );
+    }
+
+    #[test]
+    fn parse_gemini_error() {
+        let line = r#"{"type":"error","message":"API rate limit"}"#;
+        assert_eq!(
+            parse_gemini_json_line(line).as_deref(),
+            Some("⚠ API rate limit")
+        );
+    }
+
+    #[test]
+    fn extract_gemini_json_final_prefers_result() {
+        let raw = r#"{"type":"init","session_id":"s1"}
+{"type":"message","role":"assistant","content":[{"type":"text","text":"not-final"}]}
+{"type":"result","response":"TELEGRAM_REPLY: final answer","stats":{}}
+"#;
+        let text = extract_gemini_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: final answer"));
+    }
+
+    #[test]
+    fn extract_gemini_json_final_falls_back_to_message() {
+        let raw = r#"{"type":"init","session_id":"s1"}
+{"type":"message","role":"assistant","content":[{"type":"text","text":"TELEGRAM_REPLY: from message"}]}
+"#;
+        let text = extract_gemini_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: from message"));
+    }
+
+    #[test]
+    fn extract_gemini_json_final_string_content() {
+        let raw = r#"{"type":"message","role":"assistant","content":"TELEGRAM_REPLY: plain string"}
+"#;
+        let text = extract_gemini_json_final(raw);
+        assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: plain string"));
+    }
+
+    #[test]
+    fn extract_gemini_json_final_accumulates_deltas() {
+        let raw = r#"{"type":"init","session_id":"s1","model":"gemini-3.1-pro-preview"}
+{"type":"message","role":"user","content":"say hello"}
+{"type":"message","role":"assistant","content":"TELEGRAM_REPLY: This is a test reply with","delta":true}
+{"type":"message","role":"assistant","content":" multiple sentences. The quick brown fox.","delta":true}
+{"type":"result","status":"success","stats":{"total_tokens":100}}
+"#;
+        let text = extract_gemini_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some(
+                "TELEGRAM_REPLY: This is a test reply with multiple sentences. The quick brown fox."
+            )
+        );
     }
 }

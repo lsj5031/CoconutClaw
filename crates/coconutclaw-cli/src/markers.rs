@@ -43,6 +43,22 @@ pub(crate) fn render_output(
 }
 
 pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
+    let markers = parse_markers_line_anchored(payload);
+    if markers.telegram_reply.is_some() || markers.voice_reply.is_some() {
+        return markers;
+    }
+
+    if let Some(recovered_payload) = recover_embedded_marker_payload(payload) {
+        let recovered = parse_markers_line_anchored(recovered_payload);
+        if recovered.telegram_reply.is_some() || recovered.voice_reply.is_some() {
+            return recovered;
+        }
+    }
+
+    markers
+}
+
+fn parse_markers_line_anchored(payload: &str) -> ParsedMarkers {
     let mut markers = ParsedMarkers::default();
     let mut telegram_blocks = Vec::new();
     let mut voice_blocks = Vec::new();
@@ -94,6 +110,48 @@ pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
     }
 
     markers
+}
+
+fn recover_embedded_marker_payload(payload: &str) -> Option<&str> {
+    let first_line = payload.lines().next()?;
+    let first_line_trimmed = first_line.trim_start();
+    if detect_any_marker(first_line_trimmed).is_some() {
+        return None;
+    }
+    if !starts_with_wrapper(first_line_trimmed) {
+        return None;
+    }
+
+    let first_line_end = payload.find('\n').unwrap_or(payload.len());
+    let head = &payload[..first_line_end];
+    let start = marker_prefixes()
+        .iter()
+        .filter_map(|prefix| head.find(prefix))
+        .min()?;
+
+    if start == 0 {
+        None
+    } else {
+        Some(&payload[start..])
+    }
+}
+
+fn starts_with_wrapper(line: &str) -> bool {
+    ["\"\"\"", "'''", "```", "\"", "'", "`"]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+}
+
+fn marker_prefixes() -> &'static [&'static str] {
+    &[
+        "TELEGRAM_REPLY:",
+        "VOICE_REPLY:",
+        "SEND_PHOTO:",
+        "SEND_DOCUMENT:",
+        "SEND_VIDEO:",
+        "MEMORY_APPEND:",
+        "TASK_APPEND:",
+    ]
 }
 
 fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
@@ -463,6 +521,35 @@ It has some { curly braces }
     fn extract_error_summary_non_json_lines() {
         let payload = "not json\nstill not json";
         assert_eq!(extract_error_summary(payload), None);
+    }
+
+    #[test]
+    fn parse_markers_recovers_first_line_embedded_marker() {
+        let payload = concat!(
+            "\"\"\"I will research the details first.",
+            "TELEGRAM_REPLY: Parsed reply line one\n",
+            "line two\n",
+            "MEMORY_APPEND: saved item"
+        );
+
+        let markers = parse_markers(payload);
+
+        assert_eq!(
+            markers.telegram_reply.as_deref(),
+            Some("Parsed reply line one\nline two")
+        );
+        assert_eq!(markers.memory_append, vec!["saved item".to_string()]);
+    }
+
+    #[test]
+    fn parse_markers_does_not_recover_later_inline_marker_mentions() {
+        let payload =
+            "This plain reply mentions TELEGRAM_REPLY: literally, but it is not structured.";
+
+        let markers = parse_markers(payload);
+
+        assert!(markers.telegram_reply.is_none());
+        assert!(markers.memory_append.is_empty());
     }
 
     #[test]
