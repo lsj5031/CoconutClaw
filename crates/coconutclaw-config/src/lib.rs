@@ -1214,6 +1214,35 @@ WEBHOOK_PATH = \"/telegram/webhook\"\n",
         assert_eq!(cfg.webhook_secret.as_deref(), Some("secret-token"));
         assert_eq!(cfg.webhook_path, "/telegram/webhook");
     }
+
+    #[test]
+    fn toml_scalar_to_string_works() {
+        assert_eq!(
+            toml_scalar_to_string(&toml::Value::String("hello".to_string())),
+            Some("hello".to_string())
+        );
+        assert_eq!(
+            toml_scalar_to_string(&toml::Value::Integer(123)),
+            Some("123".to_string())
+        );
+        assert_eq!(
+            toml_scalar_to_string(&toml::Value::Float(1.23)),
+            Some("1.23".to_string())
+        );
+        assert_eq!(
+            toml_scalar_to_string(&toml::Value::Boolean(true)),
+            Some("true".to_string())
+        );
+        assert_eq!(
+            toml_scalar_to_string(&toml::Value::Boolean(false)),
+            Some("false".to_string())
+        );
+        assert_eq!(toml_scalar_to_string(&toml::Value::Array(vec![])), None);
+        assert_eq!(
+            toml_scalar_to_string(&toml::Value::Table(toml::value::Table::new())),
+            None
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
