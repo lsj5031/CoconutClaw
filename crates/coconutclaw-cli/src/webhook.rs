@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use axum::body::Bytes;
+use subtle::ConstantTimeEq;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -136,7 +137,14 @@ async fn webhook_post_handler(
             .get("x-telegram-bot-api-secret-token")
             .and_then(|value| value.to_str().ok())
             .map(str::trim);
-        if provided != Some(expected_secret) {
+
+        let is_match = if let Some(provided) = provided {
+            provided.as_bytes().ct_eq(expected_secret.as_bytes()).into()
+        } else {
+            false
+        };
+
+        if !is_match {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({"ok":false,"error":"forbidden"})),
@@ -350,5 +358,51 @@ fn normalize_route_path(raw: String) -> String {
         trimmed.to_string()
     } else {
         format!("/{trimmed}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_constant_time_secret_comparison() {
+        let expected = "secret123";
+
+        // Matching
+        let provided_matching = Some("secret123");
+        let is_match = if let Some(p) = provided_matching {
+            p.as_bytes().ct_eq(expected.as_bytes()).into()
+        } else {
+            false
+        };
+        assert!(is_match);
+
+        // Not matching - same length
+        let provided_wrong = Some("secret456");
+        let is_match = if let Some(p) = provided_wrong {
+            p.as_bytes().ct_eq(expected.as_bytes()).into()
+        } else {
+            false
+        };
+        assert!(!is_match);
+
+        // Not matching - different length
+        let provided_short = Some("secret");
+        let is_match = if let Some(p) = provided_short {
+            p.as_bytes().ct_eq(expected.as_bytes()).into()
+        } else {
+            false
+        };
+        assert!(!is_match);
+
+        // Not matching - empty
+        let provided_none: Option<&str> = None;
+        let is_match = if let Some(p) = provided_none {
+            p.as_bytes().ct_eq(expected.as_bytes()).into()
+        } else {
+            false
+        };
+        assert!(!is_match);
     }
 }
