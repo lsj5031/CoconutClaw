@@ -309,6 +309,18 @@ pub(crate) fn resolve_turn_result(
         };
     }
 
+    // Provider failed but output is plain natural-language text (not a JSON error
+    // stream).  Deliver it to the user instead of wrapping it in a generic error
+    // prefix — a partial response is more useful than "Agent execution failed locally."
+    if let Some(recovered) = recover_unstructured_reply(&cleaned) {
+        return TurnResult {
+            markers,
+            telegram_reply: recovered,
+            voice_reply: String::new(),
+            status: TurnStatus::AgentErrorRecovered,
+        };
+    }
+
     let err_line = extract_error_summary(raw_output)
         .or_else(|| {
             raw_output
@@ -521,7 +533,10 @@ mod tests {
 
     #[test]
     fn resolve_turn_result_marks_agent_error_when_unrecoverable() {
-        let result = resolve_turn_result("network timeout", false, false);
+        // A JSON event stream with no assistant text — truly unrecoverable.
+        let payload = r#"{"type":"system","status":"starting"}
+{"type":"error","code":"internal","message":"unexpected crash"}"#;
+        let result = resolve_turn_result(payload, false, false);
         assert_eq!(result.status, TurnStatus::AgentError);
         assert!(
             result
@@ -599,10 +614,28 @@ mod tests {
     }
 
     #[test]
-    fn resolve_turn_result_agent_error_skips_blank_lines() {
+    fn resolve_turn_result_recovers_plain_text_from_failed_provider() {
         let raw_output = "\n   \n\nReal error message here\nMore details";
         let result = resolve_turn_result(raw_output, false, false);
-        assert_eq!(result.status, TurnStatus::AgentError);
+        assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
         assert!(result.telegram_reply.contains("Real error message here"));
+        assert!(
+            !result
+                .telegram_reply
+                .contains("Agent execution failed locally")
+        );
+    }
+
+    #[test]
+    fn resolve_turn_result_recovers_plain_text_on_provider_failure() {
+        let raw = "I can see several issues with the free-migration branch. Let me update the todo and provide a comprehensive summary:";
+        let result = resolve_turn_result(raw, false, false);
+        assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
+        assert!(result.telegram_reply.contains("free-migration"));
+        assert!(
+            !result
+                .telegram_reply
+                .contains("Agent execution failed locally")
+        );
     }
 }
