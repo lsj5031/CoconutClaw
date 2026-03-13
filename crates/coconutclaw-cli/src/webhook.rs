@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use axum::body::Bytes;
-use subtle::ConstantTimeEq;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -18,6 +17,7 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
+use subtle::ConstantTimeEq;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AckStatus {
