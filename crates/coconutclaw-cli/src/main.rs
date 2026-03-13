@@ -1664,10 +1664,7 @@ mod tests {
         telegram_retry_after_seconds, telegram_text_form_params,
     };
     use crate::webhook::webhook_public_endpoint;
-    use coconutclaw_config::{
-        AgentProvider, ClaudeConfig, CodexConfig, FactoryConfig, GeminiConfig, OpenCodeConfig,
-        PiConfig, RuntimeConfig, TelegramParseMode,
-    };
+    use coconutclaw_config::{RuntimeConfig, TelegramParseMode};
 
     fn test_config() -> RuntimeConfig {
         RuntimeConfig::test_config()
