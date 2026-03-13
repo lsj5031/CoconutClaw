@@ -57,11 +57,31 @@ pub struct CodexConfig {
     pub reasoning_effort: Option<String>,
 }
 
+impl Default for CodexConfig {
+    fn default() -> Self {
+        Self {
+            bin: "codex".to_string(),
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClaudeConfig {
     pub bin: String,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+}
+
+impl Default for ClaudeConfig {
+    fn default() -> Self {
+        Self {
+            bin: "claude".to_string(),
+            model: None,
+            reasoning_effort: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -71,11 +91,31 @@ pub struct OpenCodeConfig {
     pub reasoning_effort: Option<String>,
 }
 
+impl Default for OpenCodeConfig {
+    fn default() -> Self {
+        Self {
+            bin: "opencode".to_string(),
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GeminiConfig {
     pub bin: String,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+}
+
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            bin: "gemini".to_string(),
+            model: None,
+            reasoning_effort: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,12 +125,33 @@ pub struct FactoryConfig {
     pub reasoning_effort: Option<String>,
 }
 
+impl Default for FactoryConfig {
+    fn default() -> Self {
+        Self {
+            bin: "droid".to_string(),
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PiConfig {
     pub bin: String,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub no_extensions: bool,
+}
+
+impl Default for PiConfig {
+    fn default() -> Self {
+        Self {
+            bin: "pi-rust".to_string(),
+            model: None,
+            reasoning_effort: None,
+            no_extensions: false,
+        }
+    }
 }
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -251,7 +312,128 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "PROVIDER_TIMEOUT_SECS",
 ];
 
+pub struct RuntimeConfigBuilder(RuntimeConfig);
+
+impl RuntimeConfigBuilder {
+    pub fn provider(mut self, provider: AgentProvider) -> Self {
+        self.0.provider = provider;
+        self
+    }
+
+    pub fn telegram_bot_token(mut self, token: impl Into<Option<String>>) -> Self {
+        self.0.telegram_bot_token = token.into();
+        self
+    }
+
+    pub fn telegram_chat_id(mut self, chat_id: impl Into<Option<String>>) -> Self {
+        self.0.telegram_chat_id = chat_id.into();
+        self
+    }
+
+    pub fn telegram_parse_mode(mut self, mode: TelegramParseMode) -> Self {
+        self.0.telegram_parse_mode = mode;
+        self
+    }
+
+    pub fn telegram_parse_fallback(mut self, fallback: TelegramParseFallback) -> Self {
+        self.0.telegram_parse_fallback = fallback;
+        self
+    }
+
+    pub fn webhook_mode(mut self, mode: bool) -> Self {
+        self.0.webhook_mode = mode;
+        self
+    }
+
+    pub fn webhook_public_url(mut self, url: impl Into<Option<String>>) -> Self {
+        self.0.webhook_public_url = url.into();
+        self
+    }
+
+    pub fn webhook_path(mut self, path: String) -> Self {
+        self.0.webhook_path = path;
+        self
+    }
+
+    pub fn build(self) -> RuntimeConfig {
+        self.0
+    }
+}
+
 impl RuntimeConfig {
+    pub fn builder(root: PathBuf) -> RuntimeConfigBuilder {
+        RuntimeConfigBuilder(Self::test_config_at(root))
+    }
+
+    pub fn test_builder() -> RuntimeConfigBuilder {
+        RuntimeConfigBuilder(Self::test_config())
+    }
+
+    pub fn test_config() -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = env::temp_dir().join(format!("coconutclaw_test_{unique}"));
+        Self::test_config_at(root)
+    }
+
+    pub fn test_config_at(root: PathBuf) -> Self {
+        let cfg = Self {
+            root_dir: root.clone(),
+            data_dir: root.clone(),
+            instance_name: "default".to_string(),
+            instance_dir: root.clone(),
+            runtime_dir: root.join("runtime"),
+            tmp_dir: root.join("tmp"),
+            tasks_dir: root.join("TASKS"),
+            log_dir: root.join("LOGS"),
+            sqlite_db_path: root.join("state.db"),
+            allowlist_path: root.join("config/allowlist.txt"),
+            timezone: "UTC".to_string(),
+            telegram_bot_token: Some("123:token".to_string()),
+            telegram_chat_id: Some("321".to_string()),
+            telegram_parse_mode: TelegramParseMode::Off,
+            telegram_parse_fallback: TelegramParseFallback::Plain,
+            webhook_mode: false,
+            webhook_bind: "127.0.0.1:8787".to_string(),
+            webhook_public_url: None,
+            webhook_secret: None,
+            webhook_path: "/webhook".to_string(),
+            poll_interval_seconds: 1,
+            provider: AgentProvider::Codex,
+            exec_policy: "yolo".to_string(),
+            asr_url: None,
+            asr_cmd_template: None,
+            asr_file_field: None,
+            asr_text_jq: None,
+            asr_preprocess: None,
+            asr_sample_rate: None,
+            tts_cmd_template: None,
+            voice_bitrate: None,
+            tts_max_chars: None,
+            nightly_reflection_file: root.join("LOGS/nightly_reflection.md"),
+            nightly_reflection_skip_agent: false,
+            nightly_reflection_prompt: None,
+            context_turns: 8,
+            provider_max_retries: 1,
+            progress_update_interval_secs: 3,
+            telegram_api_timeout_secs: 30,
+            telegram_api_retry_attempts: 3,
+            provider_timeout_secs: 300,
+            codex: CodexConfig::default(),
+            pi: PiConfig::default(),
+            claude: ClaudeConfig::default(),
+            opencode: OpenCodeConfig::default(),
+            gemini: GeminiConfig::default(),
+            factory: FactoryConfig::default(),
+            config_file_path: root.join("config.toml"),
+        };
+        ensure_instance_layout(&cfg).expect("layout");
+        cfg
+    }
+
     pub fn acquire_instance_lock(&self) -> Result<InstanceLock> {
         let lock_path = self.runtime_dir.join("instance.lock");
         let file = OpenOptions::new()

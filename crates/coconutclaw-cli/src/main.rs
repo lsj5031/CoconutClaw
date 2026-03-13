@@ -1664,95 +1664,10 @@ mod tests {
         telegram_retry_after_seconds, telegram_text_form_params,
     };
     use crate::webhook::webhook_public_endpoint;
-    use coconutclaw_config::{
-        AgentProvider, ClaudeConfig, CodexConfig, FactoryConfig, GeminiConfig, OpenCodeConfig,
-        PiConfig, RuntimeConfig, TelegramParseMode,
-    };
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use coconutclaw_config::{RuntimeConfig, TelegramParseMode};
 
     fn test_config() -> RuntimeConfig {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("coconutclaw_test_{unique}"));
-        let cfg = RuntimeConfig {
-            root_dir: root.clone(),
-            data_dir: root.clone(),
-            instance_name: "default".to_string(),
-            instance_dir: root.clone(),
-            runtime_dir: root.join("runtime"),
-            tmp_dir: root.join("tmp"),
-            tasks_dir: root.join("TASKS"),
-            log_dir: root.join("LOGS"),
-            sqlite_db_path: root.join("state.db"),
-            allowlist_path: root.join("config/allowlist.txt"),
-            timezone: "UTC".to_string(),
-            telegram_bot_token: Some("123:token".to_string()),
-            telegram_chat_id: Some("321".to_string()),
-            telegram_parse_mode: TelegramParseMode::Off,
-            telegram_parse_fallback: TelegramParseFallback::Plain,
-            webhook_mode: false,
-            webhook_bind: "127.0.0.1:8787".to_string(),
-            webhook_public_url: None,
-            webhook_secret: None,
-            webhook_path: "/webhook".to_string(),
-            poll_interval_seconds: 1,
-            provider: AgentProvider::Codex,
-            exec_policy: "yolo".to_string(),
-            asr_url: None,
-            asr_cmd_template: None,
-            asr_file_field: None,
-            asr_text_jq: None,
-            asr_preprocess: None,
-            asr_sample_rate: None,
-            tts_cmd_template: None,
-            voice_bitrate: None,
-            tts_max_chars: None,
-            nightly_reflection_file: root.join("LOGS/nightly_reflection.md"),
-            nightly_reflection_skip_agent: false,
-            nightly_reflection_prompt: None,
-            context_turns: 8,
-            provider_max_retries: 1,
-            progress_update_interval_secs: 3,
-            telegram_api_timeout_secs: 30,
-            telegram_api_retry_attempts: 3,
-            provider_timeout_secs: 300,
-            codex: CodexConfig {
-                bin: "codex".to_string(),
-                model: None,
-                reasoning_effort: None,
-            },
-            pi: PiConfig {
-                bin: "pi-rust".to_string(),
-                model: None,
-                reasoning_effort: None,
-                no_extensions: false,
-            },
-            claude: ClaudeConfig {
-                bin: "claude".to_string(),
-                model: None,
-                reasoning_effort: None,
-            },
-            opencode: OpenCodeConfig {
-                bin: "opencode".to_string(),
-                model: None,
-                reasoning_effort: None,
-            },
-            gemini: GeminiConfig {
-                bin: "gemini".to_string(),
-                model: None,
-                reasoning_effort: None,
-            },
-            factory: FactoryConfig {
-                bin: "droid".to_string(),
-                model: None,
-                reasoning_effort: None,
-            },
-            config_file_path: root.join("config.toml"),
-        };
-        coconutclaw_config::ensure_instance_layout(&cfg).expect("layout");
-        cfg
+        RuntimeConfig::test_config()
     }
 
     #[test]
@@ -1986,8 +1901,9 @@ mod tests {
 
     #[test]
     fn text_params_include_parse_mode_for_markdown_v2() {
-        let mut cfg = test_config();
-        cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
+        let cfg = RuntimeConfig::test_builder()
+            .telegram_parse_mode(TelegramParseMode::MarkdownV2)
+            .build();
         let params = telegram_text_form_params(
             &cfg,
             "321",
@@ -2054,8 +1970,9 @@ mod tests {
 
     #[test]
     fn render_telegram_reply_text_escapes_progress_for_markdown_v2() {
-        let mut cfg = test_config();
-        cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
+        let cfg = RuntimeConfig::test_builder()
+            .telegram_parse_mode(TelegramParseMode::MarkdownV2)
+            .build();
         let rendered = render_telegram_reply_text(&cfg, &progress_status_text(3));
         assert!(rendered.contains("Thinking\\.\\.\\."));
         assert!(rendered.contains("stop\\."));
@@ -2114,8 +2031,9 @@ mod tests {
 
     #[test]
     fn context_allows_markdown_v2_when_parse_mode_enabled() {
-        let mut cfg = test_config();
-        cfg.telegram_parse_mode = TelegramParseMode::MarkdownV2;
+        let cfg = RuntimeConfig::test_builder()
+            .telegram_parse_mode(TelegramParseMode::MarkdownV2)
+            .build();
         let store = Store::open(&cfg).expect("store");
         let input = TurnInput {
             input_type: InputType::Text,
@@ -2168,9 +2086,10 @@ mod tests {
 
     #[test]
     fn webhook_public_endpoint_joins_base_and_path() {
-        let mut cfg = test_config();
-        cfg.webhook_public_url = Some("https://claw.example".to_string());
-        cfg.webhook_path = "/telegram/webhook".to_string();
+        let cfg = RuntimeConfig::test_builder()
+            .webhook_public_url(Some("https://claw.example".to_string()))
+            .webhook_path("/telegram/webhook".to_string())
+            .build();
 
         let endpoint = webhook_public_endpoint(&cfg).expect("endpoint");
         assert_eq!(endpoint, "https://claw.example/telegram/webhook");
