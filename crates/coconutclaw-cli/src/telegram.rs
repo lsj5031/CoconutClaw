@@ -1123,4 +1123,15 @@ mod tests {
         assert!(rendered.contains("&lt;thinking&gt;"));
         assert!(rendered.contains("&lt;/thinking&gt;"));
     }
+
+    #[test]
+    fn test_html_escape() {
+        assert_eq!(html_escape("a & b"), "a &amp; b");
+        assert_eq!(html_escape("a < b"), "a &lt; b");
+        assert_eq!(html_escape("a > b"), "a &gt; b");
+        assert_eq!(html_escape("&<>"), "&amp;&lt;&gt;");
+        assert_eq!(html_escape(""), "");
+        assert_eq!(html_escape("no special chars"), "no special chars");
+        assert_eq!(html_escape("already &amp;"), "already &amp;amp;");
+    }
 }
