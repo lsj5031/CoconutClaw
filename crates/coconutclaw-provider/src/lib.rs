@@ -119,10 +119,25 @@ fn run_provider_process(
     )
 }
 
+fn fallback_text(run_result: &RunResult, prefer_stdout: bool) -> String {
+    if prefer_stdout {
+        if !run_result.stdout_text.trim().is_empty() {
+            run_result.stdout_text.clone()
+        } else {
+            run_result.stderr_text.clone()
+        }
+    } else if !run_result.stderr_text.trim().is_empty() {
+        run_result.stderr_text.clone()
+    } else {
+        run_result.stdout_text.clone()
+    }
+}
+
 fn finalize_output(
     run_result: &RunResult,
     success_override: Option<bool>,
     raw_output_override: Option<String>,
+    prefer_stdout: bool,
 ) -> ProviderOutput {
     let exit_code = if run_result.cancelled || run_result.timed_out {
         if run_result.timed_out { 124 } else { 130 }
@@ -136,10 +151,8 @@ fn finalize_output(
         "provider execution timed out".to_string()
     } else if run_result.cancelled {
         "cancelled".to_string()
-    } else if !run_result.stderr_text.trim().is_empty() {
-        run_result.stderr_text.clone()
     } else {
-        run_result.stdout_text.clone()
+        fallback_text(run_result, prefer_stdout)
     };
 
     let success = if let Some(s) = success_override {
@@ -155,20 +168,21 @@ fn finalize_output(
     }
 }
 
-fn extract_json_or_fallback<F>(run_result: &RunResult, extractor: F) -> Option<String>
+fn extract_json_or_fallback<F>(
+    run_result: &RunResult,
+    extractor: F,
+    prefer_stdout: bool,
+) -> Option<String>
 where
     F: Fn(&str) -> Option<String>,
 {
     if run_result.cancelled || run_result.timed_out {
         return None;
     }
-    Some(extractor(&run_result.stdout_text).unwrap_or_else(|| {
-        if !run_result.stderr_text.trim().is_empty() {
-            run_result.stderr_text.clone()
-        } else {
-            run_result.stdout_text.clone()
-        }
-    }))
+    Some(
+        extractor(&run_result.stdout_text)
+            .unwrap_or_else(|| fallback_text(run_result, prefer_stdout)),
+    )
 }
 
 fn run_codex(
@@ -236,7 +250,7 @@ fn run_codex(
         None
     };
 
-    let output = finalize_output(&run_result, None, raw_output_override);
+    let output = finalize_output(&run_result, None, raw_output_override, false);
     let _ = fs::remove_file(out_file);
     Ok(output)
 }
@@ -288,12 +302,12 @@ fn run_pi(
     )?;
 
     let raw_output_override = if run_result.status.success() {
-        extract_json_or_fallback(&run_result, extract_pi_json_final)
+        extract_json_or_fallback(&run_result, extract_pi_json_final, true)
     } else {
         None
     };
 
-    let output = finalize_output(&run_result, None, raw_output_override);
+    let output = finalize_output(&run_result, None, raw_output_override, true);
     let success = output.success && !output.raw_output.starts_with("⚠️ Agent stopped:");
     Ok(ProviderOutput { success, ..output })
 }
@@ -317,9 +331,7 @@ fn run_claude(
             cmd.arg("--model").arg(model);
         }
 
-        cmd.arg("--output-format")
-            .arg("stream-json")
-            .arg(context);
+        cmd.arg("--output-format").arg("stream-json").arg(context);
 
         run_provider_process(
             cmd,
@@ -345,8 +357,14 @@ fn run_claude(
         run_result = run_once(false)?;
     }
 
-    let raw_output_override = extract_json_or_fallback(&run_result, extract_claude_json_final);
-    Ok(finalize_output(&run_result, None, raw_output_override))
+    let raw_output_override =
+        extract_json_or_fallback(&run_result, extract_claude_json_final, false);
+    Ok(finalize_output(
+        &run_result,
+        None,
+        raw_output_override,
+        false,
+    ))
 }
 
 fn run_opencode(
@@ -367,9 +385,7 @@ fn run_opencode(
         cmd.arg("--variant").arg(effort);
     }
 
-    cmd.arg("--format")
-        .arg("json")
-        .arg(context);
+    cmd.arg("--format").arg("json").arg(context);
 
     let run_result = run_provider_process(
         cmd,
@@ -380,8 +396,14 @@ fn run_opencode(
         timeout_secs,
     )?;
 
-    let raw_output_override = extract_json_or_fallback(&run_result, extract_opencode_json_final);
-    Ok(finalize_output(&run_result, None, raw_output_override))
+    let raw_output_override =
+        extract_json_or_fallback(&run_result, extract_opencode_json_final, false);
+    Ok(finalize_output(
+        &run_result,
+        None,
+        raw_output_override,
+        false,
+    ))
 }
 
 fn run_gemini(
@@ -415,8 +437,14 @@ fn run_gemini(
         timeout_secs,
     )?;
 
-    let raw_output_override = extract_json_or_fallback(&run_result, extract_gemini_json_final);
-    Ok(finalize_output(&run_result, None, raw_output_override))
+    let raw_output_override =
+        extract_json_or_fallback(&run_result, extract_gemini_json_final, false);
+    Ok(finalize_output(
+        &run_result,
+        None,
+        raw_output_override,
+        false,
+    ))
 }
 
 fn run_factory(
@@ -438,9 +466,7 @@ fn run_factory(
             cmd.arg("--model").arg(model);
         }
 
-        cmd.arg("--output-format")
-            .arg("stream-json")
-            .arg(context);
+        cmd.arg("--output-format").arg("stream-json").arg(context);
 
         run_provider_process(
             cmd,
@@ -466,8 +492,14 @@ fn run_factory(
         run_result = run_once(false)?;
     }
 
-    let raw_output_override = extract_json_or_fallback(&run_result, extract_factory_json_final);
-    Ok(finalize_output(&run_result, None, raw_output_override))
+    let raw_output_override =
+        extract_json_or_fallback(&run_result, extract_factory_json_final, false);
+    Ok(finalize_output(
+        &run_result,
+        None,
+        raw_output_override,
+        false,
+    ))
 }
 
 struct RunResult {
