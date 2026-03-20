@@ -787,12 +787,15 @@ fn parse_codex_item_progress(item: &Value, started: bool) -> Option<String> {
 }
 
 fn shorten_status_text(text: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max_chars {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    if text.chars().take(max_chars + 1).count() <= max_chars {
         return text.to_string();
     }
     let keep = max_chars.saturating_sub(3);
-    let mut out: String = chars[..keep].iter().collect();
+    let mut out = String::with_capacity(keep + 3);
+    out.extend(text.chars().take(keep));
     out.push_str("...");
     out
 }
@@ -861,12 +864,15 @@ fn tool_arg_summary(tool_name: &str, args: Option<&Value>) -> String {
 }
 
 fn truncate_status_detail(text: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max_chars {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    if text.chars().take(max_chars + 1).count() <= max_chars {
         return text.to_string();
     }
     let keep = max_chars.saturating_sub(1);
-    let mut out: String = chars[..keep].iter().collect();
+    let mut out = String::with_capacity(keep + 3); // 3 bytes for '…'
+    out.extend(text.chars().take(keep));
     out.push('…');
     out
 }
