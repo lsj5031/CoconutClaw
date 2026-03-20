@@ -871,7 +871,7 @@ fn truncate_status_detail(text: &str, max_chars: usize) -> String {
         return text.to_string();
     }
     let keep = max_chars.saturating_sub(1);
-    let mut out = String::with_capacity(keep + 3); // 3 bytes for '…'
+    let mut out = String::with_capacity(keep + 3); // note: capacity is a char-count estimate, not exact byte count
     out.extend(text.chars().take(keep));
     out.push('…');
     out
