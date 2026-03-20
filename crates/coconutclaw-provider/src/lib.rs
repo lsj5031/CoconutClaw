@@ -83,6 +83,94 @@ pub fn run_provider(
     }
 }
 
+fn new_provider_command(bin_raw: &str) -> Command {
+    let (env_vars, bin_path) = parse_bin_with_env(bin_raw);
+    let mut cmd = Command::new(bin_path);
+    for (key, value) in env_vars {
+        cmd.env(&key, &value);
+    }
+    cmd
+}
+
+fn run_provider_process(
+    mut cmd: Command,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+    progress_tx: Option<&Sender<String>>,
+    progress_parser: Option<fn(&str) -> Option<String>>,
+    bin_name: &str,
+    timeout_secs: Option<u64>,
+) -> Result<RunResult> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_child_command(&mut cmd);
+
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("failed to start {bin_name}"))?;
+    run_child_process(
+        child,
+        cancel_flag,
+        progress_tx.cloned(),
+        progress_parser,
+        format!("failed waiting for {bin_name} command"),
+        format!("failed waiting after {bin_name} kill"),
+        timeout_secs,
+    )
+}
+
+fn finalize_output(
+    run_result: &RunResult,
+    success_override: Option<bool>,
+    raw_output_override: Option<String>,
+) -> ProviderOutput {
+    let exit_code = if run_result.cancelled || run_result.timed_out {
+        if run_result.timed_out { 124 } else { 130 }
+    } else {
+        run_result.status.code().unwrap_or(1)
+    };
+
+    let raw_output = if let Some(raw) = raw_output_override {
+        raw
+    } else if run_result.timed_out {
+        "provider execution timed out".to_string()
+    } else if run_result.cancelled {
+        "cancelled".to_string()
+    } else if !run_result.stderr_text.trim().is_empty() {
+        run_result.stderr_text.clone()
+    } else {
+        run_result.stdout_text.clone()
+    };
+
+    let success = if let Some(s) = success_override {
+        s
+    } else {
+        !run_result.cancelled && run_result.status.success()
+    };
+
+    ProviderOutput {
+        raw_output,
+        success,
+        exit_code,
+    }
+}
+
+fn extract_json_or_fallback<F>(run_result: &RunResult, extractor: F) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if run_result.cancelled || run_result.timed_out {
+        return None;
+    }
+    Some(extractor(&run_result.stdout_text).unwrap_or_else(|| {
+        if !run_result.stderr_text.trim().is_empty() {
+            run_result.stderr_text.clone()
+        } else {
+            run_result.stdout_text.clone()
+        }
+    }))
+}
+
 fn run_codex(
     _attachment_path: Option<&PathBuf>,
     config: &RuntimeConfig,
@@ -96,7 +184,7 @@ fn run_codex(
         .join(format!("codex_last_{}.txt", now_nanos()));
 
     let run_once = |include_dangerous_flag: bool| -> Result<RunResult> {
-        let mut cmd = Command::new(&config.codex.bin);
+        let mut cmd = new_provider_command(&config.codex.bin);
         cmd.arg("exec")
             .arg("--cd")
             .arg(&config.instance_dir)
@@ -116,23 +204,14 @@ fn run_codex(
         if progress_tx.is_some() {
             cmd.arg("--json");
         }
+        cmd.arg(context);
 
-        cmd.arg(context)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        configure_child_command(&mut cmd);
-
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("failed to start {}", config.codex.bin))?;
-        run_child_process(
-            child,
+        run_provider_process(
+            cmd,
             cancel_flag,
-            progress_tx.cloned(),
+            progress_tx,
             Some(parse_codex_progress_line),
-            "failed waiting for codex command".to_string(),
-            "failed waiting after codex kill".to_string(),
+            &config.codex.bin,
             timeout_secs,
         )
     };
@@ -151,29 +230,15 @@ fn run_codex(
         run_result = run_once(false)?;
     }
 
-    let exit_code = if run_result.cancelled || run_result.timed_out {
-        if run_result.timed_out { 124 } else { 130 }
+    let raw_output_override = if run_result.status.success() {
+        Some(fs::read_to_string(&out_file).unwrap_or_else(|_| run_result.stdout_text.clone()))
     } else {
-        run_result.status.code().unwrap_or(1)
+        None
     };
 
-    let raw_output = if run_result.status.success() {
-        fs::read_to_string(&out_file).unwrap_or_else(|_| run_result.stdout_text.clone())
-    } else if run_result.timed_out {
-        "provider execution timed out".to_string()
-    } else if run_result.cancelled {
-        "cancelled".to_string()
-    } else {
-        run_result.stderr_text
-    };
-
+    let output = finalize_output(&run_result, None, raw_output_override);
     let _ = fs::remove_file(out_file);
-
-    Ok(ProviderOutput {
-        raw_output,
-        success: !run_result.cancelled && run_result.status.success(),
-        exit_code,
-    })
+    Ok(output)
 }
 
 fn run_pi(
@@ -191,7 +256,7 @@ fn run_pi(
         "text"
     };
 
-    let mut cmd = Command::new(&config.pi.bin);
+    let mut cmd = new_provider_command(&config.pi.bin);
     cmd.arg("-p").arg("--mode").arg(pi_mode);
 
     if let Some(model) = &config.pi.model {
@@ -211,61 +276,26 @@ fn run_pi(
     if let Some(path) = attachment_path {
         cmd.arg(format!("@{}", path.display()));
     }
+    cmd.arg(context);
 
-    cmd.arg(context)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_child_command(&mut cmd);
-
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("failed to start {}", config.pi.bin))?;
-    let run_result = run_child_process(
-        child,
+    let run_result = run_provider_process(
+        cmd,
         cancel_flag,
-        progress_tx.cloned(),
+        progress_tx,
         Some(parse_pi_progress_line),
-        "failed waiting for pi command".to_string(),
-        "failed waiting after pi kill".to_string(),
+        &config.pi.bin,
         timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled || run_result.timed_out {
-        if run_result.timed_out { 124 } else { 130 }
+    let raw_output_override = if run_result.status.success() {
+        extract_json_or_fallback(&run_result, extract_pi_json_final)
     } else {
-        run_result.status.code().unwrap_or(1)
+        None
     };
 
-    let raw_output = if run_result.timed_out {
-        "provider execution timed out".to_string()
-    } else if run_result.cancelled {
-        "cancelled".to_string()
-    } else if run_result.status.success() {
-        // Always try JSON extraction first — pi may emit JSON even in text mode
-        // (e.g. when auto-retry events are present).
-        extract_pi_json_final(&run_result.stdout_text).unwrap_or_else(|| {
-            if !run_result.stdout_text.trim().is_empty() {
-                run_result.stdout_text.clone()
-            } else {
-                run_result.stderr_text.clone()
-            }
-        })
-    } else if !run_result.stdout_text.trim().is_empty() {
-        run_result.stdout_text
-    } else {
-        run_result.stderr_text
-    };
-
-    let success = !run_result.cancelled
-        && run_result.status.success()
-        && !raw_output.starts_with("⚠️ Agent stopped:");
-
-    Ok(ProviderOutput {
-        raw_output,
-        success,
-        exit_code,
-    })
+    let output = finalize_output(&run_result, None, raw_output_override);
+    let success = output.success && !output.raw_output.starts_with("⚠️ Agent stopped:");
+    Ok(ProviderOutput { success, ..output })
 }
 
 fn run_claude(
@@ -277,11 +307,7 @@ fn run_claude(
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     let run_once = |include_dangerous_flag: bool| -> Result<RunResult> {
-        let (env_vars, bin_path) = parse_bin_with_env(&config.claude.bin);
-        let mut cmd = Command::new(bin_path);
-        for (key, value) in env_vars {
-            cmd.env(&key, &value);
-        }
+        let mut cmd = new_provider_command(&config.claude.bin);
         cmd.arg("-p");
 
         if include_dangerous_flag {
@@ -293,22 +319,14 @@ fn run_claude(
 
         cmd.arg("--output-format")
             .arg("stream-json")
-            .arg(context)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        configure_child_command(&mut cmd);
+            .arg(context);
 
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("failed to start {}", config.claude.bin))?;
-        run_child_process(
-            child,
+        run_provider_process(
+            cmd,
             cancel_flag,
-            progress_tx.cloned(),
+            progress_tx,
             Some(parse_claude_json_line),
-            "failed waiting for claude command".to_string(),
-            "failed waiting after claude kill".to_string(),
+            &config.claude.bin,
             timeout_secs,
         )
     };
@@ -327,33 +345,8 @@ fn run_claude(
         run_result = run_once(false)?;
     }
 
-    let exit_code = if run_result.cancelled || run_result.timed_out {
-        if run_result.timed_out { 124 } else { 130 }
-    } else {
-        run_result.status.code().unwrap_or(1)
-    };
-
-    let raw_output = if run_result.timed_out {
-        "provider execution timed out".to_string()
-    } else if run_result.cancelled {
-        "cancelled".to_string()
-    } else {
-        extract_claude_json_final(&run_result.stdout_text).unwrap_or_else(|| {
-            if !run_result.stderr_text.trim().is_empty() {
-                run_result.stderr_text.clone()
-            } else if !run_result.stdout_text.trim().is_empty() {
-                run_result.stdout_text.clone()
-            } else {
-                String::new()
-            }
-        })
-    };
-
-    Ok(ProviderOutput {
-        raw_output,
-        success: !run_result.cancelled && run_result.status.success(),
-        exit_code,
-    })
+    let raw_output_override = extract_json_or_fallback(&run_result, extract_claude_json_final);
+    Ok(finalize_output(&run_result, None, raw_output_override))
 }
 
 fn run_opencode(
@@ -364,12 +357,7 @@ fn run_opencode(
     progress_tx: Option<&Sender<String>>,
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
-    let (env_vars, bin_path) = parse_bin_with_env(&config.opencode.bin);
-    let mut cmd = Command::new(bin_path);
-    for (key, value) in env_vars {
-        cmd.env(&key, &value);
-    }
-
+    let mut cmd = new_provider_command(&config.opencode.bin);
     cmd.arg("run");
 
     if let Some(model) = &config.opencode.model {
@@ -381,53 +369,19 @@ fn run_opencode(
 
     cmd.arg("--format")
         .arg("json")
-        .arg(context)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_child_command(&mut cmd);
+        .arg(context);
 
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("failed to start {}", config.opencode.bin))?;
-
-    let run_result = run_child_process(
-        child,
+    let run_result = run_provider_process(
+        cmd,
         cancel_flag,
-        progress_tx.cloned(),
+        progress_tx,
         Some(parse_opencode_json_line),
-        "failed waiting for opencode command".to_string(),
-        "failed waiting after opencode kill".to_string(),
+        &config.opencode.bin,
         timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled || run_result.timed_out {
-        if run_result.timed_out { 124 } else { 130 }
-    } else {
-        run_result.status.code().unwrap_or(1)
-    };
-
-    let raw_output = if run_result.timed_out {
-        "provider execution timed out".to_string()
-    } else if run_result.cancelled {
-        "cancelled".to_string()
-    } else {
-        extract_opencode_json_final(&run_result.stdout_text).unwrap_or_else(|| {
-            if !run_result.stderr_text.trim().is_empty() {
-                run_result.stderr_text.clone()
-            } else if !run_result.stdout_text.trim().is_empty() {
-                run_result.stdout_text.clone()
-            } else {
-                String::new()
-            }
-        })
-    };
-
-    Ok(ProviderOutput {
-        raw_output,
-        success: !run_result.cancelled && run_result.status.success(),
-        exit_code,
-    })
+    let raw_output_override = extract_json_or_fallback(&run_result, extract_opencode_json_final);
+    Ok(finalize_output(&run_result, None, raw_output_override))
 }
 
 fn run_gemini(
@@ -438,11 +392,7 @@ fn run_gemini(
     progress_tx: Option<&Sender<String>>,
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
-    let (env_vars, bin_path) = parse_bin_with_env(&config.gemini.bin);
-    let mut cmd = Command::new(bin_path);
-    for (key, value) in env_vars {
-        cmd.env(&key, &value);
-    }
+    let mut cmd = new_provider_command(&config.gemini.bin);
     cmd.arg("-p").arg(context);
 
     if config.exec_policy.eq_ignore_ascii_case("yolo") {
@@ -456,51 +406,17 @@ fn run_gemini(
         cmd.arg("--output-format").arg("stream-json");
     }
 
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_child_command(&mut cmd);
-
-    let child = cmd
-        .spawn()
-        .with_context(|| format!("failed to start {}", config.gemini.bin))?;
-    let run_result = run_child_process(
-        child,
+    let run_result = run_provider_process(
+        cmd,
         cancel_flag,
-        progress_tx.cloned(),
+        progress_tx,
         Some(parse_gemini_json_line),
-        "failed waiting for gemini command".to_string(),
-        "failed waiting after gemini kill".to_string(),
+        &config.gemini.bin,
         timeout_secs,
     )?;
 
-    let exit_code = if run_result.cancelled || run_result.timed_out {
-        if run_result.timed_out { 124 } else { 130 }
-    } else {
-        run_result.status.code().unwrap_or(1)
-    };
-
-    let raw_output = if run_result.timed_out {
-        "provider execution timed out".to_string()
-    } else if run_result.cancelled {
-        "cancelled".to_string()
-    } else {
-        extract_gemini_json_final(&run_result.stdout_text).unwrap_or_else(|| {
-            if !run_result.stderr_text.trim().is_empty() {
-                run_result.stderr_text.clone()
-            } else if !run_result.stdout_text.trim().is_empty() {
-                run_result.stdout_text.clone()
-            } else {
-                String::new()
-            }
-        })
-    };
-
-    Ok(ProviderOutput {
-        raw_output,
-        success: !run_result.cancelled && run_result.status.success(),
-        exit_code,
-    })
+    let raw_output_override = extract_json_or_fallback(&run_result, extract_gemini_json_final);
+    Ok(finalize_output(&run_result, None, raw_output_override))
 }
 
 fn run_factory(
@@ -512,11 +428,7 @@ fn run_factory(
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
     let run_once = |include_dangerous_flag: bool| -> Result<RunResult> {
-        let (env_vars, bin_path) = parse_bin_with_env(&config.factory.bin);
-        let mut cmd = Command::new(bin_path);
-        for (key, value) in env_vars {
-            cmd.env(&key, &value);
-        }
+        let mut cmd = new_provider_command(&config.factory.bin);
         cmd.arg("exec");
 
         if include_dangerous_flag {
@@ -528,22 +440,14 @@ fn run_factory(
 
         cmd.arg("--output-format")
             .arg("stream-json")
-            .arg(context)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        configure_child_command(&mut cmd);
+            .arg(context);
 
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("failed to start {}", config.factory.bin))?;
-        run_child_process(
-            child,
+        run_provider_process(
+            cmd,
             cancel_flag,
-            progress_tx.cloned(),
+            progress_tx,
             Some(parse_factory_json_line),
-            "failed waiting for factory command".to_string(),
-            "failed waiting after factory kill".to_string(),
+            &config.factory.bin,
             timeout_secs,
         )
     };
@@ -562,33 +466,8 @@ fn run_factory(
         run_result = run_once(false)?;
     }
 
-    let exit_code = if run_result.cancelled || run_result.timed_out {
-        if run_result.timed_out { 124 } else { 130 }
-    } else {
-        run_result.status.code().unwrap_or(1)
-    };
-
-    let raw_output = if run_result.timed_out {
-        "provider execution timed out".to_string()
-    } else if run_result.cancelled {
-        "cancelled".to_string()
-    } else {
-        extract_factory_json_final(&run_result.stdout_text).unwrap_or_else(|| {
-            if !run_result.stderr_text.trim().is_empty() {
-                run_result.stderr_text.clone()
-            } else if !run_result.stdout_text.trim().is_empty() {
-                run_result.stdout_text.clone()
-            } else {
-                String::new()
-            }
-        })
-    };
-
-    Ok(ProviderOutput {
-        raw_output,
-        success: !run_result.cancelled && run_result.status.success(),
-        exit_code,
-    })
+    let raw_output_override = extract_json_or_fallback(&run_result, extract_factory_json_final);
+    Ok(finalize_output(&run_result, None, raw_output_override))
 }
 
 struct RunResult {
