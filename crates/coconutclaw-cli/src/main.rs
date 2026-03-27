@@ -105,8 +105,6 @@ pub(crate) enum InputType {
     Video,
     Document,
     VideoNote,
-    #[allow(dead_code)]
-    System,
 }
 
 impl InputType {
@@ -118,7 +116,6 @@ impl InputType {
             Self::Video => "video",
             Self::Document => "document",
             Self::VideoNote => "video_note",
-            Self::System => "system",
         }
     }
 }
@@ -137,8 +134,6 @@ pub(crate) enum TurnStatus {
     ParseRecovered,
     ParseFallback,
     AgentErrorRecovered,
-    #[allow(dead_code)]
-    Boundary,
 }
 
 impl TurnStatus {
@@ -150,7 +145,6 @@ impl TurnStatus {
             Self::ParseRecovered => "parse_recovered",
             Self::ParseFallback => "parse_fallback",
             Self::AgentErrorRecovered => "agent_error_recovered",
-            Self::Boundary => "boundary",
         }
     }
 }
