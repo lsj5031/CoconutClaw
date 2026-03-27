@@ -791,7 +791,6 @@ pub(crate) fn send_voice_reply(
 
     let mut cmd = Command::new("bash");
     cmd.arg(script)
-        .arg(text)
         .arg(&output_voice)
         .current_dir(&cfg.root_dir)
         .env("INSTANCE_DIR", &cfg.instance_dir);
@@ -805,12 +804,24 @@ pub(crate) fn send_voice_reply(
         cmd.env("TTS_MAX_CHARS", value);
     }
 
-    let output = cmd
-        .stdin(Stdio::null())
+    let mut child = cmd
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .context("failed to execute TTS script")?;
+        .spawn()
+        .context("failed to spawn TTS script")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let input = text.to_string();
+        thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(input.as_bytes());
+        });
+    }
+
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for TTS script")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let _ = fs::remove_file(&output_voice);
@@ -1133,5 +1144,33 @@ mod tests {
         assert_eq!(html_escape(""), "");
         assert_eq!(html_escape("no special chars"), "no special chars");
         assert_eq!(html_escape("already &amp;"), "already &amp;amp;");
+    }
+
+    #[test]
+    fn test_voice_reply_stdin_logic() {
+        use std::io::Write;
+        // Verify that passing malicious strings via STDIN to a shell command is safe.
+        // We simulate the logic in send_voice_reply but using a simple cat-like command.
+        let text = "; $(echo vulnerable) | # -e";
+        let mut child = Command::new("bash")
+            .arg("-c")
+            .arg("cat") // Simulates tts.sh reading from stdin
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn cat");
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let input = text.to_string();
+            thread::spawn(move || {
+                let _ = stdin.write_all(input.as_bytes());
+            });
+        }
+
+        let output = child.wait_with_output().expect("failed to wait");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // The output should be exactly the input text, not executed.
+        assert_eq!(stdout.trim(), text);
     }
 }

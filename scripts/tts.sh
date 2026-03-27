@@ -23,13 +23,18 @@ trim() {
 
 require_cmd ffmpeg
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <text> <output_ogg>" >&2
+if [[ $# -eq 1 ]]; then
+  output_ogg="$1"
+  read_from_stdin=true
+elif [[ $# -eq 2 ]]; then
+  text_arg="$1"
+  output_ogg="$2"
+  read_from_stdin=false
+else
+  echo "usage: $0 [text] <output_ogg>" >&2
+  echo "If [text] is omitted, it will be read from stdin." >&2
   exit 1
 fi
-
-text="$1"
-output_ogg="$2"
 
 : "${TTS_CMD_TEMPLATE:?TTS_CMD_TEMPLATE is required in config.toml}"
 : "${VOICE_BITRATE:=32k}"
@@ -68,11 +73,21 @@ run_tts_once() {
   fi
 }
 
-printf "%s\n" "$text" | fold -s -w "$TTS_MAX_CHARS" > "$chunks_file"
+if [[ "$read_from_stdin" == "true" ]]; then
+  fold -s -w "$TTS_MAX_CHARS" > "$chunks_file"
+else
+  printf "%s\n" "$text_arg" | fold -s -w "$TTS_MAX_CHARS" > "$chunks_file"
+fi
+
 mapfile -t chunks < "$chunks_file"
 
 if [[ "${#chunks[@]}" -le 1 ]]; then
-  run_tts_once "$text" "$tmp_wav"
+  # If reading from stdin, text_arg is not defined, so use chunks[0]
+  if [[ "$read_from_stdin" == "true" ]]; then
+    run_tts_once "${chunks[0]:-}" "$tmp_wav"
+  else
+    run_tts_once "$text_arg" "$tmp_wav"
+  fi
   final_wav="$tmp_wav"
 else
   i=0
