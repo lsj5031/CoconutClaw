@@ -791,7 +791,6 @@ pub(crate) fn send_voice_reply(
 
     let mut cmd = Command::new("bash");
     cmd.arg(script)
-        .arg(text)
         .arg(&output_voice)
         .current_dir(&cfg.root_dir)
         .env("INSTANCE_DIR", &cfg.instance_dir);
@@ -805,12 +804,30 @@ pub(crate) fn send_voice_reply(
         cmd.env("TTS_MAX_CHARS", value);
     }
 
-    let output = cmd
-        .stdin(Stdio::null())
+    let mut child = cmd
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .context("failed to execute TTS script")?;
+        .spawn()
+        .context("failed to spawn TTS script")?;
+
+    // Write text to stdin in a separate thread to avoid deadlock
+    let text_owned = text.to_string();
+    let stdin_handle = child.stdin.take().map(|mut stdin| {
+        thread::spawn(move || {
+            use std::io::Write;
+            stdin.write_all(text_owned.as_bytes()).ok();
+        })
+    });
+
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for TTS script")?;
+
+    // Ensure stdin writer thread has finished
+    if let Some(handle) = stdin_handle {
+        let _ = handle.join();
+    }
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let _ = fs::remove_file(&output_voice);
