@@ -696,15 +696,28 @@ fn find_split_point_chars(region: &str, region_char_len: usize, is_md: bool) -> 
     }
 
     // Protect inline code spans (MarkdownV2 only).
+    // Count only backticks that are NOT part of code fence lines (``` …).
     if is_md {
         let candidate: String = region.chars().take(split_at).collect();
-        let count = candidate.matches('`').count();
-        if count % 2 == 1 {
-            // Find the char index of the last backtick in the candidate.
+        let inline_backtick_count: usize = candidate
+            .split('\n')
+            .filter(|line| !line.trim().starts_with("```"))
+            .map(|line| line.matches('`').count())
+            .sum();
+        if inline_backtick_count % 2 == 1 {
+            // Find the char index of the last non-fence backtick.
             if let Some(pos) = candidate.rfind('`') {
-                let char_pos = candidate[..pos].chars().count();
-                if char_pos > region_char_len / 4 {
-                    split_at = char_pos;
+                // Verify this backtick isn't on a fence line.
+                let before = &candidate[..pos];
+                let on_fence = before
+                    .rfind('\n')
+                    .map(|nl| candidate[nl + 1..].trim_start().starts_with("```"))
+                    .unwrap_or(candidate.trim_start().starts_with("```"));
+                if !on_fence {
+                    let char_pos = before.chars().count();
+                    if char_pos > region_char_len / 4 {
+                        split_at = char_pos;
+                    }
                 }
             }
         }
@@ -736,25 +749,33 @@ fn scan_code_block_state(text: &str, parse_mode: TelegramParseMode) -> (bool, St
             }
         }
         TelegramParseMode::Html => {
-            for line in text.split('\n') {
-                let trimmed = line.trim();
-                // Match <pre><code> with or without class="language-X"
-                if let Some(idx) = trimmed.find("<pre><code") {
+            // Use rfind to determine the final state — whichever appears
+            // last wins (handles close+open on the same line correctly).
+            let last_open = text.rfind("<pre><code");
+            let last_close = text.rfind("</code></pre>");
+            match (last_open, last_close) {
+                (Some(open_pos), Some(close_pos)) if open_pos > close_pos => {
                     in_code = true;
-                    // Extract language from class="language-X" if present
-                    let after = &trimmed[idx..];
+                    let after = &text[open_pos..];
                     if let Some(cls_start) = after.find("class=\"language-") {
-                        let rest = &after[cls_start + 16..]; // skip 'class="language-'
+                        let rest = &after[cls_start + 16..];
                         if let Some(cls_end) = rest.find('"') {
                             lang = rest[..cls_end].to_string();
                         }
-                    } else {
-                        lang = String::new();
                     }
                 }
-                if trimmed.contains("</code></pre>") {
+                (Some(open_pos), None) => {
+                    in_code = true;
+                    let after = &text[open_pos..];
+                    if let Some(cls_start) = after.find("class=\"language-") {
+                        let rest = &after[cls_start + 16..];
+                        if let Some(cls_end) = rest.find('"') {
+                            lang = rest[..cls_end].to_string();
+                        }
+                    }
+                }
+                _ => {
                     in_code = false;
-                    lang = String::new();
                 }
             }
         }

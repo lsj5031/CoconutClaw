@@ -2437,6 +2437,40 @@ mod tests {
         }
     }
 
+    /// Inline backtick protection must not corrupt ``` fences.
+    #[test]
+    fn split_md_fence_not_corrupted_by_inline_backtick_protection() {
+        let text = "Some text before\n```rust\nfn main() {}\nlet x = 1;\nlet y = 2;\n```\nAfter";
+        let chunks = split_text_chunks(text, 40, TelegramParseMode::MarkdownV2);
+        // No chunk should contain a partial fence like `` (two backticks alone)
+        for chunk in &chunks {
+            for line in chunk.split('\n') {
+                let trimmed = line.trim();
+                if trimmed.starts_with('`') && !trimmed.starts_with("```") {
+                    // Must be an inline code span (even backtick count)
+                    let count = trimmed.matches('`').count();
+                    assert_eq!(
+                        count % 2,
+                        0,
+                        "fence corrupted to partial backticks: {:?}",
+                        trimmed
+                    );
+                }
+            }
+        }
+    }
+
+    /// HTML scan correctly handles close+open on the same line.
+    #[test]
+    fn split_html_close_then_open_same_line() {
+        // Craft text where a code block is closed and another opened on the same line
+        let text = "<pre><code>first block</code></pre><pre><code class=\"language-rust\">second block content that is long enough to need splitting into multiple chunks for testing\n";
+        let text = text.repeat(3);
+        let chunks = split_text_chunks(&text, 150, TelegramParseMode::Html);
+        // Just verify it doesn't panic and produces non-empty output
+        assert!(!chunks.is_empty());
+    }
+
     /// All format-aware chunks must stay within max_chars.
     #[test]
     fn split_format_aware_all_chunks_within_limit() {
