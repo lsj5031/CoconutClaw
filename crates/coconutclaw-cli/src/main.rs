@@ -2308,4 +2308,152 @@ mod tests {
             );
         }
     }
+
+    // ── Bug-coverage tests (TDD: written to fail, then fix) ──────────
+
+    /// Bug #2: headroom subtraction must not panic on underflow when max_chars is tiny.
+    #[test]
+    fn split_format_aware_small_max_chars_no_panic() {
+        let text = "hello world this is a test string";
+        // Must not panic — previously caused integer underflow.
+        let chunks = split_text_chunks(text, 5, TelegramParseMode::MarkdownV2);
+        assert!(!chunks.is_empty());
+        // With max_chars this tiny the indicator alone exceeds the limit,
+        // so we only assert no panic and non-empty output.
+    }
+
+    /// Bug #2b: realistic small max_chars must respect limit.
+    #[test]
+    fn split_format_aware_moderate_max_chars_respects_limit() {
+        let text = "hello world this is a test string that is moderately long for splitting";
+        let max = 25;
+        let chunks = split_text_chunks(text, max, TelegramParseMode::MarkdownV2);
+        assert!(chunks.len() >= 2);
+        for chunk in &chunks {
+            assert!(
+                chunk.chars().count() <= max,
+                "chunk exceeds max {max}: {:?}",
+                chunk
+            );
+        }
+    }
+
+    /// Bug #3: byte vs char index confusion with multi-byte chars.
+    #[test]
+    fn split_multibyte_chars_respect_max_chars() {
+        // Each '日' is 3 bytes but 1 char. 200 chars = 600 bytes.
+        let text = "日".repeat(200);
+        let chunks = split_text_chunks(&text, 80, TelegramParseMode::MarkdownV2);
+        assert!(chunks.len() >= 2);
+        for chunk in &chunks {
+            assert!(
+                chunk.chars().count() <= 80,
+                "chunk char count {} exceeds 80: {:?}",
+                chunk.chars().count(),
+                &chunk[..chunk.len().min(60)]
+            );
+        }
+    }
+
+    /// Bug #4: infinite loop when max_chars is very small and headroom becomes 0.
+    #[test]
+    fn split_format_aware_terminates_with_tiny_limit() {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(5);
+        // This must terminate (not infinite loop).
+        let chunks = split_text_chunks(&text, 3, TelegramParseMode::Html);
+        assert!(!chunks.is_empty());
+    }
+
+    /// Bug #5: HtmlFormat::code_fence_open_with_lang ignores lang tag.
+    #[test]
+    fn split_html_reopens_code_block_with_language_class() {
+        let code_line = "let x = 1;\n";
+        let code_lines = code_line.repeat(30); // 330 chars
+        let text = format!("<pre><code class=\"language-rust\">{code_lines}</code></pre>");
+        let chunks = split_text_chunks(&text, 150, TelegramParseMode::Html);
+        assert!(chunks.len() >= 2);
+        // Second chunk must reopen with the language class
+        assert!(
+            chunks[1].starts_with("<pre><code class=\"language-rust\">"),
+            "second chunk should preserve language class, got: {}",
+            &chunks[1][..60.min(chunks[1].len())]
+        );
+    }
+
+    /// Bug #6: scan_code_block_state doesn't match <pre><code class="language-X">.
+    #[test]
+    fn split_html_detects_code_block_with_class_attr() {
+        let code_line = "line\n";
+        let code_lines = code_line.repeat(40);
+        let text = format!("<pre><code class=\"language-python\">{code_lines}</code></pre>");
+        let chunks = split_text_chunks(&text, 100, TelegramParseMode::Html);
+        assert!(chunks.len() >= 2);
+        // Every non-last chunk must properly close the code block
+        for (i, chunk) in chunks.iter().enumerate() {
+            if i < chunks.len() - 1 {
+                assert!(
+                    chunk.contains("</code></pre>"),
+                    "chunk {} should close code block, got: {:?}",
+                    i,
+                    chunk
+                );
+            }
+        }
+    }
+
+    /// Bug #7: split_plain appends indicators after splitting, exceeding max_chars.
+    #[test]
+    fn split_plain_chunks_respect_max_chars_with_indicators() {
+        let text = "abcde\n".repeat(500); // ~3000 chars
+        let max = 200;
+        let chunks = split_text_chunks(&text, max, TelegramParseMode::Off);
+        assert!(chunks.len() >= 2);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.chars().count() <= max,
+                "plain chunk {} is {} chars, exceeds {}: {:?}",
+                i,
+                chunk.chars().count(),
+                max,
+                &chunk[..chunk.len().min(60)]
+            );
+        }
+    }
+
+    /// Bug #7b: oversized single line in plain mode still respects limit.
+    #[test]
+    fn split_plain_oversized_line_with_indicators() {
+        let text = "x".repeat(8000);
+        let max = 4096;
+        let chunks = split_text_chunks(&text, max, TelegramParseMode::Off);
+        assert!(chunks.len() >= 2);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.chars().count() <= max,
+                "plain oversized chunk {} is {} chars, exceeds {max}",
+                i,
+                chunk.chars().count()
+            );
+        }
+    }
+
+    /// All format-aware chunks must stay within max_chars.
+    #[test]
+    fn split_format_aware_all_chunks_within_limit() {
+        let fence = "```";
+        let code_line = "x = 1\n";
+        let code_lines = code_line.repeat(100);
+        let text = format!("{fence}rust\n{code_lines}{fence}");
+        let max = 150;
+        let chunks = split_text_chunks(&text, max, TelegramParseMode::MarkdownV2);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.chars().count() <= max,
+                "md chunk {} is {} chars, exceeds {max}: {:?}",
+                i,
+                chunk.chars().count(),
+                &chunk[..chunk.len().min(80)]
+            );
+        }
+    }
 }

@@ -552,8 +552,9 @@ pub(crate) fn split_text_chunks(
     }
 
     match parse_mode {
-        TelegramParseMode::Html => split_format_aware(text, max_chars, &HtmlFormat),
-        TelegramParseMode::MarkdownV2 => split_format_aware(text, max_chars, &MarkdownV2Format),
+        TelegramParseMode::Html | TelegramParseMode::MarkdownV2 => {
+            split_format_aware(text, max_chars, parse_mode)
+        }
         TelegramParseMode::Off => split_plain(text, max_chars),
     }
 }
@@ -563,114 +564,87 @@ pub(crate) fn split_text_chunks(
 /// Reserve room for the chunk indicator at the tail of each chunk.
 const INDICATOR_RESERVE: usize = 12;
 
-trait FormatStrategy {
-    /// Fence tokens for triple-backtick code blocks (MarkdownV2) or
-    /// `<pre><code>` pairs (HTML).
-    fn code_fence_open(&self) -> &str;
-    fn code_fence_open_with_lang(&self, lang: &str) -> String;
-    fn code_fence_close(&self) -> &str;
-
-    /// Inline code delimiters (backtick pair for MD, empty for HTML).
-    fn inline_code_delim(&self) -> Option<&str>;
-
-    /// Format the chunk indicator `(1/3)` — plain for HTML/Off, escaped
-    /// `\(` `\)` for MarkdownV2.
-    fn format_indicator(&self, current: usize, total: usize) -> String;
-}
-
-struct HtmlFormat;
-struct MarkdownV2Format;
-
-impl FormatStrategy for HtmlFormat {
-    fn code_fence_open(&self) -> &str {
-        "<pre><code>"
-    }
-    fn code_fence_open_with_lang(&self, _lang: &str) -> String {
-        "<pre><code>".to_string()
-    }
-    fn code_fence_close(&self) -> &str {
-        "</code></pre>"
-    }
-    fn inline_code_delim(&self) -> Option<&str> {
-        None
-    }
-    fn format_indicator(&self, current: usize, total: usize) -> String {
-        format!("({current}/{total})")
-    }
-}
-
-impl FormatStrategy for MarkdownV2Format {
-    fn code_fence_open(&self) -> &str {
-        "```\n"
-    }
-    fn code_fence_open_with_lang(&self, lang: &str) -> String {
-        if lang.is_empty() {
-            "```\n".to_string()
-        } else {
-            format!("```{lang}\n")
+/// Build the opening fence string for a code block with an optional lang tag.
+fn code_fence_open_with_lang(parse_mode: TelegramParseMode, lang: &str) -> String {
+    match parse_mode {
+        TelegramParseMode::MarkdownV2 => {
+            if lang.is_empty() {
+                "```\n".to_string()
+            } else {
+                format!("```{lang}\n")
+            }
         }
-    }
-    fn code_fence_close(&self) -> &str {
-        "```"
-    }
-    fn inline_code_delim(&self) -> Option<&str> {
-        Some("`")
-    }
-    fn format_indicator(&self, current: usize, total: usize) -> String {
-        format!("\\({current}/{total}\\)")
+        TelegramParseMode::Html => {
+            if lang.is_empty() {
+                "<pre><code>".to_string()
+            } else {
+                format!("<pre><code class=\"language-{lang}\">")
+            }
+        }
+        TelegramParseMode::Off => String::new(),
     }
 }
 
-/// Indicators are plain parens for Off mode.
-fn plain_indicator(current: usize, total: usize) -> String {
-    format!("({current}/{total})")
+fn fence_close_str(parse_mode: TelegramParseMode) -> &'static str {
+    match parse_mode {
+        TelegramParseMode::MarkdownV2 => "```",
+        TelegramParseMode::Html => "</code></pre>",
+        TelegramParseMode::Off => "",
+    }
 }
 
-fn split_format_aware(text: &str, max_chars: usize, fmt: &dyn FormatStrategy) -> Vec<String> {
-    let fence_open = fmt.code_fence_open();
-    let fence_close = fmt.code_fence_close();
-    let inline_delim = fmt.inline_code_delim();
+fn format_indicator(parse_mode: TelegramParseMode, current: usize, total: usize) -> String {
+    match parse_mode {
+        TelegramParseMode::MarkdownV2 => format!("\\({current}/{total}\\)"),
+        _ => format!("({current}/{total})"),
+    }
+}
+
+fn split_format_aware(text: &str, max_chars: usize, parse_mode: TelegramParseMode) -> Vec<String> {
+    let fence_close = fence_close_str(parse_mode);
+    let is_md = matches!(parse_mode, TelegramParseMode::MarkdownV2);
 
     let mut chunks: Vec<String> = Vec::new();
     let mut remaining: &str = text;
-    // When the previous chunk ended mid-code-block, this holds the language
-    // tag (possibly "") so we can reopen the fence.
     let mut carry_lang: Option<String> = None;
 
     while !remaining.is_empty() {
-        // If we're continuing a code block, prepend a new opening fence.
         let prefix = match &carry_lang {
-            Some(lang) => fmt.code_fence_open_with_lang(lang),
+            Some(lang) => code_fence_open_with_lang(parse_mode, lang),
             None => String::new(),
         };
 
-        // Everything remaining fits in one final chunk (with room for indicator)
-        if prefix.chars().count() + remaining.chars().count() <= max_chars - INDICATOR_RESERVE {
+        let prefix_len = prefix.chars().count();
+        let remaining_len = remaining.chars().count();
+
+        if prefix_len + remaining_len <= max_chars.saturating_sub(INDICATOR_RESERVE) {
             chunks.push(prefix + remaining);
             break;
         }
 
-        // How much body text we can fit after accounting for prefix,
-        // a potential closing fence, and the indicator.
-        let headroom =
-            max_chars - INDICATOR_RESERVE - prefix.chars().count() - fence_close.chars().count();
-        let headroom = headroom.max(max_chars / 2);
+        let overhead = INDICATOR_RESERVE
+            .saturating_add(prefix_len)
+            .saturating_add(fence_close.chars().count());
+        let headroom = max_chars.saturating_sub(overhead).max(1);
 
-        // Find a natural split point (prefer newlines, then spaces).
+        // Collect exactly `headroom` chars as the candidate region.
         let region: String = remaining.chars().take(headroom).collect();
-        let split_at = find_split_point(&region, remaining, headroom, inline_delim);
+        let region_char_len = region.chars().count();
+
+        // find_split_point returns a *char index* within `region`.
+        let split_at = find_split_point_chars(&region, region_char_len, is_md);
+        let split_at = split_at.max(1); // guarantee forward progress
 
         let chunk_body: String = remaining.chars().take(split_at).collect();
         remaining = &remaining[chunk_body.len()..];
-        let remaining_trimmed = remaining.trim_start_matches('\n');
-        if remaining_trimmed.len() < remaining.len() {
-            remaining = remaining_trimmed;
+        let trimmed = remaining.trim_start_matches('\n');
+        if trimmed.len() < remaining.len() {
+            remaining = trimmed;
         }
 
-        let full_body = prefix.clone() + &chunk_body;
+        let full_body = prefix + &chunk_body;
 
-        // Walk chunk_body to determine whether we end inside an open code block.
-        let (in_code, lang) = scan_code_block_state(&chunk_body, fence_open, fence_close);
+        let (in_code, lang) = scan_code_block_state(&full_body, parse_mode);
 
         let full_chunk = if in_code {
             carry_lang = Some(lang);
@@ -683,35 +657,54 @@ fn split_format_aware(text: &str, max_chars: usize, fmt: &dyn FormatStrategy) ->
         chunks.push(full_chunk);
     }
 
-    append_indicators(&mut chunks, fmt)
+    if chunks.len() > 1 {
+        let total = chunks.len();
+        for (i, chunk) in chunks.iter_mut().enumerate() {
+            chunk.push_str(&format_indicator(parse_mode, i + 1, total));
+        }
+    }
+    chunks
 }
 
-/// Find a safe split point in `region`, avoiding inline code breaks.
-fn find_split_point(
-    region: &str,
-    _full_remaining: &str,
-    headroom: usize,
-    inline_delim: Option<&str>,
-) -> usize {
-    let mut split_at = region.rfind('\n').unwrap_or(0);
-    if split_at < headroom / 2 {
-        split_at = region.rfind(' ').unwrap_or(0);
-    }
-    if split_at < 1 {
-        split_at = headroom;
+/// Find a safe split point within `region`, returning a *char index*.
+/// Prefers newlines, then spaces, then hard-cuts at `region_char_len`.
+/// For MarkdownV2, avoids splitting inside inline backtick spans.
+fn find_split_point_chars(region: &str, region_char_len: usize, is_md: bool) -> usize {
+    // Walk chars to find the last newline and last space (as char indices).
+    let mut last_nl: Option<usize> = None;
+    let mut last_sp: Option<usize> = None;
+    for (i, ch) in region.chars().enumerate() {
+        if ch == '\n' {
+            last_nl = Some(i);
+        } else if ch == ' ' {
+            last_sp = Some(i);
+        }
     }
 
-    // Protect inline code spans — don't split inside a `...` pair.
-    if let Some(delim) = inline_delim {
-        let candidate = &region[..split_at];
-        let count = candidate.matches(delim).count();
+    let mut split_at = if let Some(nl) = last_nl {
+        if nl >= region_char_len / 2 {
+            nl
+        } else {
+            last_sp.unwrap_or(region_char_len)
+        }
+    } else {
+        last_sp.unwrap_or(region_char_len)
+    };
+
+    if split_at < 1 {
+        split_at = region_char_len;
+    }
+
+    // Protect inline code spans (MarkdownV2 only).
+    if is_md {
+        let candidate: String = region.chars().take(split_at).collect();
+        let count = candidate.matches('`').count();
         if count % 2 == 1 {
-            // Odd number of delimiters means we'd break an inline span.
-            // Try to move split before the last opening delimiter.
-            #[allow(clippy::collapsible_if)]
-            if let Some(pos) = candidate.rfind(delim) {
-                if pos > headroom / 4 {
-                    split_at = pos;
+            // Find the char index of the last backtick in the candidate.
+            if let Some(pos) = candidate.rfind('`') {
+                let char_pos = candidate[..pos].chars().count();
+                if char_pos > region_char_len / 4 {
+                    split_at = char_pos;
                 }
             }
         }
@@ -722,54 +715,69 @@ fn find_split_point(
 
 /// Scan text to determine if we're inside an open code block at the end.
 /// Returns (in_code_block, language_tag).
-fn scan_code_block_state(text: &str, fence_open: &str, fence_close: &str) -> (bool, String) {
+fn scan_code_block_state(text: &str, parse_mode: TelegramParseMode) -> (bool, String) {
     let mut in_code = false;
     let mut lang = String::new();
 
-    // For Markdown, detect ``` lines; for HTML, detect <pre><code> pairs.
-    for line in text.split('\n') {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") && fence_open.starts_with("```") {
-            if in_code {
-                in_code = false;
-                lang = String::new();
-            } else {
-                in_code = true;
-                let tag = trimmed.trim_start_matches('`').trim();
-                lang = tag.split_whitespace().next().unwrap_or("").to_string();
+    match parse_mode {
+        TelegramParseMode::MarkdownV2 => {
+            for line in text.split('\n') {
+                let trimmed = line.trim();
+                if trimmed.starts_with("```") {
+                    if in_code {
+                        in_code = false;
+                        lang = String::new();
+                    } else {
+                        in_code = true;
+                        let tag = trimmed.trim_start_matches('`').trim();
+                        lang = tag.split_whitespace().next().unwrap_or("").to_string();
+                    }
+                }
             }
-        } else if trimmed.contains(fence_open) && !fence_open.starts_with("```") {
-            in_code = true;
-        } else if trimmed.contains(fence_close) && !fence_close.starts_with("```") {
-            in_code = false;
-            lang = String::new();
         }
+        TelegramParseMode::Html => {
+            for line in text.split('\n') {
+                let trimmed = line.trim();
+                // Match <pre><code> with or without class="language-X"
+                if let Some(idx) = trimmed.find("<pre><code") {
+                    in_code = true;
+                    // Extract language from class="language-X" if present
+                    let after = &trimmed[idx..];
+                    if let Some(cls_start) = after.find("class=\"language-") {
+                        let rest = &after[cls_start + 16..]; // skip 'class="language-'
+                        if let Some(cls_end) = rest.find('"') {
+                            lang = rest[..cls_end].to_string();
+                        }
+                    } else {
+                        lang = String::new();
+                    }
+                }
+                if trimmed.contains("</code></pre>") {
+                    in_code = false;
+                    lang = String::new();
+                }
+            }
+        }
+        TelegramParseMode::Off => {}
     }
 
     (in_code, lang)
 }
 
-/// Append chunk indicators like `(1/3)` or `\(1/3\)` to each chunk.
-fn append_indicators(chunks: &mut Vec<String>, fmt: &dyn FormatStrategy) -> Vec<String> {
-    if chunks.len() <= 1 {
-        return std::mem::take(chunks);
-    }
-    let total = chunks.len();
-    for (i, chunk) in chunks.iter_mut().enumerate() {
-        let indicator = fmt.format_indicator(i + 1, total);
-        chunk.push_str(&indicator);
-    }
-    std::mem::take(chunks)
-}
-
 /// Original plain-text splitter (for `TelegramParseMode::Off`).
+/// Reserves room for indicators so chunks never exceed `max_chars`.
 fn split_plain(text: &str, max_chars: usize) -> Vec<String> {
+    // We don't know the total chunk count upfront, so we reserve a
+    // generous fixed amount for indicators.  After splitting we trim
+    // if the actual indicator is shorter.
+    let effective_max = max_chars.saturating_sub(INDICATOR_RESERVE).max(1);
+
     let mut chunks = Vec::new();
     let mut current = String::new();
 
     for line in text.split('\n') {
         let line_len = line.chars().count();
-        if line_len > max_chars {
+        if line_len > effective_max {
             if !current.is_empty() {
                 chunks.push(current);
                 current = String::new();
@@ -777,7 +785,7 @@ fn split_plain(text: &str, max_chars: usize) -> Vec<String> {
             let chars: Vec<char> = line.chars().collect();
             let mut start = 0usize;
             while start < chars.len() {
-                let end = (start + max_chars).min(chars.len());
+                let end = (start + effective_max).min(chars.len());
                 chunks.push(chars[start..end].iter().collect());
                 start = end;
             }
@@ -785,7 +793,7 @@ fn split_plain(text: &str, max_chars: usize) -> Vec<String> {
         }
 
         let sep = if current.is_empty() { 0 } else { 1 };
-        if current.chars().count() + sep + line_len > max_chars {
+        if current.chars().count() + sep + line_len > effective_max {
             if !current.is_empty() {
                 chunks.push(current);
             }
@@ -802,11 +810,10 @@ fn split_plain(text: &str, max_chars: usize) -> Vec<String> {
         chunks.push(current);
     }
 
-    // Append plain indicators for multi-chunk
     if chunks.len() > 1 {
         let total = chunks.len();
         for (i, chunk) in chunks.iter_mut().enumerate() {
-            chunk.push_str(&plain_indicator(i + 1, total));
+            chunk.push_str(&format_indicator(TelegramParseMode::Off, i + 1, total));
         }
     }
 
