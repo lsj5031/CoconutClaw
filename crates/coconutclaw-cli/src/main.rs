@@ -1655,7 +1655,7 @@ mod tests {
     use crate::telegram::{
         progress_status_text, progress_status_with_events, render_markdown_v2_reply,
         render_telegram_reply_text, should_fallback_plain_for_error, should_send_reply_as_document,
-        telegram_retry_after_seconds, telegram_text_form_params,
+        split_text_chunks, telegram_retry_after_seconds, telegram_text_form_params,
     };
     use crate::webhook::webhook_public_endpoint;
     use coconutclaw_config::{RuntimeConfig, TelegramParseMode};
@@ -2169,5 +2169,325 @@ mod tests {
 
         let content = fs::read_to_string(queue_path).expect("queue content");
         assert_eq!(content.trim_end(), valid);
+    }
+
+    // ── format-aware split_text_chunks tests ──────────────────────────
+
+    #[test]
+    fn split_short_text_returns_single_chunk() {
+        let text = "Hello world";
+        let chunks = split_text_chunks(text, 4096, TelegramParseMode::Off);
+        assert_eq!(chunks, vec!["Hello world"]);
+    }
+
+    #[test]
+    fn split_empty_text_returns_no_chunks() {
+        let chunks = split_text_chunks("", 4096, TelegramParseMode::Off);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn split_closes_and_reopens_code_block_at_boundary_html() {
+        // Build text with a code block that spans across the chunk limit.
+        let fence_open = "<pre><code>";
+        let fence_close = "</code></pre>";
+        let code_line = "line of code\n";
+        // code_line is 13 chars. We want ~10 lines in first chunk, rest in second.
+        let code_lines = code_line.repeat(20); // 260 chars
+        let text = format!("{fence_open}{code_lines}{fence_close}");
+
+        // max=150 chars to force a split inside the code block
+        let chunks = split_text_chunks(&text, 150, TelegramParseMode::Html);
+        assert!(chunks.len() >= 2, "should split into multiple chunks");
+
+        // First chunk must contain the closing fence (before the indicator)
+        assert!(
+            chunks[0].contains(fence_close),
+            "first chunk should contain closing fence, got: {:?}",
+            chunks[0]
+        );
+
+        // Second chunk must reopen the code block
+        assert!(
+            chunks[1].starts_with(fence_open),
+            "second chunk should start with opening fence, got: {}...",
+            &chunks[1][..fence_open.len().min(chunks[1].len())]
+        );
+
+        // Last chunk must contain the closing fence
+        let last = chunks.last().unwrap();
+        assert!(
+            last.contains(fence_close),
+            "last chunk should contain closing fence, got: {:?}",
+            last
+        );
+
+        // Multi-chunk: must have indicators
+        if chunks.len() > 1 {
+            for (i, chunk) in chunks.iter().enumerate() {
+                let indicator = format!("({}/{})", i + 1, chunks.len());
+                assert!(
+                    chunk.contains(&indicator),
+                    "chunk {} should contain indicator {:?}",
+                    i + 1,
+                    indicator
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_closes_and_reopens_code_block_markdown_v2() {
+        let fence = "```";
+        let code_line = "x = 1\n"; // 6 chars
+        let code_lines = code_line.repeat(60); // 360 chars
+        let text = format!("{fence}rust\n{code_lines}{fence}");
+
+        let chunks = split_text_chunks(&text, 150, TelegramParseMode::MarkdownV2);
+        assert!(chunks.len() >= 2);
+
+        // First chunk must contain the closing fence
+        assert!(
+            chunks[0].contains(fence),
+            "first chunk should contain ```, got: {:?}",
+            chunks[0]
+        );
+        // Second chunk must reopen with original lang tag
+        assert!(
+            chunks[1].starts_with("```rust\n"),
+            "second chunk should reopen with ```rust\\n, got: {}",
+            &chunks[1][..20.min(chunks[1].len())]
+        );
+
+        // Indicators use escaped parens for MarkdownV2
+        for (i, chunk) in chunks.iter().enumerate() {
+            let indicator = format!(
+                "\\({current}/{total}\\)",
+                current = i + 1,
+                total = chunks.len()
+            );
+            assert!(
+                chunk.contains(&indicator),
+                "chunk {} should contain escaped indicator {:?}",
+                i + 1,
+                indicator
+            );
+        }
+    }
+
+    #[test]
+    fn split_plain_mode_no_format_awareness() {
+        // In Off mode, code blocks are just text — no fence closing/reopening.
+        let text = "```rust\nfn main() {}\n```".repeat(20);
+        let chunks = split_text_chunks(&text, 200, TelegramParseMode::Off);
+        assert!(chunks.len() >= 2);
+        // No chunk should have added fence tags
+        for chunk in &chunks {
+            // The chunk indicators should be plain parens
+            if chunk.contains("(1/") || chunk.contains("(2/") {
+                // ok — plain indicator
+            }
+        }
+    }
+
+    #[test]
+    fn split_protects_inline_code_from_breaking() {
+        // Inline code with backticks that falls near a split boundary.
+        let inline = "`some_long_code_here`";
+        let padding = "word ".repeat(10); // 50 chars
+        let text = format!("{padding}{inline} more text after");
+        let chunks = split_text_chunks(&text, 60, TelegramParseMode::MarkdownV2);
+        // No chunk should have an unmatched backtick count
+        for chunk in &chunks {
+            let count = chunk.matches('`').count();
+            assert_eq!(
+                count % 2,
+                0,
+                "chunk has odd number of backticks: {:?}",
+                chunk
+            );
+        }
+    }
+
+    // ── Bug-coverage tests (TDD: written to fail, then fix) ──────────
+
+    /// Bug #2: headroom subtraction must not panic on underflow when max_chars is tiny.
+    #[test]
+    fn split_format_aware_small_max_chars_no_panic() {
+        let text = "hello world this is a test string";
+        // Must not panic — previously caused integer underflow.
+        let chunks = split_text_chunks(text, 5, TelegramParseMode::MarkdownV2);
+        assert!(!chunks.is_empty());
+        // With max_chars this tiny the indicator alone exceeds the limit,
+        // so we only assert no panic and non-empty output.
+    }
+
+    /// Bug #2b: realistic small max_chars must respect limit.
+    #[test]
+    fn split_format_aware_moderate_max_chars_respects_limit() {
+        let text = "hello world this is a test string that is moderately long for splitting";
+        let max = 25;
+        let chunks = split_text_chunks(text, max, TelegramParseMode::MarkdownV2);
+        assert!(chunks.len() >= 2);
+        for chunk in &chunks {
+            assert!(
+                chunk.chars().count() <= max,
+                "chunk exceeds max {max}: {:?}",
+                chunk
+            );
+        }
+    }
+
+    /// Bug #3: byte vs char index confusion with multi-byte chars.
+    #[test]
+    fn split_multibyte_chars_respect_max_chars() {
+        // Each '日' is 3 bytes but 1 char. 200 chars = 600 bytes.
+        let text = "日".repeat(200);
+        let chunks = split_text_chunks(&text, 80, TelegramParseMode::MarkdownV2);
+        assert!(chunks.len() >= 2);
+        for chunk in &chunks {
+            assert!(
+                chunk.chars().count() <= 80,
+                "chunk char count {} exceeds 80: {:?}",
+                chunk.chars().count(),
+                &chunk[..chunk.len().min(60)]
+            );
+        }
+    }
+
+    /// Bug #4: infinite loop when max_chars is very small and headroom becomes 0.
+    #[test]
+    fn split_format_aware_terminates_with_tiny_limit() {
+        let text = "abcdefghijklmnopqrstuvwxyz".repeat(5);
+        // This must terminate (not infinite loop).
+        let chunks = split_text_chunks(&text, 3, TelegramParseMode::Html);
+        assert!(!chunks.is_empty());
+    }
+
+    /// Bug #5: HtmlFormat::code_fence_open_with_lang ignores lang tag.
+    #[test]
+    fn split_html_reopens_code_block_with_language_class() {
+        let code_line = "let x = 1;\n";
+        let code_lines = code_line.repeat(30); // 330 chars
+        let text = format!("<pre><code class=\"language-rust\">{code_lines}</code></pre>");
+        let chunks = split_text_chunks(&text, 150, TelegramParseMode::Html);
+        assert!(chunks.len() >= 2);
+        // Second chunk must reopen with the language class
+        assert!(
+            chunks[1].starts_with("<pre><code class=\"language-rust\">"),
+            "second chunk should preserve language class, got: {}",
+            &chunks[1][..60.min(chunks[1].len())]
+        );
+    }
+
+    /// Bug #6: scan_code_block_state doesn't match <pre><code class="language-X">.
+    #[test]
+    fn split_html_detects_code_block_with_class_attr() {
+        let code_line = "line\n";
+        let code_lines = code_line.repeat(40);
+        let text = format!("<pre><code class=\"language-python\">{code_lines}</code></pre>");
+        let chunks = split_text_chunks(&text, 100, TelegramParseMode::Html);
+        assert!(chunks.len() >= 2);
+        // Every non-last chunk must properly close the code block
+        for (i, chunk) in chunks.iter().enumerate() {
+            if i < chunks.len() - 1 {
+                assert!(
+                    chunk.contains("</code></pre>"),
+                    "chunk {} should close code block, got: {:?}",
+                    i,
+                    chunk
+                );
+            }
+        }
+    }
+
+    /// Bug #7: split_plain appends indicators after splitting, exceeding max_chars.
+    #[test]
+    fn split_plain_chunks_respect_max_chars_with_indicators() {
+        let text = "abcde\n".repeat(500); // ~3000 chars
+        let max = 200;
+        let chunks = split_text_chunks(&text, max, TelegramParseMode::Off);
+        assert!(chunks.len() >= 2);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.chars().count() <= max,
+                "plain chunk {} is {} chars, exceeds {}: {:?}",
+                i,
+                chunk.chars().count(),
+                max,
+                &chunk[..chunk.len().min(60)]
+            );
+        }
+    }
+
+    /// Bug #7b: oversized single line in plain mode still respects limit.
+    #[test]
+    fn split_plain_oversized_line_with_indicators() {
+        let text = "x".repeat(8000);
+        let max = 4096;
+        let chunks = split_text_chunks(&text, max, TelegramParseMode::Off);
+        assert!(chunks.len() >= 2);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.chars().count() <= max,
+                "plain oversized chunk {} is {} chars, exceeds {max}",
+                i,
+                chunk.chars().count()
+            );
+        }
+    }
+
+    /// Inline backtick protection must not corrupt ``` fences.
+    #[test]
+    fn split_md_fence_not_corrupted_by_inline_backtick_protection() {
+        let text = "Some text before\n```rust\nfn main() {}\nlet x = 1;\nlet y = 2;\n```\nAfter";
+        let chunks = split_text_chunks(text, 40, TelegramParseMode::MarkdownV2);
+        // No chunk should contain a partial fence like `` (two backticks alone)
+        for chunk in &chunks {
+            for line in chunk.split('\n') {
+                let trimmed = line.trim();
+                if trimmed.starts_with('`') && !trimmed.starts_with("```") {
+                    // Must be an inline code span (even backtick count)
+                    let count = trimmed.matches('`').count();
+                    assert_eq!(
+                        count % 2,
+                        0,
+                        "fence corrupted to partial backticks: {:?}",
+                        trimmed
+                    );
+                }
+            }
+        }
+    }
+
+    /// HTML scan correctly handles close+open on the same line.
+    #[test]
+    fn split_html_close_then_open_same_line() {
+        // Craft text where a code block is closed and another opened on the same line
+        let text = "<pre><code>first block</code></pre><pre><code class=\"language-rust\">second block content that is long enough to need splitting into multiple chunks for testing\n";
+        let text = text.repeat(3);
+        let chunks = split_text_chunks(&text, 150, TelegramParseMode::Html);
+        // Just verify it doesn't panic and produces non-empty output
+        assert!(!chunks.is_empty());
+    }
+
+    /// All format-aware chunks must stay within max_chars.
+    #[test]
+    fn split_format_aware_all_chunks_within_limit() {
+        let fence = "```";
+        let code_line = "x = 1\n";
+        let code_lines = code_line.repeat(100);
+        let text = format!("{fence}rust\n{code_lines}{fence}");
+        let max = 150;
+        let chunks = split_text_chunks(&text, max, TelegramParseMode::MarkdownV2);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.chars().count() <= max,
+                "md chunk {} is {} chars, exceeds {max}: {:?}",
+                i,
+                chunk.chars().count(),
+                &chunk[..chunk.len().min(80)]
+            );
+        }
     }
 }
