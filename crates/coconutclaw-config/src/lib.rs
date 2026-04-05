@@ -146,7 +146,7 @@ pub struct PiConfig {
 impl Default for PiConfig {
     fn default() -> Self {
         Self {
-            bin: "pi-rust".to_string(),
+            bin: "pi".to_string(),
             model: None,
             reasoning_effort: None,
             no_extensions: false,
@@ -231,7 +231,6 @@ AGENT_PROVIDER = "codex"
 EXEC_POLICY = "yolo"
 CODEX_BIN = "codex"
 PI_BIN = "pi"
-PI_MODE = "text"
 
 ASR_URL = ""
 ASR_CMD_TEMPLATE = ""
@@ -278,7 +277,6 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "PI_BIN",
     "PI_PROVIDER",
     "PI_MODEL",
-    "PI_MODE",
     "PI_EXTRA_ARGS",
     "CLAUDE_BIN",
     "CLAUDE_MODEL",
@@ -640,7 +638,7 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
                 .map(ToOwned::to_owned),
         },
         pi: PiConfig {
-            bin: pick_value("PI_BIN", &config_file).unwrap_or_else(|| "pi-rust".to_string()),
+            bin: pick_value("PI_BIN", &config_file).unwrap_or_else(|| "pi".to_string()),
             model: pick_value("PI_MODEL", &config_file)
                 .as_deref()
                 .map(str::trim)
@@ -850,7 +848,7 @@ fn normalize_webhook_path(raw: Option<&str>) -> String {
     format!("/{trimmed}")
 }
 
-fn parse_on_off(value: Option<&str>, default: bool) -> bool {
+pub fn parse_on_off(value: Option<&str>, default: bool) -> bool {
     let Some(value) = value else {
         return default;
     };
@@ -953,9 +951,12 @@ fn default_data_dir() -> PathBuf {
         }
     }
 
-    env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".coconutclaw/state")
+    let fallback = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    tracing::warn!(
+        "neither XDG_STATE_HOME nor HOME is set; using {}",
+        fallback.display()
+    );
+    fallback.join(".coconutclaw/state")
 }
 
 fn absolutize(path: PathBuf, cwd: &Path) -> PathBuf {

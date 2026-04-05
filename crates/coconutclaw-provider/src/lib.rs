@@ -592,8 +592,9 @@ fn terminate_cancelled_child(
     kill_error: &str,
 ) -> Result<ExitStatus> {
     let pgid = child.id() as libc::pid_t;
-    unsafe {
-        libc::kill(-pgid, libc::SIGTERM);
+    let ret = unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    if ret != 0 {
+        tracing::debug!("kill(-{pgid}, SIGTERM) returned {ret}");
     }
     let deadline = Instant::now() + Duration::from_secs(5);
 
@@ -602,8 +603,9 @@ fn terminate_cancelled_child(
             return Ok(status);
         }
         if Instant::now() >= deadline {
-            unsafe {
-                libc::kill(-pgid, libc::SIGKILL);
+            let ret = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            if ret != 0 {
+                tracing::debug!("kill(-{pgid}, SIGKILL) returned {ret}");
             }
             return child.wait().context(kill_error.to_string());
         }
@@ -698,10 +700,7 @@ fn parse_codex_item_progress(item: &Value, started: bool) -> Option<String> {
 }
 
 fn shorten_status_text(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text.to_string();
-    }
-    if text.chars().take(max_chars + 1).count() <= max_chars {
+    if text.chars().count() <= max_chars {
         return text.to_string();
     }
     let keep = max_chars.saturating_sub(3);
@@ -1609,7 +1608,7 @@ mod tests {
         extract_claude_json_final, extract_factory_json_final, extract_gemini_json_final,
         extract_opencode_json_final, extract_pi_json_final, parse_claude_json_line,
         parse_codex_progress_line, parse_factory_json_line, parse_gemini_json_line,
-        parse_opencode_json_line, parse_pi_progress_line, tool_arg_summary,
+        parse_opencode_json_line, parse_pi_progress_line, shorten_status_text, tool_arg_summary,
     };
     use serde_json::Value;
 
@@ -2236,5 +2235,38 @@ mod tests {
                 "TELEGRAM_REPLY: This is a test reply with multiple sentences. The quick brown fox."
             )
         );
+    }
+
+    #[test]
+    fn shorten_status_text_ascii_no_truncation() {
+        assert_eq!(shorten_status_text("hello", 10), "hello");
+    }
+
+    #[test]
+    fn shorten_status_text_ascii_truncation() {
+        assert_eq!(shorten_status_text("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn shorten_status_text_exact_boundary() {
+        assert_eq!(shorten_status_text("hello", 5), "hello");
+    }
+
+    #[test]
+    fn shorten_status_text_multibyte_no_truncation() {
+        let cjk = "日本語テスト";
+        assert_eq!(shorten_status_text(cjk, 10), cjk);
+    }
+
+    #[test]
+    fn shorten_status_text_multibyte_truncation() {
+        let cjk = "日本語テストです";
+        // max_chars=5 → keep=5-3=2 chars + "..."
+        assert_eq!(shorten_status_text(cjk, 5), "日本...");
+    }
+
+    #[test]
+    fn shorten_status_text_empty() {
+        assert_eq!(shorten_status_text("", 5), "");
     }
 }

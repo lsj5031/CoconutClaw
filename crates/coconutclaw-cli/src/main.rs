@@ -5,7 +5,6 @@ use clap::{Args, Parser, Subcommand};
 use coconutclaw_config::{CliOverrides, RuntimeConfig, TelegramParseFallback, load_runtime_config};
 use reqwest::blocking::Client;
 use serde_json::Value;
-use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -1603,25 +1602,7 @@ pub(crate) fn command_exists(bin: &str) -> bool {
     if candidate.is_absolute() || bin.contains('/') || bin.contains('\\') {
         return candidate.is_file();
     }
-
-    let Some(paths) = env::var_os("PATH") else {
-        return false;
-    };
-
-    for dir in env::split_paths(&paths) {
-        let full = dir.join(bin);
-        if full.is_file() {
-            return true;
-        }
-        if cfg!(windows) {
-            let exe = dir.join(format!("{bin}.exe"));
-            if exe.is_file() {
-                return true;
-            }
-        }
-    }
-
-    false
+    crate::service::find_on_path(bin).is_some()
 }
 
 pub(crate) fn yes_no(value: bool) -> &'static str {
@@ -1632,16 +1613,7 @@ pub(crate) fn asr_feature_enabled(cfg: &RuntimeConfig) -> bool {
     cfg.asr_cmd_template.is_some() || cfg.asr_url.is_some()
 }
 
-pub(crate) fn parse_on_like(value: Option<&str>, default: bool) -> bool {
-    let Some(value) = value else {
-        return default;
-    };
-    match value.trim().to_ascii_lowercase().as_str() {
-        "on" | "true" | "1" | "yes" => true,
-        "off" | "false" | "0" | "no" => false,
-        _ => default,
-    }
-}
+pub(crate) use coconutclaw_config::parse_on_off as parse_on_like;
 
 #[cfg(test)]
 mod tests {

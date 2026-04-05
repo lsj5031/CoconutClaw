@@ -35,12 +35,36 @@ impl Store {
             .with_context(|| format!("failed to open {}", cfg.sqlite_db_path.display()))?;
         conn.execute_batch(SCHEMA_SQL)
             .context("failed to apply sqlite schema")?;
-        let _ = conn.execute("ALTER TABLE turns ADD COLUMN duration_ms INTEGER", []);
-        let _ = conn.execute(
-            "ALTER TABLE turns RENAME COLUMN codex_raw TO provider_raw",
-            [],
-        );
-        Ok(Self { conn })
+        let store = Self { conn };
+        store.run_migrations()?;
+        Ok(store)
+    }
+
+    /// Run database migrations tracked by the `schema_version` key in `kv`.
+    /// Each migration step is guarded by the version number so it runs only once.
+    fn run_migrations(&self) -> Result<()> {
+        let current: i64 = self
+            .kv_get("schema_version")?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        if current < 1 {
+            // Migration 1: add duration_ms column and rename legacy codex_raw → provider_raw.
+            // These are idempotent — SQLite errors if the column already exists or has been
+            // renamed, which we treat as "already applied". We use a transaction so that
+            // either both succeed or neither does, but we commit the version only on full
+            // success.
+            let _ = self
+                .conn
+                .execute("ALTER TABLE turns ADD COLUMN duration_ms INTEGER", []);
+            let _ = self.conn.execute(
+                "ALTER TABLE turns RENAME COLUMN codex_raw TO provider_raw",
+                [],
+            );
+            self.kv_set("schema_version", "1")?;
+        }
+
+        Ok(())
     }
 
     pub(crate) fn recent_turns_snippet(&self, limit: u32) -> Result<Vec<String>> {

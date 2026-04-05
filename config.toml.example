@@ -52,7 +52,6 @@ ALLOWLIST_PATH = "./config/allowlist.txt"
 PI_BIN = "pi"
 PI_PROVIDER = ""
 PI_MODEL = ""
-PI_MODE = "text"
 PI_EXTRA_ARGS = ""
 
 # Rust timer features

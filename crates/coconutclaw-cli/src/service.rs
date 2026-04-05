@@ -591,7 +591,7 @@ fn resolve_binary_path() -> Result<PathBuf> {
     bail!("failed to resolve coconutclaw binary path (tried current executable and PATH lookup)")
 }
 
-fn find_on_path(bin: &str) -> Option<PathBuf> {
+pub(crate) fn find_on_path(bin: &str) -> Option<PathBuf> {
     let paths = env::var_os("PATH")?;
     for dir in env::split_paths(&paths) {
         let candidate = dir.join(bin);
