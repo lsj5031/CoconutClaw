@@ -209,9 +209,8 @@ fn run_codex(
         if let Some(model) = &config.codex.model {
             cmd.arg("--model").arg(model);
         }
-        if let Some(effort) = &config.codex.reasoning_effort {
-            cmd.arg("--reasoning-effort").arg(effort);
-        }
+        // Note: --reasoning-effort removed in codex v0.118.0; effort is now set via
+        // model_reasoning_effort in ~/.codex/config.toml.
         if include_dangerous_flag {
             cmd.arg("--dangerously-bypass-approvals-and-sandbox");
         }

@@ -111,9 +111,6 @@ TELEGRAM_CHAT_ID = "your_chat_id"
 # AI Provider: codex, pi, claude, opencode, gemini, or factory
 AGENT_PROVIDER = "codex"
 
-# Reasoning effort for Codex: low, medium, high, or xhigh
-CODEX_REASONING_EFFORT = "xhigh"
-
 # Telegram formatting: off | MarkdownV2 | Html
 TELEGRAM_PARSE_MODE = "MarkdownV2"
 TELEGRAM_PARSE_FALLBACK = "plain"

@@ -54,7 +54,6 @@ pub struct CliOverrides {
 pub struct CodexConfig {
     pub bin: String,
     pub model: Option<String>,
-    pub reasoning_effort: Option<String>,
 }
 
 impl Default for CodexConfig {
@@ -62,7 +61,6 @@ impl Default for CodexConfig {
         Self {
             bin: "codex".to_string(),
             model: None,
-            reasoning_effort: None,
         }
     }
 }
@@ -273,7 +271,6 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "EXEC_POLICY",
     "CODEX_BIN",
     "CODEX_MODEL",
-    "CODEX_REASONING_EFFORT",
     "PI_BIN",
     "PI_PROVIDER",
     "PI_MODEL",
@@ -627,11 +624,6 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         codex: CodexConfig {
             bin: pick_value("CODEX_BIN", &config_file).unwrap_or_else(|| "codex".to_string()),
             model: pick_value("CODEX_MODEL", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            reasoning_effort: pick_value("CODEX_REASONING_EFFORT", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
