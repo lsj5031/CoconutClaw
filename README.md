@@ -132,6 +132,42 @@ TELEGRAM_PARSE_FALLBACK = "plain"
 
 ---
 
+## ⚙️ How It Works
+
+```mermaid
+flowchart LR
+    subgraph User["Your Devices"]
+        A[📱 Telegram App]
+    end
+
+    subgraph Local["Your Computer"]
+        B[🦀 CoconutClaw]
+        C[(📊 SQLite)]
+    end
+
+    subgraph AI["AI Provider"]
+        D{{Codex / Pi / Claude / ...}}
+    end
+
+    A -->|"1\. Send message"| B
+    B -->|"2\. Store context"| C
+    B -->|"3\. Request"| D
+    D -->|"4\. Response"| B
+    B -->|"5\. Reply"| A
+
+    style A fill:#e1f5fe
+    style B fill:#fff3e0
+    style D fill:#f3e5f5
+```
+
+1. **You message** your bot on Telegram.
+2. **CoconutClaw** receives it on your machine.
+3. **Context** (memory, history) is loaded from the local SQLite database.
+4. **AI provider** processes the request.
+5. **Response** is sent back to you via Telegram.
+
+---
+
 ## 👁️ Local Vision Stack (Fully Offline)
 
 Run a completely local multi-modal pipeline with no cloud API costs.
@@ -144,7 +180,7 @@ Run a completely local multi-modal pipeline with no cloud API costs.
 
 ### Quick Setup
 1. **Start llama-server** via Docker (see `docker-compose.yml` example in the repo).
-2. **Configure provider** in `models.json` to point to `http://localhost:11234/v1` with `api: "openai-completions"`.
+2. **Configure provider** in `models.json` to point to `http://localhost:11234/v1` with `api: \"openai-completions\"`.
 3. **Set instance config**:
    ```toml
    AGENT_PROVIDER = "pi"
