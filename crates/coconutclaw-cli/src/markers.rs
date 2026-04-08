@@ -11,13 +11,17 @@ pub(crate) struct ParsedMarkers {
     pub(crate) task_append: Vec<String>,
 }
 
-pub(crate) fn render_output(
-    telegram_reply: &str,
-    voice_reply: &str,
-    markers: &ParsedMarkers,
-) -> String {
+impl ParsedMarkers {
+    /// Channel-agnostic accessor: returns the reply text regardless of which
+    /// marker prefix (`REPLY:` or `TELEGRAM_REPLY:`) was used on input.
+    pub(crate) fn reply(&self) -> Option<&String> {
+        self.telegram_reply.as_ref()
+    }
+}
+
+pub(crate) fn render_output(reply: &str, voice_reply: &str, markers: &ParsedMarkers) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("TELEGRAM_REPLY: {telegram_reply}"));
+    lines.push(format!("REPLY: {reply}"));
 
     if !voice_reply.trim().is_empty() {
         lines.push(format!("VOICE_REPLY: {voice_reply}"));
@@ -144,6 +148,7 @@ fn starts_with_wrapper(line: &str) -> bool {
 
 fn marker_prefixes() -> &'static [&'static str] {
     &[
+        "REPLY:",
         "TELEGRAM_REPLY:",
         "VOICE_REPLY:",
         "SEND_PHOTO:",
@@ -156,6 +161,7 @@ fn marker_prefixes() -> &'static [&'static str] {
 
 fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
     const MARKERS: &[(&str, &str)] = &[
+        ("TELEGRAM_REPLY", "REPLY:"),
         ("TELEGRAM_REPLY", "TELEGRAM_REPLY:"),
         ("VOICE_REPLY", "VOICE_REPLY:"),
         ("SEND_PHOTO", "SEND_PHOTO:"),

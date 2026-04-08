@@ -19,6 +19,7 @@ pub(crate) struct TurnRecord {
     pub(crate) status: String,
     pub(crate) update_id: Option<String>,
     pub(crate) duration_ms: Option<i64>,
+    pub(crate) channel: String,
 }
 
 pub(crate) struct Store {
@@ -64,6 +65,25 @@ impl Store {
             self.kv_set("schema_version", "1")?;
         }
 
+        if current < 2 {
+            // Migration 2: add channel column for multi-platform support.
+            // Ignores "duplicate column" errors for idempotency, surfaces all other errors.
+            match self.conn.execute(
+                "ALTER TABLE turns ADD COLUMN channel TEXT NOT NULL DEFAULT 'telegram'",
+                [],
+            ) {
+                Ok(_) => {}
+                Err(err) => {
+                    // Column may already exist from a prior partial migration
+                    let msg = err.to_string();
+                    if !msg.contains("duplicate column") {
+                        return Err(err.into());
+                    }
+                }
+            }
+            self.kv_set("schema_version", "2")?;
+        }
+
         Ok(())
     }
 
@@ -87,8 +107,8 @@ impl Store {
 
     pub(crate) fn insert_turn(&self, turn: &TurnRecord) -> Result<bool> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, channel)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 turn.ts,
                 turn.chat_id,
@@ -101,6 +121,7 @@ impl Store {
                 turn.status,
                 turn.update_id,
                 turn.duration_ms,
+                turn.channel,
             ],
         )?;
         Ok(self.conn.changes() > 0)

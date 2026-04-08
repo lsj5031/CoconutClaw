@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
+    mpsc,
 };
 use std::thread;
 use std::time::Duration;
@@ -18,19 +19,25 @@ use std::time::Duration;
 mod context;
 mod markers;
 mod service;
+mod slack;
 mod store;
 mod telegram;
 mod turn;
 mod webhook;
 
 use crate::markers::{ParsedMarkers, render_output};
+use crate::slack::{
+    SlackMedia, SlackWebhookTurn, build_slack_client, dispatch_slack_output,
+    send_slack_progress_message, start_slack_socket_mode, valid_slack_channel_id,
+    valid_slack_token,
+};
 use crate::store::Store;
 use crate::telegram::{
     build_telegram_client, dispatch_telegram_output, fetch_cancel_updates, fetch_poll_updates,
     register_bot_commands, register_telegram_webhook, send_progress_message,
     telegram_answer_callback, valid_telegram_chat_id, valid_telegram_token,
 };
-use crate::turn::{hydrate_turn_input, process_turn, resolve_turn_input};
+use crate::turn::{hydrate_slack_turn_input, hydrate_turn_input, process_turn, resolve_turn_input};
 use crate::webhook::{
     AckStatus, ack_webhook_queue_line, ensure_webhook_queue_file, extract_update_id_from_json,
     extract_update_id_from_value, peek_webhook_queue_line, spawn_webhook_http_server,
@@ -155,13 +162,14 @@ impl std::fmt::Display for TurnStatus {
 }
 
 #[derive(Debug, Clone)]
-struct TurnInput {
+pub(crate) struct TurnInput {
     input_type: InputType,
     user_text: String,
     asr_text: String,
     attachment_type: Option<String>,
     attachment_path: Option<PathBuf>,
     attachment_owned: bool,
+    channel: String, // "telegram", "slack", "local"
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +226,7 @@ enum WebhookAction {
         update_id: Option<String>,
     },
     Turn(Box<WebhookTurn>),
+    SlackTurn(Box<SlackWebhookTurn>),
 }
 
 struct TurnResult {
@@ -225,6 +234,8 @@ struct TurnResult {
     telegram_reply: String,
     voice_reply: String,
     status: TurnStatus,
+    #[allow(dead_code)]
+    channel: String,
 }
 
 fn main() -> Result<()> {
@@ -270,11 +281,13 @@ fn run_once(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<(
         None,
         args.inject_text.clone(),
         args.inject_file.clone(),
+        "telegram",
     )?;
     let output = process_turn(
         cfg,
         store,
         input,
+        "telegram",
         args.chat_id.clone(),
         None,
         None,
@@ -296,11 +309,13 @@ fn run_run(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()
             None,
             args.inject_text.clone(),
             args.inject_file.clone(),
+            "telegram",
         )?;
         let output = process_turn(
             cfg,
             store,
             input,
+            "telegram",
             args.chat_id.clone(),
             None,
             None,
@@ -326,12 +341,128 @@ fn run_run(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()
         tracing::warn!("failed to restore inflight update on startup: {err:#}");
     }
 
+    // Start Slack Socket Mode listener if configured
+    let slack_rx = start_socket_mode_if_configured(cfg)?;
+
     if cfg.webhook_mode {
-        run_webhook_loop(cfg, store, &telegram_client, &shutdown)?;
+        run_webhook_loop(cfg, store, &telegram_client, &shutdown, slack_rx.as_ref())?;
         return Ok(());
     }
 
-    run_poll_loop(cfg, store, &telegram_client, &shutdown)
+    run_poll_loop(cfg, store, &telegram_client, &shutdown, slack_rx.as_ref())
+}
+
+fn start_socket_mode_if_configured(
+    cfg: &RuntimeConfig,
+) -> Result<Option<mpsc::Receiver<SlackWebhookTurn>>> {
+    let has_bot_token = valid_slack_token(cfg).is_some();
+    let has_app_token = cfg
+        .slack_app_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && t.starts_with("xapp-"))
+        .is_some();
+
+    if !has_bot_token || !has_app_token {
+        return Ok(None);
+    }
+
+    let (tx, rx) = mpsc::channel::<SlackWebhookTurn>();
+    start_slack_socket_mode(cfg, tx)?;
+    tracing::info!("slack socket mode listener started");
+    Ok(Some(rx))
+}
+
+fn process_slack_socket_turn(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    turn: SlackWebhookTurn,
+) -> Result<()> {
+    let slack_client = match build_slack_client(cfg) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::error!("slack client build failed for socket mode turn: {err:#}");
+            return Err(err);
+        }
+    };
+
+    let progress_message_id =
+        send_slack_progress_message(&slack_client, &turn.channel_id, turn.thread_ts.as_deref())
+            .map_err(|err| {
+                tracing::warn!("slack progress message failed: {err:#}");
+                err
+            })
+            .ok();
+
+    // Set inflight checkpoint before processing for crash recovery
+    let inflight_payload = serde_json::json!({
+        "channel": "slack",
+        "event_id": turn.event_id,
+        "channel_id": turn.channel_id,
+        "thread_ts": turn.thread_ts,
+        "user_text": turn.input.user_text,
+    });
+    if let Err(err) = set_inflight_update(
+        store,
+        turn.event_id.as_deref().unwrap_or(""),
+        &inflight_payload.to_string(),
+        &cfg.timezone,
+    ) {
+        tracing::warn!("failed to set slack inflight checkpoint: {err:#}");
+    }
+
+    let (hydrated_input, cleanup_path) =
+        hydrate_slack_turn_input(cfg, turn.event_id.as_deref(), turn.input, turn.media)?;
+
+    let output = process_turn(
+        cfg,
+        store,
+        hydrated_input,
+        "slack",
+        Some(turn.channel_id.clone()),
+        turn.event_id.clone(),
+        progress_message_id.as_deref(),
+        &QuotedMessage {
+            reply_from: None,
+            reply_text: None,
+        },
+    )?;
+
+    if let Err(err) = dispatch_slack_output(
+        &slack_client,
+        cfg,
+        &turn.channel_id,
+        &output,
+        progress_message_id.as_deref(),
+        turn.thread_ts.as_deref(),
+    ) {
+        tracing::error!("slack dispatch failed: {err:#}");
+    }
+
+    if let Err(err) = store.clear_inflight() {
+        tracing::warn!("failed to clear slack inflight after turn: {err:#}");
+    }
+
+    print!("{output}");
+    io::stdout().flush().ok();
+
+    if let Some(path) = cleanup_path {
+        let _ = fs::remove_file(path);
+    }
+
+    Ok(())
+}
+
+fn drain_slack_socket_turns(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    slack_rx: &mpsc::Receiver<SlackWebhookTurn>,
+) {
+    while let Ok(turn) = slack_rx.try_recv() {
+        if let Err(err) = process_slack_socket_turn(cfg, store, turn) {
+            tracing::warn!("failed to process slack socket mode turn: {err:#}");
+        }
+    }
 }
 
 fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
@@ -346,7 +477,9 @@ fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
+            channel: "telegram".to_string(),
         },
+        "telegram",
         cfg.telegram_chat_id.clone(),
         None,
         None,
@@ -358,6 +491,7 @@ fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
 
     let client = build_telegram_client(cfg)?;
     dispatch_telegram_output(&client, cfg, cfg.telegram_chat_id.as_deref(), &output, None)?;
+    dispatch_slack_if_configured(cfg, &output);
     print!("{output}");
     io::stdout().flush().ok();
     Ok(())
@@ -399,7 +533,9 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> 
                 attachment_type: None,
                 attachment_path: None,
                 attachment_owned: false,
+                channel: "telegram".to_string(),
             },
+            "telegram",
             cfg.telegram_chat_id.clone(),
             None,
             None,
@@ -410,6 +546,7 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> 
         )?;
         let client = build_telegram_client(cfg)?;
         dispatch_telegram_output(&client, cfg, cfg.telegram_chat_id.as_deref(), &output, None)?;
+        dispatch_slack_if_configured(cfg, &output);
     }
 
     let (turn_ts, reflection_text, status) = if let Some((turn_ts, text, status)) =
@@ -460,6 +597,8 @@ fn run_doctor(cfg: &RuntimeConfig, args: &DoctorArgs) -> Result<()> {
     let jq_ok = command_exists("jq");
     let telegram_token_ok = valid_telegram_token(cfg).is_some();
     let telegram_chat_id_ok = valid_telegram_chat_id(cfg).is_some();
+    let slack_token_ok = valid_slack_token(cfg).is_some();
+    let slack_channel_id_ok = valid_slack_channel_id(cfg).is_some();
     let webhook_bind_ok = cfg.webhook_bind.parse::<std::net::SocketAddr>().is_ok();
     let webhook_public_url_ok = cfg
         .webhook_public_url
@@ -513,6 +652,8 @@ fn run_doctor(cfg: &RuntimeConfig, args: &DoctorArgs) -> Result<()> {
                 "pi_bin": { "ok": pi_ok, "path": cfg.pi.bin },
                 "telegram_token": telegram_token_ok,
                 "telegram_chat_id": telegram_chat_id_ok,
+                "slack_token": slack_token_ok,
+                "slack_channel_id": slack_channel_id_ok,
                 "webhook_bind": webhook_bind_ok,
                 "webhook_public_url": webhook_public_url_ok,
                 "asr_script": asr_script_ok,
@@ -577,6 +718,11 @@ fn run_doctor(cfg: &RuntimeConfig, args: &DoctorArgs) -> Result<()> {
     println!(
         "check_telegram_chat_id={} (required for run)",
         yes_no(telegram_chat_id_ok)
+    );
+    println!("check_slack_token={} (optional)", yes_no(slack_token_ok));
+    println!(
+        "check_slack_channel_id={} (optional)",
+        yes_no(slack_channel_id_ok)
     );
     if cfg.webhook_mode {
         println!(
@@ -664,6 +810,7 @@ fn run_poll_loop(
     store: &mut Store,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
+    slack_rx: Option<&mpsc::Receiver<SlackWebhookTurn>>,
 ) -> Result<()> {
     let mut offset = store
         .kv_get("last_update_id")?
@@ -681,6 +828,9 @@ fn run_poll_loop(
         };
 
         if updates.is_empty() {
+            if let Some(rx) = slack_rx {
+                drain_slack_socket_turns(cfg, store, rx);
+            }
             thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
             continue;
         }
@@ -754,6 +904,11 @@ fn run_poll_loop(
                 offset = Some(update_id.saturating_add(1));
             }
         }
+
+        // Drain any pending Slack socket mode turns
+        if let Some(rx) = slack_rx {
+            drain_slack_socket_turns(cfg, store, rx);
+        }
     }
 
     tracing::info!("shutdown signal received, stopping poll loop");
@@ -765,6 +920,7 @@ fn run_webhook_loop(
     store: &mut Store,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
+    slack_rx: Option<&mpsc::Receiver<SlackWebhookTurn>>,
 ) -> Result<()> {
     ensure_webhook_queue_file(cfg)?;
 
@@ -772,6 +928,11 @@ fn run_webhook_loop(
     let _http_server = spawn_webhook_http_server(cfg.clone(), Arc::clone(shutdown))?;
 
     while !shutdown.load(Ordering::SeqCst) {
+        // Drain Slack socket mode turns first
+        if let Some(rx) = slack_rx {
+            drain_slack_socket_turns(cfg, store, rx);
+        }
+
         let progressed = match drain_webhook_queue(cfg, store, telegram_client, shutdown) {
             Ok(progressed) => progressed,
             Err(err) => {
@@ -796,6 +957,14 @@ fn restore_inflight_update(
     let Some(inflight_json) = store.kv_get("inflight_update_json")? else {
         return Ok(());
     };
+
+    // Check if this is a Slack inflight record (JSON with "channel": "slack")
+    if let Ok(v) = serde_json::from_str::<Value>(&inflight_json)
+        && v.get("channel").and_then(|c| c.as_str()) == Some("slack")
+    {
+        restore_inflight_slack(cfg, store, &v)?;
+        return Ok(());
+    }
 
     let mut inflight_update_id = store.kv_get("inflight_update_id")?;
     if inflight_update_id
@@ -889,6 +1058,62 @@ fn restore_inflight_update(
                 store.clear_inflight()?;
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Restore an inflight Slack Socket Mode turn from a previous crash.
+fn restore_inflight_slack(cfg: &RuntimeConfig, store: &mut Store, payload: &Value) -> Result<()> {
+    let event_id = payload
+        .get("event_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let channel_id = payload
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let thread_ts = payload.get("thread_ts").and_then(|v| v.as_str());
+    let user_text = payload
+        .get("user_text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if !event_id.is_empty() && store.turn_exists_for_update_id(event_id)? {
+        tracing::info!("restored slack inflight event_id={event_id} (dedup, already processed)");
+        store.clear_inflight()?;
+        return Ok(());
+    }
+
+    tracing::info!("restoring inflight slack turn: event_id={event_id} channel={channel_id}");
+
+    let turn = SlackWebhookTurn {
+        event_id: if event_id.is_empty() {
+            None
+        } else {
+            Some(event_id.to_string())
+        },
+        channel_id: channel_id.to_string(),
+        thread_ts: thread_ts.map(|s| s.to_string()),
+        input: TurnInput {
+            input_type: InputType::Text,
+            user_text: if user_text.is_empty() {
+                "(empty message)".to_string()
+            } else {
+                user_text.to_string()
+            },
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+            channel: "slack".to_string(),
+        },
+        media: None,
+    };
+
+    if let Err(err) = process_slack_socket_turn(cfg, store, turn) {
+        tracing::warn!("failed to restore inflight slack turn, clearing: {err:#}");
+        let _ = store.clear_inflight();
     }
 
     Ok(())
@@ -998,12 +1223,191 @@ struct ProcessOutcome {
     progress_message_id: Option<String>,
 }
 
+fn is_slack_interactive_payload(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .map(|t| t == "block_actions" || t == "interactive_message" || t == "slash_commands")
+        .unwrap_or(false)
+}
+
+fn check_slack_cancel(value: &Value) -> bool {
+    let payload_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+    match payload_type {
+        "block_actions" | "interactive_message" => value
+            .get("actions")
+            .and_then(Value::as_array)
+            .map(|actions| {
+                actions
+                    .iter()
+                    .any(|a| a.get("action_id").and_then(Value::as_str) == Some("cancel"))
+            })
+            .unwrap_or(false),
+        "slash_commands" => value.get("command").and_then(Value::as_str) == Some("/cancel"),
+        _ => false,
+    }
+}
+
+fn check_slack_fresh(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("slash_commands") {
+        return None;
+    }
+    if value.get("command").and_then(Value::as_str) != Some("/fresh") {
+        return None;
+    }
+    value
+        .get("channel_id")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+}
+
+fn is_slack_event(payload: &str) -> bool {
+    serde_json::from_str::<Value>(payload)
+        .ok()
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|t| t.as_str())
+                .map(|s| s == "event_callback")
+        })
+        .unwrap_or(false)
+}
+
+fn parse_slack_webhook_event(_cfg: &RuntimeConfig, payload: &str) -> Option<WebhookAction> {
+    let value: Value = serde_json::from_str(payload).ok()?;
+
+    if value.get("type").and_then(|v| v.as_str()) != Some("event_callback") {
+        return None;
+    }
+
+    let event = value.get("event")?;
+    let event_type = event.get("type")?.as_str()?;
+
+    if event_type != "message" {
+        return None;
+    }
+
+    // Skip bot messages (avoid echo loops)
+    if event.get("bot_id").is_some()
+        || event.get("subtype").and_then(|v| v.as_str()) == Some("bot_message")
+    {
+        return None;
+    }
+
+    let event_id = value
+        .get("event_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let channel_id = event.get("channel")?.as_str()?.to_string();
+    let text = event
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let thread_ts = event
+        .get("thread_ts")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    // Check for files
+    let media = event.get("files").and_then(|files| {
+        files.as_array()?.first().and_then(|file| {
+            Some(SlackMedia::File {
+                url_private: file.get("url_private")?.as_str()?.to_string(),
+                filetype: file
+                    .get("filetype")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                filename: file
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("file")
+                    .to_string(),
+                size: file.get("size").and_then(|v| v.as_u64()),
+            })
+        })
+    });
+
+    Some(WebhookAction::SlackTurn(Box::new(SlackWebhookTurn {
+        event_id,
+        channel_id,
+        thread_ts,
+        input: TurnInput {
+            input_type: InputType::Text,
+            user_text: text,
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+            channel: "slack".to_string(),
+        },
+        media,
+    })))
+}
+
 fn process_webhook_line(
     cfg: &RuntimeConfig,
     store: &mut Store,
     line: &str,
 ) -> Result<ProcessOutcome> {
-    let action = parse_webhook_action(cfg, line)?;
+    // Resolve the webhook action: try Slack event/payload detection first, then Telegram
+    let action = if is_slack_event(line) {
+        parse_slack_webhook_event(cfg, line).unwrap_or_else(|| WebhookAction::Ignore {
+            update_id: None,
+            reason: "unhandled_slack_event".to_string(),
+        })
+    } else if let Ok(value) = serde_json::from_str::<Value>(line) {
+        if is_slack_interactive_payload(&value) {
+            if check_slack_cancel(&value) {
+                if let Err(err) = signal_cancel_marker(cfg) {
+                    tracing::warn!("failed to set cancel marker: {err:#}");
+                }
+                tracing::info!("slack cancel received");
+                return Ok(ProcessOutcome {
+                    should_ack: true,
+                    update_id: None,
+                    chat_id: None,
+                    output: None,
+                    cleanup_path: None,
+                    progress_message_id: None,
+                });
+            }
+            if let Some(channel_id) = check_slack_fresh(&value) {
+                let ts = iso_now(&cfg.timezone);
+                match store.insert_boundary_turn(&ts, &channel_id, None) {
+                    Ok(true) => {
+                        tracing::info!("inserted context boundary for slack channel={channel_id}")
+                    }
+                    Ok(false) => {}
+                    Err(err) => tracing::warn!("failed to insert context boundary: {err:#}"),
+                }
+                return Ok(ProcessOutcome {
+                    should_ack: true,
+                    update_id: None,
+                    chat_id: Some(channel_id),
+                    output: Some(
+                        render_output(
+                            "Context cleared. Fresh start!",
+                            "",
+                            &ParsedMarkers::default(),
+                        )
+                        .trim_end()
+                        .to_string(),
+                    ),
+                    cleanup_path: None,
+                    progress_message_id: None,
+                });
+            }
+            // Other interactive payloads we don't handle — ack and ignore
+            WebhookAction::Ignore {
+                update_id: None,
+                reason: "unhandled_slack_interactive_payload".to_string(),
+            }
+        } else {
+            parse_webhook_action(cfg, line)?
+        }
+    } else {
+        parse_webhook_action(cfg, line)?
+    };
 
     match action {
         WebhookAction::Ignore { update_id, reason } => {
@@ -1107,13 +1511,19 @@ fn process_webhook_line(
                 .ok()
                 .flatten();
 
-            let (hydrated_input, cleanup_path) =
-                hydrate_turn_input(cfg, turn.update_id.as_deref(), turn.input, turn.media)?;
+            let (hydrated_input, cleanup_path) = hydrate_turn_input(
+                cfg,
+                turn.update_id.as_deref(),
+                turn.input,
+                turn.media,
+                "telegram",
+            )?;
 
             let output = process_turn(
                 cfg,
                 store,
                 hydrated_input,
+                "telegram",
                 Some(chat_id.clone()),
                 turn.update_id.clone(),
                 progress_message_id.as_deref(),
@@ -1128,6 +1538,70 @@ fn process_webhook_line(
                 should_ack: true,
                 update_id: turn.update_id,
                 chat_id: Some(chat_id),
+                output: Some(output.trim_end().to_string()),
+                cleanup_path,
+                progress_message_id,
+            })
+        }
+        WebhookAction::SlackTurn(turn) => {
+            let slack_client = match build_slack_client(cfg) {
+                Ok(c) => c,
+                Err(err) => {
+                    tracing::error!("slack client build failed: {err:#}");
+                    return Ok(ProcessOutcome {
+                        should_ack: true,
+                        update_id: turn.event_id,
+                        chat_id: Some(turn.channel_id.clone()),
+                        output: None,
+                        cleanup_path: None,
+                        progress_message_id: None,
+                    });
+                }
+            };
+
+            let progress_message_id = send_slack_progress_message(
+                &slack_client,
+                &turn.channel_id,
+                turn.thread_ts.as_deref(),
+            )
+            .map_err(|err| {
+                tracing::warn!("slack progress message failed: {err:#}");
+                err
+            })
+            .ok();
+
+            let (hydrated_input, cleanup_path) =
+                hydrate_slack_turn_input(cfg, turn.event_id.as_deref(), turn.input, turn.media)?;
+
+            let output = process_turn(
+                cfg,
+                store,
+                hydrated_input,
+                "slack",
+                Some(turn.channel_id.clone()),
+                turn.event_id.clone(),
+                progress_message_id.as_deref(),
+                &QuotedMessage {
+                    reply_from: None,
+                    reply_text: None,
+                },
+            )?;
+
+            if let Err(err) = dispatch_slack_output(
+                &slack_client,
+                cfg,
+                &turn.channel_id,
+                &output,
+                progress_message_id.as_deref(),
+                turn.thread_ts.as_deref(),
+            ) {
+                tracing::error!("slack dispatch failed: {err:#}");
+            }
+
+            Ok(ProcessOutcome {
+                should_ack: true,
+                update_id: turn.event_id,
+                chat_id: Some(turn.channel_id),
                 output: Some(output.trim_end().to_string()),
                 cleanup_path,
                 progress_message_id,
@@ -1437,6 +1911,7 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
         attachment_type,
         attachment_path: None,
         attachment_owned: false,
+        channel: "telegram".to_string(),
     };
 
     Ok(WebhookAction::Turn(Box::new(WebhookTurn {
@@ -1609,6 +2084,21 @@ pub(crate) fn yes_no(value: bool) -> &'static str {
     if value { "ok" } else { "missing" }
 }
 
+fn dispatch_slack_if_configured(cfg: &RuntimeConfig, output: &str) {
+    if valid_slack_token(cfg).is_none() {
+        return;
+    }
+    let Ok(slack_client) = build_slack_client(cfg) else {
+        return;
+    };
+    let Some(ch) = valid_slack_channel_id(cfg) else {
+        return;
+    };
+    if let Err(err) = dispatch_slack_output(&slack_client, cfg, ch, output, None, None) {
+        tracing::warn!("slack dispatch failed: {err:#}");
+    }
+}
+
 pub(crate) fn asr_feature_enabled(cfg: &RuntimeConfig) -> bool {
     cfg.asr_cmd_template.is_some() || cfg.asr_url.is_some()
 }
@@ -1645,7 +2135,7 @@ mod tests {
         let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
-        assert!(output.contains("TELEGRAM_REPLY:"));
+        assert!(output.contains("REPLY:"));
         assert!(output.contains("Context cleared"));
     }
 
@@ -1668,6 +2158,7 @@ mod tests {
                 status: "ok".to_string(),
                 update_id: Some("42".to_string()),
                 duration_ms: None,
+                channel: "telegram".to_string(),
             })
             .expect("insert turn");
         assert!(inserted);
@@ -1676,7 +2167,7 @@ mod tests {
         let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
-        assert!(output.contains("TELEGRAM_REPLY: Old reply"));
+        assert!(output.contains("REPLY: Old reply"));
         assert!(output.contains("SEND_DOCUMENT: /tmp/file.txt"));
     }
 
@@ -1980,6 +2471,7 @@ mod tests {
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
+            channel: "telegram".to_string(),
         };
         let text = build_context(
             &cfg,
@@ -2008,6 +2500,7 @@ mod tests {
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
+            channel: "telegram".to_string(),
         };
         let text = build_context(
             &cfg,

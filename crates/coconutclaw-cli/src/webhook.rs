@@ -7,7 +7,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use coconutclaw_config::RuntimeConfig;
 use fs2::FileExt;
+use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
@@ -95,9 +97,19 @@ pub(crate) fn spawn_webhook_http_server(
 
         runtime.block_on(async move {
             let state = WebhookHttpState { cfg: cfg.clone() };
-            let app = Router::new()
-                .route(&route_path, post(webhook_post_handler))
-                .with_state(state);
+            let mut router = Router::new()
+                .route(&route_path, post(webhook_post_handler));
+
+            if cfg.slack_signing_secret.is_some() || cfg.slack_bot_token.is_some() {
+                if cfg.slack_signing_secret.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                    tracing::warn!("SLACK_SIGNING_SECRET is not set — Slack webhook requests will not be verified");
+                }
+                let slack_path = normalize_route_path("/slack/events".to_string());
+                tracing::info!("slack events route: {slack_path}");
+                router = router.route(&slack_path, post(slack_events_post_handler));
+            }
+
+            let app = router.with_state(state);
 
             let listener = match tokio::net::TcpListener::bind(bind_addr).await {
                 Ok(listener) => listener,
@@ -359,6 +371,103 @@ fn normalize_route_path(raw: String) -> String {
     } else {
         format!("/{trimmed}")
     }
+}
+
+fn verify_slack_signature(
+    signing_secret: &str,
+    timestamp: &str,
+    body: &[u8],
+    signature: &str,
+) -> bool {
+    let ts: i64 = match timestamp.parse() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if (now - ts).abs() > 300 {
+        return false;
+    }
+
+    let basestring = format!("v0:{timestamp}:{}", String::from_utf8_lossy(body));
+    let mut mac = match Hmac::<Sha256>::new_from_slice(signing_secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(basestring.as_bytes());
+    let result = mac.finalize().into_bytes();
+    let computed = format!("v0={}", hex_encode(&result));
+
+    computed.as_bytes().ct_eq(signature.as_bytes()).into()
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+async fn slack_events_post_handler(
+    State(state): State<WebhookHttpState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let cfg = &state.cfg;
+
+    if let Some(secret) = cfg.slack_signing_secret.as_deref().map(str::trim)
+        && !secret.is_empty()
+    {
+        let timestamp = headers
+            .get("X-Slack-Request-Timestamp")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let signature = headers
+            .get("X-Slack-Signature")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if !verify_slack_signature(secret, timestamp, &body, signature) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"ok":false,"error":"invalid_signature"})),
+            )
+                .into_response();
+        }
+    }
+
+    let body_text = match std::str::from_utf8(&body) {
+        Ok(text) => text.trim(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok":false,"error":"invalid_utf8"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Handle URL verification challenge
+    if let Ok(value) = serde_json::from_str::<Value>(body_text)
+        && value.get("type").and_then(|v| v.as_str()) == Some("url_verification")
+    {
+        let challenge = value
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return Json(json!({"challenge": challenge})).into_response();
+    }
+
+    // Forward to the webhook queue
+    if let Err(err) = append_webhook_queue_line(cfg, body_text) {
+        tracing::warn!("failed to append slack event to queue: {err:#}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok":false,"error":"queue_write_failed"})),
+        )
+            .into_response();
+    }
+
+    (StatusCode::OK, Json(json!({"ok":true}))).into_response()
 }
 
 #[cfg(test)]
