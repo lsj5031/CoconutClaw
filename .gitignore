@@ -14,3 +14,6 @@ __pycache__/
 target/
 
 .last_local_backup_path
+
+.omc/
+state/

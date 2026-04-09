@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use coconutclaw_config::{AgentProvider, RuntimeConfig, TelegramParseMode};
+use coconutclaw_config::{AgentProvider, RuntimeConfig, SlackFormatMode, TelegramParseMode};
 
 use crate::markers::ParsedMarkers;
 use crate::store::Store;
@@ -20,8 +20,10 @@ pub(crate) fn build_context(
     store: &Store,
     input: &TurnInput,
     ts: &str,
+    chat_id: &str,
     quoted: &QuotedMessage,
 ) -> Result<String> {
+    let channel = input.channel.as_str();
     let local_visual_mode = cfg.provider == AgentProvider::Pi && cfg.pi.no_extensions;
 
     let soul = read_or_default(
@@ -96,7 +98,7 @@ pub(crate) fn build_context(
     } else {
         cfg.context_turns
     };
-    for line in store.recent_turns_snippet(recent_limit)? {
+    for line in store.recent_turns_snippet(recent_limit, chat_id, channel)? {
         let line = if local_visual_mode {
             truncate_chars(&line, 240)
         } else {
@@ -116,6 +118,16 @@ pub(crate) fn build_context(
         text.push_str(
             "The user is replying to the above message. Use it as context for understanding their intent.\n",
         );
+    }
+
+    if let Some(supplemental_context) = input.supplemental_context.as_ref()
+        && !supplemental_context.trim().is_empty()
+    {
+        text.push_str("\n## Supplemental conversation context\n");
+        text.push_str(supplemental_context);
+        if !supplemental_context.ends_with('\n') {
+            text.push('\n');
+        }
     }
 
     text.push_str("\n## Current user input\n");
@@ -154,6 +166,9 @@ pub(crate) fn build_context(
     text.push_str("Return only plain text marker lines. No prose before or after markers.\n");
     text.push_str("Required first line format:\n");
     text.push_str("TELEGRAM_REPLY: <reply text>\n");
+    if channel == "slack" {
+        text.push_str("Use the historical TELEGRAM_REPLY marker for Slack replies too.\n");
+    }
     text.push_str("Optional additional lines:\n");
     text.push_str("VOICE_REPLY: <spoken reply text>\n");
     text.push_str("SEND_PHOTO: <absolute file path>\n");
@@ -161,25 +176,56 @@ pub(crate) fn build_context(
     text.push_str("SEND_VIDEO: <absolute file path>\n");
     text.push_str("MEMORY_APPEND: <single memory line>\n");
     text.push_str("TASK_APPEND: <single task line>\n");
-    match cfg.telegram_parse_mode {
-        TelegramParseMode::Html => {
-            text.push_str("Rich formatting is enabled for Telegram replies.\n");
-            text.push_str("Use standard Markdown formatting inside marker values (e.g. **bold**, *italic*, `code`, ```code blocks```, [links](url)).\n");
-            text.push_str(
-                "CoconutClaw will automatically convert Markdown to the appropriate format.\n",
-            );
-            text.push_str("Keep marker prefixes plain and unchanged.\n");
+
+    if channel == "slack" {
+        match cfg.slack_format_mode {
+            SlackFormatMode::Plain => {
+                text.push_str("Use plain text for replies. No formatting.\n");
+                text.push_str("Keep marker prefixes plain and unchanged.\n");
+                text.push_str("Message limit: 40,000 characters.\n");
+            }
+            SlackFormatMode::Mrkdwn => {
+                text.push_str("Use Slack mrkdwn formatting for replies: *bold*, _italic_, ~strikethrough~, `code`, ```code blocks```.\n");
+                text.push_str("Keep marker prefixes plain and unchanged.\n");
+                text.push_str("Message limit: 40,000 characters.\n");
+            }
+            SlackFormatMode::Blocks => {
+                text.push_str("Use Slack Block Kit JSON for rich replies.\n");
+                text.push_str("Wrap the Block Kit blocks array in a ```blocks_json code fence after the TELEGRAM_REPLY: marker.\n");
+                text.push_str(
+                    "Use section blocks with mrkdwn text for paragraphs, code blocks, and lists.\n",
+                );
+                text.push_str(
+                    "Keep marker prefixes (TELEGRAM_REPLY:, SEND_PHOTO:, etc.) OUTSIDE the blocks JSON.\n",
+                );
+                text.push_str(
+                    "Message limit: 50 blocks per message, ~3000 chars per block text field.\n",
+                );
+            }
         }
-        TelegramParseMode::MarkdownV2 => {
-            text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
-            text.push_str("Use Telegram MarkdownV2 formatting only inside marker values.\n");
-            text.push_str("Use `*bold*`, `_italic_`, and `` `code` `` syntax.\n");
-            text.push_str("Do not use CommonMark syntax like `**bold**` or fenced code blocks.\n");
-            text.push_str("Keep marker prefixes plain and unchanged.\n");
-            text.push_str("Do not use code fences or extra prefixes.\n");
-        }
-        TelegramParseMode::Off => {
-            text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
+    } else {
+        match cfg.telegram_parse_mode {
+            TelegramParseMode::Html => {
+                text.push_str("Rich formatting is enabled for Telegram replies.\n");
+                text.push_str("Use standard Markdown formatting inside marker values (e.g. **bold**, *italic*, `code`, ```code blocks```, [links](url)).\n");
+                text.push_str(
+                    "CoconutClaw will automatically convert Markdown to the appropriate format.\n",
+                );
+                text.push_str("Keep marker prefixes plain and unchanged.\n");
+            }
+            TelegramParseMode::MarkdownV2 => {
+                text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
+                text.push_str("Use Telegram MarkdownV2 formatting only inside marker values.\n");
+                text.push_str("Use `*bold*`, `_italic_`, and `` `code` `` syntax.\n");
+                text.push_str(
+                    "Do not use CommonMark syntax like `**bold**` or fenced code blocks.\n",
+                );
+                text.push_str("Keep marker prefixes plain and unchanged.\n");
+                text.push_str("Do not use code fences or extra prefixes.\n");
+            }
+            TelegramParseMode::Off => {
+                text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
+            }
         }
     }
 

@@ -1,13 +1,16 @@
 use anyhow::{Context, Result};
 use axum::body::Bytes;
 use axum::extract::State;
+use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use coconutclaw_config::RuntimeConfig;
 use fs2::FileExt;
+use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
@@ -18,6 +21,9 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
+use url::form_urlencoded;
+
+use crate::signal_cancel_marker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AckStatus {
@@ -95,9 +101,19 @@ pub(crate) fn spawn_webhook_http_server(
 
         runtime.block_on(async move {
             let state = WebhookHttpState { cfg: cfg.clone() };
-            let app = Router::new()
-                .route(&route_path, post(webhook_post_handler))
-                .with_state(state);
+            let mut router = Router::new()
+                .route(&route_path, post(webhook_post_handler));
+
+            if cfg.slack_signing_secret.is_some() || cfg.slack_bot_token.is_some() {
+                if cfg.slack_signing_secret.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                    tracing::warn!("SLACK_SIGNING_SECRET is not set — Slack webhook requests will not be verified");
+                }
+                let slack_path = normalize_route_path("/slack/events".to_string());
+                tracing::info!("slack events route: {slack_path}");
+                router = router.route(&slack_path, post(slack_events_post_handler));
+            }
+
+            let app = router.with_state(state);
 
             let listener = match tokio::net::TcpListener::bind(bind_addr).await {
                 Ok(listener) => listener,
@@ -361,6 +377,184 @@ fn normalize_route_path(raw: String) -> String {
     }
 }
 
+fn verify_slack_signature(
+    signing_secret: &str,
+    timestamp: &str,
+    body: &[u8],
+    signature: &str,
+) -> bool {
+    let ts: i64 = match timestamp.parse() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if (now - ts).abs() > 300 {
+        return false;
+    }
+
+    let basestring = format!("v0:{timestamp}:{}", String::from_utf8_lossy(body));
+    let mut mac = match Hmac::<Sha256>::new_from_slice(signing_secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(basestring.as_bytes());
+    let result = mac.finalize().into_bytes();
+    let computed = format!("v0={}", hex_encode(&result));
+
+    computed.as_bytes().ct_eq(signature.as_bytes()).into()
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+async fn slack_events_post_handler(
+    State(state): State<WebhookHttpState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let cfg = &state.cfg;
+
+    if let Some(secret) = cfg.slack_signing_secret.as_deref().map(str::trim)
+        && !secret.is_empty()
+    {
+        let timestamp = headers
+            .get("X-Slack-Request-Timestamp")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let signature = headers
+            .get("X-Slack-Signature")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if !verify_slack_signature(secret, timestamp, &body, signature) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"ok":false,"error":"invalid_signature"})),
+            )
+                .into_response();
+        }
+    }
+
+    let body_text = match std::str::from_utf8(&body) {
+        Ok(text) => text.trim(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok":false,"error":"invalid_utf8"})),
+            )
+                .into_response();
+        }
+    };
+
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let value = match normalize_slack_request_payload(content_type, body_text) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!("failed to parse slack request body: {err:#}");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok":false,"error":"invalid_payload"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Handle URL verification challenge
+    if value.get("type").and_then(|v| v.as_str()) == Some("url_verification") {
+        let challenge = value
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return Json(json!({"challenge": challenge})).into_response();
+    }
+
+    if slack_cancel_requested(&value)
+        && let Err(err) = signal_cancel_marker(cfg)
+    {
+        tracing::warn!("failed to set cancel marker from slack webhook: {err:#}");
+    }
+
+    let normalized = match serde_json::to_string(&value) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!("failed to serialize normalized slack payload: {err:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok":false,"error":"queue_write_failed"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Forward to the webhook queue
+    if let Err(err) = append_webhook_queue_line(cfg, &normalized) {
+        tracing::warn!("failed to append slack event to queue: {err:#}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok":false,"error":"queue_write_failed"})),
+        )
+            .into_response();
+    }
+
+    (StatusCode::OK, Json(json!({"ok":true}))).into_response()
+}
+
+fn normalize_slack_request_payload(content_type: &str, body_text: &str) -> Result<Value> {
+    if content_type.contains("application/x-www-form-urlencoded") {
+        let fields: Vec<(String, String)> = form_urlencoded::parse(body_text.as_bytes())
+            .into_owned()
+            .collect();
+        if let Some(payload) = fields
+            .iter()
+            .find_map(|(key, value)| (key == "payload").then_some(value))
+        {
+            return serde_json::from_str(payload).context("invalid slack interactive payload JSON");
+        }
+
+        let mut value = serde_json::Map::new();
+        value.insert(
+            "type".to_string(),
+            Value::String("slash_commands".to_string()),
+        );
+        for (key, field) in fields {
+            value.insert(key, Value::String(field));
+        }
+        if value.get("command").and_then(Value::as_str).is_none() {
+            anyhow::bail!("missing slack command field");
+        }
+        return Ok(Value::Object(value));
+    }
+
+    serde_json::from_str(body_text).context("invalid slack JSON payload")
+}
+
+fn slack_cancel_requested(value: &Value) -> bool {
+    match value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "slash_commands" => value.get("command").and_then(Value::as_str) == Some("/cancel"),
+        "block_actions" | "interactive_message" => value
+            .get("actions")
+            .and_then(Value::as_array)
+            .map(|actions| {
+                actions
+                    .iter()
+                    .any(|action| action.get("action_id").and_then(Value::as_str) == Some("cancel"))
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,5 +598,39 @@ mod tests {
             false
         };
         assert!(!is_match);
+    }
+
+    #[test]
+    fn normalize_slack_request_payload_parses_interactive_form() {
+        let value = normalize_slack_request_payload(
+            "application/x-www-form-urlencoded",
+            "payload=%7B%22type%22%3A%22block_actions%22%2C%22actions%22%3A%5B%7B%22action_id%22%3A%22cancel%22%7D%5D%7D",
+        )
+        .expect("payload");
+
+        assert_eq!(
+            value.get("type").and_then(Value::as_str),
+            Some("block_actions")
+        );
+        assert!(slack_cancel_requested(&value));
+    }
+
+    #[test]
+    fn normalize_slack_request_payload_parses_slash_command_form() {
+        let value = normalize_slack_request_payload(
+            "application/x-www-form-urlencoded",
+            "command=%2Fcancel&channel_id=C123&text=stop",
+        )
+        .expect("payload");
+
+        assert_eq!(
+            value.get("type").and_then(Value::as_str),
+            Some("slash_commands")
+        );
+        assert_eq!(
+            value.get("channel_id").and_then(Value::as_str),
+            Some("C123")
+        );
+        assert!(slack_cancel_requested(&value));
     }
 }

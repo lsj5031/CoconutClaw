@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use coconutclaw_config::RuntimeConfig;
@@ -20,13 +21,33 @@ use crate::markers::{
     ParsedMarkers, extract_assistant_text_from_json_stream, extract_error_summary, parse_markers,
     recover_unstructured_reply, render_output, should_retry_provider_failure,
 };
+use crate::slack::{
+    SlackMedia, build_slack_client, slack_download_file, spawn_slack_progress_updater,
+};
 use crate::store::{Store, TurnRecord};
 use crate::telegram::{build_telegram_client, spawn_progress_updater, telegram_download_file};
 use crate::{
     IncomingMedia, InputType, QuotedMessage, TurnInput, TurnResult, TurnStatus,
-    asr_feature_enabled, clear_cancel_marker, command_exists, iso_now, maybe_spawn_cancel_watcher,
-    resolve_instance_path,
+    asr_feature_enabled, cancel_marker_path, clear_cancel_marker, command_exists, iso_now,
+    maybe_spawn_cancel_watcher, resolve_instance_path,
 };
+
+fn spawn_cancel_marker_watcher(
+    cfg: &RuntimeConfig,
+    cancel_flag: Arc<AtomicBool>,
+    stop_flag: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    let marker_path = cancel_marker_path(cfg);
+    thread::spawn(move || {
+        while !stop_flag.load(Ordering::SeqCst) && !cancel_flag.load(Ordering::SeqCst) {
+            if marker_path.exists() {
+                cancel_flag.store(true, Ordering::SeqCst);
+                break;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    })
+}
 
 fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
     let _span = tracing::info_span!("asr", path = %audio_path.display()).entered();
@@ -78,10 +99,12 @@ fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
     Ok(text.trim().to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_turn(
     cfg: &RuntimeConfig,
     store: &mut Store,
     input: TurnInput,
+    channel: &str,
     chat_id_override: Option<String>,
     update_id: Option<String>,
     progress_message_id: Option<&str>,
@@ -98,14 +121,17 @@ pub(crate) fn process_turn(
     clear_cancel_marker(cfg);
     let ts = iso_now(&cfg.timezone);
     let chat_id = chat_id_override
-        .or_else(|| cfg.telegram_chat_id.clone())
+        .or_else(|| match channel {
+            "slack" => cfg.slack_channel_id.clone(),
+            _ => cfg.telegram_chat_id.clone(),
+        })
         .unwrap_or_else(|| "local".to_string());
 
-    let context = build_context(cfg, store, &input, &ts, quoted)?;
+    let context = build_context(cfg, store, &input, &ts, &chat_id, quoted)?;
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let cancel_watcher_stop = Arc::new(AtomicBool::new(false));
-    let cancel_watcher = if update_id.is_some() {
+    let cancel_watcher = if channel == "telegram" && update_id.is_some() {
         maybe_spawn_cancel_watcher(
             cfg,
             store,
@@ -118,19 +144,41 @@ pub(crate) fn process_turn(
     } else {
         None
     };
+    let marker_watcher_stop = Arc::new(AtomicBool::new(false));
+    let marker_watcher = spawn_cancel_marker_watcher(
+        cfg,
+        Arc::clone(&cancel_flag),
+        Arc::clone(&marker_watcher_stop),
+    );
     let progress_updater_stop = Arc::new(AtomicBool::new(false));
     let (progress_sender, progress_updater) = if let Some(message_id) = progress_message_id {
         let (progress_tx, progress_rx) = mpsc::channel::<String>();
-        (
-            Some(progress_tx),
-            Some(spawn_progress_updater(
+        let updater = if channel == "slack" {
+            match build_slack_client(cfg) {
+                Ok(slack_client) => spawn_slack_progress_updater(
+                    slack_client,
+                    chat_id.clone(),
+                    message_id.to_string(),
+                    progress_rx,
+                    Arc::clone(&progress_updater_stop),
+                    cfg.progress_update_interval_secs,
+                ),
+                Err(err) => {
+                    tracing::warn!("failed to build slack client for progress updater: {err:#}");
+                    drop(progress_rx);
+                    return Err(err);
+                }
+            }
+        } else {
+            spawn_progress_updater(
                 cfg.clone(),
                 chat_id.clone(),
                 message_id.to_string(),
                 progress_rx,
                 Arc::clone(&progress_updater_stop),
-            )),
-        )
+            )
+        };
+        (Some(progress_tx), Some(updater))
     } else {
         (None, None)
     };
@@ -174,6 +222,8 @@ pub(crate) fn process_turn(
     if let Some(handle) = cancel_watcher {
         let _ = handle.join();
     }
+    marker_watcher_stop.store(true, Ordering::SeqCst);
+    let _ = marker_watcher.join();
     drop(progress_sender);
     progress_updater_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = progress_updater {
@@ -186,7 +236,7 @@ pub(crate) fn process_turn(
     };
     let duration_ms = turn_start.elapsed().as_millis() as i64;
     let cancelled = cancel_flag.load(Ordering::SeqCst) || exit_code == 130;
-    let turn_result = resolve_turn_result(&raw_output, provider_success, cancelled);
+    let turn_result = resolve_turn_result(&raw_output, channel, provider_success, cancelled);
     let markers = turn_result.markers;
     let telegram_reply = turn_result.telegram_reply;
     let voice_reply = turn_result.voice_reply;
@@ -211,6 +261,7 @@ pub(crate) fn process_turn(
         status: status.to_string(),
         update_id,
         duration_ms: Some(duration_ms),
+        channel: channel.to_string(),
     })?;
 
     if inserted && status != TurnStatus::Cancelled {
@@ -223,19 +274,23 @@ pub(crate) fn process_turn(
 
 pub(crate) fn resolve_turn_result(
     raw_output: &str,
+    channel: &str,
     provider_success: bool,
     cancelled: bool,
 ) -> TurnResult {
+    let channel = channel.to_owned();
+
     if cancelled {
         return TurnResult {
             markers: ParsedMarkers::default(),
             telegram_reply: "❌ Cancelled.".to_string(),
             voice_reply: String::new(),
             status: TurnStatus::Cancelled,
+            channel,
         };
     }
 
-    // Strip <think>...</think> blocks emitted by reasoning models (e.g. Qwen3.5).
+    // Strip<think>...</think> blocks emitted by reasoning models (e.g. Qwen3.5).
     let mut cleaned = String::new();
     let mut current = raw_output;
     while let Some(start) = current.find("<think>") {
@@ -258,7 +313,7 @@ pub(crate) fn resolve_turn_result(
         &cleaned
     };
     let markers = parse_markers(raw_output);
-    let telegram_reply = markers.telegram_reply.clone().unwrap_or_default();
+    let telegram_reply = markers.reply().cloned().unwrap_or_default();
     let voice_reply = markers.voice_reply.clone().unwrap_or_default();
     if !telegram_reply.trim().is_empty() || !voice_reply.trim().is_empty() {
         return TurnResult {
@@ -270,6 +325,7 @@ pub(crate) fn resolve_turn_result(
             } else {
                 TurnStatus::AgentError
             },
+            channel: channel.clone(),
         };
     }
 
@@ -280,6 +336,7 @@ pub(crate) fn resolve_turn_result(
                 telegram_reply: recovered,
                 voice_reply: String::new(),
                 status: TurnStatus::ParseRecovered,
+                channel: channel.clone(),
             };
         }
         // If it's just raw text without markers, and no specific unstructured JSON format
@@ -297,6 +354,7 @@ pub(crate) fn resolve_turn_result(
             } else {
                 TurnStatus::ParseRecovered
             },
+            channel: channel.clone(),
         };
     }
 
@@ -306,6 +364,7 @@ pub(crate) fn resolve_turn_result(
             telegram_reply: recovered,
             voice_reply: String::new(),
             status: TurnStatus::AgentErrorRecovered,
+            channel: channel.clone(),
         };
     }
 
@@ -318,6 +377,7 @@ pub(crate) fn resolve_turn_result(
             telegram_reply: recovered,
             voice_reply: String::new(),
             status: TurnStatus::AgentErrorRecovered,
+            channel: channel.clone(),
         };
     }
 
@@ -334,6 +394,7 @@ pub(crate) fn resolve_turn_result(
         telegram_reply: format!("Agent execution failed locally. {err_line}"),
         voice_reply: String::new(),
         status: TurnStatus::AgentError,
+        channel,
     }
 }
 
@@ -343,6 +404,7 @@ pub(crate) fn resolve_turn_input(
     _update_id: Option<String>,
     text: Option<String>,
     file: Option<PathBuf>,
+    channel: &str,
 ) -> Result<TurnInput> {
     if let Some(path) = file {
         let resolved = resolve_instance_path(&cfg.instance_dir, path);
@@ -375,6 +437,8 @@ pub(crate) fn resolve_turn_input(
             attachment_type,
             attachment_path: Some(resolved),
             attachment_owned: false,
+            supplemental_context: None,
+            channel: channel.to_string(),
         });
     }
 
@@ -390,6 +454,8 @@ pub(crate) fn resolve_turn_input(
         attachment_type: None,
         attachment_path: None,
         attachment_owned: false,
+        supplemental_context: None,
+        channel: channel.to_string(),
     })
 }
 
@@ -398,10 +464,21 @@ pub(crate) fn hydrate_turn_input(
     update_id: Option<&str>,
     mut input: TurnInput,
     media: Option<IncomingMedia>,
+    channel: &str,
 ) -> Result<(TurnInput, Option<PathBuf>)> {
     let Some(media) = media else {
         return Ok((input, None));
     };
+
+    // Only Telegram media is currently supported for download.
+    // Slack media download will be handled by the slack module.
+    if channel != "telegram" {
+        tracing::warn!(
+            "Media hydration for channel '{}' not yet implemented, ignoring attachment",
+            channel
+        );
+        return Ok((input, None));
+    }
 
     let client = match build_telegram_client(cfg) {
         Ok(client) => client,
@@ -503,6 +580,67 @@ pub(crate) fn hydrate_turn_input(
     }
 }
 
+pub(crate) fn hydrate_slack_turn_input(
+    cfg: &RuntimeConfig,
+    update_id: Option<&str>,
+    mut input: TurnInput,
+    media: Option<SlackMedia>,
+) -> Result<(TurnInput, Option<PathBuf>)> {
+    let Some(media) = media else {
+        return Ok((input, None));
+    };
+
+    let client = match build_slack_client(cfg) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::warn!("slack client build failed for media download: {err:#}");
+            return Ok((input, None));
+        }
+    };
+
+    let suffix = update_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("0")
+        .to_string();
+
+    match media {
+        SlackMedia::File {
+            url_private,
+            filetype,
+            filename,
+            size: _,
+        } => {
+            let ext = Path::new(&filename)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("bin");
+            let path = cfg.tmp_dir.join(format!("slack_{suffix}.{ext}"));
+
+            if let Err(err) = slack_download_file(&client, &url_private, &path) {
+                tracing::warn!("failed to download slack file attachment: {err:#}");
+                return Ok((input, None));
+            }
+
+            let (input_type, attachment_type) = match filetype.as_deref().unwrap_or("") {
+                "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" => {
+                    (InputType::Photo, Some("photo".to_string()))
+                }
+                "mp4" | "mkv" | "avi" | "mov" | "webm" => {
+                    (InputType::Video, Some("video".to_string()))
+                }
+                _ => (InputType::Document, Some("document".to_string())),
+            };
+
+            input.input_type = input_type;
+            input.attachment_type = attachment_type;
+            input.attachment_path = Some(path.clone());
+            input.attachment_owned = true;
+            Ok((input, Some(path)))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,7 +648,7 @@ mod tests {
 
     #[test]
     fn resolve_turn_result_marks_cancelled() {
-        let result = resolve_turn_result("TELEGRAM_REPLY: hi", true, true);
+        let result = resolve_turn_result("TELEGRAM_REPLY: hi", "telegram", true, true);
         assert_eq!(result.status, TurnStatus::Cancelled);
         assert_eq!(result.telegram_reply, "❌ Cancelled.");
         assert!(result.markers.telegram_reply.is_none());
@@ -518,7 +656,7 @@ mod tests {
 
     #[test]
     fn resolve_turn_result_marks_parse_recovered() {
-        let result = resolve_turn_result("plain reply", true, false);
+        let result = resolve_turn_result("plain reply", "telegram", true, false);
         assert_eq!(result.status, TurnStatus::ParseRecovered);
         assert_eq!(result.telegram_reply, "plain reply");
     }
@@ -526,7 +664,7 @@ mod tests {
     #[test]
     fn resolve_turn_result_marks_agent_error_recovered() {
         let payload = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Recovered"}]}}"#;
-        let result = resolve_turn_result(payload, false, false);
+        let result = resolve_turn_result(payload, "telegram", false, false);
         assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
         assert_eq!(result.telegram_reply, "Recovered");
     }
@@ -536,7 +674,7 @@ mod tests {
         // A JSON event stream with no assistant text — truly unrecoverable.
         let payload = r#"{"type":"system","status":"starting"}
 {"type":"error","code":"internal","message":"unexpected crash"}"#;
-        let result = resolve_turn_result(payload, false, false);
+        let result = resolve_turn_result(payload, "telegram", false, false);
         assert_eq!(result.status, TurnStatus::AgentError);
         assert!(
             result
@@ -549,7 +687,7 @@ mod tests {
     fn resolve_turn_result_uses_turn_failed_error_message() {
         let payload = r#"{"type":"thread.started","thread_id":"abc"}
 {"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window."}}"#;
-        let result = resolve_turn_result(payload, false, false);
+        let result = resolve_turn_result(payload, "telegram", false, false);
         assert_eq!(result.status, TurnStatus::AgentError);
         assert!(result.telegram_reply.contains("context window"));
         assert!(
@@ -561,7 +699,7 @@ mod tests {
 
     #[test]
     fn resolve_turn_result_empty_raw_output() {
-        let result = resolve_turn_result("", true, false);
+        let result = resolve_turn_result("", "telegram", true, false);
         assert_eq!(result.status, TurnStatus::ParseFallback);
         assert_eq!(
             result.telegram_reply,
@@ -572,7 +710,7 @@ mod tests {
     #[test]
     fn resolve_turn_result_think_tag_strip_after() {
         let raw_output = "<think> I am thinking about </think> TELEGRAM_REPLY: Hello";
-        let result = resolve_turn_result(raw_output, true, false);
+        let result = resolve_turn_result(raw_output, "telegram", true, false);
         assert_eq!(result.status, TurnStatus::Ok);
         assert_eq!(result.telegram_reply, "Hello");
     }
@@ -580,7 +718,7 @@ mod tests {
     #[test]
     fn resolve_turn_result_think_tag_multiple() {
         let raw_output = "<think> thought 1 </think> TELEGRAM_REPLY: some text \n<think> thought 2 </think> TELEGRAM_REPLY: Hello";
-        let result = resolve_turn_result(raw_output, true, false);
+        let result = resolve_turn_result(raw_output, "telegram", true, false);
         assert_eq!(result.status, TurnStatus::Ok);
         assert_eq!(result.telegram_reply, "some text\n\nHello");
     }
@@ -589,7 +727,7 @@ mod tests {
     fn resolve_turn_result_think_tag_unclosed() {
         let raw_output =
             "<think> thought 1 </think> some text <think> thought 2 TELEGRAM_REPLY: Hello";
-        let result = resolve_turn_result(raw_output, true, false);
+        let result = resolve_turn_result(raw_output, "telegram", true, false);
         assert_eq!(result.status, TurnStatus::ParseRecovered);
         assert_eq!(result.telegram_reply, "some text");
     }
@@ -597,14 +735,14 @@ mod tests {
     #[test]
     fn resolve_turn_result_valid_markers_but_provider_failed() {
         let raw_output = "TELEGRAM_REPLY: I crashed but here is a reply";
-        let result = resolve_turn_result(raw_output, false, false);
+        let result = resolve_turn_result(raw_output, "telegram", false, false);
         assert_eq!(result.status, TurnStatus::AgentError);
         assert_eq!(result.telegram_reply, "I crashed but here is a reply");
     }
 
     #[test]
     fn resolve_turn_result_agent_error_blank_output() {
-        let result = resolve_turn_result("   \n  \t", false, false);
+        let result = resolve_turn_result("   \n  \t", "telegram", false, false);
         assert_eq!(result.status, TurnStatus::AgentError);
         assert!(
             result
@@ -616,7 +754,7 @@ mod tests {
     #[test]
     fn resolve_turn_result_recovers_plain_text_from_failed_provider() {
         let raw_output = "\n   \n\nReal error message here\nMore details";
-        let result = resolve_turn_result(raw_output, false, false);
+        let result = resolve_turn_result(raw_output, "telegram", false, false);
         assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
         assert!(result.telegram_reply.contains("Real error message here"));
         assert!(
@@ -629,7 +767,7 @@ mod tests {
     #[test]
     fn resolve_turn_result_recovers_plain_text_on_provider_failure() {
         let raw = "I can see several issues with the free-migration branch. Let me update the todo and provide a comprehensive summary:";
-        let result = resolve_turn_result(raw, false, false);
+        let result = resolve_turn_result(raw, "telegram", false, false);
         assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
         assert!(result.telegram_reply.contains("free-migration"));
         assert!(
