@@ -120,6 +120,16 @@ pub(crate) fn build_context(
         );
     }
 
+    if let Some(supplemental_context) = input.supplemental_context.as_ref()
+        && !supplemental_context.trim().is_empty()
+    {
+        text.push_str("\n## Supplemental conversation context\n");
+        text.push_str(supplemental_context);
+        if !supplemental_context.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+
     text.push_str("\n## Current user input\n");
     let user_text = if local_visual_mode {
         truncate_chars(&input.user_text, 1200)

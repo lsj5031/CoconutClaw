@@ -377,7 +377,7 @@ fn start_socket_mode_if_configured(
 fn process_slack_socket_turn(
     cfg: &RuntimeConfig,
     store: &mut Store,
-    turn: SlackWebhookTurn,
+    mut turn: SlackWebhookTurn,
 ) -> Result<()> {
     let slack_client = match build_slack_client(cfg) {
         Ok(c) => c,
@@ -411,6 +411,8 @@ fn process_slack_socket_turn(
     ) {
         tracing::warn!("failed to set slack inflight checkpoint: {err:#}");
     }
+
+    maybe_populate_slack_thread_context(cfg, &slack_client, &mut turn);
 
     let (hydrated_input, cleanup_path) =
         hydrate_slack_turn_input(cfg, turn.event_id.as_deref(), turn.input, turn.media)?;
@@ -1031,14 +1033,10 @@ fn restore_inflight_update(
         match ack_webhook_queue_line(cfg, expected_id)? {
             AckStatus::Acked => {
                 store.clear_inflight()?;
-                if let Some(output) = outcome.output {
-                    if let Err(err) = dispatch_telegram_output(
-                        telegram_client,
-                        cfg,
-                        outcome.chat_id.as_deref(),
-                        &output,
-                        outcome.progress_message_id.as_deref(),
-                    ) {
+                if let Some(output) = outcome.output.as_deref() {
+                    if let Err(err) =
+                        dispatch_process_outcome(cfg, telegram_client, &outcome, output)
+                    {
                         tracing::warn!("failed to dispatch restored inflight output: {err:#}");
                     } else {
                         println!("{output}");
@@ -1053,14 +1051,10 @@ fn restore_inflight_update(
                 tracing::warn!("inflight restore ack skipped due queue head mismatch");
             }
             AckStatus::Empty => {
-                if let Some(output) = outcome.output {
-                    if let Err(err) = dispatch_telegram_output(
-                        telegram_client,
-                        cfg,
-                        outcome.chat_id.as_deref(),
-                        &output,
-                        outcome.progress_message_id.as_deref(),
-                    ) {
+                if let Some(output) = outcome.output.as_deref() {
+                    if let Err(err) =
+                        dispatch_process_outcome(cfg, telegram_client, &outcome, output)
+                    {
                         tracing::warn!(
                             "failed to dispatch restored inflight output (empty queue): {err:#}"
                         );
@@ -1194,14 +1188,10 @@ fn drain_webhook_queue(
                     tracing::warn!("failed to clear inflight after webhook ack: {err:#}");
                 }
                 progressed = true;
-                if let Some(output) = outcome.output {
-                    if let Err(err) = dispatch_telegram_output(
-                        telegram_client,
-                        cfg,
-                        outcome.chat_id.as_deref(),
-                        &output,
-                        outcome.progress_message_id.as_deref(),
-                    ) {
+                if let Some(output) = outcome.output.as_deref() {
+                    if let Err(err) =
+                        dispatch_process_outcome(cfg, telegram_client, &outcome, output)
+                    {
                         tracing::warn!("failed to dispatch webhook output: {err:#}");
                     } else {
                         println!("{output}");
@@ -1233,9 +1223,61 @@ struct ProcessOutcome {
     should_ack: bool,
     update_id: Option<String>,
     chat_id: Option<String>,
+    output_channel: Option<String>,
+    output_thread_ts: Option<String>,
     output: Option<String>,
     cleanup_path: Option<PathBuf>,
     progress_message_id: Option<String>,
+}
+
+fn maybe_populate_slack_thread_context(
+    cfg: &RuntimeConfig,
+    slack_client: &Client,
+    turn: &mut SlackWebhookTurn,
+) {
+    let Some(ref thread_ts) = turn.thread_ts else {
+        return;
+    };
+
+    let history_client = build_slack_user_client(cfg)
+        .unwrap_or(None)
+        .unwrap_or_else(|| slack_client.clone());
+
+    match slack_fetch_thread_context(&history_client, &turn.channel_id, Some(thread_ts)) {
+        Ok(ctx) => turn.input.supplemental_context = Some(ctx),
+        Err(err) => tracing::warn!("failed to fetch slack thread context: {err:#}"),
+    }
+}
+
+fn dispatch_process_outcome(
+    cfg: &RuntimeConfig,
+    telegram_client: &Client,
+    outcome: &ProcessOutcome,
+    output: &str,
+) -> Result<()> {
+    match outcome.output_channel.as_deref() {
+        Some("slack") => {
+            let slack_client = build_slack_client(cfg)?;
+            let channel_id = outcome.chat_id.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("missing slack channel id for webhook output dispatch")
+            })?;
+            dispatch_slack_output(
+                &slack_client,
+                cfg,
+                channel_id,
+                output,
+                outcome.progress_message_id.as_deref(),
+                outcome.output_thread_ts.as_deref(),
+            )
+        }
+        _ => dispatch_telegram_output(
+            telegram_client,
+            cfg,
+            outcome.chat_id.as_deref(),
+            output,
+            outcome.progress_message_id.as_deref(),
+        ),
+    }
 }
 
 fn is_slack_interactive_payload(value: &Value) -> bool {
@@ -1382,6 +1424,8 @@ fn process_webhook_line(
                     should_ack: true,
                     update_id: None,
                     chat_id: None,
+                    output_channel: None,
+                    output_thread_ts: None,
                     output: None,
                     cleanup_path: None,
                     progress_message_id: None,
@@ -1400,6 +1444,8 @@ fn process_webhook_line(
                     should_ack: true,
                     update_id: None,
                     chat_id: Some(channel_id),
+                    output_channel: Some("slack".to_string()),
+                    output_thread_ts: None,
                     output: Some(
                         render_output(
                             "Context cleared. Fresh start!",
@@ -1447,6 +1493,8 @@ fn process_webhook_line(
                 should_ack: true,
                 update_id,
                 chat_id: None,
+                output_channel: None,
+                output_thread_ts: None,
                 output: None,
                 cleanup_path: None,
                 progress_message_id: None,
@@ -1463,6 +1511,8 @@ fn process_webhook_line(
                 should_ack: true,
                 update_id,
                 chat_id: None,
+                output_channel: None,
+                output_thread_ts: None,
                 output: None,
                 cleanup_path: None,
                 progress_message_id: None,
@@ -1482,6 +1532,8 @@ fn process_webhook_line(
                 should_ack: true,
                 update_id,
                 chat_id: Some(chat_id),
+                output_channel: Some("telegram".to_string()),
+                output_thread_ts: None,
                 output: Some(
                     render_output(
                         "Context cleared. Fresh start!",
@@ -1506,6 +1558,8 @@ fn process_webhook_line(
                     should_ack: true,
                     update_id: Some(update_id.to_string()),
                     chat_id: Some(chat_id),
+                    output_channel: Some("telegram".to_string()),
+                    output_thread_ts: None,
                     output: replay_output,
                     cleanup_path: None,
                     progress_message_id: None,
@@ -1554,6 +1608,8 @@ fn process_webhook_line(
                 should_ack: true,
                 update_id: turn.update_id,
                 chat_id: Some(chat_id),
+                output_channel: Some("telegram".to_string()),
+                output_thread_ts: None,
                 output: Some(output.trim_end().to_string()),
                 cleanup_path,
                 progress_message_id,
@@ -1568,6 +1624,8 @@ fn process_webhook_line(
                         should_ack: true,
                         update_id: turn.event_id,
                         chat_id: Some(turn.channel_id.clone()),
+                        output_channel: None,
+                        output_thread_ts: None,
                         output: None,
                         cleanup_path: None,
                         progress_message_id: None,
@@ -1575,16 +1633,7 @@ fn process_webhook_line(
                 }
             };
 
-            if let Some(ref ts) = turn.thread_ts {
-                let history_client = build_slack_user_client(cfg)
-                    .unwrap_or(None)
-                    .unwrap_or_else(|| slack_client.clone());
-
-                match slack_fetch_thread_context(&history_client, &turn.channel_id, Some(ts)) {
-                    Ok(ctx) => turn.input.supplemental_context = Some(ctx),
-                    Err(err) => tracing::warn!("failed to fetch slack thread context: {err:#}"),
-                }
-            }
+            maybe_populate_slack_thread_context(cfg, &slack_client, &mut turn);
 
             let progress_message_id = send_slack_progress_message(
                 &slack_client,
@@ -1614,21 +1663,12 @@ fn process_webhook_line(
                 },
             )?;
 
-            if let Err(err) = dispatch_slack_output(
-                &slack_client,
-                cfg,
-                &turn.channel_id,
-                &output,
-                progress_message_id.as_deref(),
-                turn.thread_ts.as_deref(),
-            ) {
-                tracing::error!("slack dispatch failed: {err:#}");
-            }
-
             Ok(ProcessOutcome {
                 should_ack: true,
                 update_id: turn.event_id,
                 chat_id: Some(turn.channel_id),
+                output_channel: Some("slack".to_string()),
+                output_thread_ts: turn.thread_ts,
                 output: Some(output.trim_end().to_string()),
                 cleanup_path,
                 progress_message_id,
@@ -2163,6 +2203,22 @@ mod tests {
         let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
+        assert_eq!(outcome.output_channel.as_deref(), Some("telegram"));
+        assert!(output.contains("TELEGRAM_REPLY:"));
+        assert!(output.contains("Context cleared"));
+    }
+
+    #[test]
+    fn slack_fresh_command_routes_output_to_slack_channel() {
+        let cfg = test_config();
+        let mut store = Store::open(&cfg).expect("store");
+        let payload = r#"{"type":"slash_commands","command":"/fresh","channel_id":"C123"}"#;
+
+        let outcome = process_webhook_line(&cfg, &mut store, payload).expect("process");
+        let output = outcome.output.unwrap_or_default();
+
+        assert_eq!(outcome.chat_id.as_deref(), Some("C123"));
+        assert_eq!(outcome.output_channel.as_deref(), Some("slack"));
         assert!(output.contains("TELEGRAM_REPLY:"));
         assert!(output.contains("Context cleared"));
     }
@@ -2612,6 +2668,38 @@ mod tests {
 
         assert!(text.contains("telegram hello"));
         assert!(!text.contains("slack hello"));
+    }
+
+    #[test]
+    fn context_includes_supplemental_conversation_context() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        let input = TurnInput {
+            input_type: InputType::Text,
+            user_text: "follow-up".to_string(),
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+            supplemental_context: Some("U123: earlier thread reply".to_string()),
+            channel: "slack".to_string(),
+        };
+
+        let text = build_context(
+            &cfg,
+            &store,
+            &input,
+            "2026-01-01T00:02:00+0000",
+            "C123",
+            &QuotedMessage {
+                reply_from: None,
+                reply_text: None,
+            },
+        )
+        .expect("context");
+
+        assert!(text.contains("## Supplemental conversation context"));
+        assert!(text.contains("U123: earlier thread reply"));
     }
 
     #[test]
