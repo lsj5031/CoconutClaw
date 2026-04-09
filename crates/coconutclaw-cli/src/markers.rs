@@ -21,7 +21,7 @@ impl ParsedMarkers {
 
 pub(crate) fn render_output(reply: &str, voice_reply: &str, markers: &ParsedMarkers) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("REPLY: {reply}"));
+    lines.push(format!("TELEGRAM_REPLY: {reply}"));
 
     if !voice_reply.trim().is_empty() {
         lines.push(format!("VOICE_REPLY: {voice_reply}"));

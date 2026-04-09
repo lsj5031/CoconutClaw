@@ -25,6 +25,7 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+url.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 futures-util.workspace = true

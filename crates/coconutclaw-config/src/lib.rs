@@ -169,6 +169,7 @@ pub struct RuntimeConfig {
     pub telegram_parse_mode: TelegramParseMode,
     pub telegram_parse_fallback: TelegramParseFallback,
     pub slack_bot_token: Option<String>,
+    pub slack_user_token: Option<String>,
     pub slack_app_token: Option<String>,
     pub slack_channel_id: Option<String>,
     pub slack_api_timeout_secs: u64,
@@ -234,6 +235,7 @@ WEBHOOK_PATH = "/webhook"
 
 # Slack configuration (optional - uncomment to enable)
 # SLACK_BOT_TOKEN=
+# SLACK_USER_TOKEN=
 # SLACK_APP_TOKEN=
 # SLACK_CHANNEL_ID=
 # SLACK_SIGNING_SECRET=
@@ -322,6 +324,7 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "TELEGRAM_API_RETRY_ATTEMPTS",
     "PROVIDER_TIMEOUT_SECS",
     "SLACK_BOT_TOKEN",
+    "SLACK_USER_TOKEN",
     "SLACK_APP_TOKEN",
     "SLACK_CHANNEL_ID",
     "SLACK_SIGNING_SECRET",
@@ -412,6 +415,7 @@ impl RuntimeConfig {
             telegram_parse_mode: TelegramParseMode::Off,
             telegram_parse_fallback: TelegramParseFallback::Plain,
             slack_bot_token: None,
+            slack_user_token: None,
             slack_app_token: None,
             slack_channel_id: None,
             slack_api_timeout_secs: 30,
@@ -634,6 +638,7 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         telegram_parse_mode,
         telegram_parse_fallback,
         slack_bot_token: pick_value("SLACK_BOT_TOKEN", &config_file),
+        slack_user_token: pick_value("SLACK_USER_TOKEN", &config_file),
         slack_app_token: pick_value("SLACK_APP_TOKEN", &config_file),
         slack_channel_id: pick_value("SLACK_CHANNEL_ID", &config_file),
         slack_api_timeout_secs,

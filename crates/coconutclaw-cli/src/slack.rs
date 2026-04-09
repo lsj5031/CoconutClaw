@@ -86,6 +86,28 @@ fn slack_api_base() -> &'static str {
     "https://slack.com/api"
 }
 
+pub(crate) fn build_slack_user_client(cfg: &RuntimeConfig) -> Result<Option<Client>> {
+    let token = match cfg
+        .slack_user_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+    let timeout_secs = cfg.slack_api_timeout_secs.max(1);
+    let client = Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .default_headers(reqwest::header::HeaderMap::from_iter([(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        )]))
+        .build()
+        .context("failed to build slack user HTTP client")?;
+    Ok(Some(client))
+}
+
 pub(crate) fn build_slack_client(cfg: &RuntimeConfig) -> Result<Client> {
     let token = valid_slack_token(cfg).ok_or_else(|| {
         anyhow::anyhow!("SLACK_BOT_TOKEN is missing; set it in instance config.toml")
@@ -113,6 +135,51 @@ fn parse_slack_response(body: &str, context: &str) -> Result<Value> {
     }
     let error = v["error"].as_str().unwrap_or("unknown_error");
     bail!("slack {context}: {error}")
+}
+
+pub(crate) fn format_slack_thread_context(json_response: &str) -> Result<String> {
+    let v = parse_slack_response(json_response, "conversations.replies/history")?;
+
+    let messages = v["messages"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing or invalid messages array"))?;
+
+    let mut lines = Vec::new();
+    for msg in messages {
+        let user = msg["user"].as_str().unwrap_or("unknown_user");
+        let text = msg["text"].as_str().unwrap_or("");
+        lines.push(format!("{user}: {text}"));
+    }
+
+    Ok(lines.join("\n"))
+}
+
+pub(crate) fn slack_fetch_thread_context(
+    client: &Client,
+    channel: &str,
+    thread_ts: Option<&str>,
+) -> Result<String> {
+    let (url, mut form) = match thread_ts {
+        Some(ts) => (
+            format!("{}/conversations.replies", slack_api_base()),
+            vec![("channel", channel.to_string()), ("ts", ts.to_string())],
+        ),
+        None => (
+            format!("{}/conversations.history", slack_api_base()),
+            vec![("channel", channel.to_string())],
+        ),
+    };
+
+    form.push(("limit", "15".to_string()));
+
+    let resp = client
+        .post(&url)
+        .form(&form)
+        .send()
+        .context(format!("slack {} send failed", url))?;
+
+    let body = resp.text().context(format!("slack {} read failed", url))?;
+    format_slack_thread_context(&body)
 }
 
 pub(crate) fn slack_post_message(
@@ -1011,6 +1078,7 @@ async fn slack_socket_mode_inner(
                             attachment_type: None,
                             attachment_path: None,
                             attachment_owned: false,
+                            supplemental_context: None,
                             channel: "slack".to_string(),
                         },
                         media,
@@ -1096,6 +1164,20 @@ fn extract_slack_media(event: &Value) -> Option<SlackMedia> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_slack_thread_context_parses_replies() {
+        let json = r#"{
+            "ok": true,
+            "messages": [
+                {"user": "U1", "text": "First message"},
+                {"user": "U2", "text": "Second message"}
+            ]
+        }"#;
+
+        let context = super::format_slack_thread_context(json).unwrap();
+        assert_eq!(context, "U1: First message\nU2: Second message");
+    }
 
     #[test]
     fn split_slack_text_short() {

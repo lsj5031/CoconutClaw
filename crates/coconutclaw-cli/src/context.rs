@@ -20,6 +20,7 @@ pub(crate) fn build_context(
     store: &Store,
     input: &TurnInput,
     ts: &str,
+    chat_id: &str,
     quoted: &QuotedMessage,
 ) -> Result<String> {
     let channel = input.channel.as_str();
@@ -97,7 +98,7 @@ pub(crate) fn build_context(
     } else {
         cfg.context_turns
     };
-    for line in store.recent_turns_snippet(recent_limit)? {
+    for line in store.recent_turns_snippet(recent_limit, chat_id, channel)? {
         let line = if local_visual_mode {
             truncate_chars(&line, 240)
         } else {
@@ -154,10 +155,9 @@ pub(crate) fn build_context(
     text.push_str("\n## Output requirements\n");
     text.push_str("Return only plain text marker lines. No prose before or after markers.\n");
     text.push_str("Required first line format:\n");
+    text.push_str("TELEGRAM_REPLY: <reply text>\n");
     if channel == "slack" {
-        text.push_str("REPLY: <reply text>\n");
-    } else {
-        text.push_str("TELEGRAM_REPLY: <reply text>\n");
+        text.push_str("Use the historical TELEGRAM_REPLY marker for Slack replies too.\n");
     }
     text.push_str("Optional additional lines:\n");
     text.push_str("VOICE_REPLY: <spoken reply text>\n");
@@ -181,12 +181,12 @@ pub(crate) fn build_context(
             }
             SlackFormatMode::Blocks => {
                 text.push_str("Use Slack Block Kit JSON for rich replies.\n");
-                text.push_str("Wrap the Block Kit blocks array in a ```blocks_json code fence after the REPLY: marker.\n");
+                text.push_str("Wrap the Block Kit blocks array in a ```blocks_json code fence after the TELEGRAM_REPLY: marker.\n");
                 text.push_str(
                     "Use section blocks with mrkdwn text for paragraphs, code blocks, and lists.\n",
                 );
                 text.push_str(
-                    "Keep marker prefixes (REPLY:, SEND_PHOTO:, etc.) OUTSIDE the blocks JSON.\n",
+                    "Keep marker prefixes (TELEGRAM_REPLY:, SEND_PHOTO:, etc.) OUTSIDE the blocks JSON.\n",
                 );
                 text.push_str(
                     "Message limit: 50 blocks per message, ~3000 chars per block text field.\n",

@@ -27,9 +27,9 @@ mod webhook;
 
 use crate::markers::{ParsedMarkers, render_output};
 use crate::slack::{
-    SlackMedia, SlackWebhookTurn, build_slack_client, dispatch_slack_output,
-    send_slack_progress_message, start_slack_socket_mode, valid_slack_channel_id,
-    valid_slack_token,
+    SlackMedia, SlackWebhookTurn, build_slack_client, build_slack_user_client,
+    dispatch_slack_output, send_slack_progress_message, slack_fetch_thread_context,
+    start_slack_socket_mode, valid_slack_channel_id, valid_slack_token,
 };
 use crate::store::Store;
 use crate::telegram::{
@@ -169,6 +169,7 @@ pub(crate) struct TurnInput {
     attachment_type: Option<String>,
     attachment_path: Option<PathBuf>,
     attachment_owned: bool,
+    supplemental_context: Option<String>,
     channel: String, // "telegram", "slack", "local"
 }
 
@@ -477,6 +478,7 @@ fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
+            supplemental_context: None,
             channel: "telegram".to_string(),
         },
         "telegram",
@@ -533,6 +535,7 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> 
                 attachment_type: None,
                 attachment_path: None,
                 attachment_owned: false,
+                supplemental_context: None,
                 channel: "telegram".to_string(),
             },
             "telegram",
@@ -598,6 +601,12 @@ fn run_doctor(cfg: &RuntimeConfig, args: &DoctorArgs) -> Result<()> {
     let telegram_token_ok = valid_telegram_token(cfg).is_some();
     let telegram_chat_id_ok = valid_telegram_chat_id(cfg).is_some();
     let slack_token_ok = valid_slack_token(cfg).is_some();
+    let slack_user_token_ok = cfg
+        .slack_user_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some();
     let slack_channel_id_ok = valid_slack_channel_id(cfg).is_some();
     let webhook_bind_ok = cfg.webhook_bind.parse::<std::net::SocketAddr>().is_ok();
     let webhook_public_url_ok = cfg
@@ -653,6 +662,7 @@ fn run_doctor(cfg: &RuntimeConfig, args: &DoctorArgs) -> Result<()> {
                 "telegram_token": telegram_token_ok,
                 "telegram_chat_id": telegram_chat_id_ok,
                 "slack_token": slack_token_ok,
+                "slack_user_token": slack_user_token_ok,
                 "slack_channel_id": slack_channel_id_ok,
                 "webhook_bind": webhook_bind_ok,
                 "webhook_public_url": webhook_public_url_ok,
@@ -720,6 +730,10 @@ fn run_doctor(cfg: &RuntimeConfig, args: &DoctorArgs) -> Result<()> {
         yes_no(telegram_chat_id_ok)
     );
     println!("check_slack_token={} (optional)", yes_no(slack_token_ok));
+    println!(
+        "check_slack_user_token={} (optional; enables full thread history in channels)",
+        yes_no(slack_user_token_ok)
+    );
     println!(
         "check_slack_channel_id={} (optional)",
         yes_no(slack_channel_id_ok)
@@ -1106,6 +1120,7 @@ fn restore_inflight_slack(cfg: &RuntimeConfig, store: &mut Store, payload: &Valu
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
+            supplemental_context: None,
             channel: "slack".to_string(),
         },
         media: None,
@@ -1338,6 +1353,7 @@ fn parse_slack_webhook_event(_cfg: &RuntimeConfig, payload: &str) -> Option<Webh
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
+            supplemental_context: None,
             channel: "slack".to_string(),
         },
         media,
@@ -1373,7 +1389,7 @@ fn process_webhook_line(
             }
             if let Some(channel_id) = check_slack_fresh(&value) {
                 let ts = iso_now(&cfg.timezone);
-                match store.insert_boundary_turn(&ts, &channel_id, None) {
+                match store.insert_boundary_turn(&ts, &channel_id, None, "slack") {
                     Ok(true) => {
                         tracing::info!("inserted context boundary for slack channel={channel_id}")
                     }
@@ -1454,7 +1470,7 @@ fn process_webhook_line(
         }
         WebhookAction::Fresh { update_id, chat_id } => {
             let ts = iso_now(&cfg.timezone);
-            match store.insert_boundary_turn(&ts, &chat_id, update_id.as_deref()) {
+            match store.insert_boundary_turn(&ts, &chat_id, update_id.as_deref(), "telegram") {
                 Ok(true) => tracing::info!("inserted context boundary for chat_id={chat_id}"),
                 Ok(false) => {}
                 Err(err) => tracing::warn!("failed to insert context boundary: {err:#}"),
@@ -1543,7 +1559,7 @@ fn process_webhook_line(
                 progress_message_id,
             })
         }
-        WebhookAction::SlackTurn(turn) => {
+        WebhookAction::SlackTurn(mut turn) => {
             let slack_client = match build_slack_client(cfg) {
                 Ok(c) => c,
                 Err(err) => {
@@ -1558,6 +1574,17 @@ fn process_webhook_line(
                     });
                 }
             };
+
+            if let Some(ref ts) = turn.thread_ts {
+                let history_client = build_slack_user_client(cfg)
+                    .unwrap_or(None)
+                    .unwrap_or_else(|| slack_client.clone());
+
+                match slack_fetch_thread_context(&history_client, &turn.channel_id, Some(ts)) {
+                    Ok(ctx) => turn.input.supplemental_context = Some(ctx),
+                    Err(err) => tracing::warn!("failed to fetch slack thread context: {err:#}"),
+                }
+            }
 
             let progress_message_id = send_slack_progress_message(
                 &slack_client,
@@ -1911,6 +1938,7 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
         attachment_type,
         attachment_path: None,
         attachment_owned: false,
+        supplemental_context: None,
         channel: "telegram".to_string(),
     };
 
@@ -2135,7 +2163,7 @@ mod tests {
         let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
-        assert!(output.contains("REPLY:"));
+        assert!(output.contains("TELEGRAM_REPLY:"));
         assert!(output.contains("Context cleared"));
     }
 
@@ -2167,7 +2195,7 @@ mod tests {
         let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
-        assert!(output.contains("REPLY: Old reply"));
+        assert!(output.contains("TELEGRAM_REPLY: Old reply"));
         assert!(output.contains("SEND_DOCUMENT: /tmp/file.txt"));
     }
 
@@ -2471,6 +2499,7 @@ mod tests {
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
+            supplemental_context: None,
             channel: "telegram".to_string(),
         };
         let text = build_context(
@@ -2478,6 +2507,7 @@ mod tests {
             &store,
             &input,
             "2026-01-01T00:00:00+0000",
+            "321",
             &QuotedMessage {
                 reply_from: None,
                 reply_text: None,
@@ -2500,6 +2530,7 @@ mod tests {
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
+            supplemental_context: None,
             channel: "telegram".to_string(),
         };
         let text = build_context(
@@ -2507,6 +2538,7 @@ mod tests {
             &store,
             &input,
             "2026-01-01T00:00:00+0000",
+            "321",
             &QuotedMessage {
                 reply_from: None,
                 reply_text: None,
@@ -2515,6 +2547,71 @@ mod tests {
         .expect("context");
         assert!(text.contains("MarkdownV2"));
         assert!(!text.contains("Do not use markdown"));
+    }
+
+    #[test]
+    fn context_recent_turns_are_scoped_to_chat_and_channel() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_turn(&TurnRecord {
+                ts: "2026-01-01T00:00:00+0000".to_string(),
+                chat_id: "321".to_string(),
+                input_type: "text".to_string(),
+                user_text: "telegram hello".to_string(),
+                asr_text: String::new(),
+                provider_raw: "TELEGRAM_REPLY: telegram reply\n".to_string(),
+                telegram_reply: "telegram reply".to_string(),
+                voice_reply: String::new(),
+                status: "ok".to_string(),
+                update_id: Some("500".to_string()),
+                duration_ms: None,
+                channel: "telegram".to_string(),
+            })
+            .expect("insert telegram turn");
+        store
+            .insert_turn(&TurnRecord {
+                ts: "2026-01-01T00:01:00+0000".to_string(),
+                chat_id: "C123".to_string(),
+                input_type: "text".to_string(),
+                user_text: "slack hello".to_string(),
+                asr_text: String::new(),
+                provider_raw: "TELEGRAM_REPLY: slack reply\n".to_string(),
+                telegram_reply: "slack reply".to_string(),
+                voice_reply: String::new(),
+                status: "ok".to_string(),
+                update_id: Some("501".to_string()),
+                duration_ms: None,
+                channel: "slack".to_string(),
+            })
+            .expect("insert slack turn");
+
+        let input = TurnInput {
+            input_type: InputType::Text,
+            user_text: "next telegram message".to_string(),
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+            supplemental_context: None,
+            channel: "telegram".to_string(),
+        };
+
+        let text = build_context(
+            &cfg,
+            &store,
+            &input,
+            "2026-01-01T00:02:00+0000",
+            "321",
+            &QuotedMessage {
+                reply_from: None,
+                reply_text: None,
+            },
+        )
+        .expect("context");
+
+        assert!(text.contains("telegram hello"));
+        assert!(!text.contains("slack hello"));
     }
 
     #[test]

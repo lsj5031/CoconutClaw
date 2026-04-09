@@ -87,17 +87,24 @@ impl Store {
         Ok(())
     }
 
-    pub(crate) fn recent_turns_snippet(&self, limit: u32) -> Result<Vec<String>> {
+    pub(crate) fn recent_turns_snippet(
+        &self,
+        limit: u32,
+        chat_id: &str,
+        channel: &str,
+    ) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT ts || ' | in=' || COALESCE(REPLACE(user_text, char(10), ' '), '') || ' | out=' || COALESCE(REPLACE(COALESCE(telegram_reply, voice_reply), char(10), ' '), '')
              FROM turns
              WHERE status != 'boundary'
-               AND id > COALESCE((SELECT MAX(id) FROM turns WHERE user_text = '---CONTEXT_BOUNDARY---'), 0)
+               AND chat_id = ?1
+               AND channel = ?2
+               AND id > COALESCE((SELECT MAX(id) FROM turns WHERE user_text = '---CONTEXT_BOUNDARY---' AND chat_id = ?1 AND channel = ?2), 0)
              ORDER BY id DESC
-             LIMIT ?1",
+             LIMIT ?3",
         )?;
 
-        let mut rows = stmt.query(params![limit])?;
+        let mut rows = stmt.query(params![chat_id, channel, limit])?;
         let mut lines = Vec::new();
         while let Some(row) = rows.next()? {
             lines.push(row.get::<_, String>(0)?);
@@ -154,11 +161,12 @@ impl Store {
         ts: &str,
         chat_id: &str,
         update_id: Option<&str>,
+        channel: &str,
     ) -> Result<bool> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id)
-             VALUES(?1, ?2, 'system', '---CONTEXT_BOUNDARY---', '', '', '', '', 'boundary', ?3)",
-            params![ts, chat_id, update_id],
+            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, channel)
+             VALUES(?1, ?2, 'system', '---CONTEXT_BOUNDARY---', '', '', '', '', 'boundary', ?3, ?4)",
+            params![ts, chat_id, update_id, channel],
         )?;
         Ok(self.conn.changes() > 0)
     }

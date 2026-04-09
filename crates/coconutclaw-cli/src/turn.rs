@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use coconutclaw_config::RuntimeConfig;
@@ -27,9 +28,26 @@ use crate::store::{Store, TurnRecord};
 use crate::telegram::{build_telegram_client, spawn_progress_updater, telegram_download_file};
 use crate::{
     IncomingMedia, InputType, QuotedMessage, TurnInput, TurnResult, TurnStatus,
-    asr_feature_enabled, clear_cancel_marker, command_exists, iso_now, maybe_spawn_cancel_watcher,
-    resolve_instance_path,
+    asr_feature_enabled, cancel_marker_path, clear_cancel_marker, command_exists, iso_now,
+    maybe_spawn_cancel_watcher, resolve_instance_path,
 };
+
+fn spawn_cancel_marker_watcher(
+    cfg: &RuntimeConfig,
+    cancel_flag: Arc<AtomicBool>,
+    stop_flag: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    let marker_path = cancel_marker_path(cfg);
+    thread::spawn(move || {
+        while !stop_flag.load(Ordering::SeqCst) && !cancel_flag.load(Ordering::SeqCst) {
+            if marker_path.exists() {
+                cancel_flag.store(true, Ordering::SeqCst);
+                break;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+    })
+}
 
 fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
     let _span = tracing::info_span!("asr", path = %audio_path.display()).entered();
@@ -109,11 +127,11 @@ pub(crate) fn process_turn(
         })
         .unwrap_or_else(|| "local".to_string());
 
-    let context = build_context(cfg, store, &input, &ts, quoted)?;
+    let context = build_context(cfg, store, &input, &ts, &chat_id, quoted)?;
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let cancel_watcher_stop = Arc::new(AtomicBool::new(false));
-    let cancel_watcher = if update_id.is_some() {
+    let cancel_watcher = if channel == "telegram" && update_id.is_some() {
         maybe_spawn_cancel_watcher(
             cfg,
             store,
@@ -126,6 +144,12 @@ pub(crate) fn process_turn(
     } else {
         None
     };
+    let marker_watcher_stop = Arc::new(AtomicBool::new(false));
+    let marker_watcher = spawn_cancel_marker_watcher(
+        cfg,
+        Arc::clone(&cancel_flag),
+        Arc::clone(&marker_watcher_stop),
+    );
     let progress_updater_stop = Arc::new(AtomicBool::new(false));
     let (progress_sender, progress_updater) = if let Some(message_id) = progress_message_id {
         let (progress_tx, progress_rx) = mpsc::channel::<String>();
@@ -198,6 +222,8 @@ pub(crate) fn process_turn(
     if let Some(handle) = cancel_watcher {
         let _ = handle.join();
     }
+    marker_watcher_stop.store(true, Ordering::SeqCst);
+    let _ = marker_watcher.join();
     drop(progress_sender);
     progress_updater_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = progress_updater {
@@ -411,6 +437,7 @@ pub(crate) fn resolve_turn_input(
             attachment_type,
             attachment_path: Some(resolved),
             attachment_owned: false,
+            supplemental_context: None,
             channel: channel.to_string(),
         });
     }
@@ -427,6 +454,7 @@ pub(crate) fn resolve_turn_input(
         attachment_type: None,
         attachment_path: None,
         attachment_owned: false,
+        supplemental_context: None,
         channel: channel.to_string(),
     })
 }
