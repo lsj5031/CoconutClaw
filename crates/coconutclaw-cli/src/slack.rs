@@ -137,7 +137,10 @@ fn parse_slack_response(body: &str, context: &str) -> Result<Value> {
     bail!("slack {context}: {error}")
 }
 
-pub(crate) fn format_slack_thread_context(json_response: &str) -> Result<String> {
+pub(crate) fn format_slack_thread_context(
+    json_response: &str,
+    min_ts: Option<f64>,
+) -> Result<String> {
     let v = parse_slack_response(json_response, "conversations.replies/history")?;
 
     let messages = v["messages"]
@@ -146,6 +149,14 @@ pub(crate) fn format_slack_thread_context(json_response: &str) -> Result<String>
 
     let mut lines = Vec::new();
     for msg in messages {
+        let message_ts = msg["ts"]
+            .as_str()
+            .and_then(|value| value.parse::<f64>().ok());
+        if let (Some(cutoff), Some(message_ts)) = (min_ts, message_ts)
+            && message_ts <= cutoff
+        {
+            continue;
+        }
         let user = msg["user"].as_str().unwrap_or("unknown_user");
         let text = msg["text"].as_str().unwrap_or("");
         lines.push(format!("{user}: {text}"));
@@ -158,6 +169,7 @@ pub(crate) fn slack_fetch_thread_context(
     client: &Client,
     channel: &str,
     thread_ts: Option<&str>,
+    min_ts: Option<f64>,
 ) -> Result<String> {
     let (url, mut form) = match thread_ts {
         Some(ts) => (
@@ -179,7 +191,7 @@ pub(crate) fn slack_fetch_thread_context(
         .context(format!("slack {} send failed", url))?;
 
     let body = resp.text().context(format!("slack {} read failed", url))?;
-    format_slack_thread_context(&body)
+    format_slack_thread_context(&body, min_ts)
 }
 
 pub(crate) fn slack_post_message(
@@ -1170,13 +1182,27 @@ mod tests {
         let json = r#"{
             "ok": true,
             "messages": [
-                {"user": "U1", "text": "First message"},
-                {"user": "U2", "text": "Second message"}
+                {"user": "U1", "text": "First message", "ts": "1710000001.000100"},
+                {"user": "U2", "text": "Second message", "ts": "1710000002.000100"}
             ]
         }"#;
 
-        let context = super::format_slack_thread_context(json).unwrap();
+        let context = super::format_slack_thread_context(json, None).unwrap();
         assert_eq!(context, "U1: First message\nU2: Second message");
+    }
+
+    #[test]
+    fn format_slack_thread_context_skips_messages_before_boundary() {
+        let json = r#"{
+            "ok": true,
+            "messages": [
+                {"user": "U1", "text": "Old message", "ts": "1710000000.100000"},
+                {"user": "U2", "text": "Fresh message", "ts": "1710000010.100000"}
+            ]
+        }"#;
+
+        let context = super::format_slack_thread_context(json, Some(1710000005.0)).unwrap();
+        assert_eq!(context, "U2: Fresh message");
     }
 
     #[test]

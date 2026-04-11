@@ -108,7 +108,14 @@ pub(crate) fn build_context(
         text.push('\n');
     }
 
+    let boundary_unix = store.latest_boundary_unix(chat_id, channel)?;
+    let quoted_is_after_boundary = match (quoted.reply_ts, boundary_unix) {
+        (Some(reply_ts), Some(boundary_ts)) => reply_ts > boundary_ts,
+        _ => true,
+    };
+
     if let Some(reply_text) = quoted.reply_text.as_ref()
+        && quoted_is_after_boundary
         && !reply_text.trim().is_empty()
     {
         text.push_str("\n## Quoted/replied-to message\n");

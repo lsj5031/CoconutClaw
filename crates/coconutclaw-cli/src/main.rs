@@ -177,6 +177,7 @@ pub(crate) struct TurnInput {
 struct QuotedMessage {
     reply_from: Option<String>,
     reply_text: Option<String>,
+    reply_ts: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +296,7 @@ fn run_once(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<(
         &QuotedMessage {
             reply_from: None,
             reply_text: None,
+            reply_ts: None,
         },
     )?;
     print!("{output}");
@@ -323,6 +325,7 @@ fn run_run(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()
             &QuotedMessage {
                 reply_from: None,
                 reply_text: None,
+                reply_ts: None,
             },
         )?;
         print!("{output}");
@@ -412,7 +415,7 @@ fn process_slack_socket_turn(
         tracing::warn!("failed to set slack inflight checkpoint: {err:#}");
     }
 
-    maybe_populate_slack_thread_context(cfg, &slack_client, &mut turn);
+    maybe_populate_slack_thread_context(cfg, store, &slack_client, &mut turn);
 
     let (hydrated_input, cleanup_path) =
         hydrate_slack_turn_input(cfg, turn.event_id.as_deref(), turn.input, turn.media)?;
@@ -428,6 +431,7 @@ fn process_slack_socket_turn(
         &QuotedMessage {
             reply_from: None,
             reply_text: None,
+            reply_ts: None,
         },
     )?;
 
@@ -490,6 +494,7 @@ fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
         &QuotedMessage {
             reply_from: None,
             reply_text: None,
+            reply_ts: None,
         },
     )?;
 
@@ -547,6 +552,7 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> 
             &QuotedMessage {
                 reply_from: None,
                 reply_text: None,
+                reply_ts: None,
             },
         )?;
         let client = build_telegram_client(cfg)?;
@@ -1232,6 +1238,7 @@ struct ProcessOutcome {
 
 fn maybe_populate_slack_thread_context(
     cfg: &RuntimeConfig,
+    store: &Store,
     slack_client: &Client,
     turn: &mut SlackWebhookTurn,
 ) {
@@ -1239,12 +1246,26 @@ fn maybe_populate_slack_thread_context(
         return;
     };
 
+    let boundary_unix = match store.latest_boundary_unix(&turn.channel_id, "slack") {
+        Ok(ts) => ts,
+        Err(err) => {
+            tracing::warn!("failed to read slack context boundary: {err:#}");
+            None
+        }
+    };
+
     let history_client = build_slack_user_client(cfg)
         .unwrap_or(None)
         .unwrap_or_else(|| slack_client.clone());
 
-    match slack_fetch_thread_context(&history_client, &turn.channel_id, Some(thread_ts)) {
-        Ok(ctx) => turn.input.supplemental_context = Some(ctx),
+    match slack_fetch_thread_context(
+        &history_client,
+        &turn.channel_id,
+        Some(thread_ts),
+        boundary_unix.map(|ts| ts as f64),
+    ) {
+        Ok(ctx) if !ctx.trim().is_empty() => turn.input.supplemental_context = Some(ctx),
+        Ok(_) => turn.input.supplemental_context = None,
         Err(err) => tracing::warn!("failed to fetch slack thread context: {err:#}"),
     }
 }
@@ -1633,7 +1654,7 @@ fn process_webhook_line(
                 }
             };
 
-            maybe_populate_slack_thread_context(cfg, &slack_client, &mut turn);
+            maybe_populate_slack_thread_context(cfg, store, &slack_client, &mut turn);
 
             let progress_message_id = send_slack_progress_message(
                 &slack_client,
@@ -1660,6 +1681,7 @@ fn process_webhook_line(
                 &QuotedMessage {
                     reply_from: None,
                     reply_text: None,
+                    reply_ts: None,
                 },
             )?;
 
@@ -1952,6 +1974,10 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
                 .and_then(Value::as_str)
         })
         .map(ToOwned::to_owned);
+    let reply_ts = message
+        .get("reply_to_message")
+        .and_then(|node| node.get("date"))
+        .and_then(Value::as_i64);
 
     let (input_type, attachment_type) = match media.as_ref() {
         Some(IncomingMedia::Voice { .. }) => (InputType::Voice, None),
@@ -1990,6 +2016,7 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
         quoted: QuotedMessage {
             reply_from,
             reply_text,
+            reply_ts,
         },
     })))
 }
@@ -2567,6 +2594,7 @@ mod tests {
             &QuotedMessage {
                 reply_from: None,
                 reply_text: None,
+                reply_ts: None,
             },
         )
         .expect("context");
@@ -2598,6 +2626,7 @@ mod tests {
             &QuotedMessage {
                 reply_from: None,
                 reply_text: None,
+                reply_ts: None,
             },
         )
         .expect("context");
@@ -2662,6 +2691,7 @@ mod tests {
             &QuotedMessage {
                 reply_from: None,
                 reply_text: None,
+                reply_ts: None,
             },
         )
         .expect("context");
@@ -2694,12 +2724,51 @@ mod tests {
             &QuotedMessage {
                 reply_from: None,
                 reply_text: None,
+                reply_ts: None,
             },
         )
         .expect("context");
 
         assert!(text.contains("## Supplemental conversation context"));
         assert!(text.contains("U123: earlier thread reply"));
+    }
+
+    #[test]
+    fn context_omits_quoted_reply_from_before_boundary() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+
+        store
+            .insert_boundary_turn("2026-01-01T00:02:00+0000", "321", Some("600"), "telegram")
+            .expect("insert boundary");
+
+        let input = TurnInput {
+            input_type: InputType::Text,
+            user_text: "fresh question".to_string(),
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+            supplemental_context: None,
+            channel: "telegram".to_string(),
+        };
+
+        let text = build_context(
+            &cfg,
+            &store,
+            &input,
+            "2026-01-01T00:03:00+0000",
+            "321",
+            &QuotedMessage {
+                reply_from: Some("CoconutClaw".to_string()),
+                reply_text: Some("older reply".to_string()),
+                reply_ts: Some(1_767_225_719),
+            },
+        )
+        .expect("context");
+
+        assert!(!text.contains("## Quoted/replied-to message"));
+        assert!(!text.contains("older reply"));
     }
 
     #[test]

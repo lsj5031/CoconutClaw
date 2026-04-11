@@ -1,5 +1,6 @@
 use crate::markers::{parse_markers, render_output};
 use anyhow::{Context, Result};
+use chrono::DateTime;
 use coconutclaw_config::RuntimeConfig;
 use rusqlite::{Connection, params};
 use std::fs;
@@ -110,6 +111,28 @@ impl Store {
             lines.push(row.get::<_, String>(0)?);
         }
         Ok(lines)
+    }
+
+    pub(crate) fn latest_boundary_unix(&self, chat_id: &str, channel: &str) -> Result<Option<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts
+             FROM turns
+             WHERE status = 'boundary'
+               AND chat_id = ?1
+               AND channel = ?2
+             ORDER BY id DESC
+             LIMIT 1",
+        )?;
+
+        let mut rows = stmt.query(params![chat_id, channel])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+
+        let ts: String = row.get(0)?;
+        Ok(DateTime::parse_from_str(&ts, "%Y-%m-%dT%H:%M:%S%z")
+            .ok()
+            .map(|dt| dt.timestamp()))
     }
 
     pub(crate) fn insert_turn(&self, turn: &TurnRecord) -> Result<bool> {
