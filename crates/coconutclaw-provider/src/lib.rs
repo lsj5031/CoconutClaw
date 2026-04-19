@@ -390,6 +390,10 @@ fn run_opencode(
         }
         if include_dangerous_flag {
             cmd.arg("--dangerously-skip-permissions");
+            // --dangerously-skip-permissions only auto-approves "ask" permissions;
+            // tools like external_directory have a default "deny" rule that takes
+            // precedence.  Override with OPENCODE_PERMISSION so everything is allowed.
+            cmd.env("OPENCODE_PERMISSION", r#"{"*":"allow"}"#);
         }
 
         cmd.arg("--format").arg("json").arg(context);
