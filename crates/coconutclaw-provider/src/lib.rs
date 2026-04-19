@@ -374,30 +374,52 @@ fn run_opencode(
     progress_tx: Option<&Sender<String>>,
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
-    let mut cmd = new_provider_command(&config.opencode.bin);
-    cmd.arg("run");
+    let run_once = |include_dangerous_flag: bool| -> Result<RunResult> {
+        let mut cmd = new_provider_command(&config.opencode.bin);
+        cmd.arg("run");
 
-    if let Some(model) = &config.opencode.model {
-        cmd.arg("--model").arg(model);
+        if let Some(model) = &config.opencode.model {
+            cmd.arg("--model").arg(model);
+        }
+        if let Some(effort) = &config.opencode.reasoning_effort {
+            cmd.arg("--variant").arg(effort);
+        }
+
+        if progress_tx.is_some() {
+            cmd.arg("--thinking");
+        }
+        if include_dangerous_flag {
+            cmd.arg("--dangerously-skip-permissions");
+        }
+
+        cmd.arg("--format").arg("json").arg(context);
+
+        run_provider_process(
+            cmd,
+            cancel_flag,
+            progress_tx,
+            Some(parse_opencode_json_line),
+            &config.opencode.bin,
+            timeout_secs,
+        )
+    };
+
+    let yolo_mode = config
+        .opencode
+        .skip_permissions
+        .unwrap_or_else(|| config.exec_policy.eq_ignore_ascii_case("yolo"));
+    let mut run_result = run_once(yolo_mode)?;
+    if yolo_mode
+        && !run_result.status.success()
+        && !run_result.cancelled
+        && !run_result.timed_out
+        && should_retry_without_dangerous_flag(&run_result.stdout_text, &run_result.stderr_text)
+    {
+        tracing::warn!(
+            "opencode CLI rejected dangerous permission flag; retrying without it for compatibility"
+        );
+        run_result = run_once(false)?;
     }
-    if let Some(effort) = &config.opencode.reasoning_effort {
-        cmd.arg("--variant").arg(effort);
-    }
-
-    if progress_tx.is_some() {
-        cmd.arg("--thinking");
-    }
-
-    cmd.arg("--format").arg("json").arg(context);
-
-    let run_result = run_provider_process(
-        cmd,
-        cancel_flag,
-        progress_tx,
-        Some(parse_opencode_json_line),
-        &config.opencode.bin,
-        timeout_secs,
-    )?;
 
     let raw_output_override =
         extract_json_or_fallback(&run_result, extract_opencode_json_final, false);

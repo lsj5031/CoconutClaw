@@ -87,6 +87,9 @@ pub struct OpenCodeConfig {
     pub bin: String,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    /// When `Some(true)`, pass `--dangerously-skip-permissions` to opencode.
+    /// When `None`, falls back to the global `exec_policy == "yolo"` check.
+    pub skip_permissions: Option<bool>,
 }
 
 impl Default for OpenCodeConfig {
@@ -95,6 +98,7 @@ impl Default for OpenCodeConfig {
             bin: "opencode".to_string(),
             model: None,
             reasoning_effort: None,
+            skip_permissions: None,
         }
     }
 }
@@ -266,6 +270,7 @@ PROVIDER_TIMEOUT_SECS = 300
 
 CLAUDE_BIN = "claude"
 OPENCODE_BIN = "opencode"
+OPENCODE_SKIP_PERMISSIONS = ""
 GEMINI_BIN = "gemini"
 FACTORY_BIN = "droid"
 "#;
@@ -299,6 +304,7 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "OPENCODE_BIN",
     "OPENCODE_MODEL",
     "OPENCODE_REASONING_EFFORT",
+    "OPENCODE_SKIP_PERMISSIONS",
     "GEMINI_BIN",
     "GEMINI_MODEL",
     "GEMINI_REASONING_EFFORT",
@@ -721,6 +727,13 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
+            skip_permissions: {
+                let raw = pick_value("OPENCODE_SKIP_PERMISSIONS", &config_file);
+                match raw.as_deref().map(str::trim) {
+                    Some(v) if !v.is_empty() => Some(parse_on_off(Some(v), false)),
+                    _ => None,
+                }
+            },
         },
         gemini: GeminiConfig {
             bin: pick_value("GEMINI_BIN", &config_file).unwrap_or_else(|| "gemini".to_string()),

@@ -45,6 +45,7 @@ AGENT_PROVIDER = "codex"
 CODEX_BIN = "codex"
 CODEX_MODEL = ""
 EXEC_POLICY = "yolo"
+OPENCODE_SKIP_PERMISSIONS = ""
 ALLOWLIST_PATH = "./config/allowlist.txt"
 
 # pi provider settings
