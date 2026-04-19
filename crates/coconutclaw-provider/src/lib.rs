@@ -384,6 +384,10 @@ fn run_opencode(
         cmd.arg("--variant").arg(effort);
     }
 
+    if progress_tx.is_some() {
+        cmd.arg("--thinking");
+    }
+
     cmd.arg("--format").arg("json").arg(context);
 
     let run_result = run_provider_process(
@@ -1291,6 +1295,40 @@ fn parse_opencode_json_line(line: &str) -> Option<String> {
         return Some("Processing...".to_string());
     }
 
+    // text — assistant message block completed
+    if event_type == "text" {
+        let part = value.get("part")?;
+        let part_type = part.get("type").and_then(Value::as_str).unwrap_or("text");
+        if part_type == "text" {
+            return Some("Drafting response...".to_string());
+        }
+    }
+
+    // reasoning/thinking — reasoning block completed
+    if matches!(event_type, "reasoning" | "thinking") {
+        let part = value.get("part")?;
+        let part_type = part
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or(event_type);
+        if matches!(part_type, "reasoning" | "thinking") {
+            let text = part
+                .get("text")
+                .and_then(Value::as_str)
+                .map(|text| {
+                    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let trimmed = collapsed.trim().trim_matches('*').trim_matches('`').trim();
+                    shorten_status_text(trimmed, 120)
+                })
+                .unwrap_or_default();
+            return if text.is_empty() {
+                Some("Reasoning...".to_string())
+            } else {
+                Some(format!("Reasoning: {text}"))
+            };
+        }
+    }
+
     // tool_use — tool invocation (often emitted with final state)
     if event_type == "tool_use" {
         let part = value.get("part")?;
@@ -1302,11 +1340,16 @@ fn parse_opencode_json_line(line: &str) -> Option<String> {
             .unwrap_or("");
         let is_started = matches!(status, "running" | "in_progress" | "started" | "pending");
         let is_error = state
-            .and_then(|s| s.get("metadata"))
-            .and_then(|m| m.get("exit"))
-            .and_then(Value::as_i64)
-            .map(|c| c != 0)
-            .unwrap_or(false);
+            .and_then(|s| s.get("status"))
+            .and_then(Value::as_str)
+            .map(|status| matches!(status, "error" | "failed"))
+            .unwrap_or(false)
+            || state
+                .and_then(|s| s.get("metadata"))
+                .and_then(|m| m.get("exit"))
+                .and_then(Value::as_i64)
+                .map(|c| c != 0)
+                .unwrap_or(false);
         let detail = state
             .and_then(|s| s.get("title"))
             .and_then(Value::as_str)
@@ -1317,6 +1360,22 @@ fn parse_opencode_json_line(line: &str) -> Option<String> {
                     .and_then(|s| s.get("input"))
                     .map(|input| tool_arg_summary(tool, Some(input)))
                     .filter(|text| !text.is_empty())
+            })
+            .or_else(|| {
+                state
+                    .and_then(|s| s.get("error"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| shorten_status_text(text, 60))
+            })
+            .or_else(|| {
+                state
+                    .and_then(|s| s.get("output"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| shorten_status_text(text, 60))
             })
             .unwrap_or_default();
         let marker = if is_started {
@@ -1337,7 +1396,7 @@ fn parse_opencode_json_line(line: &str) -> Option<String> {
     if event_type == "step_finish" {
         let part = value.get("part")?;
         let reason = part.get("reason").and_then(Value::as_str).unwrap_or("");
-        if reason == "tool-calls" {
+        if matches!(reason, "tool_calls" | "tool-calls") {
             return Some("Continuing...".to_string());
         }
     }
@@ -2082,8 +2141,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_opencode_text() {
+        let line = r#"{"type":"text","timestamp":1767036061000,"sessionID":"ses_1","part":{"id":"part_1","type":"text","text":"TELEGRAM_REPLY: hello","time":{"start":1,"end":2}}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("Drafting response...")
+        );
+    }
+
+    #[test]
+    fn parse_opencode_reasoning() {
+        let line = r#"{"type":"reasoning","timestamp":1767036061100,"sessionID":"ses_1","part":{"id":"part_2","type":"reasoning","text":"  Let me\n  think this through carefully.  ","time":{"start":1,"end":2}}}"#;
+        assert_eq!(
+            parse_opencode_json_line(line).as_deref(),
+            Some("Reasoning: Let me think this through carefully.")
+        );
+    }
+
+    #[test]
     fn parse_opencode_tool_use_success() {
-        let line = r#"{"type":"tool_use","timestamp":1767036061199,"sessionID":"ses_1","part":{"tool":"bash","state":{"status":"completed","input":{"command":"echo hello"},"title":"Print hello","metadata":{"exit":0}}}}"#;
+        let line = r#"{"type":"tool_use","timestamp":1767036061199,"sessionID":"ses_1","part":{"id":"part_3","type":"tool","callID":"call_1","tool":"bash","state":{"status":"completed","input":{"command":"echo hello"},"output":"hello\n","title":"Print hello","metadata":{"exit":0},"time":{"start":1,"end":2}}}}"#;
         assert_eq!(
             parse_opencode_json_line(line).as_deref(),
             Some("✓ bash: Print hello")
@@ -2119,7 +2196,7 @@ mod tests {
 
     #[test]
     fn parse_opencode_step_finish_tool_calls() {
-        let line = r#"{"type":"step_finish","timestamp":1767036061205,"sessionID":"ses_1","part":{"type":"step-finish","reason":"tool-calls"}}"#;
+        let line = r#"{"type":"step_finish","timestamp":1767036061205,"sessionID":"ses_1","part":{"type":"step-finish","reason":"tool_calls"}}"#;
         assert_eq!(
             parse_opencode_json_line(line).as_deref(),
             Some("Continuing...")
