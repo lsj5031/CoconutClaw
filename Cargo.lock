@@ -267,7 +267,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "coconutclaw"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "coconutclaw-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "coconutclaw-provider"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "coconutclaw-config",
