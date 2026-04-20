@@ -43,14 +43,22 @@ pub(crate) fn telegram_api_base(cfg: &RuntimeConfig) -> Result<String> {
     let token = valid_telegram_token(cfg).ok_or_else(|| {
         anyhow::anyhow!("TELEGRAM_BOT_TOKEN is missing; set it in instance config.toml")
     })?;
-    Ok(format!("https://api.telegram.org/bot{token}"))
+    if let Some(base) = &cfg.telegram_api_base {
+        Ok(format!("{}/bot{}", base.trim_end_matches('/'), token))
+    } else {
+        Ok(format!("https://api.telegram.org/bot{token}"))
+    }
 }
 
 pub(crate) fn telegram_file_base(cfg: &RuntimeConfig) -> Result<String> {
     let token = valid_telegram_token(cfg).ok_or_else(|| {
         anyhow::anyhow!("TELEGRAM_BOT_TOKEN is missing; set it in instance config.toml")
     })?;
-    Ok(format!("https://api.telegram.org/file/bot{token}"))
+    if let Some(base) = &cfg.telegram_file_base {
+        Ok(format!("{}/bot{}", base.trim_end_matches('/'), token))
+    } else {
+        Ok(format!("https://api.telegram.org/file/bot{token}"))
+    }
 }
 
 pub(crate) fn build_telegram_client(cfg: &RuntimeConfig) -> Result<Client> {

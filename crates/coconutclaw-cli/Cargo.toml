@@ -32,3 +32,6 @@ futures-util.workspace = true
 subtle = "2.6.1"
 coconutclaw-config = { path = "../coconutclaw-config" }
 coconutclaw-provider = { path = "../coconutclaw-provider" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

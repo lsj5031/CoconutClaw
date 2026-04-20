@@ -9,6 +9,7 @@ pub(crate) struct ParsedMarkers {
     pub(crate) send_video: Vec<String>,
     pub(crate) memory_append: Vec<String>,
     pub(crate) task_append: Vec<String>,
+    pub(crate) schedule_prompt: Vec<String>,
 }
 
 impl ParsedMarkers {
@@ -41,6 +42,9 @@ pub(crate) fn render_output(reply: &str, voice_reply: &str, markers: &ParsedMark
     }
     for line in &markers.task_append {
         lines.push(format!("TASK_APPEND: {line}"));
+    }
+    for line in &markers.schedule_prompt {
+        lines.push(format!("SCHEDULE_PROMPT: {line}"));
     }
 
     lines.join("\n") + "\n"
@@ -156,6 +160,7 @@ fn marker_prefixes() -> &'static [&'static str] {
         "SEND_VIDEO:",
         "MEMORY_APPEND:",
         "TASK_APPEND:",
+        "SCHEDULE_PROMPT:",
     ]
 }
 
@@ -169,6 +174,7 @@ fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
         ("SEND_VIDEO", "SEND_VIDEO:"),
         ("MEMORY_APPEND", "MEMORY_APPEND:"),
         ("TASK_APPEND", "TASK_APPEND:"),
+        ("SCHEDULE_PROMPT", "SCHEDULE_PROMPT:"),
     ];
 
     for &(name, prefix) in MARKERS {
@@ -200,6 +206,7 @@ fn commit_block(
         "SEND_VIDEO" => markers.send_video.push(content.to_string()),
         "MEMORY_APPEND" => markers.memory_append.push(content.to_string()),
         "TASK_APPEND" => markers.task_append.push(content.to_string()),
+        "SCHEDULE_PROMPT" => markers.schedule_prompt.push(content.to_string()),
         _ => {}
     }
 }

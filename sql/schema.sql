@@ -30,4 +30,16 @@ CREATE TABLE IF NOT EXISTS tasks (
   done INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  source TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  schedule_time TEXT NOT NULL,
+  recurring INTEGER NOT NULL DEFAULT 1,
+  last_run_ts TEXT,
+  done INTEGER NOT NULL DEFAULT 0,
+  pending_output TEXT
+);
+
 INSERT OR IGNORE INTO kv(key, value) VALUES ('last_update_id', '0');

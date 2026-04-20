@@ -183,6 +183,8 @@ pub(crate) fn build_context(
     text.push_str("SEND_VIDEO: <absolute file path>\n");
     text.push_str("MEMORY_APPEND: <single memory line>\n");
     text.push_str("TASK_APPEND: <single task line>\n");
+    text.push_str("SCHEDULE_PROMPT: HH:MM|<prompt text> (recurring daily)\n");
+    text.push_str("SCHEDULE_PROMPT: once HH:MM|<prompt text> (one-shot)\n");
 
     if channel == "slack" {
         match cfg.slack_format_mode {
@@ -291,12 +293,55 @@ pub(crate) fn append_memory_and_tasks(
         store.insert_tasks(ts, cfg.provider.as_str(), &markers.task_append)?;
     }
 
+    if !markers.schedule_prompt.is_empty() && cfg.scheduled_tasks_enabled {
+        for line in &markers.schedule_prompt {
+            if let Some((recurring, time, text)) = parse_schedule_prompt_line(line)
+                && let Err(err) = store.insert_scheduled_task(ts, "agent", &text, &time, recurring)
+            {
+                tracing::warn!("failed to persist scheduled task: {err:#}");
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Parse a SCHEDULE_PROMPT value into its components.
+/// Format: `[once ]HH:MM|prompt text`
+/// Returns normalized `(recurring, "HH:MM", "prompt text")` or `None` on parse failure.
+fn parse_schedule_prompt_line(line: &str) -> Option<(bool, String, String)> {
+    let (recurring, rest) = if let Some(stripped) = line.strip_prefix("once ") {
+        (false, stripped.trim())
+    } else {
+        (true, line)
+    };
+
+    let (time, prompt) = rest.split_once('|')?;
+    let time = time.trim();
+    let prompt = prompt.trim();
+
+    // Basic HH:MM validation
+    let parts: Vec<&str> = time.split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let h = parts[0].parse::<u8>().ok()?;
+    let m = parts[1].parse::<u8>().ok()?;
+    if h > 23 || m > 59 {
+        return None;
+    }
+
+    if prompt.is_empty() {
+        None
+    } else {
+        Some((recurring, format!("{h:02}:{m:02}"), prompt.to_string()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coconutclaw_config::RuntimeConfig;
     use std::path::PathBuf;
 
     #[test]
@@ -349,5 +394,33 @@ mod tests {
         std::fs::write(&path, "file content").unwrap();
         assert_eq!(read_or_default(&path, "fallback"), "file content");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parse_schedule_prompt_line_normalizes_time_and_once_prefix() {
+        assert_eq!(
+            parse_schedule_prompt_line("once 9:05|Check backups"),
+            Some((false, "09:05".to_string(), "Check backups".to_string()))
+        );
+    }
+
+    #[test]
+    fn append_memory_and_tasks_stores_normalized_scheduled_time() {
+        let cfg = RuntimeConfig::test_config();
+        let mut store = Store::open(&cfg).expect("store");
+        let markers = ParsedMarkers {
+            schedule_prompt: vec!["9:00|Check backups".to_string()],
+            ..ParsedMarkers::default()
+        };
+
+        append_memory_and_tasks(&cfg, &mut store, "2026-04-20T08:00:00+0000", &markers)
+            .expect("append schedule prompt");
+
+        let due = store
+            .get_due_scheduled_tasks("10:00", "2026-04-20")
+            .expect("get due scheduled tasks");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].schedule_time, "09:00");
+        assert_eq!(due[0].prompt, "Check backups");
     }
 }

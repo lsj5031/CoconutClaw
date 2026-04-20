@@ -472,6 +472,117 @@ fn drain_slack_socket_turns(
     }
 }
 
+fn run_due_scheduled_tasks(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    telegram_client: &Client,
+) -> Result<()> {
+    if !cfg.scheduled_tasks_enabled {
+        return Ok(());
+    }
+
+    let (current_hhmm, today) = scheduled_task_slot_now(&cfg.timezone);
+
+    let due_tasks = store.get_due_scheduled_tasks(&current_hhmm, &today)?;
+    if due_tasks.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("running {} due scheduled task(s)", due_tasks.len());
+
+    for task in due_tasks {
+        let is_retry = task.pending_output.is_some();
+        tracing::info!(
+            "executing scheduled task id={} created={} last_run={:?} time={} recurring={} done={} prompt={:?} is_retry={}",
+            task.id,
+            task.ts,
+            task.last_run_ts,
+            task.schedule_time,
+            task.recurring,
+            task.done,
+            task.prompt,
+            is_retry
+        );
+
+        let output_to_dispatch = if let Some(pending) = task.pending_output.as_deref() {
+            tracing::info!("retrying dispatch for scheduled task id={}", task.id);
+            Some(pending.to_string())
+        } else {
+            match process_turn(
+                cfg,
+                store,
+                TurnInput {
+                    input_type: InputType::Text,
+                    user_text: task.prompt.clone(),
+                    asr_text: String::new(),
+                    attachment_type: None,
+                    attachment_path: None,
+                    attachment_owned: false,
+                    supplemental_context: Some(format!(
+                        "This is a scheduled task set to run at {}. Source: {}.",
+                        task.schedule_time, task.source
+                    )),
+                    channel: "telegram".to_string(),
+                },
+                "telegram",
+                cfg.telegram_chat_id.clone(),
+                None,
+                None,
+                &QuotedMessage {
+                    reply_from: None,
+                    reply_text: None,
+                    reply_ts: None,
+                },
+            ) {
+                Ok(output) => {
+                    if let Err(err) = store.set_scheduled_task_pending_output(task.id, &output) {
+                        tracing::warn!(
+                            "failed to set pending output for scheduled task id={}: {err:#}",
+                            task.id
+                        );
+                    }
+                    Some(output)
+                }
+                Err(err) => {
+                    tracing::warn!("scheduled task id={} failed: {err:#}", task.id);
+                    None
+                }
+            }
+        };
+
+        if let Some(output) = output_to_dispatch {
+            let mut dispatch_success = false;
+            if let Err(err) = dispatch_telegram_output(
+                telegram_client,
+                cfg,
+                cfg.telegram_chat_id.as_deref(),
+                &output,
+                None,
+            ) {
+                tracing::warn!("failed to dispatch scheduled task output: {err:#}");
+            } else {
+                dispatch_success = true;
+            }
+
+            if !is_retry {
+                dispatch_slack_if_configured(cfg, &output);
+            }
+
+            if dispatch_success {
+                let now_iso = iso_now(&cfg.timezone);
+                if let Err(err) = store.mark_scheduled_task_executed(task.id, &now_iso) {
+                    tracing::warn!(
+                        "failed to mark scheduled task id={} as executed: {err:#}",
+                        task.id
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
     let prompt = "Daily heartbeat for CoconutClaw. Summarize today, surface urgent tasks from TASKS/pending.md, and suggest next 1-3 actions.";
     let output = process_turn(
@@ -853,6 +964,10 @@ fn run_poll_loop(
             if let Some(rx) = slack_rx {
                 drain_slack_socket_turns(cfg, store, rx);
             }
+            // Run any due scheduled tasks before sleeping
+            if let Err(err) = run_due_scheduled_tasks(cfg, store, telegram_client) {
+                tracing::warn!("scheduled task execution failed: {err:#}");
+            }
             thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
             continue;
         }
@@ -931,6 +1046,11 @@ fn run_poll_loop(
         if let Some(rx) = slack_rx {
             drain_slack_socket_turns(cfg, store, rx);
         }
+
+        // Run any due scheduled tasks
+        if let Err(err) = run_due_scheduled_tasks(cfg, store, telegram_client) {
+            tracing::warn!("scheduled task execution failed: {err:#}");
+        }
     }
 
     tracing::info!("shutdown signal received, stopping poll loop");
@@ -962,6 +1082,12 @@ fn run_webhook_loop(
                 false
             }
         };
+
+        // Run any due scheduled tasks
+        if let Err(err) = run_due_scheduled_tasks(cfg, store, telegram_client) {
+            tracing::warn!("scheduled task execution failed: {err:#}");
+        }
+
         if !progressed {
             thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
         }
@@ -2142,6 +2268,24 @@ pub(crate) fn local_day(timezone: &str) -> String {
     now.format("%Y-%m-%d").to_string()
 }
 
+fn scheduled_task_slot_at(now: DateTime<Utc>, timezone: &str) -> (String, String) {
+    if let Ok(tz) = timezone.parse::<Tz>() {
+        let local = now.with_timezone(&tz);
+        return (
+            local.format("%H:%M").to_string(),
+            local.format("%Y-%m-%d").to_string(),
+        );
+    }
+    (
+        now.format("%H:%M").to_string(),
+        now.format("%Y-%m-%d").to_string(),
+    )
+}
+
+fn scheduled_task_slot_now(timezone: &str) -> (String, String) {
+    scheduled_task_slot_at(Utc::now(), timezone)
+}
+
 pub(crate) fn iso_now(timezone: &str) -> String {
     let now: DateTime<Utc> = Utc::now();
     if let Ok(tz) = timezone.parse::<Tz>() {
@@ -2215,6 +2359,7 @@ mod tests {
         split_text_chunks, telegram_retry_after_seconds, telegram_text_form_params,
     };
     use crate::webhook::webhook_public_endpoint;
+    use chrono::DateTime;
     use coconutclaw_config::{RuntimeConfig, TelegramParseMode};
 
     fn test_config() -> RuntimeConfig {
@@ -2350,6 +2495,22 @@ mod tests {
         assert_eq!(
             callback_signal.and_then(|signal| signal.callback_query_id),
             Some("cb1".to_string())
+        );
+    }
+
+    #[test]
+    fn scheduled_task_slot_uses_configured_timezone() {
+        let now = DateTime::parse_from_rfc3339("2026-04-20T00:30:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            scheduled_task_slot_at(now, "Pacific/Auckland"),
+            ("12:30".to_string(), "2026-04-20".to_string())
+        );
+        assert_eq!(
+            scheduled_task_slot_at(now, "America/Los_Angeles"),
+            ("17:30".to_string(), "2026-04-19".to_string())
         );
     }
 

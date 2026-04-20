@@ -23,6 +23,19 @@ pub(crate) struct TurnRecord {
     pub(crate) channel: String,
 }
 
+#[derive(Debug)]
+pub(crate) struct ScheduledTask {
+    pub(crate) id: i64,
+    pub(crate) ts: String,
+    pub(crate) source: String,
+    pub(crate) prompt: String,
+    pub(crate) schedule_time: String,
+    pub(crate) recurring: bool,
+    pub(crate) last_run_ts: Option<String>,
+    pub(crate) done: bool,
+    pub(crate) pending_output: Option<String>,
+}
+
 pub(crate) struct Store {
     conn: Connection,
 }
@@ -83,6 +96,23 @@ impl Store {
                 }
             }
             self.kv_set("schema_version", "2")?;
+        }
+
+        if current < 3 {
+            // Migration 3: add pending_output column for scheduled tasks retries
+            match self.conn.execute(
+                "ALTER TABLE scheduled_tasks ADD COLUMN pending_output TEXT",
+                [],
+            ) {
+                Ok(_) => {}
+                Err(err) => {
+                    let msg = err.to_string();
+                    if !msg.contains("duplicate column") {
+                        return Err(err.into());
+                    }
+                }
+            }
+            self.kv_set("schema_version", "3")?;
         }
 
         Ok(())
@@ -176,6 +206,85 @@ impl Store {
 
         tx.commit()?;
 
+        Ok(())
+    }
+
+    pub(crate) fn insert_scheduled_task(
+        &self,
+        ts: &str,
+        source: &str,
+        prompt: &str,
+        schedule_time: &str,
+        recurring: bool,
+    ) -> Result<()> {
+        // Deduplicate: skip if same source, prompt, and schedule_time already exists and is not done.
+        let existing: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM scheduled_tasks WHERE source = ?1 AND prompt = ?2 AND schedule_time = ?3 AND done = 0",
+            params![source, prompt, schedule_time],
+            |row| row.get(0),
+        )?;
+        if existing > 0 {
+            return Ok(());
+        }
+
+        self.conn.execute(
+            "INSERT INTO scheduled_tasks(ts, source, prompt, schedule_time, recurring, done, pending_output)
+             VALUES(?1, ?2, ?3, ?4, ?5, 0, NULL)",
+            params![ts, source, prompt, schedule_time, recurring as i32],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn get_due_scheduled_tasks(
+        &self,
+        current_hhmm: &str,
+        today: &str,
+    ) -> Result<Vec<ScheduledTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output
+             FROM scheduled_tasks
+             WHERE schedule_time <= ?1
+               AND done = 0
+               AND (
+                 (last_run_ts IS NOT NULL AND substr(last_run_ts, 1, 10) < ?2)
+                 OR
+                 (last_run_ts IS NULL AND (
+                    substr(ts, 1, 10) < ?2 OR substr(ts, 12, 5) <= schedule_time
+                 ))
+               )
+             ORDER BY schedule_time ASC",
+        )?;
+        let mut rows = stmt.query(params![current_hhmm, today])?;
+        let mut tasks = Vec::new();
+        while let Some(row) = rows.next()? {
+            tasks.push(ScheduledTask {
+                id: row.get(0)?,
+                ts: row.get(1)?,
+                source: row.get(2)?,
+                prompt: row.get(3)?,
+                schedule_time: row.get(4)?,
+                recurring: row.get::<_, i32>(5)? != 0,
+                last_run_ts: row.get(6)?,
+                done: row.get::<_, i32>(7)? != 0,
+                pending_output: row.get(8)?,
+            });
+        }
+        Ok(tasks)
+    }
+
+    pub(crate) fn mark_scheduled_task_executed(&self, id: i64, ts: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE scheduled_tasks SET last_run_ts = ?1, done = CASE WHEN recurring = 0 THEN 1 ELSE 0 END, pending_output = NULL WHERE id = ?2",
+            params![ts, id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn set_scheduled_task_pending_output(&self, id: i64, output: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE scheduled_tasks SET pending_output = ?1 WHERE id = ?2",
+            params![output, id],
+        )?;
         Ok(())
     }
 

@@ -170,6 +170,8 @@ pub struct RuntimeConfig {
     pub timezone: String,
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
+    pub telegram_api_base: Option<String>,
+    pub telegram_file_base: Option<String>,
     pub telegram_parse_mode: TelegramParseMode,
     pub telegram_parse_fallback: TelegramParseFallback,
     pub slack_bot_token: Option<String>,
@@ -206,6 +208,7 @@ pub struct RuntimeConfig {
     pub telegram_api_timeout_secs: u64,
     pub telegram_api_retry_attempts: u32,
     pub provider_timeout_secs: u64,
+    pub scheduled_tasks_enabled: bool,
     pub codex: CodexConfig,
     pub pi: PiConfig,
     pub claude: ClaudeConfig,
@@ -267,6 +270,7 @@ PROGRESS_UPDATE_INTERVAL = 3
 TELEGRAM_API_TIMEOUT_SECS = 30
 TELEGRAM_API_RETRY_ATTEMPTS = 3
 PROVIDER_TIMEOUT_SECS = 300
+SCHEDULED_TASKS_ENABLED = true
 
 CLAUDE_BIN = "claude"
 OPENCODE_BIN = "opencode"
@@ -278,6 +282,8 @@ FACTORY_BIN = "droid"
 const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
+    "TELEGRAM_API_BASE",
+    "TELEGRAM_FILE_BASE",
     "TELEGRAM_PARSE_MODE",
     "TELEGRAM_PARSE_FALLBACK",
     "TIMEZONE",
@@ -329,6 +335,7 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "TELEGRAM_API_TIMEOUT_SECS",
     "TELEGRAM_API_RETRY_ATTEMPTS",
     "PROVIDER_TIMEOUT_SECS",
+    "SCHEDULED_TASKS_ENABLED",
     "SLACK_BOT_TOKEN",
     "SLACK_USER_TOKEN",
     "SLACK_APP_TOKEN",
@@ -418,6 +425,8 @@ impl RuntimeConfig {
             timezone: "UTC".to_string(),
             telegram_bot_token: Some("123:token".to_string()),
             telegram_chat_id: Some("321".to_string()),
+            telegram_api_base: None,
+            telegram_file_base: None,
             telegram_parse_mode: TelegramParseMode::Off,
             telegram_parse_fallback: TelegramParseFallback::Plain,
             slack_bot_token: None,
@@ -454,6 +463,7 @@ impl RuntimeConfig {
             telegram_api_timeout_secs: 30,
             telegram_api_retry_attempts: 3,
             provider_timeout_secs: 300,
+            scheduled_tasks_enabled: true,
             codex: CodexConfig::default(),
             pi: PiConfig::default(),
             claude: ClaudeConfig::default(),
@@ -626,6 +636,10 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(300);
+    let scheduled_tasks_enabled = parse_on_off(
+        pick_value("SCHEDULED_TASKS_ENABLED", &config_file).as_deref(),
+        true,
+    );
 
     let cfg = RuntimeConfig {
         root_dir,
@@ -641,6 +655,8 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         timezone: pick_value("TIMEZONE", &config_file).unwrap_or_else(|| "UTC".to_string()),
         telegram_bot_token: pick_value("TELEGRAM_BOT_TOKEN", &config_file),
         telegram_chat_id: pick_value("TELEGRAM_CHAT_ID", &config_file),
+        telegram_api_base: normalize_optional(pick_value("TELEGRAM_API_BASE", &config_file)),
+        telegram_file_base: normalize_optional(pick_value("TELEGRAM_FILE_BASE", &config_file)),
         telegram_parse_mode,
         telegram_parse_fallback,
         slack_bot_token: pick_value("SLACK_BOT_TOKEN", &config_file),
@@ -677,6 +693,7 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         telegram_api_timeout_secs,
         telegram_api_retry_attempts,
         provider_timeout_secs,
+        scheduled_tasks_enabled,
         codex: CodexConfig {
             bin: pick_value("CODEX_BIN", &config_file).unwrap_or_else(|| "codex".to_string()),
             model: pick_value("CODEX_MODEL", &config_file)

@@ -374,6 +374,11 @@ fn run_opencode(
     progress_tx: Option<&Sender<String>>,
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
+    let yolo_mode = config
+        .opencode
+        .skip_permissions
+        .unwrap_or_else(|| config.exec_policy.eq_ignore_ascii_case("yolo"));
+
     let run_once = |include_dangerous_flag: bool| -> Result<RunResult> {
         let mut cmd = new_provider_command(&config.opencode.bin);
         cmd.arg("run");
@@ -388,12 +393,13 @@ fn run_opencode(
         if progress_tx.is_some() {
             cmd.arg("--thinking");
         }
+        if yolo_mode {
+            // Keep the inline permission override active even if we have to retry
+            // without the legacy CLI flag on newer opencode versions.
+            cmd.env("OPENCODE_PERMISSION", r#"{"*":"allow"}"#);
+        }
         if include_dangerous_flag {
             cmd.arg("--dangerously-skip-permissions");
-            // --dangerously-skip-permissions only auto-approves "ask" permissions;
-            // tools like external_directory have a default "deny" rule that takes
-            // precedence.  Override with OPENCODE_PERMISSION so everything is allowed.
-            cmd.env("OPENCODE_PERMISSION", r#"{"*":"allow"}"#);
         }
 
         cmd.arg("--format").arg("json").arg(context);
@@ -407,11 +413,6 @@ fn run_opencode(
             timeout_secs,
         )
     };
-
-    let yolo_mode = config
-        .opencode
-        .skip_permissions
-        .unwrap_or_else(|| config.exec_policy.eq_ignore_ascii_case("yolo"));
     let mut run_result = run_once(yolo_mode)?;
     if yolo_mode
         && !run_result.status.success()
@@ -1451,16 +1452,16 @@ fn extract_opencode_json_final(raw: &str) -> Option<String> {
             continue;
         };
         if event_type == "text" {
-            // Actual format: {"type":"text","part":{"type":"text","text":"..."}}
-            if let Some(text) = value
+            let text = value
                 .get("part")
                 .and_then(|p| p.get("text"))
                 .and_then(Value::as_str)
-            {
-                final_text.push_str(text);
-            }
-            // Legacy format: {"type":"text","content":"..."}
-            else if let Some(text) = value.get("content").and_then(Value::as_str) {
+                .or_else(|| value.get("content").and_then(Value::as_str));
+
+            if let Some(text) = text {
+                if !final_text.is_empty() && !final_text.ends_with('\n') {
+                    final_text.push('\n');
+                }
                 final_text.push_str(text);
             }
         }
@@ -1692,9 +1693,14 @@ mod tests {
         extract_claude_json_final, extract_factory_json_final, extract_gemini_json_final,
         extract_opencode_json_final, extract_pi_json_final, parse_claude_json_line,
         parse_codex_progress_line, parse_factory_json_line, parse_gemini_json_line,
-        parse_opencode_json_line, parse_pi_progress_line, shorten_status_text, tool_arg_summary,
+        parse_opencode_json_line, parse_pi_progress_line, run_provider, shorten_status_text,
+        tool_arg_summary,
     };
+    use coconutclaw_config::{AgentProvider, RuntimeConfig};
     use serde_json::Value;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn parse_codex_turn_started() {
@@ -2098,6 +2104,32 @@ mod tests {
         assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: hello from opencode"));
     }
 
+    #[test]
+    fn extract_opencode_json_final_separates_multiple_text_events() {
+        // Multiple text events must be separated by newlines so that
+        // parse_markers can detect markers on each line.
+        let raw = r#"{"type":"text","timestamp":1,"sessionID":"s1","part":{"type":"text","text":"TELEGRAM_REPLY: hello"}}
+{"type":"text","timestamp":2,"sessionID":"s1","part":{"type":"text","text":"MEMORY_APPEND: some fact"}}
+"#;
+        let text = extract_opencode_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some("TELEGRAM_REPLY: hello\nMEMORY_APPEND: some fact")
+        );
+    }
+
+    #[test]
+    fn extract_opencode_json_final_no_double_newline_if_text_ends_with_newline() {
+        let raw = r#"{"type":"text","timestamp":1,"sessionID":"s1","part":{"type":"text","text":"TELEGRAM_REPLY: hello\n"}}
+{"type":"text","timestamp":2,"sessionID":"s1","part":{"type":"text","text":"MEMORY_APPEND: fact"}}
+"#;
+        let text = extract_opencode_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some("TELEGRAM_REPLY: hello\nMEMORY_APPEND: fact")
+        );
+    }
+
     // --- Claude progress parser tests ---
 
     #[test]
@@ -2236,6 +2268,45 @@ mod tests {
             parse_opencode_json_line(line).as_deref(),
             Some("⚠ Rate limit exceeded")
         );
+    }
+
+    #[test]
+    fn run_opencode_keeps_permission_override_when_retrying_without_legacy_flag() {
+        let mut config = RuntimeConfig::test_config();
+        config.provider = AgentProvider::OpenCode;
+        config.exec_policy = "yolo".to_string();
+        config.opencode.skip_permissions = Some(true);
+
+        let script_path = config.root_dir.join("fake-opencode.sh");
+        let log_path = config.root_dir.join("fake-opencode.log");
+        let script = format!(
+            "#!/bin/sh\nlog=\"{}\"\nprintf 'args:%s\\n' \"$*\" >> \"$log\"\nprintf 'permission:%s\\n' \"${{OPENCODE_PERMISSION:-}}\" >> \"$log\"\nif printf '%s\\n' \"$*\" | grep -q -- '--dangerously-skip-permissions'; then\n  echo \"unexpected argument '--dangerously-skip-permissions'\" >&2\n  exit 1\nfi\ncat <<'EOF'\n{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello from fake opencode\"}}}}\nEOF\n",
+            log_path.display()
+        );
+        fs::write(&script_path, script).expect("write fake opencode script");
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script_path)
+                .expect("read fake opencode metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms).expect("chmod fake opencode script");
+        }
+
+        config.opencode.bin = script_path.display().to_string();
+
+        let output = run_provider(None, &config, "hello", None, None, Some(5))
+            .expect("run fake opencode provider");
+        assert!(output.success);
+        assert_eq!(
+            output.raw_output,
+            "TELEGRAM_REPLY: hello from fake opencode"
+        );
+
+        let log = fs::read_to_string(&log_path).expect("read fake opencode log");
+        assert!(log.contains("args:run --dangerously-skip-permissions --format json hello"));
+        assert!(log.contains("args:run --format json hello"));
+        assert_eq!(log.matches("permission:{\"*\":\"allow\"}").count(), 2);
     }
 
     // --- Gemini progress parser tests ---

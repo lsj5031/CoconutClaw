@@ -58,3 +58,6 @@ PI_EXTRA_ARGS = ""
 NIGHTLY_REFLECTION_FILE = "./LOGS/nightly_reflection.md"
 NIGHTLY_REFLECTION_SKIP_AGENT = "off"
 NIGHTLY_REFLECTION_PROMPT = ""
+
+# Agent-driven scheduled tasks (in-process, no OS timer needed)
+SCHEDULED_TASKS_ENABLED = "true"
