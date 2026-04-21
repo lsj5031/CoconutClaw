@@ -49,10 +49,10 @@ cat << 'EOF' > "$OUT_FILE"
 EOF
 "#
         .to_string(),
-        r#"@echo off
-echo ^<message^>
-echo ^<telegram_reply^>Hello from fake provider^</telegram_reply^>
-echo ^</message^>
+        r#"
+Write-Output '<message>'
+Write-Output '<telegram_reply>Hello from fake provider</telegram_reply>'
+Write-Output '</message>'
 "#
         .to_string(),
     );

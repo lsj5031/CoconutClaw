@@ -84,11 +84,12 @@ pub fn run_provider(
 }
 
 fn new_provider_command(bin_raw: &str) -> Command {
-    let (env_vars, bin_path) = parse_bin_with_env(bin_raw);
+    let (env_vars, bin_path, initial_args) = parse_bin_with_env(bin_raw);
     let mut cmd = Command::new(bin_path);
     for (key, value) in env_vars {
         cmd.env(&key, &value);
     }
+    cmd.args(initial_args);
     cmd
 }
 
@@ -1627,9 +1628,13 @@ fn extract_gemini_json_final(raw: &str) -> Option<String> {
     }
 }
 
-fn parse_bin_with_env(raw: &str) -> (HashMap<String, String>, String) {
+fn parse_bin_with_env(raw: &str) -> (HashMap<String, String>, String, Vec<String>) {
+    let parts = split_command_spec(raw);
+    if parts.is_empty() {
+        return (HashMap::new(), raw.to_string(), Vec::new());
+    }
+
     let mut env_vars = HashMap::new();
-    let parts: Vec<&str> = raw.split_whitespace().collect();
     let mut bin_index = 0;
 
     for (i, part) in parts.iter().enumerate() {
@@ -1645,12 +1650,43 @@ fn parse_bin_with_env(raw: &str) -> (HashMap<String, String>, String) {
     }
 
     let bin_path = if bin_index < parts.len() {
-        parts[bin_index..].join(" ")
+        parts[bin_index].clone()
     } else {
         raw.to_string()
     };
+    let initial_args = if bin_index < parts.len() {
+        parts[bin_index + 1..].to_vec()
+    } else {
+        Vec::new()
+    };
 
-    (env_vars, bin_path)
+    (env_vars, bin_path, initial_args)
+}
+
+fn split_command_spec(raw: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+
+    for ch in raw.chars() {
+        match quote {
+            Some(active) if ch == active => quote = None,
+            Some(_) => current.push(ch),
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
 }
 
 fn should_retry_without_dangerous_flag(stdout: &str, stderr: &str) -> bool {
@@ -1691,10 +1727,10 @@ fn configure_child_command(_cmd: &mut Command) {
 mod tests {
     use super::{
         extract_claude_json_final, extract_factory_json_final, extract_gemini_json_final,
-        extract_opencode_json_final, extract_pi_json_final, parse_claude_json_line,
-        parse_codex_progress_line, parse_factory_json_line, parse_gemini_json_line,
-        parse_opencode_json_line, parse_pi_progress_line, run_provider, shorten_status_text,
-        tool_arg_summary,
+        extract_opencode_json_final, extract_pi_json_final, parse_bin_with_env,
+        parse_claude_json_line, parse_codex_progress_line, parse_factory_json_line,
+        parse_gemini_json_line, parse_opencode_json_line, parse_pi_progress_line, run_provider,
+        shorten_status_text, split_command_spec, tool_arg_summary,
     };
     use coconutclaw_config::{AgentProvider, RuntimeConfig};
     use serde_json::Value;
@@ -1822,6 +1858,36 @@ mod tests {
     fn parse_pi_progress_line_tool_execution_end_error() {
         let line = r#"{"type":"tool_execution_end","toolCallId":"t1","toolName":"bash","result":{},"isError":true}"#;
         assert_eq!(parse_pi_progress_line(line).as_deref(), Some("✗ bash"));
+    }
+
+    #[test]
+    fn split_command_spec_preserves_quoted_segments() {
+        assert_eq!(
+            split_command_spec(r#"powershell -File "C:\tmp dir\fake provider.ps1" --flag"#),
+            vec![
+                "powershell".to_string(),
+                "-File".to_string(),
+                r#"C:\tmp dir\fake provider.ps1"#.to_string(),
+                "--flag".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_bin_with_env_splits_env_command_and_args() {
+        let (env_vars, bin, args) = parse_bin_with_env(
+            r#"FOO=bar powershell -NoProfile -File "C:\tmp dir\fake provider.ps1""#,
+        );
+        assert_eq!(env_vars.get("FOO").map(String::as_str), Some("bar"));
+        assert_eq!(bin, "powershell");
+        assert_eq!(
+            args,
+            vec![
+                "-NoProfile".to_string(),
+                "-File".to_string(),
+                r#"C:\tmp dir\fake provider.ps1"#.to_string()
+            ]
+        );
     }
 
     #[test]

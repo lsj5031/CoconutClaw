@@ -64,16 +64,16 @@ fi
             state = state_path.display()
         ),
         format!(
-            r#"@echo off
-echo 1>> "{invocations}"
-if not exist "{state}" (
-    type nul > "{state}"
-    for /f %%i in ('powershell -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('HH:mm')"') do set "SCHEDULE_TIME=%%i"
-    echo TELEGRAM_REPLY: Scheduled!
-    echo SCHEDULE_PROMPT: once %%SCHEDULE_TIME%%^|Check backups
-) else (
-    echo TELEGRAM_REPLY: Backup complete
-)
+            r#"
+Add-Content -Path "{invocations}" -Value '1'
+if (-not (Test-Path "{state}")) {{
+    New-Item -ItemType File -Path "{state}" | Out-Null
+    $scheduleTime = [DateTime]::UtcNow.ToString('HH:mm')
+    Write-Output 'TELEGRAM_REPLY: Scheduled!'
+    Write-Output "SCHEDULE_PROMPT: once $scheduleTime|Check backups"
+}} else {{
+    Write-Output 'TELEGRAM_REPLY: Backup complete'
+}}
 "#,
             invocations = invocations_path.display(),
             state = state_path.display()
