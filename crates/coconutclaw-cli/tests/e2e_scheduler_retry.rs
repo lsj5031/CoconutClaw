@@ -70,11 +70,12 @@ echo 1>> "{invocations}"
 
 :parse
 if "%~1"=="" goto after_args
-shift
 if /I "%~1"=="--output-last-message" goto set_out
+shift
 goto parse
 
 :set_out
+if "%~2"=="" goto after_args
 set "OUT_FILE=%~2"
 shift
 shift
