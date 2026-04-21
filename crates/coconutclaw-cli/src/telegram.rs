@@ -168,6 +168,7 @@ pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Res
     let commands = serde_json::json!([
         {"command": "fresh", "description": "Start a fresh conversation"},
         {"command": "cancel", "description": "Cancel the current task"},
+        {"command": "schedules", "description": "List active scheduled tasks"},
     ]);
     let params = vec![("commands".to_string(), commands.to_string())];
     telegram_post_form(

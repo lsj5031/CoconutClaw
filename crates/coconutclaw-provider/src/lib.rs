@@ -468,12 +468,12 @@ fn run_gemini(
     )?;
 
     let raw_output_override =
-        extract_json_or_fallback(&run_result, extract_gemini_json_final, false);
+        extract_json_or_fallback(&run_result, extract_gemini_json_final, true);
     Ok(finalize_output(
         &run_result,
         None,
         raw_output_override,
-        false,
+        true,
     ))
 }
 
@@ -2407,6 +2407,39 @@ mod tests {
             Some(
                 "TELEGRAM_REPLY: This is a test reply with multiple sentences. The quick brown fox."
             )
+        );
+    }
+
+    #[test]
+    fn run_gemini_prefers_stdout_over_stderr_banner_for_plain_text() {
+        let mut config = RuntimeConfig::test_config();
+        config.provider = AgentProvider::Gemini;
+        config.exec_policy = "yolo".to_string();
+
+        let script_path = config.root_dir.join("fake-gemini.sh");
+        let script = r#"#!/bin/sh
+printf 'TELEGRAM_REPLY: hello from fake gemini\n'
+printf 'YOLO mode is enabled. All tool calls will be automatically approved.\n' >&2
+printf 'YOLO mode is enabled. All tool calls will be automatically approved.\n' >&2
+"#;
+        fs::write(&script_path, script).expect("write fake gemini script");
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script_path)
+                .expect("read fake gemini metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms).expect("chmod fake gemini script");
+        }
+
+        config.gemini.bin = script_path.display().to_string();
+
+        let output =
+            run_provider(None, &config, "hello", None, None, Some(5)).expect("run fake gemini");
+        assert!(output.success);
+        assert_eq!(
+            output.raw_output.trim(),
+            "TELEGRAM_REPLY: hello from fake gemini"
         );
     }
 

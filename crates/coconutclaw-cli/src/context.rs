@@ -12,8 +12,13 @@ use anyhow::{Context, Result};
 use coconutclaw_config::{AgentProvider, RuntimeConfig, SlackFormatMode, TelegramParseMode};
 
 use crate::markers::ParsedMarkers;
-use crate::store::Store;
+use crate::store::{ScheduledTaskInsertResult, Store};
 use crate::{QuotedMessage, TurnInput};
+
+#[derive(Debug, Default)]
+pub(crate) struct AppendOutcome {
+    pub(crate) schedule_feedback: Vec<String>,
+}
 
 pub(crate) fn build_context(
     cfg: &RuntimeConfig,
@@ -265,7 +270,9 @@ pub(crate) fn append_memory_and_tasks(
     store: &mut Store,
     ts: &str,
     markers: &ParsedMarkers,
-) -> Result<()> {
+) -> Result<AppendOutcome> {
+    let mut outcome = AppendOutcome::default();
+
     if !markers.memory_append.is_empty() {
         let memory_path = cfg.instance_dir.join("MEMORY.md");
         let mut file = OpenOptions::new()
@@ -293,17 +300,62 @@ pub(crate) fn append_memory_and_tasks(
         store.insert_tasks(ts, cfg.provider.as_str(), &markers.task_append)?;
     }
 
+    if !markers.schedule_prompt.is_empty() && !cfg.scheduled_tasks_enabled {
+        for line in &markers.schedule_prompt {
+            outcome.schedule_feedback.push(format!(
+                "Runtime confirmation: schedule not saved because scheduled tasks are disabled for this instance — {}",
+                truncate_chars(line.trim(), 100)
+            ));
+        }
+    }
+
     if !markers.schedule_prompt.is_empty() && cfg.scheduled_tasks_enabled {
         for line in &markers.schedule_prompt {
-            if let Some((recurring, time, text)) = parse_schedule_prompt_line(line)
-                && let Err(err) = store.insert_scheduled_task(ts, "agent", &text, &time, recurring)
-            {
-                tracing::warn!("failed to persist scheduled task: {err:#}");
+            if let Some((recurring, time, text)) = parse_schedule_prompt_line(line) {
+                match store.insert_scheduled_task(ts, "agent", &text, &time, recurring) {
+                    Ok(result) => outcome
+                        .schedule_feedback
+                        .push(schedule_feedback_line(cfg, result, recurring, &time, &text)),
+                    Err(err) => {
+                        tracing::warn!("failed to persist scheduled task: {err:#}");
+                        outcome.schedule_feedback.push(format!(
+                            "Runtime confirmation: failed to save {} schedule at {} ({}) — {}",
+                            if recurring { "daily" } else { "one-shot" },
+                            time,
+                            cfg.timezone,
+                            truncate_chars(&text, 100)
+                        ));
+                    }
+                }
+            } else {
+                outcome.schedule_feedback.push(format!(
+                    "Runtime confirmation: schedule not saved because the format was invalid — {}",
+                    truncate_chars(line.trim(), 100)
+                ));
             }
         }
     }
 
-    Ok(())
+    Ok(outcome)
+}
+
+fn schedule_feedback_line(
+    cfg: &RuntimeConfig,
+    result: ScheduledTaskInsertResult,
+    recurring: bool,
+    time: &str,
+    text: &str,
+) -> String {
+    let kind = if recurring { "daily" } else { "one-shot" };
+    let action = match result {
+        ScheduledTaskInsertResult::Inserted => "saved",
+        ScheduledTaskInsertResult::Duplicate => "already active",
+    };
+    format!(
+        "Runtime confirmation: {action} {kind} schedule at {time} ({}) — {}",
+        cfg.timezone,
+        truncate_chars(text.trim(), 100)
+    )
 }
 
 /// Parse a SCHEDULE_PROMPT value into its components.
@@ -413,8 +465,9 @@ mod tests {
             ..ParsedMarkers::default()
         };
 
-        append_memory_and_tasks(&cfg, &mut store, "2026-04-20T08:00:00+0000", &markers)
-            .expect("append schedule prompt");
+        let outcome =
+            append_memory_and_tasks(&cfg, &mut store, "2026-04-20T08:00:00+0000", &markers)
+                .expect("append schedule prompt");
 
         let due = store
             .get_due_scheduled_tasks("10:00", "2026-04-20")
@@ -422,5 +475,26 @@ mod tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].schedule_time, "09:00");
         assert_eq!(due[0].prompt, "Check backups");
+        assert_eq!(outcome.schedule_feedback.len(), 1);
+        assert!(outcome.schedule_feedback[0].contains("saved daily schedule at 09:00"));
+    }
+
+    #[test]
+    fn append_memory_and_tasks_reports_duplicate_schedules() {
+        let cfg = RuntimeConfig::test_config();
+        let mut store = Store::open(&cfg).expect("store");
+        let markers = ParsedMarkers {
+            schedule_prompt: vec!["9:00|Check backups".to_string()],
+            ..ParsedMarkers::default()
+        };
+
+        append_memory_and_tasks(&cfg, &mut store, "2026-04-20T08:00:00+0000", &markers)
+            .expect("insert schedule");
+        let duplicate =
+            append_memory_and_tasks(&cfg, &mut store, "2026-04-20T08:01:00+0000", &markers)
+                .expect("insert duplicate schedule");
+
+        assert_eq!(duplicate.schedule_feedback.len(), 1);
+        assert!(duplicate.schedule_feedback[0].contains("already active daily schedule"));
     }
 }

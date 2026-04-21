@@ -259,13 +259,28 @@ pub(crate) fn process_turn(
         telegram_reply: telegram_reply.clone(),
         voice_reply: voice_reply.clone(),
         status: status.to_string(),
-        update_id,
+        update_id: update_id.clone(),
         duration_ms: Some(duration_ms),
         channel: channel.to_string(),
     })?;
 
+    let mut telegram_reply = telegram_reply;
     if inserted && status != TurnStatus::Cancelled {
-        append_memory_and_tasks(cfg, store, &ts, &markers)?;
+        let append_outcome = append_memory_and_tasks(cfg, store, &ts, &markers)?;
+        if !append_outcome.schedule_feedback.is_empty() {
+            if !telegram_reply.trim().is_empty() {
+                telegram_reply.push_str("\n\n");
+            }
+            telegram_reply.push_str(&append_outcome.schedule_feedback.join("\n"));
+            if let Some(update_id) = update_id.as_deref()
+                && let Err(err) =
+                    store.update_turn_reply_by_update_id(update_id, &telegram_reply, &voice_reply)
+            {
+                tracing::warn!(
+                    "failed to update stored turn reply with schedule feedback: {err:#}"
+                );
+            }
+        }
     }
 
     clear_cancel_marker(cfg);

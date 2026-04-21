@@ -36,6 +36,12 @@ pub(crate) struct ScheduledTask {
     pub(crate) pending_output: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScheduledTaskInsertResult {
+    Inserted,
+    Duplicate,
+}
+
 pub(crate) struct Store {
     conn: Connection,
 }
@@ -216,7 +222,7 @@ impl Store {
         prompt: &str,
         schedule_time: &str,
         recurring: bool,
-    ) -> Result<()> {
+    ) -> Result<ScheduledTaskInsertResult> {
         // Deduplicate: skip if same source, prompt, and schedule_time already exists and is not done.
         let existing: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM scheduled_tasks WHERE source = ?1 AND prompt = ?2 AND schedule_time = ?3 AND done = 0",
@@ -224,7 +230,7 @@ impl Store {
             |row| row.get(0),
         )?;
         if existing > 0 {
-            return Ok(());
+            return Ok(ScheduledTaskInsertResult::Duplicate);
         }
 
         self.conn.execute(
@@ -232,7 +238,32 @@ impl Store {
              VALUES(?1, ?2, ?3, ?4, ?5, 0, NULL)",
             params![ts, source, prompt, schedule_time, recurring as i32],
         )?;
-        Ok(())
+        Ok(ScheduledTaskInsertResult::Inserted)
+    }
+
+    pub(crate) fn list_active_scheduled_tasks(&self) -> Result<Vec<ScheduledTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output
+             FROM scheduled_tasks
+             WHERE done = 0
+             ORDER BY schedule_time ASC, id ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut tasks = Vec::new();
+        while let Some(row) = rows.next()? {
+            tasks.push(ScheduledTask {
+                id: row.get(0)?,
+                ts: row.get(1)?,
+                source: row.get(2)?,
+                prompt: row.get(3)?,
+                schedule_time: row.get(4)?,
+                recurring: row.get::<_, i32>(5)? != 0,
+                last_run_ts: row.get(6)?,
+                done: row.get::<_, i32>(7)? != 0,
+                pending_output: row.get(8)?,
+            });
+        }
+        Ok(tasks)
     }
 
     pub(crate) fn get_due_scheduled_tasks(
@@ -341,6 +372,22 @@ impl Store {
             &markers,
         );
         Ok(Some(rendered.trim_end().to_string()))
+    }
+
+    pub(crate) fn update_turn_reply_by_update_id(
+        &self,
+        update_id: &str,
+        telegram_reply: &str,
+        voice_reply: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE turns
+             SET telegram_reply = ?2,
+                 voice_reply = ?3
+             WHERE update_id = ?1",
+            params![update_id, telegram_reply, voice_reply],
+        )?;
+        Ok(())
     }
 
     pub(crate) fn kv_get(&self, key: &str) -> Result<Option<String>> {

@@ -227,6 +227,10 @@ enum WebhookAction {
     Cancel {
         update_id: Option<String>,
     },
+    Schedules {
+        update_id: Option<String>,
+        chat_id: String,
+    },
     Turn(Box<WebhookTurn>),
     SlackTurn(Box<SlackWebhookTurn>),
 }
@@ -1427,6 +1431,35 @@ fn dispatch_process_outcome(
     }
 }
 
+fn render_active_schedules_reply(cfg: &RuntimeConfig, store: &Store) -> Result<String> {
+    let tasks = store.list_active_scheduled_tasks()?;
+    if tasks.is_empty() {
+        return Ok(format!(
+            "No active scheduled tasks. Timezone: {}.",
+            cfg.timezone
+        ));
+    }
+
+    let mut lines = vec![format!("Active scheduled tasks ({})", cfg.timezone)];
+    for (idx, task) in tasks.iter().enumerate() {
+        lines.push(format!(
+            "{}. {} at {} — {}",
+            idx + 1,
+            if task.recurring { "Daily" } else { "Once" },
+            task.schedule_time,
+            shorten_log_text(task.prompt.trim(), 120)
+        ));
+        if let Some(last_run_ts) = task.last_run_ts.as_deref() {
+            lines.push(format!("Last run: {last_run_ts}"));
+        }
+        if task.pending_output.is_some() {
+            lines.push("Pending delivery retry queued.".to_string());
+        }
+    }
+
+    Ok(lines.join("\n"))
+}
+
 fn is_slack_interactive_payload(value: &Value) -> bool {
     value
         .get("type")
@@ -1689,6 +1722,26 @@ fn process_webhook_line(
                     )
                     .trim_end()
                     .to_string(),
+                ),
+                cleanup_path: None,
+                progress_message_id: None,
+            })
+        }
+        WebhookAction::Schedules { update_id, chat_id } => {
+            if let Some(update_id) = update_id.as_ref() {
+                let _ = store.kv_set("last_update_id", update_id);
+            }
+            let reply = render_active_schedules_reply(cfg, store)?;
+            Ok(ProcessOutcome {
+                should_ack: true,
+                update_id,
+                chat_id: Some(chat_id),
+                output_channel: Some("telegram".to_string()),
+                output_thread_ts: None,
+                output: Some(
+                    render_output(&reply, "", &ParsedMarkers::default())
+                        .trim_end()
+                        .to_string(),
                 ),
                 cleanup_path: None,
                 progress_message_id: None,
@@ -2082,6 +2135,9 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
     if message_text.trim().eq_ignore_ascii_case("/cancel") {
         return Ok(WebhookAction::Cancel { update_id });
     }
+    if message_text.trim().eq_ignore_ascii_case("/schedules") {
+        return Ok(WebhookAction::Schedules { update_id, chat_id });
+    }
 
     let reply_from = message
         .get("reply_to_message")
@@ -2393,6 +2449,31 @@ mod tests {
         assert_eq!(outcome.output_channel.as_deref(), Some("slack"));
         assert!(output.contains("TELEGRAM_REPLY:"));
         assert!(output.contains("Context cleared"));
+    }
+
+    #[test]
+    fn schedules_command_lists_active_tasks() {
+        let mut cfg = test_config();
+        cfg.timezone = "Pacific/Auckland".to_string();
+        let mut store = Store::open(&cfg).expect("store");
+        store
+            .insert_scheduled_task(
+                "2026-04-21T04:00:00+0000",
+                "agent",
+                "Check GitHub Trending and summarize the top 5 repos.",
+                "16:30",
+                true,
+            )
+            .expect("insert schedule");
+
+        let update = r#"{"update_id":101,"message":{"chat":{"id":"321"},"text":"/schedules"}}"#;
+        let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
+        let output = outcome.output.unwrap_or_default();
+
+        assert_eq!(outcome.output_channel.as_deref(), Some("telegram"));
+        assert!(output.contains("TELEGRAM_REPLY: Active scheduled tasks (Pacific/Auckland)"));
+        assert!(output.contains("1. Daily at 16:30"));
+        assert!(output.contains("Check GitHub Trending"));
     }
 
     #[test]
