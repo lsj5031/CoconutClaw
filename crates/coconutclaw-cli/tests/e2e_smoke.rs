@@ -1,8 +1,11 @@
+mod support;
+
 use axum::{Json, Router, body::Bytes, response::IntoResponse, routing::post};
 use serde_json::json;
 use std::fs;
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use support::write_fake_provider_script;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
@@ -28,9 +31,9 @@ WEBHOOK_PUBLIC_URL = "https://example.com"
     .unwrap();
 
     // Fake provider
-    let provider_path = tmp_dir.path().join("fake_provider.sh");
-    fs::write(
-        &provider_path,
+    let provider_path = write_fake_provider_script(
+        tmp_dir.path(),
+        "fake_provider",
         r#"#!/bin/bash
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -44,14 +47,29 @@ cat << 'EOF' > "$OUT_FILE"
 <telegram_reply>Hello from fake provider</telegram_reply>
 </message>
 EOF
-"#,
-    )
-    .unwrap();
-    fs::set_permissions(
-        &provider_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
+"#
+        .to_string(),
+        r#"@echo off
+setlocal EnableDelayedExpansion
+
+:parse
+if "%~1"=="" goto after_args
+if "%~1"=="--output-last-message" (
+    set "OUT_FILE=%~2"
+    shift
+)
+shift
+goto parse
+
+:after_args
+> "%OUT_FILE%" (
+    echo ^<message^>
+    echo ^<telegram_reply^>Hello from fake provider^</telegram_reply^>
+    echo ^</message^>
+)
+"#
+        .to_string(),
+    );
 
     // Setup local fake Telegram server
     let (tx, mut rx) = mpsc::channel(100);

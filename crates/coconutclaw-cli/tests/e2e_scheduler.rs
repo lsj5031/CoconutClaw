@@ -1,8 +1,11 @@
+mod support;
+
 use axum::{Json, Router, body::Bytes, response::IntoResponse, routing::post};
 use serde_json::json;
 use std::fs;
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use support::write_fake_provider_script;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
@@ -29,10 +32,10 @@ SCHEDULED_TASKS_ENABLED = true
     .unwrap();
 
     // Fake provider
-    let provider_path = tmp_dir.path().join("fake_provider.sh");
     let state_path = tmp_dir.path().join("provider_state");
-    fs::write(
-        &provider_path,
+    let provider_path = write_fake_provider_script(
+        tmp_dir.path(),
+        "fake_provider",
         format!(
             r#"#!/bin/bash
 while [[ "$#" -gt 0 ]]; do
@@ -58,13 +61,36 @@ fi
             state_path.display(),
             state_path.display()
         ),
+        format!(
+            r#"@echo off
+setlocal EnableDelayedExpansion
+
+:parse
+if "%~1"=="" goto after_args
+if "%~1"=="--output-last-message" (
+    set "OUT_FILE=%~2"
+    shift
+)
+shift
+goto parse
+
+:after_args
+if not exist "{state}" (
+    type nul > "{state}"
+    for /f %%i in ('powershell -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('HH:mm')"') do set "SCHEDULE_TIME=%%i"
+    > "%OUT_FILE%" (
+        echo TELEGRAM_REPLY: Scheduled!
+        echo SCHEDULE_PROMPT: once !SCHEDULE_TIME!^|Check backups
     )
-    .unwrap();
-    fs::set_permissions(
-        &provider_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+) else (
+    > "%OUT_FILE%" (
+        echo TELEGRAM_REPLY: Backup complete
     )
-    .unwrap();
+)
+"#,
+            state = state_path.display()
+        ),
+    );
 
     // Setup local fake Telegram server
     let (tx, mut rx) = mpsc::channel(100);

@@ -1,3 +1,5 @@
+mod support;
+
 use axum::{Json, Router, body::Bytes, response::IntoResponse, routing::post};
 use serde_json::json;
 use std::fs;
@@ -5,6 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use support::write_fake_provider_script;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
@@ -29,11 +32,11 @@ SCHEDULED_TASKS_ENABLED = true
     )
     .unwrap();
 
-    let provider_path = tmp_dir.path().join("fake_provider.sh");
     let state_path = tmp_dir.path().join("provider_state");
     let invocations_path = tmp_dir.path().join("invocations");
-    fs::write(
-        &provider_path,
+    let provider_path = write_fake_provider_script(
+        tmp_dir.path(),
+        "fake_provider",
         format!(
             r#"#!/bin/bash
 echo "1" >> "{invocations}"
@@ -60,13 +63,38 @@ fi
             invocations = invocations_path.display(),
             state = state_path.display()
         ),
+        format!(
+            r#"@echo off
+setlocal EnableDelayedExpansion
+echo 1>> "{invocations}"
+
+:parse
+if "%~1"=="" goto after_args
+if "%~1"=="--output-last-message" (
+    set "OUT_FILE=%~2"
+    shift
+)
+shift
+goto parse
+
+:after_args
+if not exist "{state}" (
+    type nul > "{state}"
+    for /f %%i in ('powershell -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('HH:mm')"') do set "SCHEDULE_TIME=%%i"
+    > "%OUT_FILE%" (
+        echo TELEGRAM_REPLY: Scheduled!
+        echo SCHEDULE_PROMPT: once !SCHEDULE_TIME!^|Check backups
     )
-    .unwrap();
-    fs::set_permissions(
-        &provider_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+) else (
+    > "%OUT_FILE%" (
+        echo TELEGRAM_REPLY: Backup complete
     )
-    .unwrap();
+)
+"#,
+            invocations = invocations_path.display(),
+            state = state_path.display()
+        ),
+    );
 
     let (tx, mut rx) = mpsc::channel(100);
     let fail_first_backup = Arc::new(AtomicBool::new(true));
