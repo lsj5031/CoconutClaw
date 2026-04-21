@@ -1737,6 +1737,39 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    fn write_test_provider_script(
+        dir: &Path,
+        stem: &str,
+        unix_body: &str,
+        windows_body: &str,
+    ) -> String {
+        let (path, body, command) = if cfg!(windows) {
+            let path = dir.join(format!("{stem}.ps1"));
+            let command = format!(
+                "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+                path.display()
+            );
+            (path, windows_body, command)
+        } else {
+            let path = dir.join(format!("{stem}.sh"));
+            let command = path.display().to_string();
+            (path, unix_body, command)
+        };
+
+        fs::write(&path, body).expect("write fake provider script");
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&path)
+                .expect("read fake provider metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).expect("chmod fake provider script");
+        }
+
+        command
+    }
 
     #[test]
     fn parse_codex_turn_started() {
@@ -2343,23 +2376,18 @@ mod tests {
         config.exec_policy = "yolo".to_string();
         config.opencode.skip_permissions = Some(true);
 
-        let script_path = config.root_dir.join("fake-opencode.sh");
         let log_path = config.root_dir.join("fake-opencode.log");
         let script = format!(
             "#!/bin/sh\nlog=\"{}\"\nprintf 'args:%s\\n' \"$*\" >> \"$log\"\nprintf 'permission:%s\\n' \"${{OPENCODE_PERMISSION:-}}\" >> \"$log\"\nif printf '%s\\n' \"$*\" | grep -q -- '--dangerously-skip-permissions'; then\n  echo \"unexpected argument '--dangerously-skip-permissions'\" >&2\n  exit 1\nfi\ncat <<'EOF'\n{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello from fake opencode\"}}}}\nEOF\n",
             log_path.display()
         );
-        fs::write(&script_path, script).expect("write fake opencode script");
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&script_path)
-                .expect("read fake opencode metadata")
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).expect("chmod fake opencode script");
-        }
+        let windows_script = format!(
+            "$log = \"{}\"\nAdd-Content -Path $log -Value \"args:$($args -join ' ')\"\nAdd-Content -Path $log -Value \"permission:$env:OPENCODE_PERMISSION\"\nif ($args -contains '--dangerously-skip-permissions') {{\n    [Console]::Error.WriteLine(\"unexpected argument '--dangerously-skip-permissions'\")\n    exit 1\n}}\nWrite-Output '{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello from fake opencode\"}}}}'\n",
+            log_path.display()
+        );
 
-        config.opencode.bin = script_path.display().to_string();
+        config.opencode.bin =
+            write_test_provider_script(&config.root_dir, "fake-opencode", &script, &windows_script);
 
         let output = run_provider(None, &config, "hello", None, None, Some(5))
             .expect("run fake opencode provider");
@@ -2482,23 +2510,19 @@ mod tests {
         config.provider = AgentProvider::Gemini;
         config.exec_policy = "yolo".to_string();
 
-        let script_path = config.root_dir.join("fake-gemini.sh");
         let script = r#"#!/bin/sh
 printf 'TELEGRAM_REPLY: hello from fake gemini\n'
 printf 'YOLO mode is enabled. All tool calls will be automatically approved.\n' >&2
 printf 'YOLO mode is enabled. All tool calls will be automatically approved.\n' >&2
 "#;
-        fs::write(&script_path, script).expect("write fake gemini script");
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&script_path)
-                .expect("read fake gemini metadata")
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script_path, perms).expect("chmod fake gemini script");
-        }
+        let windows_script = r#"
+Write-Output 'TELEGRAM_REPLY: hello from fake gemini'
+[Console]::Error.WriteLine('YOLO mode is enabled. All tool calls will be automatically approved.')
+[Console]::Error.WriteLine('YOLO mode is enabled. All tool calls will be automatically approved.')
+"#;
 
-        config.gemini.bin = script_path.display().to_string();
+        config.gemini.bin =
+            write_test_provider_script(&config.root_dir, "fake-gemini", script, windows_script);
 
         let output =
             run_provider(None, &config, "hello", None, None, Some(5)).expect("run fake gemini");

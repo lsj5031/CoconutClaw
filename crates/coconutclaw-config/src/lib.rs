@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentProvider {
@@ -406,7 +409,8 @@ impl RuntimeConfig {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let root = env::temp_dir().join(format!("coconutclaw_test_{unique}"));
+        let counter = TEST_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = env::temp_dir().join(format!("coconutclaw_test_{unique}_{counter}"));
         Self::test_config_at(root)
     }
 
