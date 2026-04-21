@@ -67,10 +67,13 @@ setlocal EnableDelayedExpansion
 
 :parse
 if "%~1"=="" goto after_args
-if "%~1"=="--output-last-message" (
-    set "OUT_FILE=%~2"
-    shift
-)
+shift
+if /I "%~1"=="--output-last-message" goto set_out
+goto parse
+
+:set_out
+set "OUT_FILE=%~2"
+shift
 shift
 goto parse
 
