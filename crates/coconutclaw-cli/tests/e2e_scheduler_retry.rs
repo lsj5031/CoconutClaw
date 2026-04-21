@@ -65,34 +65,14 @@ fi
         ),
         format!(
             r#"@echo off
-setlocal EnableDelayedExpansion
 echo 1>> "{invocations}"
-
-:parse
-if "%~1"=="" goto after_args
-if /I "%~1"=="--output-last-message" goto set_out
-shift
-goto parse
-
-:set_out
-if "%~2"=="" goto after_args
-set "OUT_FILE=%~2"
-shift
-shift
-goto parse
-
-:after_args
 if not exist "{state}" (
     type nul > "{state}"
     for /f %%i in ('powershell -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('HH:mm')"') do set "SCHEDULE_TIME=%%i"
-    > "%OUT_FILE%" (
-        echo TELEGRAM_REPLY: Scheduled!
-        echo SCHEDULE_PROMPT: once !SCHEDULE_TIME!^|Check backups
-    )
+    echo TELEGRAM_REPLY: Scheduled!
+    echo SCHEDULE_PROMPT: once %%SCHEDULE_TIME%%^|Check backups
 ) else (
-    > "%OUT_FILE%" (
-        echo TELEGRAM_REPLY: Backup complete
-    )
+    echo TELEGRAM_REPLY: Backup complete
 )
 "#,
             invocations = invocations_path.display(),

@@ -50,27 +50,9 @@ EOF
 "#
         .to_string(),
         r#"@echo off
-setlocal EnableDelayedExpansion
-
-:parse
-if "%~1"=="" goto after_args
-if /I "%~1"=="--output-last-message" goto set_out
-shift
-goto parse
-
-:set_out
-if "%~2"=="" goto after_args
-set "OUT_FILE=%~2"
-shift
-shift
-goto parse
-
-:after_args
-> "%OUT_FILE%" (
-    echo ^<message^>
-    echo ^<telegram_reply^>Hello from fake provider^</telegram_reply^>
-    echo ^</message^>
-)
+echo ^<message^>
+echo ^<telegram_reply^>Hello from fake provider^</telegram_reply^>
+echo ^</message^>
 "#
         .to_string(),
     );
