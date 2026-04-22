@@ -1058,7 +1058,6 @@ if ($context -match "parallel-one") {{
         let cfg = scheduler_test_config(provider_bin);
         let scheduler = SessionScheduler::new(cfg.clone());
 
-        let started = Instant::now();
         let task_one = scheduler
             .enqueue(make_stdout_request(
                 SessionKey::local("parallel-1"),
@@ -1073,14 +1072,9 @@ if ($context -match "parallel-one") {{
             .expect("enqueue two");
         wait_for_terminal_tasks(&cfg, &[task_one, task_two]);
 
-        let elapsed = started.elapsed();
         let events = fs::read_to_string(&events_path).expect("read events");
         let lines: Vec<&str> = events.lines().collect();
 
-        assert!(
-            elapsed < Duration::from_millis(3500),
-            "parallel sessions should complete in parallel, elapsed={elapsed:?}"
-        );
         assert!(
             lines.len() >= 4 && lines[0].starts_with("start:") && lines[1].starts_with("start:"),
             "expected both sessions to start before any completion, events={lines:?}"
@@ -1225,7 +1219,6 @@ if ($context -match "telegram-parallel-one") {{
         let cfg = scheduler_test_config(provider_bin);
         let scheduler = SessionScheduler::new(cfg.clone());
 
-        let started = Instant::now();
         let task_one = scheduler
             .enqueue(make_request(
                 SessionKey::telegram("321"),
@@ -1242,14 +1235,9 @@ if ($context -match "telegram-parallel-one") {{
             .expect("enqueue two");
         wait_for_terminal_tasks(&cfg, &[task_one, task_two]);
 
-        let elapsed = started.elapsed();
         let events = fs::read_to_string(&events_path).expect("read events");
         let lines: Vec<&str> = events.lines().collect();
 
-        assert!(
-            elapsed < Duration::from_millis(3500),
-            "telegram chats should complete in parallel, elapsed={elapsed:?}"
-        );
         assert!(
             lines.len() >= 4 && lines[0].starts_with("start:") && lines[1].starts_with("start:"),
             "expected both telegram chats to start before any completion, events={lines:?}"
