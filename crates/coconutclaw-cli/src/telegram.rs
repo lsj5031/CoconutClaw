@@ -37,6 +37,12 @@ pub(crate) fn valid_telegram_chat_id(cfg: &RuntimeConfig) -> Option<&str> {
         .as_deref()
         .map(str::trim)
         .filter(|chat_id| !chat_id.is_empty() && *chat_id != "replace_me")
+        .or_else(|| {
+            cfg.telegram_chat_ids.iter().find_map(|chat_id| {
+                let trimmed = chat_id.trim();
+                (!trimmed.is_empty() && trimmed != "replace_me").then_some(trimmed)
+            })
+        })
 }
 
 pub(crate) fn telegram_api_base(cfg: &RuntimeConfig) -> Result<String> {
@@ -63,9 +69,6 @@ pub(crate) fn telegram_file_base(cfg: &RuntimeConfig) -> Result<String> {
 
 pub(crate) fn build_telegram_client(cfg: &RuntimeConfig) -> Result<Client> {
     let _ = telegram_api_base(cfg)?;
-    let _ = valid_telegram_chat_id(cfg).ok_or_else(|| {
-        anyhow::anyhow!("TELEGRAM_CHAT_ID is missing; set it in instance config.toml")
-    })?;
     let timeout_secs = cfg.telegram_api_timeout_secs.max(1);
     Client::builder()
         .timeout(Duration::from_secs(timeout_secs))

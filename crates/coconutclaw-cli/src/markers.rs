@@ -7,6 +7,7 @@ pub(crate) struct ParsedMarkers {
     pub(crate) send_photo: Vec<String>,
     pub(crate) send_document: Vec<String>,
     pub(crate) send_video: Vec<String>,
+    pub(crate) send_approval: Vec<String>,
     pub(crate) memory_append: Vec<String>,
     pub(crate) task_append: Vec<String>,
     pub(crate) schedule_prompt: Vec<String>,
@@ -36,6 +37,9 @@ pub(crate) fn render_output(reply: &str, voice_reply: &str, markers: &ParsedMark
     }
     for line in &markers.send_video {
         lines.push(format!("SEND_VIDEO: {line}"));
+    }
+    for line in &markers.send_approval {
+        lines.push(format!("SEND_APPROVAL: {line}"));
     }
     for line in &markers.memory_append {
         lines.push(format!("MEMORY_APPEND: {line}"));
@@ -158,6 +162,7 @@ fn marker_prefixes() -> &'static [&'static str] {
         "SEND_PHOTO:",
         "SEND_DOCUMENT:",
         "SEND_VIDEO:",
+        "SEND_APPROVAL:",
         "MEMORY_APPEND:",
         "TASK_APPEND:",
         "SCHEDULE_PROMPT:",
@@ -172,6 +177,7 @@ fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
         ("SEND_PHOTO", "SEND_PHOTO:"),
         ("SEND_DOCUMENT", "SEND_DOCUMENT:"),
         ("SEND_VIDEO", "SEND_VIDEO:"),
+        ("SEND_APPROVAL", "SEND_APPROVAL:"),
         ("MEMORY_APPEND", "MEMORY_APPEND:"),
         ("TASK_APPEND", "TASK_APPEND:"),
         ("SCHEDULE_PROMPT", "SCHEDULE_PROMPT:"),
@@ -204,6 +210,7 @@ fn commit_block(
         "SEND_PHOTO" => markers.send_photo.push(content.to_string()),
         "SEND_DOCUMENT" => markers.send_document.push(content.to_string()),
         "SEND_VIDEO" => markers.send_video.push(content.to_string()),
+        "SEND_APPROVAL" => markers.send_approval.push(content.to_string()),
         "MEMORY_APPEND" => markers.memory_append.push(content.to_string()),
         "TASK_APPEND" => markers.task_append.push(content.to_string()),
         "SCHEDULE_PROMPT" => markers.schedule_prompt.push(content.to_string()),
@@ -627,6 +634,14 @@ It has some { curly braces }
             Some("Parsed reply line one\nline two")
         );
         assert_eq!(markers.memory_append, vec!["saved item".to_string()]);
+    }
+
+    #[test]
+    fn parse_markers_collects_send_approval() {
+        let payload = "TELEGRAM_REPLY: Ready
+SEND_APPROVAL: Delete prod data";
+        let markers = parse_markers(payload);
+        assert_eq!(markers.send_approval, vec!["Delete prod data".to_string()]);
     }
 
     #[test]

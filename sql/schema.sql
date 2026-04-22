@@ -42,4 +42,43 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   pending_output TEXT
 );
 
+CREATE TABLE IF NOT EXISTS task_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  source_chat_id TEXT,
+  source_user_id TEXT,
+  update_id TEXT,
+  prompt TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  cancel_requested_at TEXT,
+  progress_message_id TEXT,
+  last_progress TEXT,
+  error_summary TEXT,
+  result_summary TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_runs_session_status ON task_runs(session_id, status, id DESC);
+CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status, id DESC);
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_run_id INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  source_user_id TEXT,
+  channel_id TEXT,
+  thread_ts TEXT,
+  prompt_text TEXT NOT NULL,
+  status TEXT NOT NULL,
+  request_message_ts TEXT,
+  resume_payload TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolved_by_user_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_task_status ON approvals(task_run_id, status, id DESC);
+
 INSERT OR IGNORE INTO kv(key, value) VALUES ('last_update_id', '0');

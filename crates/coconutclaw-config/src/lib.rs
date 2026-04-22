@@ -173,6 +173,7 @@ pub struct RuntimeConfig {
     pub timezone: String,
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
+    pub telegram_chat_ids: Vec<String>,
     pub telegram_api_base: Option<String>,
     pub telegram_file_base: Option<String>,
     pub telegram_parse_mode: TelegramParseMode,
@@ -183,6 +184,7 @@ pub struct RuntimeConfig {
     pub slack_channel_id: Option<String>,
     pub slack_api_timeout_secs: u64,
     pub slack_signing_secret: Option<String>,
+    pub slack_admin_user_ids: Vec<String>,
     pub slack_format_mode: SlackFormatMode,
     pub slack_format_fallback: SlackFormatFallback,
     pub webhook_mode: bool,
@@ -229,6 +231,7 @@ pub struct InstanceLock {
 const DEFAULT_CONFIG_TOML: &str = r#"# CoconutClaw runtime config
 TELEGRAM_BOT_TOKEN = "replace_me"
 TELEGRAM_CHAT_ID = "replace_me"
+# TELEGRAM_CHAT_IDS = "123456789,987654321"
 TELEGRAM_PARSE_MODE = "off"
 TELEGRAM_PARSE_FALLBACK = "plain"
 
@@ -249,6 +252,7 @@ WEBHOOK_PATH = "/webhook"
 # SLACK_APP_TOKEN=
 # SLACK_CHANNEL_ID=
 # SLACK_SIGNING_SECRET=
+# SLACK_ADMIN_USER_IDS="U123,U456"
 # SLACK_API_TIMEOUT_SECS=30
 # SLACK_FORMAT_MODE=mrkdwn
 # SLACK_FORMAT_FALLBACK=plain
@@ -285,6 +289,7 @@ FACTORY_BIN = "droid"
 const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
+    "TELEGRAM_CHAT_IDS",
     "TELEGRAM_API_BASE",
     "TELEGRAM_FILE_BASE",
     "TELEGRAM_PARSE_MODE",
@@ -344,6 +349,7 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "SLACK_APP_TOKEN",
     "SLACK_CHANNEL_ID",
     "SLACK_SIGNING_SECRET",
+    "SLACK_ADMIN_USER_IDS",
 ];
 
 pub struct RuntimeConfigBuilder(RuntimeConfig);
@@ -361,6 +367,11 @@ impl RuntimeConfigBuilder {
 
     pub fn telegram_chat_id(mut self, chat_id: impl Into<Option<String>>) -> Self {
         self.0.telegram_chat_id = chat_id.into();
+        self
+    }
+
+    pub fn telegram_chat_ids(mut self, chat_ids: Vec<String>) -> Self {
+        self.0.telegram_chat_ids = chat_ids;
         self
     }
 
@@ -429,6 +440,7 @@ impl RuntimeConfig {
             timezone: "UTC".to_string(),
             telegram_bot_token: Some("123:token".to_string()),
             telegram_chat_id: Some("321".to_string()),
+            telegram_chat_ids: Vec::new(),
             telegram_api_base: None,
             telegram_file_base: None,
             telegram_parse_mode: TelegramParseMode::Off,
@@ -439,6 +451,7 @@ impl RuntimeConfig {
             slack_channel_id: None,
             slack_api_timeout_secs: 30,
             slack_signing_secret: None,
+            slack_admin_user_ids: Vec::new(),
             slack_format_mode: SlackFormatMode::Mrkdwn,
             slack_format_fallback: SlackFormatFallback::Plain,
             webhook_mode: false,
@@ -659,6 +672,7 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         timezone: pick_value("TIMEZONE", &config_file).unwrap_or_else(|| "UTC".to_string()),
         telegram_bot_token: pick_value("TELEGRAM_BOT_TOKEN", &config_file),
         telegram_chat_id: pick_value("TELEGRAM_CHAT_ID", &config_file),
+        telegram_chat_ids: parse_csv_list(pick_value("TELEGRAM_CHAT_IDS", &config_file)),
         telegram_api_base: normalize_optional(pick_value("TELEGRAM_API_BASE", &config_file)),
         telegram_file_base: normalize_optional(pick_value("TELEGRAM_FILE_BASE", &config_file)),
         telegram_parse_mode,
@@ -668,7 +682,8 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         slack_app_token: pick_value("SLACK_APP_TOKEN", &config_file),
         slack_channel_id: pick_value("SLACK_CHANNEL_ID", &config_file),
         slack_api_timeout_secs,
-        slack_signing_secret: pick_value("SLACK_SIGNING_SECRET", &config_file),
+        slack_signing_secret: normalize_optional(pick_value("SLACK_SIGNING_SECRET", &config_file)),
+        slack_admin_user_ids: parse_csv_list(pick_value("SLACK_ADMIN_USER_IDS", &config_file)),
         slack_format_mode,
         slack_format_fallback,
         webhook_mode,
@@ -911,6 +926,19 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn parse_csv_list(value: Option<String>) -> Vec<String> {
+    value
+        .as_deref()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn normalize_webhook_path(raw: Option<&str>) -> String {
@@ -1234,6 +1262,22 @@ mod tests {
 
         let text = format!("{err:#}");
         assert!(text.contains("invalid TELEGRAM_PARSE_FALLBACK"));
+    }
+
+    #[test]
+    fn telegram_chat_ids_accepts_csv_allowlist() {
+        let instance_dir = unique_dir();
+        write_config(
+            &instance_dir,
+            "TELEGRAM_BOT_TOKEN = \"123:token\"\nTELEGRAM_CHAT_ID = \"321\"\nTELEGRAM_CHAT_IDS = \"999, 555\"\n",
+        );
+
+        let cfg = load_runtime_config_isolated(instance_dir).expect("config");
+
+        assert_eq!(
+            cfg.telegram_chat_ids,
+            vec!["999".to_string(), "555".to_string()]
+        );
     }
 
     #[test]

@@ -18,7 +18,9 @@ use std::time::Duration;
 
 mod context;
 mod markers;
+mod scheduler;
 mod service;
+mod session;
 mod slack;
 mod store;
 mod telegram;
@@ -26,10 +28,12 @@ mod turn;
 mod webhook;
 
 use crate::markers::{ParsedMarkers, render_output};
+use crate::scheduler::{DispatchTarget, SessionScheduler, TaskMedia, TaskRequest};
+use crate::session::SessionKey;
 use crate::slack::{
-    SlackMedia, SlackWebhookTurn, build_slack_client, build_slack_user_client,
-    dispatch_slack_output, send_slack_progress_message, slack_fetch_thread_context,
-    start_slack_socket_mode, valid_slack_channel_id, valid_slack_token,
+    SlackMedia, SlackWebhookTurn, build_slack_client, dispatch_slack_output,
+    send_slack_progress_message, start_slack_socket_mode, valid_slack_channel_id,
+    valid_slack_token,
 };
 use crate::store::Store;
 use crate::telegram::{
@@ -37,7 +41,7 @@ use crate::telegram::{
     register_bot_commands, register_telegram_webhook, send_progress_message,
     telegram_answer_callback, valid_telegram_chat_id, valid_telegram_token,
 };
-use crate::turn::{hydrate_slack_turn_input, hydrate_turn_input, process_turn, resolve_turn_input};
+use crate::turn::{process_turn, resolve_turn_input};
 use crate::webhook::{
     AckStatus, ack_webhook_queue_line, ensure_webhook_queue_file, extract_update_id_from_json,
     extract_update_id_from_value, peek_webhook_queue_line, spawn_webhook_http_server,
@@ -163,21 +167,21 @@ impl std::fmt::Display for TurnStatus {
 
 #[derive(Debug, Clone)]
 pub(crate) struct TurnInput {
-    input_type: InputType,
-    user_text: String,
-    asr_text: String,
-    attachment_type: Option<String>,
-    attachment_path: Option<PathBuf>,
-    attachment_owned: bool,
-    supplemental_context: Option<String>,
-    channel: String, // "telegram", "slack", "local"
+    pub(crate) input_type: InputType,
+    pub(crate) user_text: String,
+    pub(crate) asr_text: String,
+    pub(crate) attachment_type: Option<String>,
+    pub(crate) attachment_path: Option<PathBuf>,
+    pub(crate) attachment_owned: bool,
+    pub(crate) supplemental_context: Option<String>,
+    pub(crate) channel: String, // "telegram", "slack", "local"
 }
 
 #[derive(Debug, Clone)]
-struct QuotedMessage {
-    reply_from: Option<String>,
-    reply_text: Option<String>,
-    reply_ts: Option<i64>,
+pub(crate) struct QuotedMessage {
+    pub(crate) reply_from: Option<String>,
+    pub(crate) reply_text: Option<String>,
+    pub(crate) reply_ts: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,7 +194,7 @@ struct WebhookTurn {
 }
 
 #[derive(Debug, Clone)]
-enum IncomingMedia {
+pub(crate) enum IncomingMedia {
     Voice {
         file_id: String,
     },
@@ -226,6 +230,7 @@ enum WebhookAction {
     },
     Cancel {
         update_id: Option<String>,
+        chat_id: String,
     },
     Schedules {
         update_id: Option<String>,
@@ -344,8 +349,13 @@ fn run_run(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()
         tracing::warn!("failed to register bot menu commands: {err:#}");
     }
 
+    let scheduler = SessionScheduler::new(cfg.clone());
+    if let Err(err) = store.mark_stale_task_runs_failed(&iso_now(&cfg.timezone)) {
+        tracing::warn!("failed to mark stale task runs on startup: {err:#}");
+    }
+
     // Attempt to recover any in-flight update from a previous crash before entering loops
-    if let Err(err) = restore_inflight_update(cfg, store, &telegram_client) {
+    if let Err(err) = restore_inflight_update(cfg, store, &scheduler, &telegram_client) {
         tracing::warn!("failed to restore inflight update on startup: {err:#}");
     }
 
@@ -353,11 +363,25 @@ fn run_run(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()
     let slack_rx = start_socket_mode_if_configured(cfg)?;
 
     if cfg.webhook_mode {
-        run_webhook_loop(cfg, store, &telegram_client, &shutdown, slack_rx.as_ref())?;
+        run_webhook_loop(
+            cfg,
+            store,
+            &scheduler,
+            &telegram_client,
+            &shutdown,
+            slack_rx.as_ref(),
+        )?;
         return Ok(());
     }
 
-    run_poll_loop(cfg, store, &telegram_client, &shutdown, slack_rx.as_ref())
+    run_poll_loop(
+        cfg,
+        store,
+        &scheduler,
+        &telegram_client,
+        &shutdown,
+        slack_rx.as_ref(),
+    )
 }
 
 fn start_socket_mode_if_configured(
@@ -381,19 +405,261 @@ fn start_socket_mode_if_configured(
     Ok(Some(rx))
 }
 
+fn render_command_output(reply: &str) -> String {
+    render_output(reply, "", &ParsedMarkers::default())
+        .trim_end()
+        .to_string()
+}
+
+fn slack_actor_is_admin(cfg: &RuntimeConfig, actor_user_id: Option<&str>) -> bool {
+    if cfg.slack_admin_user_ids.is_empty() {
+        return true;
+    }
+    let Some(actor_user_id) = actor_user_id else {
+        return false;
+    };
+    cfg.slack_admin_user_ids
+        .iter()
+        .any(|candidate| candidate == actor_user_id)
+}
+
+fn parse_command_parts(text: &str) -> Option<(&str, Option<&str>)> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let command = parts.next()?;
+    let arg = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    Some((command, arg))
+}
+
+fn parse_task_id_arg(arg: Option<&str>) -> Result<Option<i64>> {
+    let Some(arg) = arg else {
+        return Ok(None);
+    };
+    let task_id = arg
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing task id"))?
+        .parse::<i64>()
+        .with_context(|| format!("invalid task id: {arg}"))?;
+    Ok(Some(task_id))
+}
+
+fn enqueue_telegram_turn(
+    scheduler: &SessionScheduler,
+    turn: WebhookTurn,
+    progress_message_id: Option<String>,
+) -> Result<i64> {
+    let session = SessionKey::telegram(&turn.chat_id);
+    let chat_id = turn.chat_id.clone();
+    scheduler.enqueue(TaskRequest {
+        session,
+        channel: "telegram".to_string(),
+        input: turn.input,
+        update_id: turn.update_id,
+        media: turn.media.map(TaskMedia::Telegram),
+        quoted: turn.quoted,
+        dispatch: DispatchTarget::Telegram { chat_id },
+        source_user_id: None,
+        progress_message_id,
+        scheduled_task_id: None,
+    })
+}
+
+fn enqueue_slack_turn(
+    scheduler: &SessionScheduler,
+    turn: SlackWebhookTurn,
+    progress_message_id: Option<String>,
+) -> Result<i64> {
+    let session = SessionKey::slack(&turn.channel_id, turn.thread_ts.as_deref());
+    let channel_id = turn.channel_id.clone();
+    let thread_ts = turn.thread_ts.clone();
+    scheduler.enqueue(TaskRequest {
+        session,
+        channel: "slack".to_string(),
+        input: turn.input,
+        update_id: turn.event_id,
+        media: turn.media.map(TaskMedia::Slack),
+        quoted: QuotedMessage {
+            reply_from: None,
+            reply_text: None,
+            reply_ts: None,
+        },
+        dispatch: DispatchTarget::Slack {
+            channel_id,
+            thread_ts,
+        },
+        source_user_id: turn.source_user_id,
+        progress_message_id,
+        scheduled_task_id: None,
+    })
+}
+
+fn maybe_handle_telegram_command(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    scheduler: &SessionScheduler,
+    update_id: Option<String>,
+    chat_id: &str,
+    text: &str,
+) -> Result<Option<ProcessOutcome>> {
+    let Some((command, arg)) = parse_command_parts(text) else {
+        return Ok(None);
+    };
+
+    let session = SessionKey::telegram(chat_id);
+    let reply = match command {
+        "/fresh" => {
+            let ts = iso_now(&cfg.timezone);
+            match store.insert_boundary_turn(&ts, &session.id(), update_id.as_deref(), "telegram") {
+                Ok(true) => {
+                    tracing::info!("inserted context boundary for session={}", session.id())
+                }
+                Ok(false) => {}
+                Err(err) => tracing::warn!("failed to insert context boundary: {err:#}"),
+            }
+            Some("Context cleared. Fresh start!".to_string())
+        }
+        "/cancel" => {
+            let task_id = parse_task_id_arg(arg)?;
+            let reply = if let Some(task_id) = task_id {
+                if scheduler.cancel_task(task_id)? {
+                    format!("Cancel requested for task #{task_id}.")
+                } else {
+                    format!("Task #{task_id} is not active.")
+                }
+            } else if let Some(task_id) = scheduler.cancel_active_for_session(&session.id())? {
+                format!("Cancel requested for task #{task_id}.")
+            } else {
+                "No active task for this chat.".to_string()
+            };
+            Some(reply)
+        }
+        "/tasks" => Some(scheduler.render_active_tasks()?),
+        "/schedules" => Some(render_active_schedules_reply(cfg, store)?),
+        _ => None,
+    };
+
+    Ok(reply.map(|reply| ProcessOutcome {
+        should_ack: true,
+        update_id,
+        chat_id: Some(chat_id.to_string()),
+        output_channel: Some("telegram".to_string()),
+        output_thread_ts: None,
+        output: Some(render_command_output(&reply)),
+        cleanup_path: None,
+        progress_message_id: None,
+    }))
+}
+
+fn maybe_handle_slack_command(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    scheduler: &SessionScheduler,
+    channel_id: &str,
+    thread_ts: Option<&str>,
+    source_user_id: Option<&str>,
+    text: &str,
+) -> Result<Option<ProcessOutcome>> {
+    let Some((command, arg)) = parse_command_parts(text) else {
+        return Ok(None);
+    };
+
+    let session = SessionKey::slack(channel_id, thread_ts);
+    let reply = match command {
+        "/fresh" => {
+            if !slack_actor_is_admin(cfg, source_user_id) {
+                Some("Admin role required to clear Slack thread context.".to_string())
+            } else {
+                let ts = iso_now(&cfg.timezone);
+                match store.insert_boundary_turn(&ts, &session.id(), None, "slack") {
+                    Ok(true) => tracing::info!(
+                        "inserted context boundary for slack session={}",
+                        session.id()
+                    ),
+                    Ok(false) => {}
+                    Err(err) => tracing::warn!("failed to insert slack context boundary: {err:#}"),
+                }
+                Some("Context cleared. Fresh start!".to_string())
+            }
+        }
+        "/cancel" => {
+            let task_id = parse_task_id_arg(arg)?;
+            if task_id.is_some() && !slack_actor_is_admin(cfg, source_user_id) {
+                Some("Admin role required to cancel a specific task by id.".to_string())
+            } else if let Some(task_id) = task_id {
+                Some(if scheduler.cancel_task(task_id)? {
+                    format!("Cancel requested for task #{task_id}.")
+                } else {
+                    format!("Task #{task_id} is not active.")
+                })
+            } else if let Some(task_id) = scheduler.cancel_active_for_session(&session.id())? {
+                Some(format!("Cancel requested for task #{task_id}."))
+            } else {
+                Some("No active task for this Slack session.".to_string())
+            }
+        }
+        "/tasks" => Some(scheduler.render_active_tasks()?),
+        "/schedules" => Some(render_active_schedules_reply(cfg, store)?),
+        _ => None,
+    };
+
+    Ok(reply.map(|reply| ProcessOutcome {
+        should_ack: true,
+        update_id: None,
+        chat_id: Some(channel_id.to_string()),
+        output_channel: Some("slack".to_string()),
+        output_thread_ts: thread_ts.map(ToOwned::to_owned),
+        output: Some(render_command_output(&reply)),
+        cleanup_path: None,
+        progress_message_id: None,
+    }))
+}
+
 fn process_slack_socket_turn(
     cfg: &RuntimeConfig,
     store: &mut Store,
-    mut turn: SlackWebhookTurn,
+    scheduler: &SessionScheduler,
+    turn: SlackWebhookTurn,
 ) -> Result<()> {
-    let slack_client = match build_slack_client(cfg) {
-        Ok(c) => c,
-        Err(err) => {
-            tracing::error!("slack client build failed for socket mode turn: {err:#}");
-            return Err(err);
+    if let Some(outcome) = maybe_handle_slack_command(
+        cfg,
+        store,
+        scheduler,
+        &turn.channel_id,
+        turn.thread_ts.as_deref(),
+        turn.source_user_id.as_deref(),
+        &turn.input.user_text,
+    )? {
+        if let Some(output) = outcome.output.as_deref() {
+            let slack_client = build_slack_client(cfg)?;
+            dispatch_slack_output(
+                &slack_client,
+                cfg,
+                &turn.channel_id,
+                output,
+                None,
+                turn.thread_ts.as_deref(),
+            )?;
+            print!("{output}");
+            io::stdout().flush().ok();
         }
-    };
+        return Ok(());
+    }
 
+    if let Some(event_id) = turn.event_id.as_deref()
+        && store.turn_exists_for_update_id(event_id)?
+    {
+        return Ok(());
+    }
+
+    let slack_client = build_slack_client(cfg)?;
     let progress_message_id =
         send_slack_progress_message(&slack_client, &turn.channel_id, turn.thread_ts.as_deref())
             .map_err(|err| {
@@ -402,75 +668,19 @@ fn process_slack_socket_turn(
             })
             .ok();
 
-    // Set inflight checkpoint before processing for crash recovery
-    let inflight_payload = serde_json::json!({
-        "channel": "slack",
-        "event_id": turn.event_id,
-        "channel_id": turn.channel_id,
-        "thread_ts": turn.thread_ts,
-        "user_text": turn.input.user_text,
-    });
-    if let Err(err) = set_inflight_update(
-        store,
-        turn.event_id.as_deref().unwrap_or(""),
-        &inflight_payload.to_string(),
-        &cfg.timezone,
-    ) {
-        tracing::warn!("failed to set slack inflight checkpoint: {err:#}");
-    }
-
-    maybe_populate_slack_thread_context(cfg, store, &slack_client, &mut turn);
-
-    let (hydrated_input, cleanup_path) =
-        hydrate_slack_turn_input(cfg, turn.event_id.as_deref(), turn.input, turn.media)?;
-
-    let output = process_turn(
-        cfg,
-        store,
-        hydrated_input,
-        "slack",
-        Some(turn.channel_id.clone()),
-        turn.event_id.clone(),
-        progress_message_id.as_deref(),
-        &QuotedMessage {
-            reply_from: None,
-            reply_text: None,
-            reply_ts: None,
-        },
-    )?;
-
-    if let Err(err) = dispatch_slack_output(
-        &slack_client,
-        cfg,
-        &turn.channel_id,
-        &output,
-        progress_message_id.as_deref(),
-        turn.thread_ts.as_deref(),
-    ) {
-        tracing::error!("slack dispatch failed: {err:#}");
-    }
-
-    if let Err(err) = store.clear_inflight() {
-        tracing::warn!("failed to clear slack inflight after turn: {err:#}");
-    }
-
-    print!("{output}");
-    io::stdout().flush().ok();
-
-    if let Some(path) = cleanup_path {
-        let _ = fs::remove_file(path);
-    }
-
+    let task_id = enqueue_slack_turn(scheduler, turn.clone(), progress_message_id.clone())?;
+    tracing::info!(task_id, session = %SessionKey::slack(&turn.channel_id, turn.thread_ts.as_deref()).id(), "queued slack socket task");
     Ok(())
 }
 
 fn drain_slack_socket_turns(
     cfg: &RuntimeConfig,
     store: &mut Store,
+    scheduler: &SessionScheduler,
     slack_rx: &mpsc::Receiver<SlackWebhookTurn>,
 ) {
     while let Ok(turn) = slack_rx.try_recv() {
-        if let Err(err) = process_slack_socket_turn(cfg, store, turn) {
+        if let Err(err) = process_slack_socket_turn(cfg, store, scheduler, turn) {
             tracing::warn!("failed to process slack socket mode turn: {err:#}");
         }
     }
@@ -479,6 +689,7 @@ fn drain_slack_socket_turns(
 fn run_due_scheduled_tasks(
     cfg: &RuntimeConfig,
     store: &mut Store,
+    scheduler: &SessionScheduler,
     telegram_client: &Client,
 ) -> Result<()> {
     if !cfg.scheduled_tasks_enabled {
@@ -512,10 +723,11 @@ fn run_due_scheduled_tasks(
             tracing::info!("retrying dispatch for scheduled task id={}", task.id);
             Some(pending.to_string())
         } else {
-            match process_turn(
-                cfg,
-                store,
-                TurnInput {
+            let session = SessionKey::scheduled(&format!("task-{}", task.id));
+            let enqueue_result = scheduler.enqueue(TaskRequest {
+                session: session.clone(),
+                channel: "scheduled".to_string(),
+                input: TurnInput {
                     input_type: InputType::Text,
                     user_text: task.prompt.clone(),
                     asr_text: String::new(),
@@ -526,32 +738,34 @@ fn run_due_scheduled_tasks(
                         "This is a scheduled task set to run at {}. Source: {}.",
                         task.schedule_time, task.source
                     )),
-                    channel: "telegram".to_string(),
+                    channel: "scheduled".to_string(),
                 },
-                "telegram",
-                cfg.telegram_chat_id.clone(),
-                None,
-                None,
-                &QuotedMessage {
+                update_id: None,
+                media: None,
+                quoted: QuotedMessage {
                     reply_from: None,
                     reply_text: None,
                     reply_ts: None,
                 },
-            ) {
-                Ok(output) => {
-                    if let Err(err) = store.set_scheduled_task_pending_output(task.id, &output) {
-                        tracing::warn!(
-                            "failed to set pending output for scheduled task id={}: {err:#}",
-                            task.id
-                        );
-                    }
-                    Some(output)
+                dispatch: DispatchTarget::Telegram {
+                    chat_id: cfg
+                        .telegram_chat_id
+                        .clone()
+                        .unwrap_or_else(|| "local".to_string()),
+                },
+                source_user_id: None,
+                progress_message_id: None,
+                scheduled_task_id: Some(task.id),
+            });
+            match enqueue_result {
+                Ok(task_run_id) => {
+                    tracing::info!(task_run_id, session = %session.id(), scheduled_task_id = task.id, "queued scheduled task");
                 }
                 Err(err) => {
-                    tracing::warn!("scheduled task id={} failed: {err:#}", task.id);
-                    None
+                    tracing::warn!("scheduled task id={} failed to queue: {err:#}", task.id);
                 }
             }
+            None
         };
 
         if let Some(output) = output_to_dispatch {
@@ -945,6 +1159,7 @@ fn install_shutdown_handler() -> Result<Arc<AtomicBool>> {
 fn run_poll_loop(
     cfg: &RuntimeConfig,
     store: &mut Store,
+    scheduler: &SessionScheduler,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
     slack_rx: Option<&mpsc::Receiver<SlackWebhookTurn>>,
@@ -966,10 +1181,10 @@ fn run_poll_loop(
 
         if updates.is_empty() {
             if let Some(rx) = slack_rx {
-                drain_slack_socket_turns(cfg, store, rx);
+                drain_slack_socket_turns(cfg, store, scheduler, rx);
             }
             // Run any due scheduled tasks before sleeping
-            if let Err(err) = run_due_scheduled_tasks(cfg, store, telegram_client) {
+            if let Err(err) = run_due_scheduled_tasks(cfg, store, scheduler, telegram_client) {
                 tracing::warn!("scheduled task execution failed: {err:#}");
             }
             thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
@@ -1002,7 +1217,7 @@ fn run_poll_loop(
             ) {
                 tracing::warn!("failed to set inflight checkpoint: {err:#}");
             }
-            let outcome = match process_webhook_line(cfg, store, &line) {
+            let outcome = match process_webhook_line(cfg, store, scheduler, &line) {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     tracing::warn!(
@@ -1048,11 +1263,11 @@ fn run_poll_loop(
 
         // Drain any pending Slack socket mode turns
         if let Some(rx) = slack_rx {
-            drain_slack_socket_turns(cfg, store, rx);
+            drain_slack_socket_turns(cfg, store, scheduler, rx);
         }
 
         // Run any due scheduled tasks
-        if let Err(err) = run_due_scheduled_tasks(cfg, store, telegram_client) {
+        if let Err(err) = run_due_scheduled_tasks(cfg, store, scheduler, telegram_client) {
             tracing::warn!("scheduled task execution failed: {err:#}");
         }
     }
@@ -1064,6 +1279,7 @@ fn run_poll_loop(
 fn run_webhook_loop(
     cfg: &RuntimeConfig,
     store: &mut Store,
+    scheduler: &SessionScheduler,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
     slack_rx: Option<&mpsc::Receiver<SlackWebhookTurn>>,
@@ -1076,10 +1292,11 @@ fn run_webhook_loop(
     while !shutdown.load(Ordering::SeqCst) {
         // Drain Slack socket mode turns first
         if let Some(rx) = slack_rx {
-            drain_slack_socket_turns(cfg, store, rx);
+            drain_slack_socket_turns(cfg, store, scheduler, rx);
         }
 
-        let progressed = match drain_webhook_queue(cfg, store, telegram_client, shutdown) {
+        let progressed = match drain_webhook_queue(cfg, store, scheduler, telegram_client, shutdown)
+        {
             Ok(progressed) => progressed,
             Err(err) => {
                 tracing::warn!("webhook queue drain failed (will continue): {err:#}");
@@ -1088,7 +1305,7 @@ fn run_webhook_loop(
         };
 
         // Run any due scheduled tasks
-        if let Err(err) = run_due_scheduled_tasks(cfg, store, telegram_client) {
+        if let Err(err) = run_due_scheduled_tasks(cfg, store, scheduler, telegram_client) {
             tracing::warn!("scheduled task execution failed: {err:#}");
         }
 
@@ -1104,6 +1321,7 @@ fn run_webhook_loop(
 fn restore_inflight_update(
     cfg: &RuntimeConfig,
     store: &mut Store,
+    scheduler: &SessionScheduler,
     telegram_client: &Client,
 ) -> Result<()> {
     let Some(inflight_json) = store.kv_get("inflight_update_json")? else {
@@ -1114,7 +1332,7 @@ fn restore_inflight_update(
     if let Ok(v) = serde_json::from_str::<Value>(&inflight_json)
         && v.get("channel").and_then(|c| c.as_str()) == Some("slack")
     {
-        restore_inflight_slack(cfg, store, &v)?;
+        restore_inflight_slack(cfg, store, scheduler, &v)?;
         return Ok(());
     }
 
@@ -1153,7 +1371,7 @@ fn restore_inflight_update(
         return Ok(());
     }
 
-    let outcome = match process_webhook_line(cfg, store, &inflight_json) {
+    let outcome = match process_webhook_line(cfg, store, scheduler, &inflight_json) {
         Ok(outcome) => outcome,
         Err(err) => {
             tracing::warn!("failed to process inflight update, clearing: {err:#}");
@@ -1208,7 +1426,12 @@ fn restore_inflight_update(
 }
 
 /// Restore an inflight Slack Socket Mode turn from a previous crash.
-fn restore_inflight_slack(cfg: &RuntimeConfig, store: &mut Store, payload: &Value) -> Result<()> {
+fn restore_inflight_slack(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    scheduler: &SessionScheduler,
+    payload: &Value,
+) -> Result<()> {
     let event_id = payload
         .get("event_id")
         .and_then(|v| v.as_str())
@@ -1239,6 +1462,10 @@ fn restore_inflight_slack(cfg: &RuntimeConfig, store: &mut Store, payload: &Valu
         },
         channel_id: channel_id.to_string(),
         thread_ts: thread_ts.map(|s| s.to_string()),
+        source_user_id: payload
+            .get("source_user_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         input: TurnInput {
             input_type: InputType::Text,
             user_text: if user_text.is_empty() {
@@ -1256,7 +1483,7 @@ fn restore_inflight_slack(cfg: &RuntimeConfig, store: &mut Store, payload: &Valu
         media: None,
     };
 
-    if let Err(err) = process_slack_socket_turn(cfg, store, turn) {
+    if let Err(err) = process_slack_socket_turn(cfg, store, scheduler, turn) {
         tracing::warn!("failed to restore inflight slack turn, clearing: {err:#}");
         let _ = store.clear_inflight();
     }
@@ -1267,6 +1494,7 @@ fn restore_inflight_slack(cfg: &RuntimeConfig, store: &mut Store, payload: &Valu
 fn drain_webhook_queue(
     cfg: &RuntimeConfig,
     store: &mut Store,
+    scheduler: &SessionScheduler,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<bool> {
@@ -1298,7 +1526,7 @@ fn drain_webhook_queue(
             }
         };
 
-        let outcome = match process_webhook_line(cfg, store, &line) {
+        let outcome = match process_webhook_line(cfg, store, scheduler, &line) {
             Ok(outcome) => outcome,
             Err(err) => {
                 tracing::warn!("webhook processing failed (will retry): {err:#}");
@@ -1364,40 +1592,6 @@ struct ProcessOutcome {
     output: Option<String>,
     cleanup_path: Option<PathBuf>,
     progress_message_id: Option<String>,
-}
-
-fn maybe_populate_slack_thread_context(
-    cfg: &RuntimeConfig,
-    store: &Store,
-    slack_client: &Client,
-    turn: &mut SlackWebhookTurn,
-) {
-    let Some(ref thread_ts) = turn.thread_ts else {
-        return;
-    };
-
-    let boundary_unix = match store.latest_boundary_unix(&turn.channel_id, "slack") {
-        Ok(ts) => ts,
-        Err(err) => {
-            tracing::warn!("failed to read slack context boundary: {err:#}");
-            None
-        }
-    };
-
-    let history_client = build_slack_user_client(cfg)
-        .unwrap_or(None)
-        .unwrap_or_else(|| slack_client.clone());
-
-    match slack_fetch_thread_context(
-        &history_client,
-        &turn.channel_id,
-        Some(thread_ts),
-        boundary_unix.map(|ts| ts as f64),
-    ) {
-        Ok(ctx) if !ctx.trim().is_empty() => turn.input.supplemental_context = Some(ctx),
-        Ok(_) => turn.input.supplemental_context = None,
-        Err(err) => tracing::warn!("failed to fetch slack thread context: {err:#}"),
-    }
 }
 
 fn dispatch_process_outcome(
@@ -1466,36 +1660,6 @@ fn is_slack_interactive_payload(value: &Value) -> bool {
         .and_then(Value::as_str)
         .map(|t| t == "block_actions" || t == "interactive_message" || t == "slash_commands")
         .unwrap_or(false)
-}
-
-fn check_slack_cancel(value: &Value) -> bool {
-    let payload_type = value.get("type").and_then(Value::as_str).unwrap_or("");
-    match payload_type {
-        "block_actions" | "interactive_message" => value
-            .get("actions")
-            .and_then(Value::as_array)
-            .map(|actions| {
-                actions
-                    .iter()
-                    .any(|a| a.get("action_id").and_then(Value::as_str) == Some("cancel"))
-            })
-            .unwrap_or(false),
-        "slash_commands" => value.get("command").and_then(Value::as_str) == Some("/cancel"),
-        _ => false,
-    }
-}
-
-fn check_slack_fresh(value: &Value) -> Option<String> {
-    if value.get("type").and_then(Value::as_str) != Some("slash_commands") {
-        return None;
-    }
-    if value.get("command").and_then(Value::as_str) != Some("/fresh") {
-        return None;
-    }
-    value
-        .get("channel_id")
-        .and_then(Value::as_str)
-        .map(|s| s.to_string())
 }
 
 fn is_slack_event(payload: &str) -> bool {
@@ -1568,6 +1732,10 @@ fn parse_slack_webhook_event(_cfg: &RuntimeConfig, payload: &str) -> Option<Webh
         event_id,
         channel_id,
         thread_ts,
+        source_user_id: event
+            .get("user")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         input: TurnInput {
             input_type: InputType::Text,
             user_text: text,
@@ -1585,6 +1753,7 @@ fn parse_slack_webhook_event(_cfg: &RuntimeConfig, payload: &str) -> Option<Webh
 fn process_webhook_line(
     cfg: &RuntimeConfig,
     store: &mut Store,
+    scheduler: &SessionScheduler,
     line: &str,
 ) -> Result<ProcessOutcome> {
     // Resolve the webhook action: try Slack event/payload detection first, then Telegram
@@ -1595,54 +1764,127 @@ fn process_webhook_line(
         })
     } else if let Ok(value) = serde_json::from_str::<Value>(line) {
         if is_slack_interactive_payload(&value) {
-            if check_slack_cancel(&value) {
-                if let Err(err) = signal_cancel_marker(cfg) {
-                    tracing::warn!("failed to set cancel marker: {err:#}");
+            let payload_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+            let channel_id = value
+                .get("channel")
+                .and_then(|node| node.get("id"))
+                .and_then(Value::as_str)
+                .or_else(|| value.get("channel_id").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_string();
+            let thread_ts = value
+                .get("container")
+                .and_then(|node| node.get("thread_ts"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    value
+                        .get("message")
+                        .and_then(|node| node.get("thread_ts"))
+                        .and_then(Value::as_str)
+                })
+                .or_else(|| {
+                    value
+                        .get("message")
+                        .and_then(|node| node.get("ts"))
+                        .and_then(Value::as_str)
+                })
+                .map(ToOwned::to_owned);
+            let actor_user_id = value
+                .get("user")
+                .and_then(|node| node.get("id"))
+                .and_then(Value::as_str)
+                .or_else(|| value.get("user_id").and_then(Value::as_str));
+
+            if payload_type == "slash_commands" {
+                let command = value.get("command").and_then(Value::as_str).unwrap_or("");
+                let extra = value
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                let mut text = command.to_string();
+                if !extra.is_empty() {
+                    text.push(' ');
+                    text.push_str(extra);
                 }
-                tracing::info!("slack cancel received");
-                return Ok(ProcessOutcome {
-                    should_ack: true,
+                if let Some(outcome) = maybe_handle_slack_command(
+                    cfg,
+                    store,
+                    scheduler,
+                    &channel_id,
+                    thread_ts.as_deref(),
+                    actor_user_id,
+                    &text,
+                )? {
+                    return Ok(outcome);
+                }
+                WebhookAction::Ignore {
                     update_id: None,
-                    chat_id: None,
-                    output_channel: None,
-                    output_thread_ts: None,
-                    output: None,
-                    cleanup_path: None,
-                    progress_message_id: None,
-                });
-            }
-            if let Some(channel_id) = check_slack_fresh(&value) {
-                let ts = iso_now(&cfg.timezone);
-                match store.insert_boundary_turn(&ts, &channel_id, None, "slack") {
-                    Ok(true) => {
-                        tracing::info!("inserted context boundary for slack channel={channel_id}")
+                    reason: "unhandled_slack_interactive_payload".to_string(),
+                }
+            } else if let Some(actions) = value.get("actions").and_then(Value::as_array) {
+                if let Some(action) = actions.first() {
+                    let action_id = action
+                        .get("action_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let action_value = action.get("value").and_then(Value::as_str).unwrap_or("");
+                    if let Some((approval_id, approval_action)) = action_value
+                        .strip_prefix("approval:")
+                        .and_then(|value| value.split_once(':'))
+                    {
+                        let reply = approval_id
+                            .parse::<i64>()
+                            .with_context(|| format!("invalid approval id: {approval_id}"))
+                            .and_then(|approval_id| {
+                                scheduler.resolve_approval(
+                                    approval_id,
+                                    approval_action,
+                                    actor_user_id.unwrap_or_default(),
+                                )
+                            })?
+                            .unwrap_or_else(|| "Approval action processed.".to_string());
+                        return Ok(ProcessOutcome {
+                            should_ack: true,
+                            update_id: None,
+                            chat_id: Some(channel_id),
+                            output_channel: Some("slack".to_string()),
+                            output_thread_ts: thread_ts,
+                            output: Some(render_command_output(&reply)),
+                            cleanup_path: None,
+                            progress_message_id: None,
+                        });
                     }
-                    Ok(false) => {}
-                    Err(err) => tracing::warn!("failed to insert context boundary: {err:#}"),
+                    if action_id == "cancel" {
+                        let session = SessionKey::slack(&channel_id, thread_ts.as_deref());
+                        let reply = if let Some(task_id) =
+                            scheduler.cancel_active_for_session(&session.id())?
+                        {
+                            format!("Cancel requested for task #{task_id}.")
+                        } else {
+                            "No active task for this Slack session.".to_string()
+                        };
+                        return Ok(ProcessOutcome {
+                            should_ack: true,
+                            update_id: None,
+                            chat_id: Some(channel_id),
+                            output_channel: Some("slack".to_string()),
+                            output_thread_ts: thread_ts,
+                            output: Some(render_command_output(&reply)),
+                            cleanup_path: None,
+                            progress_message_id: None,
+                        });
+                    }
                 }
-                return Ok(ProcessOutcome {
-                    should_ack: true,
+                WebhookAction::Ignore {
                     update_id: None,
-                    chat_id: Some(channel_id),
-                    output_channel: Some("slack".to_string()),
-                    output_thread_ts: None,
-                    output: Some(
-                        render_output(
-                            "Context cleared. Fresh start!",
-                            "",
-                            &ParsedMarkers::default(),
-                        )
-                        .trim_end()
-                        .to_string(),
-                    ),
-                    cleanup_path: None,
-                    progress_message_id: None,
-                });
-            }
-            // Other interactive payloads we don't handle — ack and ignore
-            WebhookAction::Ignore {
-                update_id: None,
-                reason: "unhandled_slack_interactive_payload".to_string(),
+                    reason: "unhandled_slack_interactive_payload".to_string(),
+                }
+            } else {
+                WebhookAction::Ignore {
+                    update_id: None,
+                    reason: "unhandled_slack_interactive_payload".to_string(),
+                }
             }
         } else {
             parse_webhook_action(cfg, line)?
@@ -1680,28 +1922,34 @@ fn process_webhook_line(
                 progress_message_id: None,
             })
         }
-        WebhookAction::Cancel { update_id } => {
-            if let Err(err) = signal_cancel_marker(cfg) {
-                tracing::warn!("failed to set cancel marker: {err:#}");
-            }
+        WebhookAction::Cancel { update_id, chat_id } => {
+            let session_id = SessionKey::telegram(&chat_id).id();
+            let reply = if let Some(task_id) = scheduler.cancel_active_for_session(&session_id)? {
+                format!("Cancel requested for task #{task_id}.")
+            } else {
+                "No active task for this chat.".to_string()
+            };
             if let Some(update_id) = update_id.as_ref() {
                 let _ = store.kv_set("last_update_id", update_id);
             }
             Ok(ProcessOutcome {
                 should_ack: true,
                 update_id,
-                chat_id: None,
-                output_channel: None,
+                chat_id: Some(chat_id),
+                output_channel: Some("telegram".to_string()),
                 output_thread_ts: None,
-                output: None,
+                output: Some(render_command_output(&reply)),
                 cleanup_path: None,
                 progress_message_id: None,
             })
         }
         WebhookAction::Fresh { update_id, chat_id } => {
             let ts = iso_now(&cfg.timezone);
-            match store.insert_boundary_turn(&ts, &chat_id, update_id.as_deref(), "telegram") {
-                Ok(true) => tracing::info!("inserted context boundary for chat_id={chat_id}"),
+            let session = SessionKey::telegram(&chat_id);
+            match store.insert_boundary_turn(&ts, &session.id(), update_id.as_deref(), "telegram") {
+                Ok(true) => {
+                    tracing::info!("inserted context boundary for session={}", session.id())
+                }
                 Ok(false) => {}
                 Err(err) => tracing::warn!("failed to insert context boundary: {err:#}"),
             }
@@ -1749,6 +1997,20 @@ fn process_webhook_line(
         }
         WebhookAction::Turn(turn) => {
             let chat_id = turn.chat_id.clone();
+            if let Some(outcome) = maybe_handle_telegram_command(
+                cfg,
+                store,
+                scheduler,
+                turn.update_id.clone(),
+                &chat_id,
+                &turn.input.user_text,
+            )? {
+                if let Some(update_id) = outcome.update_id.as_ref() {
+                    let _ = store.kv_set("last_update_id", update_id);
+                }
+                return Ok(outcome);
+            }
+
             if let Some(update_id) = turn.update_id.as_deref()
                 && store.turn_exists_for_update_id(update_id)?
             {
@@ -1766,13 +2028,6 @@ fn process_webhook_line(
                 });
             }
 
-            set_inflight_update(
-                store,
-                turn.update_id.as_deref().unwrap_or(""),
-                line,
-                &cfg.timezone,
-            )?;
-
             let progress_message_id = send_progress_message(cfg, &chat_id)
                 .map_err(|err| {
                     tracing::warn!("failed to send progress message: {err:#}");
@@ -1781,60 +2036,56 @@ fn process_webhook_line(
                 .ok()
                 .flatten();
 
-            let (hydrated_input, cleanup_path) = hydrate_turn_input(
-                cfg,
-                turn.update_id.as_deref(),
-                turn.input,
-                turn.media,
-                "telegram",
-            )?;
+            let turn = *turn;
+            let update_id = turn.update_id.clone();
+            let task_id = enqueue_telegram_turn(scheduler, turn, progress_message_id.clone())?;
+            tracing::info!(task_id, session = %SessionKey::telegram(&chat_id).id(), "queued telegram task");
 
-            let output = process_turn(
-                cfg,
-                store,
-                hydrated_input,
-                "telegram",
-                Some(chat_id.clone()),
-                turn.update_id.clone(),
-                progress_message_id.as_deref(),
-                &turn.quoted,
-            )?;
-
-            if let Some(update_id) = turn.update_id.as_ref() {
+            if let Some(update_id) = update_id.as_ref() {
                 let _ = store.kv_set("last_update_id", update_id);
             }
 
             Ok(ProcessOutcome {
                 should_ack: true,
-                update_id: turn.update_id,
+                update_id,
                 chat_id: Some(chat_id),
                 output_channel: Some("telegram".to_string()),
                 output_thread_ts: None,
-                output: Some(output.trim_end().to_string()),
-                cleanup_path,
+                output: None,
+                cleanup_path: None,
                 progress_message_id,
             })
         }
-        WebhookAction::SlackTurn(mut turn) => {
-            let slack_client = match build_slack_client(cfg) {
-                Ok(c) => c,
-                Err(err) => {
-                    tracing::error!("slack client build failed: {err:#}");
-                    return Ok(ProcessOutcome {
-                        should_ack: true,
-                        update_id: turn.event_id,
-                        chat_id: Some(turn.channel_id.clone()),
-                        output_channel: None,
-                        output_thread_ts: None,
-                        output: None,
-                        cleanup_path: None,
-                        progress_message_id: None,
-                    });
-                }
-            };
+        WebhookAction::SlackTurn(turn) => {
+            if let Some(outcome) = maybe_handle_slack_command(
+                cfg,
+                store,
+                scheduler,
+                &turn.channel_id,
+                turn.thread_ts.as_deref(),
+                turn.source_user_id.as_deref(),
+                &turn.input.user_text,
+            )? {
+                return Ok(outcome);
+            }
 
-            maybe_populate_slack_thread_context(cfg, store, &slack_client, &mut turn);
+            if let Some(event_id) = turn.event_id.as_deref()
+                && store.turn_exists_for_update_id(event_id)?
+            {
+                let replay_output = store.rendered_output_for_update_id(event_id)?;
+                return Ok(ProcessOutcome {
+                    should_ack: true,
+                    update_id: Some(event_id.to_string()),
+                    chat_id: Some(turn.channel_id.clone()),
+                    output_channel: Some("slack".to_string()),
+                    output_thread_ts: turn.thread_ts.clone(),
+                    output: replay_output,
+                    cleanup_path: None,
+                    progress_message_id: None,
+                });
+            }
 
+            let slack_client = build_slack_client(cfg)?;
             let progress_message_id = send_slack_progress_message(
                 &slack_client,
                 &turn.channel_id,
@@ -1846,32 +2097,20 @@ fn process_webhook_line(
             })
             .ok();
 
-            let (hydrated_input, cleanup_path) =
-                hydrate_slack_turn_input(cfg, turn.event_id.as_deref(), turn.input, turn.media)?;
-
-            let output = process_turn(
-                cfg,
-                store,
-                hydrated_input,
-                "slack",
-                Some(turn.channel_id.clone()),
-                turn.event_id.clone(),
-                progress_message_id.as_deref(),
-                &QuotedMessage {
-                    reply_from: None,
-                    reply_text: None,
-                    reply_ts: None,
-                },
-            )?;
+            let update_id = turn.event_id.clone();
+            let channel_id = turn.channel_id.clone();
+            let thread_ts = turn.thread_ts.clone();
+            let task_id = enqueue_slack_turn(scheduler, *turn, progress_message_id.clone())?;
+            tracing::info!(task_id, session = %SessionKey::slack(&channel_id, thread_ts.as_deref()).id(), "queued slack task");
 
             Ok(ProcessOutcome {
                 should_ack: true,
-                update_id: turn.event_id,
-                chat_id: Some(turn.channel_id),
+                update_id,
+                chat_id: Some(channel_id),
                 output_channel: Some("slack".to_string()),
-                output_thread_ts: turn.thread_ts,
-                output: Some(output.trim_end().to_string()),
-                cleanup_path,
+                output_thread_ts: thread_ts,
+                output: None,
+                cleanup_path: None,
                 progress_message_id,
             })
         }
@@ -2064,7 +2303,7 @@ pub(crate) fn scan_webhook_queue_for_cancel(
 pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction> {
     let value: Value = serde_json::from_str(line).context("invalid webhook JSON payload")?;
     let update_id = extract_update_id_from_value(&value);
-    let configured_chat = cfg.telegram_chat_id.as_deref().unwrap_or("<any>");
+    let configured_chat = configured_telegram_chat_scope(cfg);
 
     if let Some(callback_query) = value.get("callback_query") {
         let data = callback_query
@@ -2078,7 +2317,10 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
                 .and_then(|node| node.get("id"))
                 .map(value_to_string);
             if is_allowed_chat(cfg, chat_id.as_deref()) {
-                return Ok(WebhookAction::Cancel { update_id });
+                return Ok(WebhookAction::Cancel {
+                    update_id,
+                    chat_id: chat_id.unwrap_or_default(),
+                });
             }
             let actual_chat = chat_id.unwrap_or_else(|| "<missing>".to_string());
             return Ok(WebhookAction::Ignore {
@@ -2133,7 +2375,7 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
         return Ok(WebhookAction::Fresh { update_id, chat_id });
     }
     if message_text.trim().eq_ignore_ascii_case("/cancel") {
-        return Ok(WebhookAction::Cancel { update_id });
+        return Ok(WebhookAction::Cancel { update_id, chat_id });
     }
     if message_text.trim().eq_ignore_ascii_case("/schedules") {
         return Ok(WebhookAction::Schedules { update_id, chat_id });
@@ -2290,9 +2532,41 @@ pub(crate) fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {
 }
 
 pub(crate) fn is_allowed_chat(cfg: &RuntimeConfig, chat_id: Option<&str>) -> bool {
-    match (cfg.telegram_chat_id.as_deref(), chat_id) {
-        (None, _) | (Some(_), None) => false,
-        (Some(expected), Some(actual)) => expected == actual,
+    let Some(actual) = chat_id.map(str::trim).filter(|chat_id| !chat_id.is_empty()) else {
+        return false;
+    };
+
+    telegram_allowed_chat_ids(cfg)
+        .iter()
+        .any(|expected| expected == &actual)
+}
+
+fn telegram_allowed_chat_ids(cfg: &RuntimeConfig) -> Vec<&str> {
+    let mut allowed = Vec::new();
+    if let Some(chat_id) = cfg
+        .telegram_chat_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|chat_id| !chat_id.is_empty() && *chat_id != "replace_me")
+    {
+        allowed.push(chat_id);
+    }
+    for chat_id in &cfg.telegram_chat_ids {
+        let trimmed = chat_id.trim();
+        if trimmed.is_empty() || trimmed == "replace_me" || allowed.contains(&trimmed) {
+            continue;
+        }
+        allowed.push(trimmed);
+    }
+    allowed
+}
+
+fn configured_telegram_chat_scope(cfg: &RuntimeConfig) -> String {
+    let allowed = telegram_allowed_chat_ids(cfg);
+    if allowed.is_empty() {
+        "<none>".to_string()
+    } else {
+        allowed.join(",")
     }
 }
 
@@ -2428,7 +2702,8 @@ mod tests {
         let mut store = Store::open(&cfg).expect("store");
         let update = r#"{"update_id":100,"message":{"chat":{"id":"321"},"text":"/fresh"}}"#;
 
-        let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
         assert_eq!(outcome.output_channel.as_deref(), Some("telegram"));
@@ -2442,7 +2717,8 @@ mod tests {
         let mut store = Store::open(&cfg).expect("store");
         let payload = r#"{"type":"slash_commands","command":"/fresh","channel_id":"C123"}"#;
 
-        let outcome = process_webhook_line(&cfg, &mut store, payload).expect("process");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, payload).expect("process");
         let output = outcome.output.unwrap_or_default();
 
         assert_eq!(outcome.chat_id.as_deref(), Some("C123"));
@@ -2467,7 +2743,8 @@ mod tests {
             .expect("insert schedule");
 
         let update = r#"{"update_id":101,"message":{"chat":{"id":"321"},"text":"/schedules"}}"#;
-        let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
         assert_eq!(outcome.output_channel.as_deref(), Some("telegram"));
@@ -2501,7 +2778,8 @@ mod tests {
         assert!(inserted);
 
         let update = r#"{"update_id":42,"message":{"chat":{"id":"321"},"text":"hello again"}}"#;
-        let outcome = process_webhook_line(&cfg, &mut store, update).expect("process");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
         let output = outcome.output.unwrap_or_default();
 
         assert!(output.contains("TELEGRAM_REPLY: Old reply"));
@@ -2549,14 +2827,271 @@ mod tests {
         let cfg = test_config();
         let mut store = Store::open(&cfg).expect("store");
         let update = r#"{"update_id":202,"message":{"chat":{"id":"321"},"text":"/cancel"}}"#;
-        let marker_path = cfg.runtime_dir.join("cancel");
-        if marker_path.exists() {
-            fs::remove_file(&marker_path).expect("cleanup stale marker");
-        }
 
-        let _ = process_webhook_line(&cfg, &mut store, update).expect("process");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
+        let output = outcome.output.unwrap_or_default();
 
-        assert!(marker_path.exists());
+        assert!(output.contains("No active task for this chat."));
+    }
+
+    #[test]
+    fn tasks_command_lists_active_runtime_tasks() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        let task_id = store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:321".to_string(),
+                channel: "telegram".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: None,
+                update_id: None,
+                prompt: "summarize status".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: None,
+            })
+            .expect("insert task run");
+        let mut store = Store::open(&cfg).expect("store reopen");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let update = r#"{"update_id":203,"message":{"chat":{"id":"321"},"text":"/tasks"}}"#;
+
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
+        let output = outcome.output.unwrap_or_default();
+
+        assert!(output.contains("Active tasks"));
+        assert!(output.contains(&format!("#{task_id} [queued] summarize status")));
+    }
+
+    #[test]
+    fn slack_targeted_cancel_requires_admin_role() {
+        let mut cfg = test_config();
+        cfg.slack_admin_user_ids = vec!["UADMIN".to_string()];
+        let mut store = Store::open(&cfg).expect("store");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let payload = r#"{"type":"slash_commands","command":"/cancel","text":"99","channel_id":"C123","user_id":"UNAUTHORIZED"}"#;
+
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, payload).expect("process");
+        let output = outcome.output.unwrap_or_default();
+
+        assert_eq!(outcome.output_channel.as_deref(), Some("slack"));
+        assert!(output.contains("Admin role required"));
+    }
+
+    #[test]
+    fn telegram_update_from_unconfigured_chat_is_ignored() {
+        let cfg = test_config();
+        let mut store = Store::open(&cfg).expect("store");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let update =
+            r#"{"update_id":204,"message":{"chat":{"id":"999"},"text":"hello from another chat"}}"#;
+
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
+
+        assert!(outcome.output.is_none());
+        assert!(outcome.output_channel.is_none());
+        assert_eq!(
+            store.kv_get("last_ignored_reason").expect("ignored reason"),
+            Some("chat_id_mismatch actual=999 configured=321".to_string())
+        );
+    }
+
+    #[test]
+    fn telegram_update_from_secondary_configured_chat_is_accepted() {
+        let mut cfg = test_config();
+        cfg.telegram_chat_ids = vec!["999".to_string(), "321".to_string()];
+        let update =
+            r#"{"update_id":205,"message":{"chat":{"id":"999"},"text":"hello from another chat"}}"#;
+
+        let action = parse_webhook_action(&cfg, update).expect("parse");
+
+        let WebhookAction::Turn(turn) = action else {
+            panic!("expected turn action");
+        };
+        assert_eq!(turn.chat_id, "999");
+        assert_eq!(turn.input.user_text, "hello from another chat");
+    }
+
+    #[test]
+    fn telegram_cancel_command_replies_to_request_chat() {
+        let mut cfg = test_config();
+        cfg.telegram_chat_ids = vec!["999".to_string()];
+        let mut store = Store::open(&cfg).expect("store");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let update = r#"{"update_id":206,"message":{"chat":{"id":"999"},"text":"/cancel"}}"#;
+
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
+        let output = outcome.output.unwrap_or_default();
+
+        assert_eq!(outcome.chat_id.as_deref(), Some("999"));
+        assert!(output.contains("No active task for this chat."));
+    }
+
+    #[test]
+    fn slack_approval_action_denies_non_admin_actor() {
+        let mut cfg = test_config();
+        cfg.slack_admin_user_ids = vec!["UADMIN".to_string()];
+        let store = Store::open(&cfg).expect("store");
+        let task_id = store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "slack:C123#171.5".to_string(),
+                channel: "slack".to_string(),
+                source_chat_id: Some("C123".to_string()),
+                source_user_id: Some("UREQUESTER".to_string()),
+                update_id: Some("evt-1".to_string()),
+                prompt: "deploy".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: None,
+            })
+            .expect("insert task run");
+        let approval_id = store
+            .create_approval(crate::store::CreateApprovalParams {
+                task_run_id: task_id,
+                session_id: "slack:C123#171.5".to_string(),
+                channel: "slack".to_string(),
+                source_user_id: Some("UREQUESTER".to_string()),
+                channel_id: Some("C123".to_string()),
+                thread_ts: Some("171.5".to_string()),
+                prompt_text: "deploy production".to_string(),
+                request_message_ts: Some("171.6".to_string()),
+                resume_payload: "{}".to_string(),
+                created_at: "2026-04-22T10:00:01+0000".to_string(),
+            })
+            .expect("create approval");
+        let mut store = Store::open(&cfg).expect("store reopen");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let payload = format!(
+            r#"{{"type":"block_actions","user":{{"id":"UNAUTHORIZED"}},"channel":{{"id":"C123"}},"message":{{"thread_ts":"171.5"}},"actions":[{{"action_id":"approval_approve","value":"approval:{approval_id}:approve"}}]}}"#
+        );
+
+        let outcome =
+            process_webhook_line(&cfg, &mut store, &scheduler, &payload).expect("process");
+        let output = outcome.output.unwrap_or_default();
+
+        assert!(output.contains("not authorized"));
+    }
+
+    #[test]
+    fn store_task_and_approval_records_round_trip() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        let task_id = store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:321".to_string(),
+                channel: "telegram".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: Some("user-1".to_string()),
+                update_id: Some("42".to_string()),
+                prompt: "hello".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: Some("99".to_string()),
+            })
+            .expect("insert task");
+        store
+            .update_task_run_started(task_id, "2026-04-22T10:00:05+0000")
+            .expect("start task");
+        store
+            .mark_task_run_cancel_requested(task_id, "2026-04-22T10:00:06+0000")
+            .expect("cancel request");
+        let approval_id = store
+            .create_approval(crate::store::CreateApprovalParams {
+                task_run_id: task_id,
+                session_id: "telegram:321".to_string(),
+                channel: "telegram".to_string(),
+                source_user_id: Some("user-1".to_string()),
+                channel_id: None,
+                thread_ts: None,
+                prompt_text: "confirm".to_string(),
+                request_message_ts: None,
+                resume_payload: "{}".to_string(),
+                created_at: "2026-04-22T10:00:07+0000".to_string(),
+            })
+            .expect("create approval");
+        store
+            .resolve_approval(
+                approval_id,
+                "approved",
+                "2026-04-22T10:00:08+0000",
+                Some("admin"),
+            )
+            .expect("resolve approval");
+        store
+            .finish_task_run(
+                task_id,
+                crate::store::TaskRunStatus::Completed,
+                "2026-04-22T10:00:09+0000",
+                None,
+                Some("done"),
+            )
+            .expect("finish task");
+
+        let task = store
+            .get_task_run(task_id)
+            .expect("get task")
+            .expect("task");
+        let approval = store
+            .get_pending_approval(approval_id)
+            .expect("get approval")
+            .expect("approval");
+
+        assert_eq!(task.status, "completed");
+        assert_eq!(task.result_summary.as_deref(), Some("done"));
+        assert_eq!(approval.status, "approved");
+        assert_eq!(approval.resolved_by_user_id.as_deref(), Some("admin"));
+    }
+
+    #[test]
+    fn stale_task_recovery_marks_runs_failed_and_approvals_expired() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        let task_id = store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "slack:C123#171.5".to_string(),
+                channel: "slack".to_string(),
+                source_chat_id: Some("C123".to_string()),
+                source_user_id: Some("UREQUESTER".to_string()),
+                update_id: Some("evt-1".to_string()),
+                prompt: "deploy".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: None,
+            })
+            .expect("insert task");
+        store
+            .mark_task_run_awaiting_approval(task_id)
+            .expect("awaiting approval");
+        let approval_id = store
+            .create_approval(crate::store::CreateApprovalParams {
+                task_run_id: task_id,
+                session_id: "slack:C123#171.5".to_string(),
+                channel: "slack".to_string(),
+                source_user_id: Some("UREQUESTER".to_string()),
+                channel_id: Some("C123".to_string()),
+                thread_ts: Some("171.5".to_string()),
+                prompt_text: "deploy production".to_string(),
+                request_message_ts: Some("171.6".to_string()),
+                resume_payload: "{}".to_string(),
+                created_at: "2026-04-22T10:00:01+0000".to_string(),
+            })
+            .expect("create approval");
+
+        store
+            .mark_stale_task_runs_failed("2026-04-22T10:05:00+0000")
+            .expect("mark stale");
+
+        let task = store
+            .get_task_run(task_id)
+            .expect("get task")
+            .expect("task");
+        let approval = store
+            .get_pending_approval(approval_id)
+            .expect("get approval")
+            .expect("approval");
+
+        assert_eq!(task.status, "failed");
+        assert_eq!(
+            task.error_summary.as_deref(),
+            Some("runtime restarted before task completion")
+        );
+        assert_eq!(approval.status, "expired");
     }
 
     #[test]
@@ -3108,8 +3643,9 @@ mod tests {
 
         fs::write(&queue_path, "{\"update_id\":9003,\n").expect("write malformed queue line");
 
-        let progressed =
-            drain_webhook_queue(&cfg, &mut store, &client, &shutdown).expect("drain webhook queue");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let progressed = drain_webhook_queue(&cfg, &mut store, &scheduler, &client, &shutdown)
+            .expect("drain webhook queue");
         assert!(progressed);
 
         let content = fs::read_to_string(queue_path).expect("queue content");

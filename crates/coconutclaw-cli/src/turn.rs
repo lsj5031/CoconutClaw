@@ -99,6 +99,11 @@ fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
     Ok(text.trim().to_string())
 }
 
+pub(crate) struct ProcessedTurn {
+    pub(crate) output: String,
+    pub(crate) status: TurnStatus,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process_turn(
     cfg: &RuntimeConfig,
@@ -110,6 +115,34 @@ pub(crate) fn process_turn(
     progress_message_id: Option<&str>,
     quoted: &QuotedMessage,
 ) -> Result<String> {
+    Ok(process_turn_with_status(
+        cfg,
+        store,
+        input,
+        channel,
+        chat_id_override,
+        update_id,
+        progress_message_id,
+        quoted,
+        None,
+        true,
+    )?
+    .output)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_turn_with_status(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    input: TurnInput,
+    channel: &str,
+    chat_id_override: Option<String>,
+    update_id: Option<String>,
+    progress_message_id: Option<&str>,
+    quoted: &QuotedMessage,
+    external_cancel_flag: Option<Arc<AtomicBool>>,
+    enable_cancel_watchers: bool,
+) -> Result<ProcessedTurn> {
     let turn_start = Instant::now();
     let _span = tracing::info_span!(
         "process_turn",
@@ -118,7 +151,9 @@ pub(crate) fn process_turn(
     )
     .entered();
 
-    clear_cancel_marker(cfg);
+    if enable_cancel_watchers {
+        clear_cancel_marker(cfg);
+    }
     let ts = iso_now(&cfg.timezone);
     let chat_id = chat_id_override
         .or_else(|| match channel {
@@ -129,9 +164,9 @@ pub(crate) fn process_turn(
 
     let context = build_context(cfg, store, &input, &ts, &chat_id, quoted)?;
 
-    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_flag = external_cancel_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let cancel_watcher_stop = Arc::new(AtomicBool::new(false));
-    let cancel_watcher = if channel == "telegram" && update_id.is_some() {
+    let cancel_watcher = if enable_cancel_watchers && channel == "telegram" && update_id.is_some() {
         maybe_spawn_cancel_watcher(
             cfg,
             store,
@@ -145,11 +180,15 @@ pub(crate) fn process_turn(
         None
     };
     let marker_watcher_stop = Arc::new(AtomicBool::new(false));
-    let marker_watcher = spawn_cancel_marker_watcher(
-        cfg,
-        Arc::clone(&cancel_flag),
-        Arc::clone(&marker_watcher_stop),
-    );
+    let marker_watcher = if enable_cancel_watchers {
+        Some(spawn_cancel_marker_watcher(
+            cfg,
+            Arc::clone(&cancel_flag),
+            Arc::clone(&marker_watcher_stop),
+        ))
+    } else {
+        None
+    };
     let progress_updater_stop = Arc::new(AtomicBool::new(false));
     let (progress_sender, progress_updater) = if let Some(message_id) = progress_message_id {
         let (progress_tx, progress_rx) = mpsc::channel::<String>();
@@ -223,7 +262,9 @@ pub(crate) fn process_turn(
         let _ = handle.join();
     }
     marker_watcher_stop.store(true, Ordering::SeqCst);
-    let _ = marker_watcher.join();
+    if let Some(handle) = marker_watcher {
+        let _ = handle.join();
+    }
     drop(progress_sender);
     progress_updater_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = progress_updater {
@@ -269,9 +310,16 @@ pub(crate) fn process_turn(
         let append_outcome = append_memory_and_tasks(cfg, store, &ts, &markers)?;
         if !append_outcome.schedule_feedback.is_empty() {
             if !telegram_reply.trim().is_empty() {
-                telegram_reply.push_str("\n\n");
+                telegram_reply.push_str(
+                    "
+
+",
+                );
             }
-            telegram_reply.push_str(&append_outcome.schedule_feedback.join("\n"));
+            telegram_reply.push_str(&append_outcome.schedule_feedback.join(
+                "
+",
+            ));
             if let Some(update_id) = update_id.as_deref()
                 && let Err(err) =
                     store.update_turn_reply_by_update_id(update_id, &telegram_reply, &voice_reply)
@@ -283,8 +331,13 @@ pub(crate) fn process_turn(
         }
     }
 
-    clear_cancel_marker(cfg);
-    Ok(render_output(&telegram_reply, &voice_reply, &markers))
+    if enable_cancel_watchers {
+        clear_cancel_marker(cfg);
+    }
+    Ok(ProcessedTurn {
+        output: render_output(&telegram_reply, &voice_reply, &markers),
+        status,
+    })
 }
 
 pub(crate) fn resolve_turn_result(

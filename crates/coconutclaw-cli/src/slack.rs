@@ -24,7 +24,6 @@ use crate::InputType;
 use crate::TurnInput;
 use crate::markers::parse_markers;
 use crate::resolve_instance_path;
-use crate::signal_cancel_marker;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +34,7 @@ pub(crate) struct SlackWebhookTurn {
     pub event_id: Option<String>,  // for dedup (stored in update_id column)
     pub channel_id: String,        // Slack channel ID (C01234567)
     pub thread_ts: Option<String>, // for thread replies
+    pub source_user_id: Option<String>,
     pub input: TurnInput,
     pub media: Option<SlackMedia>,
 }
@@ -797,6 +797,54 @@ fn send_slack_voice_reply(
 // Progress messages
 // ---------------------------------------------------------------------------
 
+pub(crate) fn send_slack_approval_request(
+    client: &Client,
+    channel_id: &str,
+    thread_ts: Option<&str>,
+    approval_id: i64,
+    prompt: &str,
+) -> Result<String> {
+    let text = if prompt.trim().is_empty() {
+        "Approval requested.".to_string()
+    } else {
+        format!("Approval requested: {}", prompt.trim())
+    };
+    let blocks = slack_approval_blocks(approval_id, prompt);
+    let blocks_str = serde_json::to_string(&blocks)?;
+    slack_post_message(client, channel_id, &text, Some(&blocks_str), thread_ts)
+}
+
+fn slack_approval_blocks(approval_id: i64, prompt: &str) -> Value {
+    json!([
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": format!("*Approval required*\n{}", prompt.trim())
+            }
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Approve"},
+                    "style": "primary",
+                    "action_id": "approval_approve",
+                    "value": format!("approval:{}:approve", approval_id)
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Reject"},
+                    "style": "danger",
+                    "action_id": "approval_reject",
+                    "value": format!("approval:{}:reject", approval_id)
+                }
+            ]
+        }
+    ])
+}
+
 pub(crate) fn send_slack_progress_message(
     client: &Client,
     channel_id: &str,
@@ -1079,6 +1127,7 @@ async fn slack_socket_mode_inner(
                         event_id,
                         channel_id,
                         thread_ts,
+                        source_user_id: event["user"].as_str().map(|s| s.to_string()),
                         input: TurnInput {
                             input_type: InputType::Text,
                             user_text: if user_text.trim().is_empty() {
@@ -1126,23 +1175,38 @@ async fn slack_socket_mode_inner(
                 tracing::info!(
                     "slack socket mode: received slash command={command} channel={channel_id}"
                 );
+                let text = payload["text"].as_str().unwrap_or("").trim();
+                let thread_ts = payload["thread_ts"].as_str().map(|s| s.to_string());
+                let user_id = payload["user_id"].as_str().map(|s| s.to_string());
+                let mut user_text = command.to_string();
+                if !text.is_empty() {
+                    user_text.push(' ');
+                    user_text.push_str(text);
+                }
 
-                match command {
-                    "/cancel" => {
-                        if let Err(err) = signal_cancel_marker(cfg) {
-                            tracing::warn!("slack socket mode: cancel marker failed: {err:#}");
-                        }
-                        tracing::info!("slack socket mode: cancel signalled");
-                    }
-                    "/fresh" => {
-                        tracing::warn!(
-                            "slack socket mode: /fresh not supported via Socket Mode \
-                             (requires Store access). Use the webhook path instead."
-                        );
-                    }
-                    _ => {
-                        tracing::debug!("slack socket mode: unhandled slash command={command}");
-                    }
+                let turn = SlackWebhookTurn {
+                    event_id: envelope["envelope_id"].as_str().map(|s| s.to_string()),
+                    channel_id,
+                    thread_ts,
+                    source_user_id: user_id,
+                    input: TurnInput {
+                        input_type: InputType::Text,
+                        user_text,
+                        asr_text: String::new(),
+                        attachment_type: None,
+                        attachment_path: None,
+                        attachment_owned: false,
+                        supplemental_context: None,
+                        channel: "slack".to_string(),
+                    },
+                    media: None,
+                };
+
+                if let Err(err) = tx.send(turn) {
+                    tracing::warn!(
+                        "slack socket mode: failed to send slash command via channel: {err:#}"
+                    );
+                    bail!("channel send failed: {err:#}");
                 }
             }
             other => {
@@ -1295,5 +1359,14 @@ mod tests {
                 .to_string()
                 .contains("channel_not_found")
         );
+    }
+
+    #[test]
+    fn approval_blocks_encode_the_approval_row_id() {
+        let blocks = super::slack_approval_blocks(42, "deploy production");
+        let elements = blocks[1]["elements"].as_array().expect("elements");
+
+        assert_eq!(elements[0]["value"], "approval:42:approve");
+        assert_eq!(elements[1]["value"], "approval:42:reject");
     }
 }
