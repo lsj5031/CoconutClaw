@@ -1000,7 +1000,12 @@ mod tests {
     #[test]
     fn different_sessions_can_run_in_parallel() {
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let events_path = tmp_dir.path().join("parallel-events.log");
+        let markers_dir = tmp_dir.path().join("parallel-markers");
+        fs::create_dir_all(&markers_dir).expect("create markers dir");
+        let start_one = markers_dir.join("start-one");
+        let start_two = markers_dir.join("start-two");
+        let saw_one = markers_dir.join("saw-one");
+        let saw_two = markers_dir.join("saw-two");
         let provider_bin = write_fake_provider_script(
             tmp_dir.path(),
             "parallel-provider",
@@ -1014,20 +1019,33 @@ for ((i=1; i<=$#; i++)); do
 done
 CONTEXT="${{@: -1}}"
 if [[ "$CONTEXT" == *"parallel-one"* ]]; then
-    printf 'start:one\n' >> "{events}"
-    sleep 2
-    printf 'done:one\n' >> "{events}"
+    touch "{start_one}"
+    for _ in $(seq 1 40); do
+        if [[ -f "{start_two}" ]]; then
+            touch "{saw_one}"
+            break
+        fi
+        sleep 0.1
+    done
     printf 'TELEGRAM_REPLY: one\n' > "$OUT_FILE"
 elif [[ "$CONTEXT" == *"parallel-two"* ]]; then
-    printf 'start:two\n' >> "{events}"
-    sleep 2
-    printf 'done:two\n' >> "{events}"
+    touch "{start_two}"
+    for _ in $(seq 1 40); do
+        if [[ -f "{start_one}" ]]; then
+            touch "{saw_two}"
+            break
+        fi
+        sleep 0.1
+    done
     printf 'TELEGRAM_REPLY: two\n' > "$OUT_FILE"
 else
     printf 'TELEGRAM_REPLY: unexpected\n' > "$OUT_FILE"
 fi
 "#,
-                events = events_path.display()
+                start_one = start_one.display(),
+                start_two = start_two.display(),
+                saw_one = saw_one.display(),
+                saw_two = saw_two.display()
             ),
             &format!(
                 r#"$outFile = ""
@@ -1039,20 +1057,33 @@ for ($i = 0; $i -lt $args.Count; $i++) {{
 }}
 $context = $args[$args.Count - 1]
 if ($context -match "parallel-one") {{
-    "start:one" | Add-Content -Path "{events}"
-    Start-Sleep -Seconds 2
-    "done:one" | Add-Content -Path "{events}"
+    New-Item -ItemType File -Path "{start_one}" -Force | Out-Null
+    for ($i = 0; $i -lt 40; $i++) {{
+        if (Test-Path "{start_two}") {{
+            New-Item -ItemType File -Path "{saw_one}" -Force | Out-Null
+            break
+        }}
+        Start-Sleep -Milliseconds 100
+    }}
     "TELEGRAM_REPLY: one" | Set-Content -Path $outFile
 }} elseif ($context -match "parallel-two") {{
-    "start:two" | Add-Content -Path "{events}"
-    Start-Sleep -Seconds 2
-    "done:two" | Add-Content -Path "{events}"
+    New-Item -ItemType File -Path "{start_two}" -Force | Out-Null
+    for ($i = 0; $i -lt 40; $i++) {{
+        if (Test-Path "{start_one}") {{
+            New-Item -ItemType File -Path "{saw_two}" -Force | Out-Null
+            break
+        }}
+        Start-Sleep -Milliseconds 100
+    }}
     "TELEGRAM_REPLY: two" | Set-Content -Path $outFile
 }} else {{
     "TELEGRAM_REPLY: unexpected" | Set-Content -Path $outFile
 }}
 "#,
-                events = events_path.display()
+                start_one = start_one.display(),
+                start_two = start_two.display(),
+                saw_one = saw_one.display(),
+                saw_two = saw_two.display()
             ),
         );
         let cfg = scheduler_test_config(provider_bin);
@@ -1072,12 +1103,10 @@ if ($context -match "parallel-one") {{
             .expect("enqueue two");
         wait_for_terminal_tasks(&cfg, &[task_one, task_two]);
 
-        let events = fs::read_to_string(&events_path).expect("read events");
-        let lines: Vec<&str> = events.lines().collect();
-
         assert!(
-            lines.len() >= 4 && lines[0].starts_with("start:") && lines[1].starts_with("start:"),
-            "expected both sessions to start before any completion, events={lines:?}"
+            saw_one.exists() && saw_two.exists(),
+            "expected both sessions to observe the other start marker, markers={:?}",
+            [start_one, start_two, saw_one, saw_two]
         );
     }
 
@@ -1161,7 +1190,12 @@ if ($context -match "fifo-second") {{
     #[test]
     fn telegram_chats_can_run_in_parallel() {
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let events_path = tmp_dir.path().join("telegram-parallel-events.log");
+        let markers_dir = tmp_dir.path().join("telegram-parallel-markers");
+        fs::create_dir_all(&markers_dir).expect("create markers dir");
+        let start_one = markers_dir.join("start-321");
+        let start_two = markers_dir.join("start-999");
+        let saw_one = markers_dir.join("saw-321");
+        let saw_two = markers_dir.join("saw-999");
         let provider_bin = write_fake_provider_script(
             tmp_dir.path(),
             "telegram-parallel-provider",
@@ -1175,20 +1209,33 @@ for ((i=1; i<=$#; i++)); do
 done
 CONTEXT="${{@: -1}}"
 if [[ "$CONTEXT" == *"telegram-parallel-one"* ]]; then
-    printf 'start:321\n' >> "{events}"
-    sleep 2
-    printf 'done:321\n' >> "{events}"
+    touch "{start_one}"
+    for _ in $(seq 1 40); do
+        if [[ -f "{start_two}" ]]; then
+            touch "{saw_one}"
+            break
+        fi
+        sleep 0.1
+    done
     printf 'TELEGRAM_REPLY: one\n' > "$OUT_FILE"
 elif [[ "$CONTEXT" == *"telegram-parallel-two"* ]]; then
-    printf 'start:999\n' >> "{events}"
-    sleep 2
-    printf 'done:999\n' >> "{events}"
+    touch "{start_two}"
+    for _ in $(seq 1 40); do
+        if [[ -f "{start_one}" ]]; then
+            touch "{saw_two}"
+            break
+        fi
+        sleep 0.1
+    done
     printf 'TELEGRAM_REPLY: two\n' > "$OUT_FILE"
 else
     printf 'TELEGRAM_REPLY: unexpected\n' > "$OUT_FILE"
 fi
 "#,
-                events = events_path.display()
+                start_one = start_one.display(),
+                start_two = start_two.display(),
+                saw_one = saw_one.display(),
+                saw_two = saw_two.display()
             ),
             &format!(
                 r#"$outFile = ""
@@ -1200,20 +1247,33 @@ for ($i = 0; $i -lt $args.Count; $i++) {{
 }}
 $context = $args[$args.Count - 1]
 if ($context -match "telegram-parallel-one") {{
-    "start:321" | Add-Content -Path "{events}"
-    Start-Sleep -Seconds 2
-    "done:321" | Add-Content -Path "{events}"
+    New-Item -ItemType File -Path "{start_one}" -Force | Out-Null
+    for ($i = 0; $i -lt 40; $i++) {{
+        if (Test-Path "{start_two}") {{
+            New-Item -ItemType File -Path "{saw_one}" -Force | Out-Null
+            break
+        }}
+        Start-Sleep -Milliseconds 100
+    }}
     "TELEGRAM_REPLY: one" | Set-Content -Path $outFile
 }} elseif ($context -match "telegram-parallel-two") {{
-    "start:999" | Add-Content -Path "{events}"
-    Start-Sleep -Seconds 2
-    "done:999" | Add-Content -Path "{events}"
+    New-Item -ItemType File -Path "{start_two}" -Force | Out-Null
+    for ($i = 0; $i -lt 40; $i++) {{
+        if (Test-Path "{start_one}") {{
+            New-Item -ItemType File -Path "{saw_two}" -Force | Out-Null
+            break
+        }}
+        Start-Sleep -Milliseconds 100
+    }}
     "TELEGRAM_REPLY: two" | Set-Content -Path $outFile
 }} else {{
     "TELEGRAM_REPLY: unexpected" | Set-Content -Path $outFile
 }}
 "#,
-                events = events_path.display()
+                start_one = start_one.display(),
+                start_two = start_two.display(),
+                saw_one = saw_one.display(),
+                saw_two = saw_two.display()
             ),
         );
         let cfg = scheduler_test_config(provider_bin);
@@ -1235,12 +1295,10 @@ if ($context -match "telegram-parallel-one") {{
             .expect("enqueue two");
         wait_for_terminal_tasks(&cfg, &[task_one, task_two]);
 
-        let events = fs::read_to_string(&events_path).expect("read events");
-        let lines: Vec<&str> = events.lines().collect();
-
         assert!(
-            lines.len() >= 4 && lines[0].starts_with("start:") && lines[1].starts_with("start:"),
-            "expected both telegram chats to start before any completion, events={lines:?}"
+            saw_one.exists() && saw_two.exists(),
+            "expected both telegram chats to observe the other start marker, markers={:?}",
+            [start_one, start_two, saw_one, saw_two]
         );
     }
 
