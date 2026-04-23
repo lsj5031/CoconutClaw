@@ -1,19 +1,34 @@
 .env
 config.toml
+
+# Local runtime state
 state.db
-USER.md
-MEMORY.md
+state/
 TASKS/
 LOGS/*.md
 !LOGS/.gitkeep
 runtime/
 tmp/
+target/
+
+# Local user/context files
+USER.md
+MEMORY.md
+
+# Local tool state
+.claude/
+.factory/
+.hermes/
+.omc/
+.pi/
+.wrangler/
+
+# Scratch outputs
+diff.txt
+pr_page.html
+.last_local_backup_path
+
+# Generated media/cache
 *.ogg
 *.wav
 __pycache__/
-target/
-
-.last_local_backup_path
-
-.omc/
-state/
