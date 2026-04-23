@@ -219,7 +219,7 @@ pub(crate) fn dispatch_telegram_output(
 ) -> Result<()> {
     let _span = tracing::info_span!("dispatch_telegram").entered();
     let Some(chat_id) = chat_id_override
-        .or(cfg.telegram_chat_id.as_deref())
+        .or(valid_telegram_chat_id(cfg))
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
@@ -1413,5 +1413,14 @@ mod tests {
         assert_eq!(html_escape(""), "");
         assert_eq!(html_escape("no special chars"), "no special chars");
         assert_eq!(html_escape("already &amp;"), "already &amp;amp;");
+    }
+
+    #[test]
+    fn valid_telegram_chat_id_falls_back_to_allowlist() {
+        let mut cfg = RuntimeConfig::test_config();
+        cfg.telegram_chat_id = None;
+        cfg.telegram_chat_ids = vec!["".to_string(), "999".to_string(), "321".to_string()];
+
+        assert_eq!(valid_telegram_chat_id(&cfg), Some("999"));
     }
 }

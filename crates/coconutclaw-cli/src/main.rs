@@ -353,6 +353,9 @@ fn run_run(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()
     if let Err(err) = store.mark_stale_task_runs_failed(&iso_now(&cfg.timezone)) {
         tracing::warn!("failed to mark stale task runs on startup: {err:#}");
     }
+    if let Err(err) = scheduler.cleanup_expired_approval_attachments() {
+        tracing::warn!("failed to cleanup expired approval attachments on startup: {err:#}");
+    }
 
     // Attempt to recover any in-flight update from a previous crash before entering loops
     if let Err(err) = restore_inflight_update(cfg, store, &scheduler, &telegram_client) {
@@ -529,10 +532,10 @@ fn maybe_handle_telegram_command(
         "/cancel" => {
             let task_id = parse_task_id_arg(arg)?;
             let reply = if let Some(task_id) = task_id {
-                if scheduler.cancel_task(task_id)? {
+                if scheduler.cancel_task_for_session(task_id, &session.id())? {
                     format!("Cancel requested for task #{task_id}.")
                 } else {
-                    format!("Task #{task_id} is not active.")
+                    format!("Task #{task_id} is not active for this chat.")
                 }
             } else if let Some(task_id) = scheduler.cancel_active_for_session(&session.id())? {
                 format!("Cancel requested for task #{task_id}.")
@@ -541,7 +544,7 @@ fn maybe_handle_telegram_command(
             };
             Some(reply)
         }
-        "/tasks" => Some(scheduler.render_active_tasks()?),
+        "/tasks" => Some(scheduler.render_active_tasks_for_session(&session.id())?),
         "/schedules" => Some(render_active_schedules_reply(cfg, store)?),
         _ => None,
     };
@@ -605,7 +608,7 @@ fn maybe_handle_slack_command(
                 Some("No active task for this Slack session.".to_string())
             }
         }
-        "/tasks" => Some(scheduler.render_active_tasks()?),
+        "/tasks" => Some(scheduler.render_active_tasks_for_session(&session.id())?),
         "/schedules" => Some(render_active_schedules_reply(cfg, store)?),
         _ => None,
     };
@@ -748,10 +751,7 @@ fn run_due_scheduled_tasks(
                     reply_ts: None,
                 },
                 dispatch: DispatchTarget::Telegram {
-                    chat_id: cfg
-                        .telegram_chat_id
-                        .clone()
-                        .unwrap_or_else(|| "local".to_string()),
+                    chat_id: valid_telegram_chat_id(cfg).unwrap_or("local").to_string(),
                 },
                 source_user_id: None,
                 progress_message_id: None,
@@ -773,7 +773,7 @@ fn run_due_scheduled_tasks(
             if let Err(err) = dispatch_telegram_output(
                 telegram_client,
                 cfg,
-                cfg.telegram_chat_id.as_deref(),
+                valid_telegram_chat_id(cfg),
                 &output,
                 None,
             ) {
@@ -817,7 +817,7 @@ fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
             channel: "telegram".to_string(),
         },
         "telegram",
-        cfg.telegram_chat_id.clone(),
+        valid_telegram_chat_id(cfg).map(ToOwned::to_owned),
         None,
         None,
         &QuotedMessage {
@@ -828,7 +828,7 @@ fn run_heartbeat(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> {
     )?;
 
     let client = build_telegram_client(cfg)?;
-    dispatch_telegram_output(&client, cfg, cfg.telegram_chat_id.as_deref(), &output, None)?;
+    dispatch_telegram_output(&client, cfg, valid_telegram_chat_id(cfg), &output, None)?;
     dispatch_slack_if_configured(cfg, &output);
     print!("{output}");
     io::stdout().flush().ok();
@@ -875,7 +875,7 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> 
                 channel: "telegram".to_string(),
             },
             "telegram",
-            cfg.telegram_chat_id.clone(),
+            valid_telegram_chat_id(cfg).map(ToOwned::to_owned),
             None,
             None,
             &QuotedMessage {
@@ -885,7 +885,7 @@ fn run_nightly_reflection(cfg: &RuntimeConfig, store: &mut Store) -> Result<()> 
             },
         )?;
         let client = build_telegram_client(cfg)?;
-        dispatch_telegram_output(&client, cfg, cfg.telegram_chat_id.as_deref(), &output, None)?;
+        dispatch_telegram_output(&client, cfg, valid_telegram_chat_id(cfg), &output, None)?;
         dispatch_slack_if_configured(cfg, &output);
     }
 
@@ -2027,6 +2027,21 @@ fn process_webhook_line(
                     progress_message_id: None,
                 });
             }
+            if let Some(update_id) = turn.update_id.as_deref()
+                && scheduler.has_active_task_for_update_id(update_id)?
+            {
+                let _ = store.kv_set("last_update_id", update_id);
+                return Ok(ProcessOutcome {
+                    should_ack: true,
+                    update_id: Some(update_id.to_string()),
+                    chat_id: Some(chat_id),
+                    output_channel: None,
+                    output_thread_ts: None,
+                    output: None,
+                    cleanup_path: None,
+                    progress_message_id: None,
+                });
+            }
 
             let progress_message_id = send_progress_message(cfg, &chat_id)
                 .map_err(|err| {
@@ -2080,6 +2095,20 @@ fn process_webhook_line(
                     output_channel: Some("slack".to_string()),
                     output_thread_ts: turn.thread_ts.clone(),
                     output: replay_output,
+                    cleanup_path: None,
+                    progress_message_id: None,
+                });
+            }
+            if let Some(event_id) = turn.event_id.as_deref()
+                && scheduler.has_active_task_for_update_id(event_id)?
+            {
+                return Ok(ProcessOutcome {
+                    should_ack: true,
+                    update_id: Some(event_id.to_string()),
+                    chat_id: Some(turn.channel_id.clone()),
+                    output_channel: None,
+                    output_thread_ts: turn.thread_ts.clone(),
+                    output: None,
                     cleanup_path: None,
                     progress_message_id: None,
                 });
@@ -2787,6 +2816,41 @@ mod tests {
     }
 
     #[test]
+    fn telegram_duplicate_inflight_update_is_not_enqueued_twice() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:321".to_string(),
+                channel: "telegram".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: None,
+                update_id: Some("4242".to_string()),
+                prompt: "hello".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: Some("99".to_string()),
+            })
+            .expect("insert active task");
+        let mut store = Store::open(&cfg).expect("store reopen");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let update = r#"{"update_id":4242,"message":{"chat":{"id":"321"},"text":"hello again"}}"#;
+
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
+
+        assert!(outcome.output.is_none());
+        assert!(outcome.progress_message_id.is_none());
+        assert_eq!(
+            store
+                .list_active_task_runs()
+                .expect("list active tasks")
+                .iter()
+                .filter(|task| task.update_id.as_deref() == Some("4242"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn missing_media_marker_path_does_not_fail_dispatch() {
         let cfg = test_config();
         let client = build_telegram_client(&cfg).expect("telegram client");
@@ -2863,6 +2927,47 @@ mod tests {
     }
 
     #[test]
+    fn tasks_command_hides_other_sessions() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:321".to_string(),
+                channel: "telegram".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: None,
+                update_id: Some("42".to_string()),
+                prompt: "visible task".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: None,
+            })
+            .expect("insert visible task");
+        store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:999".to_string(),
+                channel: "telegram".to_string(),
+                source_chat_id: Some("999".to_string()),
+                source_user_id: None,
+                update_id: Some("43".to_string()),
+                prompt: "hidden task".to_string(),
+                created_at: "2026-04-22T10:00:01+0000".to_string(),
+                progress_message_id: None,
+            })
+            .expect("insert hidden task");
+
+        let mut store = Store::open(&cfg).expect("store reopen");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let update = r#"{"update_id":207,"message":{"chat":{"id":"321"},"text":"/tasks"}}"#;
+
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
+        let output = outcome.output.unwrap_or_default();
+
+        assert!(output.contains("visible task"));
+        assert!(!output.contains("hidden task"));
+        assert!(!output.contains("telegram:999"));
+    }
+
+    #[test]
     fn slack_targeted_cancel_requires_admin_role() {
         let mut cfg = test_config();
         cfg.slack_admin_user_ids = vec!["UADMIN".to_string()];
@@ -2927,6 +3032,40 @@ mod tests {
     }
 
     #[test]
+    fn telegram_targeted_cancel_cannot_cross_sessions() {
+        let mut cfg = test_config();
+        cfg.telegram_chat_ids = vec!["321".to_string(), "999".to_string()];
+        let store = Store::open(&cfg).expect("store");
+        let task_id = store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:999".to_string(),
+                channel: "telegram".to_string(),
+                source_chat_id: Some("999".to_string()),
+                source_user_id: None,
+                update_id: Some("evt-9".to_string()),
+                prompt: "other session".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: None,
+            })
+            .expect("insert task");
+        let mut store = Store::open(&cfg).expect("store reopen");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let update = format!(
+            r#"{{"update_id":208,"message":{{"chat":{{"id":"321"}},"text":"/cancel {task_id}"}}}}"#
+        );
+
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, &update).expect("process");
+        let output = outcome.output.unwrap_or_default();
+        let task = store
+            .get_task_run(task_id)
+            .expect("get task")
+            .expect("task exists");
+
+        assert!(output.contains("not active for this chat"));
+        assert_eq!(task.status, "queued");
+    }
+
+    #[test]
     fn slack_approval_action_denies_non_admin_actor() {
         let mut cfg = test_config();
         cfg.slack_admin_user_ids = vec!["UADMIN".to_string()];
@@ -2968,6 +3107,42 @@ mod tests {
         let output = outcome.output.unwrap_or_default();
 
         assert!(output.contains("not authorized"));
+    }
+
+    #[test]
+    fn slack_duplicate_inflight_event_is_not_enqueued_twice() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "slack:C123#171.5".to_string(),
+                channel: "slack".to_string(),
+                source_chat_id: Some("C123".to_string()),
+                source_user_id: Some("U123".to_string()),
+                update_id: Some("evt-42".to_string()),
+                prompt: "deploy".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: Some("171.6".to_string()),
+            })
+            .expect("insert active task");
+        let mut store = Store::open(&cfg).expect("store reopen");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let payload = r#"{"type":"event_callback","event_id":"evt-42","event":{"type":"message","channel":"C123","thread_ts":"171.5","user":"U123","text":"deploy"}} "#;
+
+        let outcome =
+            process_webhook_line(&cfg, &mut store, &scheduler, payload.trim()).expect("process");
+
+        assert!(outcome.output.is_none());
+        assert!(outcome.progress_message_id.is_none());
+        assert_eq!(
+            store
+                .list_active_task_runs()
+                .expect("list active tasks")
+                .iter()
+                .filter(|task| task.update_id.as_deref() == Some("evt-42"))
+                .count(),
+            1
+        );
     }
 
     #[test]

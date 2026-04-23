@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -81,6 +81,26 @@ struct SchedulerInner {
 #[derive(Clone, Debug)]
 pub(crate) struct SessionScheduler {
     inner: Arc<SchedulerInner>,
+}
+
+pub(crate) fn cleanup_attachment_from_resume_payload(payload: &str) -> Result<()> {
+    let value: Value = serde_json::from_str(payload).context("parse approval resume payload")?;
+    let attachment_owned = value
+        .get("attachment_owned")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let attachment_path = value
+        .get("attachment_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+
+    if attachment_owned && let Some(path) = attachment_path.as_deref() {
+        cleanup_attachment_path(path);
+    }
+
+    Ok(())
 }
 
 impl SessionScheduler {
@@ -171,16 +191,20 @@ impl SessionScheduler {
 
         if task.status == TaskRunStatus::Queued.as_str() {
             let mut removed = false;
+            let mut removed_request: Option<TaskRequest> = None;
             {
                 let mut lanes = self.inner.lanes.lock().expect("lanes");
                 if let Some(lane) = lanes.get_mut(&task.session_id)
                     && let Some(index) = lane.queue.iter().position(|queued| queued.id == task_id)
                 {
-                    lane.queue.remove(index);
+                    removed_request = lane.queue.remove(index).map(|queued| queued.request);
                     removed = true;
                 }
             }
             if removed {
+                if let Some(request) = removed_request.as_ref() {
+                    Self::cleanup_task_attachment(None, request, &request.input);
+                }
                 store.finish_task_run(
                     task_id,
                     TaskRunStatus::Cancelled,
@@ -196,6 +220,7 @@ impl SessionScheduler {
             let mut task_state = self.inner.task_state.lock().expect("task_state");
             if let Some(state) = task_state.get_mut(&task_id) {
                 if state.awaiting_approval {
+                    self.cleanup_pending_approval_attachment(&store, task_id);
                     store.finish_task_run(
                         task_id,
                         TaskRunStatus::Cancelled,
@@ -231,33 +256,46 @@ impl SessionScheduler {
         Ok(None)
     }
 
-    pub(crate) fn render_active_tasks(&self) -> Result<String> {
+    pub(crate) fn cancel_task_for_session(&self, task_id: i64, session_id: &str) -> Result<bool> {
         let store = Store::open(&self.inner.cfg)?;
-        let tasks = store.list_active_task_runs()?;
-        if tasks.is_empty() {
-            return Ok("No active tasks.".to_string());
+        let Some(task) = store.get_task_run(task_id)? else {
+            return Ok(false);
+        };
+        if task.session_id != session_id {
+            return Ok(false);
         }
+        self.cancel_task(task_id)
+    }
 
-        let mut lines = vec!["Active tasks".to_string()];
-        for task in tasks {
-            let mut line = format!(
-                "#{} [{}] {}",
-                task.id,
-                task.status,
-                shorten_log_text(task.prompt.trim(), 80)
-            );
-            if !task.session_id.trim().is_empty() {
-                line.push_str(&format!(" — {}", task.session_id));
+    pub(crate) fn render_active_tasks_for_session(&self, session_id: &str) -> Result<String> {
+        let store = Store::open(&self.inner.cfg)?;
+        let tasks = store.list_active_task_runs_for_session(session_id)?;
+        Ok(render_active_task_lines(tasks, false))
+    }
+
+    pub(crate) fn has_active_task_for_update_id(&self, update_id: &str) -> Result<bool> {
+        let store = Store::open(&self.inner.cfg)?;
+        Ok(store
+            .find_active_task_run_by_update_id(update_id)?
+            .is_some())
+    }
+
+    fn cleanup_pending_approval_attachment(&self, store: &Store, task_id: i64) {
+        match store.pending_approval_resume_payload_for_task(task_id) {
+            Ok(Some(payload)) => {
+                if let Err(err) = cleanup_attachment_from_resume_payload(&payload) {
+                    tracing::warn!(
+                        "failed to cleanup pending approval attachment for task {task_id}: {err:#}"
+                    );
+                }
             }
-            if let Some(progress) = task.last_progress.as_deref()
-                && !progress.trim().is_empty()
-            {
-                line.push_str(&format!(" — progress: {}", shorten_log_text(progress, 40)));
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    "failed to load pending approval payload for task {task_id}: {err:#}"
+                );
             }
-            lines.push(line);
         }
-
-        Ok(lines.join("\n"))
     }
 
     pub(crate) fn resolve_approval(
@@ -299,6 +337,11 @@ impl SessionScheduler {
                 Ok(Some("Approval recorded. Resuming the task.".to_string()))
             }
             "reject" => {
+                if let Err(err) = cleanup_attachment_from_resume_payload(&approval.resume_payload) {
+                    tracing::warn!(
+                        "failed to cleanup rejected approval attachment #{approval_id}: {err:#}"
+                    );
+                }
                 store.resolve_approval(approval_id, "rejected", &now, Some(actor_user_id))?;
                 store.finish_task_run(
                     approval.task_run_id,
@@ -426,7 +469,7 @@ impl SessionScheduler {
             None => (request.input.clone(), None),
         };
 
-        let processed = process_turn_with_status(
+        let processed = match process_turn_with_status(
             &self.inner.cfg,
             &mut store,
             input.clone(),
@@ -437,126 +480,155 @@ impl SessionScheduler {
             &request.quoted,
             Some(cancel_flag),
             false,
-        )?;
-
-        let markers = parse_markers(&processed.output);
-        match &request.dispatch {
-            DispatchTarget::Telegram { chat_id } => {
-                let client = build_telegram_client(&self.inner.cfg)?;
-                dispatch_telegram_output(
-                    &client,
-                    &self.inner.cfg,
-                    Some(chat_id),
-                    &processed.output,
-                    request.progress_message_id.as_deref(),
-                )?;
-                if request.channel == "scheduled"
-                    && self.inner.cfg.slack_channel_id.as_deref().is_some()
-                    && let Ok(slack_client) = build_slack_client(&self.inner.cfg)
-                    && let Err(err) = dispatch_slack_output(
-                        &slack_client,
-                        &self.inner.cfg,
-                        self.inner
-                            .cfg
-                            .slack_channel_id
-                            .as_deref()
-                            .unwrap_or_default(),
-                        &processed.output,
-                        None,
-                        None,
-                    )
-                {
-                    tracing::warn!("failed to mirror scheduled task output to slack: {err:#}");
-                }
+        ) {
+            Ok(processed) => processed,
+            Err(err) => {
+                Self::cleanup_task_attachment(cleanup_path.as_ref(), &request, &input);
+                return Err(err);
             }
-            DispatchTarget::Slack {
-                channel_id,
-                thread_ts,
-            } => {
-                let client = build_slack_client(&self.inner.cfg)?;
-                dispatch_slack_output(
-                    &client,
-                    &self.inner.cfg,
-                    channel_id,
-                    &processed.output,
-                    request.progress_message_id.as_deref(),
-                    thread_ts.as_deref(),
-                )?;
+        };
 
-                if let Some(prompt) = markers.send_approval.first() {
-                    let resume_payload = self.build_resume_payload(&request, &input)?;
-                    store.mark_task_run_awaiting_approval(task_id)?;
-                    let approval_id =
-                        store.create_approval(crate::store::CreateApprovalParams {
-                            task_run_id: task_id,
-                            session_id: request.session.id(),
-                            channel: request.channel.clone(),
-                            source_user_id: request.source_user_id.clone(),
-                            channel_id: Some(channel_id.to_string()),
-                            thread_ts: thread_ts.clone(),
-                            prompt_text: prompt.clone(),
-                            request_message_ts: None,
-                            resume_payload,
-                            created_at: iso_now(&self.inner.cfg.timezone),
-                        })?;
-                    let approval_message_ts = match send_slack_approval_request(
+        let task_result = (|| -> Result<TaskCompletion> {
+            let markers = parse_markers(&processed.output);
+            match &request.dispatch {
+                DispatchTarget::Telegram { chat_id } => {
+                    let client = build_telegram_client(&self.inner.cfg)?;
+                    dispatch_telegram_output(
                         &client,
-                        channel_id,
-                        thread_ts.as_deref(),
-                        approval_id,
-                        prompt,
-                    ) {
-                        Ok(ts) => ts,
-                        Err(err) => {
-                            let now = iso_now(&self.inner.cfg.timezone);
-                            let _ = store.resolve_approval(approval_id, "expired", &now, None);
-                            return Err(err);
-                        }
-                    };
-                    store.update_approval_request_message_ts(approval_id, &approval_message_ts)?;
-                    if let Some(path) = cleanup_path.as_deref() {
-                        let _ = std::fs::remove_file(path);
+                        &self.inner.cfg,
+                        Some(chat_id),
+                        &processed.output,
+                        request.progress_message_id.as_deref(),
+                    )?;
+                    if request.channel == "scheduled"
+                        && self.inner.cfg.slack_channel_id.as_deref().is_some()
+                        && let Ok(slack_client) = build_slack_client(&self.inner.cfg)
+                        && let Err(err) = dispatch_slack_output(
+                            &slack_client,
+                            &self.inner.cfg,
+                            self.inner
+                                .cfg
+                                .slack_channel_id
+                                .as_deref()
+                                .unwrap_or_default(),
+                            &processed.output,
+                            None,
+                            None,
+                        )
+                    {
+                        tracing::warn!("failed to mirror scheduled task output to slack: {err:#}");
                     }
-                    return Ok(TaskCompletion::AwaitingApproval);
+                }
+                DispatchTarget::Slack {
+                    channel_id,
+                    thread_ts,
+                } => {
+                    let client = build_slack_client(&self.inner.cfg)?;
+                    dispatch_slack_output(
+                        &client,
+                        &self.inner.cfg,
+                        channel_id,
+                        &processed.output,
+                        request.progress_message_id.as_deref(),
+                        thread_ts.as_deref(),
+                    )?;
+
+                    if let Some(prompt) = markers.send_approval.first() {
+                        let resume_payload = self.build_resume_payload(&request, &input)?;
+                        store.mark_task_run_awaiting_approval(task_id)?;
+                        let approval_id =
+                            store.create_approval(crate::store::CreateApprovalParams {
+                                task_run_id: task_id,
+                                session_id: request.session.id(),
+                                channel: request.channel.clone(),
+                                source_user_id: request.source_user_id.clone(),
+                                channel_id: Some(channel_id.to_string()),
+                                thread_ts: thread_ts.clone(),
+                                prompt_text: prompt.clone(),
+                                request_message_ts: None,
+                                resume_payload,
+                                created_at: iso_now(&self.inner.cfg.timezone),
+                            })?;
+                        let approval_message_ts = match send_slack_approval_request(
+                            &client,
+                            channel_id,
+                            thread_ts.as_deref(),
+                            approval_id,
+                            prompt,
+                        ) {
+                            Ok(ts) => ts,
+                            Err(err) => {
+                                let now = iso_now(&self.inner.cfg.timezone);
+                                let _ = store.resolve_approval(approval_id, "expired", &now, None);
+                                return Err(err);
+                            }
+                        };
+                        store.update_approval_request_message_ts(
+                            approval_id,
+                            &approval_message_ts,
+                        )?;
+                        return Ok(TaskCompletion::AwaitingApproval);
+                    }
+                }
+                DispatchTarget::Stdout => {
+                    println!("{}", processed.output);
                 }
             }
-            DispatchTarget::Stdout => {
-                println!("{}", processed.output);
+
+            if processed.status != crate::TurnStatus::AgentError
+                && processed.status != crate::TurnStatus::Cancelled
+                && let Some(scheduled_task_id) = request.scheduled_task_id
+            {
+                let now = iso_now(&self.inner.cfg.timezone);
+                if let Err(err) = store.mark_scheduled_task_executed(scheduled_task_id, &now) {
+                    tracing::warn!(
+                        "failed to mark scheduled task as executed id={scheduled_task_id}: {err:#}"
+                    );
+                }
             }
+
+            let status = match processed.status {
+                crate::TurnStatus::Cancelled => TaskRunStatus::Cancelled,
+                crate::TurnStatus::AgentError => TaskRunStatus::Failed,
+                _ => TaskRunStatus::Completed,
+            };
+            let summary = match status {
+                TaskRunStatus::Cancelled => "task cancelled".to_string(),
+                TaskRunStatus::Failed => "task failed".to_string(),
+                _ => "task completed".to_string(),
+            };
+            Ok(TaskCompletion::Finished { status, summary })
+        })();
+
+        let preserve_attachment =
+            matches!(task_result.as_ref(), Ok(TaskCompletion::AwaitingApproval));
+        if !preserve_attachment {
+            Self::cleanup_task_attachment(cleanup_path.as_ref(), &request, &input);
         }
 
-        if let Some(path) = cleanup_path.as_deref() {
-            let _ = std::fs::remove_file(path);
-        } else if request.media.is_none()
-            && input.attachment_owned
-            && let Some(path) = input.attachment_path.as_deref()
-        {
-            let _ = std::fs::remove_file(path);
-        }
+        task_result
+    }
 
-        if processed.status != crate::TurnStatus::AgentError
-            && processed.status != crate::TurnStatus::Cancelled
-            && let Some(scheduled_task_id) = request.scheduled_task_id
-        {
-            let now = iso_now(&self.inner.cfg.timezone);
-            if let Err(err) = store.mark_scheduled_task_executed(scheduled_task_id, &now) {
-                tracing::warn!(
-                    "failed to mark scheduled task as executed id={scheduled_task_id}: {err:#}"
-                );
-            }
-        }
+    fn task_cleanup_path(
+        cleanup_path: Option<&PathBuf>,
+        request: &TaskRequest,
+        input: &TurnInput,
+    ) -> Option<PathBuf> {
+        cleanup_path.cloned().or_else(|| {
+            (request.media.is_none() && input.attachment_owned)
+                .then(|| input.attachment_path.clone())
+                .flatten()
+        })
+    }
 
-        let status = match processed.status {
-            crate::TurnStatus::Cancelled => TaskRunStatus::Cancelled,
-            crate::TurnStatus::AgentError => TaskRunStatus::Failed,
-            _ => TaskRunStatus::Completed,
-        };
-        let summary = match status {
-            TaskRunStatus::Cancelled => "task cancelled".to_string(),
-            TaskRunStatus::Failed => "task failed".to_string(),
-            _ => "task completed".to_string(),
-        };
-        Ok(TaskCompletion::Finished { status, summary })
+    fn cleanup_task_attachment(
+        cleanup_path: Option<&PathBuf>,
+        request: &TaskRequest,
+        input: &TurnInput,
+    ) {
+        if let Some(path) = Self::task_cleanup_path(cleanup_path, request, input) {
+            cleanup_attachment_path(&path);
+        }
     }
 
     fn populate_slack_thread_context(
@@ -757,6 +829,16 @@ impl SessionScheduler {
         })
     }
 
+    pub(crate) fn cleanup_expired_approval_attachments(&self) -> Result<()> {
+        let store = Store::open(&self.inner.cfg)?;
+        for payload in store.approval_resume_payloads_by_status("expired")? {
+            if let Err(err) = cleanup_attachment_from_resume_payload(&payload) {
+                tracing::warn!("failed to cleanup expired approval attachment: {err:#}");
+            }
+        }
+        Ok(())
+    }
+
     fn complete_task(&self, task_id: i64, session_id: &str) -> Result<()> {
         {
             let mut task_state = self.inner.task_state.lock().expect("task_state");
@@ -805,6 +887,41 @@ impl SessionScheduler {
     }
 }
 
+fn cleanup_attachment_path(path: &Path) {
+    if let Err(err) = std::fs::remove_file(path)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("failed to remove attachment {}: {err:#}", path.display());
+    }
+}
+
+fn render_active_task_lines(tasks: Vec<crate::store::TaskRun>, include_session_id: bool) -> String {
+    if tasks.is_empty() {
+        return "No active tasks.".to_string();
+    }
+
+    let mut lines = vec!["Active tasks".to_string()];
+    for task in tasks {
+        let mut line = format!(
+            "#{} [{}] {}",
+            task.id,
+            task.status,
+            shorten_log_text(task.prompt.trim(), 80)
+        );
+        if include_session_id && !task.session_id.trim().is_empty() {
+            line.push_str(&format!(" — {}", task.session_id));
+        }
+        if let Some(progress) = task.last_progress.as_deref()
+            && !progress.trim().is_empty()
+        {
+            line.push_str(&format!(" — progress: {}", shorten_log_text(progress, 40)));
+        }
+        lines.push(line);
+    }
+
+    lines.join("\n")
+}
+
 #[derive(Debug)]
 enum TaskCompletion {
     AwaitingApproval,
@@ -824,7 +941,11 @@ mod tests {
 
     use coconutclaw_config::{AgentProvider, RuntimeConfig};
 
-    use super::{DispatchTarget, SessionKey, SessionScheduler, TaskRequest};
+    use super::{
+        DispatchTarget, SessionKey, SessionScheduler, TaskRequest,
+        cleanup_attachment_from_resume_payload,
+    };
+    use crate::store::Store;
     use crate::{InputType, QuotedMessage, TurnInput};
 
     fn write_fake_provider_script(
@@ -1381,5 +1502,59 @@ if ($context -match "telegram-fifo-second") {{
             vec!["start:first", "done:first", "start:second", "done:second"],
             "same telegram chat should remain FIFO"
         );
+    }
+
+    #[test]
+    fn cleanup_attachment_from_resume_payload_removes_owned_file() {
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+        let attachment_path = tmp_dir.path().join("approval.txt");
+        fs::write(&attachment_path, "pending").expect("write attachment");
+        let payload = format!(
+            r#"{{"attachment_owned":true,"attachment_path":"{}"}}"#,
+            attachment_path.display()
+        );
+
+        cleanup_attachment_from_resume_payload(&payload).expect("cleanup payload");
+
+        assert!(!attachment_path.exists());
+    }
+
+    #[test]
+    fn render_active_tasks_for_session_hides_other_sessions() {
+        let cfg = RuntimeConfig::test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:321".to_string(),
+                channel: "telegram".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: None,
+                update_id: Some("evt-1".to_string()),
+                prompt: "session one".to_string(),
+                created_at: "2026-04-22T10:00:00+0000".to_string(),
+                progress_message_id: None,
+            })
+            .expect("insert task one");
+        store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:999".to_string(),
+                channel: "telegram".to_string(),
+                source_chat_id: Some("999".to_string()),
+                source_user_id: None,
+                update_id: Some("evt-2".to_string()),
+                prompt: "session two".to_string(),
+                created_at: "2026-04-22T10:00:01+0000".to_string(),
+                progress_message_id: None,
+            })
+            .expect("insert task two");
+
+        let scheduler = SessionScheduler::new(cfg);
+        let output = scheduler
+            .render_active_tasks_for_session("telegram:321")
+            .expect("render tasks");
+
+        assert!(output.contains("session one"));
+        assert!(!output.contains("session two"));
+        assert!(!output.contains("telegram:999"));
     }
 }

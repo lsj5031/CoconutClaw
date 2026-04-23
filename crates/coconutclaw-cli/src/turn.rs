@@ -25,7 +25,9 @@ use crate::slack::{
     SlackMedia, build_slack_client, slack_download_file, spawn_slack_progress_updater,
 };
 use crate::store::{Store, TurnRecord};
-use crate::telegram::{build_telegram_client, spawn_progress_updater, telegram_download_file};
+use crate::telegram::{
+    build_telegram_client, spawn_progress_updater, telegram_download_file, valid_telegram_chat_id,
+};
 use crate::{
     IncomingMedia, InputType, QuotedMessage, TurnInput, TurnResult, TurnStatus,
     asr_feature_enabled, cancel_marker_path, clear_cancel_marker, command_exists, iso_now,
@@ -158,7 +160,7 @@ pub(crate) fn process_turn_with_status(
     let chat_id = chat_id_override
         .or_else(|| match channel {
             "slack" => cfg.slack_channel_id.clone(),
-            _ => cfg.telegram_chat_id.clone(),
+            _ => valid_telegram_chat_id(cfg).map(ToOwned::to_owned),
         })
         .unwrap_or_else(|| "local".to_string());
 

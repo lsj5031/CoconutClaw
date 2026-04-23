@@ -704,6 +704,7 @@ impl Store {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) fn list_active_task_runs(&self) -> Result<Vec<TaskRun>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
@@ -714,6 +715,44 @@ impl Store {
              ORDER BY id ASC",
         )?;
         let mut rows = stmt.query([])?;
+        let mut tasks = Vec::new();
+        while let Some(row) = rows.next()? {
+            tasks.push(TaskRun {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                channel: row.get(2)?,
+                source_chat_id: row.get(3)?,
+                source_user_id: row.get(4)?,
+                update_id: row.get(5)?,
+                prompt: row.get(6)?,
+                status: row.get(7)?,
+                created_at: row.get(8)?,
+                started_at: row.get(9)?,
+                finished_at: row.get(10)?,
+                cancel_requested_at: row.get(11)?,
+                progress_message_id: row.get(12)?,
+                last_progress: row.get(13)?,
+                error_summary: row.get(14)?,
+                result_summary: row.get(15)?,
+            });
+        }
+        Ok(tasks)
+    }
+
+    pub(crate) fn list_active_task_runs_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<TaskRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
+                    created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
+                    last_progress, error_summary, result_summary
+             FROM task_runs
+             WHERE session_id = ?1
+               AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
+             ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query(params![session_id])?;
         let mut tasks = Vec::new();
         while let Some(row) = rows.next()? {
             tasks.push(TaskRun {
@@ -779,6 +818,44 @@ impl Store {
         }))
     }
 
+    pub(crate) fn find_active_task_run_by_update_id(
+        &self,
+        update_id: &str,
+    ) -> Result<Option<TaskRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
+                    created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
+                    last_progress, error_summary, result_summary
+             FROM task_runs
+             WHERE update_id = ?1
+               AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
+             ORDER BY id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![update_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(TaskRun {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            channel: row.get(2)?,
+            source_chat_id: row.get(3)?,
+            source_user_id: row.get(4)?,
+            update_id: row.get(5)?,
+            prompt: row.get(6)?,
+            status: row.get(7)?,
+            created_at: row.get(8)?,
+            started_at: row.get(9)?,
+            finished_at: row.get(10)?,
+            cancel_requested_at: row.get(11)?,
+            progress_message_id: row.get(12)?,
+            last_progress: row.get(13)?,
+            error_summary: row.get(14)?,
+            result_summary: row.get(15)?,
+        }))
+    }
+
     pub(crate) fn create_approval(&self, params: CreateApprovalParams) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO approvals(
@@ -799,6 +876,41 @@ impl Store {
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    pub(crate) fn pending_approval_resume_payload_for_task(
+        &self,
+        task_run_id: i64,
+    ) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT resume_payload
+             FROM approvals
+             WHERE task_run_id = ?1
+               AND status = 'pending'
+             ORDER BY id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![task_run_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(row.get(0)?))
+    }
+
+    pub(crate) fn approval_resume_payloads_by_status(&self, status: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT resume_payload
+             FROM approvals
+             WHERE status = ?1
+               AND resume_payload != ''
+             ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query(params![status])?;
+        let mut payloads = Vec::new();
+        while let Some(row) = rows.next()? {
+            payloads.push(row.get(0)?);
+        }
+        Ok(payloads)
     }
 
     pub(crate) fn get_pending_approval(&self, approval_id: i64) -> Result<Option<ApprovalRecord>> {
