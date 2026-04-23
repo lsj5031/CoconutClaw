@@ -940,6 +940,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use coconutclaw_config::{AgentProvider, RuntimeConfig};
+    use serde_json::json;
 
     use super::{
         DispatchTarget, SessionKey, SessionScheduler, TaskRequest,
@@ -1509,10 +1510,11 @@ if ($context -match "telegram-fifo-second") {{
         let tmp_dir = tempfile::tempdir().expect("tempdir");
         let attachment_path = tmp_dir.path().join("approval.txt");
         fs::write(&attachment_path, "pending").expect("write attachment");
-        let payload = format!(
-            r#"{{"attachment_owned":true,"attachment_path":"{}"}}"#,
-            attachment_path.display()
-        );
+        let payload = json!({
+            "attachment_owned": true,
+            "attachment_path": attachment_path.display().to_string(),
+        })
+        .to_string();
 
         cleanup_attachment_from_resume_payload(&payload).expect("cleanup payload");
 
