@@ -1445,6 +1445,7 @@ fn parse_opencode_json_line(line: &str) -> Option<String> {
 
 fn extract_opencode_json_final(raw: &str) -> Option<String> {
     let mut final_text = String::new();
+    let mut marker_text: Option<String> = None;
     for line in raw.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -1465,13 +1466,42 @@ fn extract_opencode_json_final(raw: &str) -> Option<String> {
                 }
                 final_text.push_str(text);
             }
+        } else if matches!(event_type, "reasoning" | "thinking")
+            && let Some(text) = value
+                .get("part")
+                .and_then(|p| p.get("text"))
+                .and_then(Value::as_str)
+                .and_then(trim_to_first_marker)
+        {
+            marker_text = Some(text);
         }
     }
     if final_text.is_empty() {
-        None
+        marker_text
+    } else if let Some(markers) = trim_to_first_marker(&final_text) {
+        Some(markers)
     } else {
-        Some(final_text)
+        marker_text.or(Some(final_text))
     }
+}
+
+fn trim_to_first_marker(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let start = [
+        "TELEGRAM_REPLY:",
+        "VOICE_REPLY:",
+        "SEND_PHOTO:",
+        "SEND_DOCUMENT:",
+        "SEND_VIDEO:",
+        "MEMORY_APPEND:",
+        "TASK_APPEND:",
+        "SCHEDULE_PROMPT:",
+    ]
+    .iter()
+    .filter_map(|prefix| trimmed.find(prefix))
+    .min()?;
+
+    Some(trimmed[start..].trim().to_string())
 }
 
 /// Parse a Gemini CLI `--output-format stream-json` JSONL line.
@@ -2226,6 +2256,30 @@ mod tests {
         assert_eq!(
             text.as_deref(),
             Some("TELEGRAM_REPLY: hello\nMEMORY_APPEND: fact")
+        );
+    }
+
+    #[test]
+    fn extract_opencode_json_final_recovers_marker_from_reasoning() {
+        let raw = r#"{"type":"reasoning","timestamp":1,"sessionID":"s1","part":{"type":"reasoning","text":"I will format the answer now.\nTELEGRAM_REPLY: short reply\nVOICE_REPLY: spoken"}}
+{"type":"text","timestamp":2,"sessionID":"s1","part":{"type":"text","text":""}}
+"#;
+        let text = extract_opencode_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some("TELEGRAM_REPLY: short reply\nVOICE_REPLY: spoken")
+        );
+    }
+
+    #[test]
+    fn extract_opencode_json_final_prefers_reasoning_markers_over_followup_chatter() {
+        let raw = r#"{"type":"reasoning","timestamp":1,"sessionID":"s1","part":{"type":"reasoning","text":"I will format the answer now.\nTELEGRAM_REPLY: short reply\nVOICE_REPLY: spoken"}}
+{"type":"text","timestamp":2,"sessionID":"s1","part":{"type":"text","text":"Done, I've sent it."}}
+"#;
+        let text = extract_opencode_json_final(raw);
+        assert_eq!(
+            text.as_deref(),
+            Some("TELEGRAM_REPLY: short reply\nVOICE_REPLY: spoken")
         );
     }
 

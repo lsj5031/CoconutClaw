@@ -28,7 +28,10 @@ mod turn;
 mod webhook;
 
 use crate::markers::{ParsedMarkers, render_output};
-use crate::scheduler::{DispatchTarget, SessionScheduler, TaskMedia, TaskRequest};
+use crate::scheduler::{
+    DispatchTarget, ScheduledTaskDispatch, SessionScheduler, TaskMedia, TaskRequest,
+    dispatch_scheduled_task_output,
+};
 use crate::session::SessionKey;
 use crate::slack::{
     SlackMedia, SlackWebhookTurn, build_slack_client, dispatch_slack_output,
@@ -38,14 +41,18 @@ use crate::slack::{
 use crate::store::Store;
 use crate::telegram::{
     build_telegram_client, dispatch_telegram_output, fetch_cancel_updates, fetch_poll_updates,
-    register_bot_commands, register_telegram_webhook, send_progress_message,
-    telegram_answer_callback, valid_telegram_chat_id, valid_telegram_token,
+    register_bot_commands, register_telegram_webhook, send_placeholder_message,
+    send_progress_message, telegram_answer_callback, valid_telegram_chat_id, valid_telegram_token,
 };
 use crate::turn::{process_turn, resolve_turn_input};
 use crate::webhook::{
     AckStatus, ack_webhook_queue_line, ensure_webhook_queue_file, extract_update_id_from_json,
     extract_update_id_from_value, peek_webhook_queue_line, spawn_webhook_http_server,
     value_to_string, webhook_request_path, with_webhook_lock,
+};
+use crate::{
+    context::{append_memory_and_tasks, sync_managed_context_files},
+    markers::parse_markers,
 };
 
 #[derive(Parser, Debug)]
@@ -350,8 +357,36 @@ fn run_run(cfg: &RuntimeConfig, store: &mut Store, args: &TurnArgs) -> Result<()
     }
 
     let scheduler = SessionScheduler::new(cfg.clone());
-    if let Err(err) = store.mark_stale_task_runs_failed(&iso_now(&cfg.timezone)) {
+    let startup_ts = iso_now(&cfg.timezone);
+    if let Err(err) = store.mark_stale_task_runs_failed(&startup_ts) {
         tracing::warn!("failed to mark stale task runs on startup: {err:#}");
+    }
+    match store.reconcile_scheduled_tasks_from_completed_runs(&startup_ts) {
+        Ok(count) if count > 0 => {
+            tracing::info!(
+                recovered = count,
+                "reconciled scheduled tasks from completed task runs on startup"
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!("failed to reconcile scheduled task state on startup: {err:#}");
+        }
+    }
+    match reconcile_pending_turn_side_effects(cfg, store) {
+        Ok(count) if count > 0 => {
+            tracing::info!(
+                recovered = count,
+                "reconciled pending turn side effects on startup"
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!("failed to reconcile pending turn side effects on startup: {err:#}");
+        }
+    }
+    if let Err(err) = sync_managed_context_files(cfg, store) {
+        tracing::warn!("failed to sync managed context files on startup: {err:#}");
     }
     if let Err(err) = scheduler.cleanup_expired_approval_attachments() {
         tracing::warn!("failed to cleanup expired approval attachments on startup: {err:#}");
@@ -689,6 +724,79 @@ fn drain_slack_socket_turns(
     }
 }
 
+fn recover_scheduled_task_output_from_task_run(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    scheduled_task_id: i64,
+    task_run_id: i64,
+) -> Result<Option<String>> {
+    let Some(mut turn) = store.turn_output_for_task_run(task_run_id)? else {
+        return Ok(None);
+    };
+    if turn.status == crate::TurnStatus::Cancelled.to_string() {
+        return Ok(None);
+    }
+
+    let markers = parse_markers(&turn.provider_raw);
+    if !turn.side_effects_applied {
+        let append_outcome =
+            append_memory_and_tasks(cfg, store, &turn.ts, Some(turn.id), &markers)?;
+        if !append_outcome.schedule_feedback.is_empty() {
+            if !turn.telegram_reply.trim().is_empty() {
+                turn.telegram_reply.push_str("\n\n");
+            }
+            turn.telegram_reply
+                .push_str(&append_outcome.schedule_feedback.join("\n"));
+        }
+        store.update_turn_reply_and_side_effects_by_id(
+            turn.id,
+            &turn.telegram_reply,
+            &turn.voice_reply,
+        )?;
+    }
+
+    let mut replay_markers = markers;
+    if !turn.telegram_reply.trim().is_empty() {
+        replay_markers.telegram_reply = Some(turn.telegram_reply.clone());
+    }
+    if !turn.voice_reply.trim().is_empty() {
+        replay_markers.voice_reply = Some(turn.voice_reply.clone());
+    }
+    let output = render_output(
+        replay_markers.telegram_reply.as_deref().unwrap_or_default(),
+        replay_markers.voice_reply.as_deref().unwrap_or_default(),
+        &replay_markers,
+    )
+    .trim_end()
+    .to_string();
+    store.set_scheduled_task_pending_output(scheduled_task_id, &output)?;
+    Ok(Some(output))
+}
+
+fn reconcile_pending_turn_side_effects(cfg: &RuntimeConfig, store: &mut Store) -> Result<usize> {
+    let pending_turns = store.pending_turn_side_effects()?;
+    let mut reconciled = 0usize;
+    for mut turn in pending_turns {
+        let markers = parse_markers(&turn.provider_raw);
+        let append_outcome =
+            append_memory_and_tasks(cfg, store, &turn.ts, Some(turn.id), &markers)?;
+        if !append_outcome.schedule_feedback.is_empty() {
+            if !turn.telegram_reply.trim().is_empty() {
+                turn.telegram_reply.push_str("\n\n");
+            }
+            turn.telegram_reply
+                .push_str(&append_outcome.schedule_feedback.join("\n"));
+        }
+        store.update_turn_reply_and_side_effects_by_id(
+            turn.id,
+            &turn.telegram_reply,
+            &turn.voice_reply,
+        )?;
+        reconciled += 1;
+    }
+    Ok(reconciled)
+}
+
 fn run_due_scheduled_tasks(
     cfg: &RuntimeConfig,
     store: &mut Store,
@@ -709,6 +817,8 @@ fn run_due_scheduled_tasks(
     tracing::info!("running {} due scheduled task(s)", due_tasks.len());
 
     for task in due_tasks {
+        let session = SessionKey::scheduled(&format!("task-{}", task.id));
+        let latest_task_run = store.latest_task_run_for_scheduled_task(task.id)?;
         let is_retry = task.pending_output.is_some();
         tracing::info!(
             "executing scheduled task id={} created={} last_run={:?} time={} recurring={} done={} prompt={:?} is_retry={}",
@@ -722,78 +832,129 @@ fn run_due_scheduled_tasks(
             is_retry
         );
 
+        if let Some(active_task) = store.find_active_task_for_session(&session.id())? {
+            tracing::info!(
+                scheduled_task_id = task.id,
+                active_task_run_id = active_task.id,
+                session = %session.id(),
+                is_retry,
+                "scheduled task already has an active run; skipping duplicate enqueue or retry"
+            );
+            continue;
+        }
+
+        let progress_message_id = latest_task_run
+            .as_ref()
+            .and_then(|task_run| task_run.progress_message_id.clone());
+
         let output_to_dispatch = if let Some(pending) = task.pending_output.as_deref() {
             tracing::info!("retrying dispatch for scheduled task id={}", task.id);
             Some(pending.to_string())
-        } else {
-            let session = SessionKey::scheduled(&format!("task-{}", task.id));
-            let enqueue_result = scheduler.enqueue(TaskRequest {
-                session: session.clone(),
-                channel: "scheduled".to_string(),
-                input: TurnInput {
-                    input_type: InputType::Text,
-                    user_text: task.prompt.clone(),
-                    asr_text: String::new(),
-                    attachment_type: None,
-                    attachment_path: None,
-                    attachment_owned: false,
-                    supplemental_context: Some(format!(
-                        "This is a scheduled task set to run at {}. Source: {}.",
-                        task.schedule_time, task.source
-                    )),
-                    channel: "scheduled".to_string(),
-                },
-                update_id: None,
-                media: None,
-                quoted: QuotedMessage {
-                    reply_from: None,
-                    reply_text: None,
-                    reply_ts: None,
-                },
-                dispatch: DispatchTarget::Telegram {
-                    chat_id: valid_telegram_chat_id(cfg).unwrap_or("local").to_string(),
-                },
-                source_user_id: None,
-                progress_message_id: None,
-                scheduled_task_id: Some(task.id),
-            });
-            match enqueue_result {
-                Ok(task_run_id) => {
-                    tracing::info!(task_run_id, session = %session.id(), scheduled_task_id = task.id, "queued scheduled task");
+        } else if let Some(task_run_id) = latest_task_run.as_ref().map(|task_run| task_run.id) {
+            match recover_scheduled_task_output_from_task_run(cfg, store, task.id, task_run_id)? {
+                Some(output) => {
+                    tracing::info!(
+                        scheduled_task_id = task.id,
+                        task_run_id,
+                        "recovered scheduled task output from persisted turn without rerunning provider"
+                    );
+                    Some(output)
                 }
-                Err(err) => {
-                    tracing::warn!("scheduled task id={} failed to queue: {err:#}", task.id);
-                }
+                None => None,
             }
+        } else {
             None
         };
 
         if let Some(output) = output_to_dispatch {
-            let mut dispatch_success = false;
-            if let Err(err) = dispatch_telegram_output(
+            let delivery_state = if task.pending_output.is_some() {
+                task.delivery_state.as_deref()
+            } else {
+                None
+            };
+            match dispatch_scheduled_task_output(
+                store,
+                cfg,
+                telegram_client,
+                ScheduledTaskDispatch {
+                    scheduled_task_id: task.id,
+                    chat_id_override: valid_telegram_chat_id(cfg),
+                    output: &output,
+                    progress_message_id: progress_message_id.as_deref(),
+                    delivery_state_raw: delivery_state,
+                },
+            ) {
+                Ok(true) => {
+                    let now_iso = iso_now(&cfg.timezone);
+                    if let Err(err) = store.mark_scheduled_task_executed(task.id, &now_iso) {
+                        tracing::warn!(
+                            "failed to mark scheduled task id={} as executed: {err:#}",
+                            task.id
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!("failed to dispatch scheduled task output: {err:#}");
+                }
+            }
+            continue;
+        }
+
+        let progress_message_id = match valid_telegram_chat_id(cfg) {
+            Some(chat_id) => match send_placeholder_message(
                 telegram_client,
                 cfg,
-                valid_telegram_chat_id(cfg),
-                &output,
-                None,
+                chat_id,
+                "Running scheduled task...",
             ) {
-                tracing::warn!("failed to dispatch scheduled task output: {err:#}");
-            } else {
-                dispatch_success = true;
-            }
-
-            if !is_retry {
-                dispatch_slack_if_configured(cfg, &output);
-            }
-
-            if dispatch_success {
-                let now_iso = iso_now(&cfg.timezone);
-                if let Err(err) = store.mark_scheduled_task_executed(task.id, &now_iso) {
+                Ok(message_id) => message_id,
+                Err(err) => {
                     tracing::warn!(
-                        "failed to mark scheduled task id={} as executed: {err:#}",
+                        "failed to create scheduled task placeholder id={}: {err:#}",
                         task.id
                     );
+                    None
                 }
+            },
+            None => None,
+        };
+        let enqueue_result = scheduler.enqueue(TaskRequest {
+            session: session.clone(),
+            channel: "scheduled".to_string(),
+            input: TurnInput {
+                input_type: InputType::Text,
+                user_text: task.prompt.clone(),
+                asr_text: String::new(),
+                attachment_type: None,
+                attachment_path: None,
+                attachment_owned: false,
+                supplemental_context: Some(format!(
+                    "This is a scheduled task set to run at {}. Source: {}.",
+                    task.schedule_time, task.source
+                )),
+                channel: "scheduled".to_string(),
+            },
+            update_id: None,
+            media: None,
+            quoted: QuotedMessage {
+                reply_from: None,
+                reply_text: None,
+                reply_ts: None,
+            },
+            dispatch: DispatchTarget::Telegram {
+                chat_id: valid_telegram_chat_id(cfg).unwrap_or("local").to_string(),
+            },
+            source_user_id: None,
+            progress_message_id,
+            scheduled_task_id: Some(task.id),
+        });
+        match enqueue_result {
+            Ok(task_run_id) => {
+                tracing::info!(task_run_id, session = %session.id(), scheduled_task_id = task.id, "queued scheduled task");
+            }
+            Err(err) => {
+                tracing::warn!("scheduled task id={} failed to queue: {err:#}", task.id);
             }
         }
     }
@@ -2783,6 +2944,278 @@ mod tests {
     }
 
     #[test]
+    fn due_scheduled_task_with_active_run_is_not_enqueued_twice() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_scheduled_task(
+                "2026-04-23T20:00:00+1200",
+                "agent",
+                "Check interest.co.nz and summarize the top article.",
+                "09:00",
+                true,
+            )
+            .expect("insert schedule");
+        store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "scheduled:task-1".to_string(),
+                channel: "scheduled".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: None,
+                update_id: None,
+                prompt: "Check interest.co.nz and summarize the top article.".to_string(),
+                created_at: "2026-04-24T09:00:01+1200".to_string(),
+                progress_message_id: None,
+                scheduled_task_id: Some(1),
+            })
+            .expect("insert active scheduled task run");
+
+        let mut store = Store::open(&cfg).expect("store reopen");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let client = build_telegram_client(&cfg).expect("telegram client");
+
+        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+            .expect("run due scheduled tasks");
+
+        assert_eq!(
+            store
+                .list_active_task_runs_for_session("scheduled:task-1")
+                .expect("list active task runs")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn due_scheduled_task_retry_with_active_run_is_not_dispatched_twice() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_scheduled_task(
+                "2026-04-23T20:00:00+1200",
+                "agent",
+                "Check backups.",
+                "09:00",
+                true,
+            )
+            .expect("insert schedule");
+        store
+            .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
+            .expect("set pending output");
+        store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "scheduled:task-1".to_string(),
+                channel: "scheduled".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: None,
+                update_id: None,
+                prompt: "Check backups.".to_string(),
+                created_at: "2026-04-24T09:00:01+1200".to_string(),
+                progress_message_id: None,
+                scheduled_task_id: Some(1),
+            })
+            .expect("insert active scheduled task run");
+
+        let mut store = Store::open(&cfg).expect("store reopen");
+        let scheduler = SessionScheduler::new(cfg.clone());
+        let client = build_telegram_client(&cfg).expect("telegram client");
+
+        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+            .expect("run due scheduled tasks");
+
+        let schedules = store
+            .list_active_scheduled_tasks()
+            .expect("list active schedules");
+        assert_eq!(schedules.len(), 1);
+        assert_eq!(
+            schedules[0].pending_output.as_deref(),
+            Some("TELEGRAM_REPLY: Backup complete")
+        );
+    }
+
+    #[test]
+    fn completed_scheduled_task_run_is_reconciled_without_redelivery() {
+        let cfg = test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_scheduled_task(
+                "2026-04-23T20:00:00+1200",
+                "agent",
+                "Check backups.",
+                "09:00",
+                false,
+            )
+            .expect("insert schedule");
+        store
+            .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
+            .expect("set pending output");
+        let task_run_id = store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "scheduled:task-1".to_string(),
+                channel: "scheduled".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: None,
+                update_id: None,
+                prompt: "Check backups.".to_string(),
+                created_at: "2026-04-24T09:00:01+1200".to_string(),
+                progress_message_id: None,
+                scheduled_task_id: Some(1),
+            })
+            .expect("insert scheduled task run");
+        store
+            .finish_task_run(
+                task_run_id,
+                crate::store::TaskRunStatus::Completed,
+                "2026-04-24T09:00:05+1200",
+                None,
+                Some("task completed"),
+            )
+            .expect("finish task run");
+
+        assert_eq!(
+            store
+                .reconcile_scheduled_tasks_from_completed_runs("2026-04-24T09:00:06+1200")
+                .expect("reconcile scheduled tasks"),
+            1
+        );
+        assert!(
+            store
+                .list_active_scheduled_tasks()
+                .expect("list active scheduled tasks")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn pending_turn_side_effects_are_reconciled_into_managed_files() {
+        let cfg = test_config();
+        fs::write(
+            cfg.instance_dir.join("MEMORY.md"),
+            "# Long-Term Memory\nmanual note\n",
+        )
+        .expect("seed memory");
+        fs::write(
+            cfg.instance_dir.join("TASKS/pending.md"),
+            "# Pending Tasks\nmanual task note\n",
+        )
+        .expect("seed tasks");
+
+        let mut store = Store::open(&cfg).expect("store");
+        let turn_id = store
+            .insert_turn(&TurnRecord {
+                ts: "2026-04-24T09:00:03+1200".to_string(),
+                chat_id: "321".to_string(),
+                input_type: "text".to_string(),
+                user_text: "remember and track this".to_string(),
+                asr_text: String::new(),
+                provider_raw: "TELEGRAM_REPLY: ok\nMEMORY_APPEND: remembered fact\nTASK_APPEND: follow up later\n"
+                    .to_string(),
+                telegram_reply: "ok".to_string(),
+                voice_reply: String::new(),
+                status: "ok".to_string(),
+                update_id: Some("900".to_string()),
+                duration_ms: Some(42),
+                channel: "telegram".to_string(),
+                task_run_id: None,
+                side_effects_applied: false,
+            })
+            .expect("insert turn")
+            .expect("turn id");
+
+        assert_eq!(
+            reconcile_pending_turn_side_effects(&cfg, &mut store).expect("reconcile turns"),
+            1
+        );
+
+        let memory = fs::read_to_string(cfg.instance_dir.join("MEMORY.md")).expect("read memory");
+        let tasks =
+            fs::read_to_string(cfg.instance_dir.join("TASKS/pending.md")).expect("read tasks");
+        assert!(memory.contains("manual note"));
+        assert!(memory.contains("remembered fact"));
+        assert!(tasks.contains("manual task note"));
+        assert!(tasks.contains("follow up later"));
+        assert!(
+            store
+                .pending_turn_side_effects()
+                .expect("pending turns")
+                .is_empty()
+        );
+
+        let pending_db_tasks = store
+            .managed_pending_task_entries()
+            .expect("managed task entries");
+        assert_eq!(pending_db_tasks, vec!["follow up later".to_string()]);
+
+        let turn = store
+            .pending_turn_side_effects()
+            .expect("pending turns after reconcile");
+        assert!(turn.is_empty(), "turn {turn_id} should be marked applied");
+    }
+
+    #[test]
+    fn scheduled_task_output_is_recovered_from_persisted_turn_without_provider_rerun() {
+        let cfg = test_config();
+        let mut store = Store::open(&cfg).expect("store");
+        store
+            .insert_scheduled_task(
+                "2026-04-23T20:00:00+1200",
+                "agent",
+                "Check backups.",
+                "09:00",
+                true,
+            )
+            .expect("insert schedule");
+        let task_run_id = store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "scheduled:task-1".to_string(),
+                channel: "scheduled".to_string(),
+                source_chat_id: Some("321".to_string()),
+                source_user_id: None,
+                update_id: None,
+                prompt: "Check backups.".to_string(),
+                created_at: "2026-04-24T09:00:01+1200".to_string(),
+                progress_message_id: Some("77".to_string()),
+                scheduled_task_id: Some(1),
+            })
+            .expect("insert task run");
+        store
+            .insert_turn(&TurnRecord {
+                ts: "2026-04-24T09:00:03+1200".to_string(),
+                chat_id: "scheduled:task-1".to_string(),
+                input_type: "text".to_string(),
+                user_text: "Check backups.".to_string(),
+                asr_text: String::new(),
+                provider_raw: "TELEGRAM_REPLY: Backup complete\nSEND_DOCUMENT: /tmp/report.txt\n"
+                    .to_string(),
+                telegram_reply: "Backup complete".to_string(),
+                voice_reply: String::new(),
+                status: "ok".to_string(),
+                update_id: None,
+                duration_ms: Some(42),
+                channel: "scheduled".to_string(),
+                task_run_id: Some(task_run_id),
+                side_effects_applied: true,
+            })
+            .expect("insert turn");
+
+        let recovered =
+            recover_scheduled_task_output_from_task_run(&cfg, &mut store, 1, task_run_id)
+                .expect("recover")
+                .expect("output recovered");
+
+        assert!(recovered.contains("TELEGRAM_REPLY: Backup complete"));
+        assert!(recovered.contains("SEND_DOCUMENT: /tmp/report.txt"));
+        let schedules = store
+            .list_active_scheduled_tasks()
+            .expect("list active schedules");
+        assert_eq!(
+            schedules[0].pending_output.as_deref(),
+            Some(recovered.as_str())
+        );
+        assert_eq!(schedules[0].delivery_state, None);
+    }
+
+    #[test]
     fn dedup_replays_previous_output_from_store() {
         let cfg = test_config();
         let mut store = Store::open(&cfg).expect("store");
@@ -2802,9 +3235,11 @@ mod tests {
                 update_id: Some("42".to_string()),
                 duration_ms: None,
                 channel: "telegram".to_string(),
+                task_run_id: None,
+                side_effects_applied: true,
             })
             .expect("insert turn");
-        assert!(inserted);
+        assert!(inserted.is_some());
 
         let update = r#"{"update_id":42,"message":{"chat":{"id":"321"},"text":"hello again"}}"#;
         let scheduler = SessionScheduler::new(cfg.clone());
@@ -2829,6 +3264,7 @@ mod tests {
                 prompt: "hello".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: Some("99".to_string()),
+                scheduled_task_id: None,
             })
             .expect("insert active task");
         let mut store = Store::open(&cfg).expect("store reopen");
@@ -2913,6 +3349,7 @@ mod tests {
                 prompt: "summarize status".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: None,
+                scheduled_task_id: None,
             })
             .expect("insert task run");
         let mut store = Store::open(&cfg).expect("store reopen");
@@ -2940,6 +3377,7 @@ mod tests {
                 prompt: "visible task".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: None,
+                scheduled_task_id: None,
             })
             .expect("insert visible task");
         store
@@ -2952,6 +3390,7 @@ mod tests {
                 prompt: "hidden task".to_string(),
                 created_at: "2026-04-22T10:00:01+0000".to_string(),
                 progress_message_id: None,
+                scheduled_task_id: None,
             })
             .expect("insert hidden task");
 
@@ -3046,6 +3485,7 @@ mod tests {
                 prompt: "other session".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: None,
+                scheduled_task_id: None,
             })
             .expect("insert task");
         let mut store = Store::open(&cfg).expect("store reopen");
@@ -3080,6 +3520,7 @@ mod tests {
                 prompt: "deploy".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: None,
+                scheduled_task_id: None,
             })
             .expect("insert task run");
         let approval_id = store
@@ -3123,6 +3564,7 @@ mod tests {
                 prompt: "deploy".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: Some("171.6".to_string()),
+                scheduled_task_id: None,
             })
             .expect("insert active task");
         let mut store = Store::open(&cfg).expect("store reopen");
@@ -3159,6 +3601,7 @@ mod tests {
                 prompt: "hello".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: Some("99".to_string()),
+                scheduled_task_id: Some(7),
             })
             .expect("insert task");
         store
@@ -3210,6 +3653,7 @@ mod tests {
 
         assert_eq!(task.status, "completed");
         assert_eq!(task.result_summary.as_deref(), Some("done"));
+        assert_eq!(task.scheduled_task_id, Some(7));
         assert_eq!(approval.status, "approved");
         assert_eq!(approval.resolved_by_user_id.as_deref(), Some("admin"));
     }
@@ -3228,6 +3672,7 @@ mod tests {
                 prompt: "deploy".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: None,
+                scheduled_task_id: None,
             })
             .expect("insert task");
         store
@@ -3604,6 +4049,8 @@ mod tests {
                 update_id: Some("500".to_string()),
                 duration_ms: None,
                 channel: "telegram".to_string(),
+                task_run_id: None,
+                side_effects_applied: true,
             })
             .expect("insert telegram turn");
         store
@@ -3620,6 +4067,8 @@ mod tests {
                 update_id: Some("501".to_string()),
                 duration_ms: None,
                 channel: "slack".to_string(),
+                task_run_id: None,
+                side_effects_applied: true,
             })
             .expect("insert slack turn");
 

@@ -112,18 +112,7 @@ if (-not (Test-Path "{state}")) {{
             "/botfake_token/sendMessage",
             post({
                 let tx = tx.clone();
-                let fail_first_backup = fail_first_backup.clone();
                 move |body: Bytes| async move {
-                    let text = String::from_utf8_lossy(&body);
-                    if (text.contains("Backup complete") || text.contains("Backup+complete"))
-                        && fail_first_backup.swap(false, Ordering::SeqCst)
-                    {
-                        tx.send(("sendMessage_fail".to_string(), body.to_vec()))
-                            .await
-                            .unwrap();
-                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error")
-                            .into_response();
-                    }
                     tx.send(("sendMessage".to_string(), body.to_vec()))
                         .await
                         .unwrap();
@@ -135,7 +124,18 @@ if (-not (Test-Path "{state}")) {{
             "/botfake_token/editMessageText",
             post({
                 let tx = tx.clone();
+                let fail_first_backup = fail_first_backup.clone();
                 move |body: Bytes| async move {
+                    let text = String::from_utf8_lossy(&body);
+                    if (text.contains("Backup complete") || text.contains("Backup+complete"))
+                        && fail_first_backup.swap(false, Ordering::SeqCst)
+                    {
+                        tx.send(("editMessageText_fail".to_string(), body.to_vec()))
+                            .await
+                            .unwrap();
+                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error")
+                            .into_response();
+                    }
                     tx.send(("editMessageText".to_string(), body.to_vec()))
                         .await
                         .unwrap();
@@ -216,7 +216,7 @@ if (-not (Test-Path "{state}")) {{
                 } else if text.contains("Backup complete") || text.contains("Backup+complete") {
                     scheduler_reply_sent = true;
                 }
-            } else if endpoint == "sendMessage_fail" {
+            } else if endpoint == "editMessageText_fail" {
                 scheduler_reply_failed = true;
             }
         }

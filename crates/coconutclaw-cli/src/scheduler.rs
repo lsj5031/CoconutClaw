@@ -16,7 +16,12 @@ use crate::slack::{
     send_slack_approval_request, slack_fetch_thread_context,
 };
 use crate::store::{Store, TaskRunStatus};
-use crate::telegram::{build_telegram_client, dispatch_telegram_output};
+use crate::telegram::{
+    build_telegram_client, dispatch_telegram_output, render_telegram_reply_text,
+    send_markdown_reply_document, send_or_edit_text, send_voice_reply,
+    should_send_reply_as_document, telegram_delete_message, telegram_remove_keyboard,
+    telegram_send_media_file, valid_telegram_chat_id,
+};
 use crate::turn::{hydrate_slack_turn_input, hydrate_turn_input, process_turn_with_status};
 use crate::{IncomingMedia, QuotedMessage, TurnInput, iso_now, shorten_log_text};
 
@@ -78,6 +83,33 @@ struct SchedulerInner {
     task_state: Mutex<HashMap<i64, RuntimeTaskState>>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct ScheduledDeliveryState {
+    completed_ops: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScheduledTaskDispatch<'a> {
+    pub(crate) scheduled_task_id: i64,
+    pub(crate) chat_id_override: Option<&'a str>,
+    pub(crate) output: &'a str,
+    pub(crate) progress_message_id: Option<&'a str>,
+    pub(crate) delivery_state_raw: Option<&'a str>,
+}
+
+impl ScheduledDeliveryState {
+    fn has(&self, op: &str) -> bool {
+        self.completed_ops.iter().any(|existing| existing == op)
+    }
+
+    fn mark(&mut self, op: impl Into<String>) {
+        let op = op.into();
+        if !self.has(&op) {
+            self.completed_ops.push(op);
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SessionScheduler {
     inner: Arc<SchedulerInner>,
@@ -126,6 +158,7 @@ impl SessionScheduler {
             prompt: request.input.user_text.clone(),
             created_at: created_at.clone(),
             progress_message_id: request.progress_message_id.clone(),
+            scheduled_task_id: request.scheduled_task_id,
         })?;
         let session_id = request.session.id();
         let mut should_spawn = false;
@@ -160,6 +193,7 @@ impl SessionScheduler {
             prompt: request.input.user_text.clone(),
             created_at: created_at.clone(),
             progress_message_id: request.progress_message_id.clone(),
+            scheduled_task_id: request.scheduled_task_id,
         })?;
         let session_id = request.session.id();
         let mut should_spawn = false;
@@ -476,6 +510,7 @@ impl SessionScheduler {
             &request.channel,
             Some(request.session.id()),
             request.update_id.clone(),
+            Some(task_id),
             request.progress_message_id.as_deref(),
             &request.quoted,
             Some(cancel_flag),
@@ -489,34 +524,48 @@ impl SessionScheduler {
         };
 
         let task_result = (|| -> Result<TaskCompletion> {
+            if processed.status != crate::TurnStatus::AgentError
+                && processed.status != crate::TurnStatus::Cancelled
+                && let Some(scheduled_task_id) = request.scheduled_task_id
+            {
+                store.set_scheduled_task_pending_output(scheduled_task_id, &processed.output)?;
+            }
+
             let markers = parse_markers(&processed.output);
             match &request.dispatch {
                 DispatchTarget::Telegram { chat_id } => {
                     let client = build_telegram_client(&self.inner.cfg)?;
-                    dispatch_telegram_output(
-                        &client,
-                        &self.inner.cfg,
-                        Some(chat_id),
-                        &processed.output,
-                        request.progress_message_id.as_deref(),
-                    )?;
-                    if request.channel == "scheduled"
-                        && self.inner.cfg.slack_channel_id.as_deref().is_some()
-                        && let Ok(slack_client) = build_slack_client(&self.inner.cfg)
-                        && let Err(err) = dispatch_slack_output(
-                            &slack_client,
+                    if let Some(scheduled_task_id) = request.scheduled_task_id {
+                        let delivered = dispatch_scheduled_task_output(
+                            &store,
                             &self.inner.cfg,
-                            self.inner
-                                .cfg
-                                .slack_channel_id
-                                .as_deref()
-                                .unwrap_or_default(),
+                            &client,
+                            ScheduledTaskDispatch {
+                                scheduled_task_id,
+                                chat_id_override: Some(chat_id),
+                                output: &processed.output,
+                                progress_message_id: request.progress_message_id.as_deref(),
+                                delivery_state_raw: None,
+                            },
+                        )?;
+                        if delivered {
+                            let now = iso_now(&self.inner.cfg.timezone);
+                            if let Err(err) =
+                                store.mark_scheduled_task_executed(scheduled_task_id, &now)
+                            {
+                                tracing::warn!(
+                                    "failed to mark scheduled task as executed id={scheduled_task_id}: {err:#}"
+                                );
+                            }
+                        }
+                    } else {
+                        dispatch_telegram_output(
+                            &client,
+                            &self.inner.cfg,
+                            Some(chat_id),
                             &processed.output,
-                            None,
-                            None,
-                        )
-                    {
-                        tracing::warn!("failed to mirror scheduled task output to slack: {err:#}");
+                            request.progress_message_id.as_deref(),
+                        )?;
                     }
                 }
                 DispatchTarget::Slack {
@@ -572,18 +621,6 @@ impl SessionScheduler {
                 }
                 DispatchTarget::Stdout => {
                     println!("{}", processed.output);
-                }
-            }
-
-            if processed.status != crate::TurnStatus::AgentError
-                && processed.status != crate::TurnStatus::Cancelled
-                && let Some(scheduled_task_id) = request.scheduled_task_id
-            {
-                let now = iso_now(&self.inner.cfg.timezone);
-                if let Err(err) = store.mark_scheduled_task_executed(scheduled_task_id, &now) {
-                    tracing::warn!(
-                        "failed to mark scheduled task as executed id={scheduled_task_id}: {err:#}"
-                    );
                 }
             }
 
@@ -922,6 +959,257 @@ fn render_active_task_lines(tasks: Vec<crate::store::TaskRun>, include_session_i
     lines.join("\n")
 }
 
+fn parse_scheduled_delivery_state(raw: Option<&str>) -> ScheduledDeliveryState {
+    let Some(raw) = raw else {
+        return ScheduledDeliveryState::default();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return ScheduledDeliveryState::default();
+    };
+    let completed_ops = value
+        .get("completed_ops")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ScheduledDeliveryState { completed_ops }
+}
+
+fn persist_scheduled_delivery_state(
+    store: &Store,
+    scheduled_task_id: i64,
+    state: &ScheduledDeliveryState,
+) -> Result<()> {
+    let encoded = json!({ "completed_ops": state.completed_ops }).to_string();
+    store.set_scheduled_task_delivery_state(scheduled_task_id, Some(&encoded))
+}
+
+fn dispatch_scheduled_telegram_output(
+    store: &Store,
+    cfg: &RuntimeConfig,
+    client: &Client,
+    request: ScheduledTaskDispatch<'_>,
+    state: &mut ScheduledDeliveryState,
+) -> Result<()> {
+    let chat_id = request
+        .chat_id_override
+        .or(valid_telegram_chat_id(cfg))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let markers = parse_markers(request.output);
+
+    if let Some(reply) = markers.telegram_reply.as_deref() {
+        let reply = reply.trim();
+        if !reply.is_empty() {
+            if !state.has("telegram:text") {
+                if let Some(chat_id) = chat_id {
+                    let rendered_reply = render_telegram_reply_text(cfg, reply);
+                    if should_send_reply_as_document(&rendered_reply) {
+                        if let Err(err) = send_markdown_reply_document(
+                            client,
+                            cfg,
+                            chat_id,
+                            reply,
+                            request.progress_message_id,
+                        ) {
+                            tracing::warn!(
+                                "failed to send long reply as markdown document, falling back to text: {err:#}"
+                            );
+                            send_or_edit_text(
+                                client,
+                                cfg,
+                                chat_id,
+                                &rendered_reply,
+                                request.progress_message_id,
+                            )?;
+                        }
+                    } else {
+                        send_or_edit_text(
+                            client,
+                            cfg,
+                            chat_id,
+                            &rendered_reply,
+                            request.progress_message_id,
+                        )?;
+                    }
+                } else {
+                    tracing::warn!(
+                        "cannot dispatch scheduled telegram text output: no chat_id available"
+                    );
+                }
+                state.mark("telegram:text");
+                persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+            }
+        } else if request.progress_message_id.is_some() && !state.has("telegram:text") {
+            if let (Some(chat_id), Some(message_id)) = (chat_id, request.progress_message_id) {
+                let _ = telegram_delete_message(client, cfg, chat_id, message_id)
+                    .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
+            }
+            state.mark("telegram:text");
+            persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+        }
+    } else if request.progress_message_id.is_some() && !state.has("telegram:text") {
+        if let (Some(chat_id), Some(message_id)) = (chat_id, request.progress_message_id) {
+            let _ = telegram_delete_message(client, cfg, chat_id, message_id)
+                .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
+        }
+        state.mark("telegram:text");
+        persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+    }
+
+    if cfg.tts_cmd_template.is_some()
+        && let Some(voice_reply) = markers.voice_reply.as_deref()
+    {
+        let voice_reply = voice_reply.trim();
+        if !voice_reply.is_empty() && !state.has("telegram:voice") {
+            if let Some(chat_id) = chat_id {
+                send_voice_reply(client, cfg, chat_id, voice_reply)?;
+            } else {
+                tracing::warn!(
+                    "cannot dispatch scheduled telegram voice output: no chat_id available"
+                );
+            }
+            state.mark("telegram:voice");
+            persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+        }
+    }
+
+    for (idx, item) in markers.send_photo.iter().enumerate() {
+        let op_id = format!("telegram:photo:{idx}");
+        if state.has(&op_id) {
+            continue;
+        }
+        let path = crate::resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
+        if let Some(chat_id) = chat_id {
+            telegram_send_media_file(client, cfg, chat_id, "sendPhoto", "photo", &path)?;
+        } else {
+            tracing::warn!(
+                "cannot dispatch scheduled photo {}: no chat_id available",
+                path.display()
+            );
+        }
+        state.mark(op_id);
+        persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+    }
+
+    for (idx, item) in markers.send_document.iter().enumerate() {
+        let op_id = format!("telegram:document:{idx}");
+        if state.has(&op_id) {
+            continue;
+        }
+        let path = crate::resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
+        if let Some(chat_id) = chat_id {
+            telegram_send_media_file(client, cfg, chat_id, "sendDocument", "document", &path)?;
+        } else {
+            tracing::warn!(
+                "cannot dispatch scheduled document {}: no chat_id available",
+                path.display()
+            );
+        }
+        state.mark(op_id);
+        persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+    }
+
+    for (idx, item) in markers.send_video.iter().enumerate() {
+        let op_id = format!("telegram:video:{idx}");
+        if state.has(&op_id) {
+            continue;
+        }
+        let path = crate::resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
+        if let Some(chat_id) = chat_id {
+            telegram_send_media_file(client, cfg, chat_id, "sendVideo", "video", &path)?;
+        } else {
+            tracing::warn!(
+                "cannot dispatch scheduled video {}: no chat_id available",
+                path.display()
+            );
+        }
+        state.mark(op_id);
+        persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn dispatch_scheduled_task_output(
+    store: &Store,
+    cfg: &RuntimeConfig,
+    telegram_client: &Client,
+    request: ScheduledTaskDispatch<'_>,
+) -> Result<bool> {
+    let mut state = parse_scheduled_delivery_state(request.delivery_state_raw);
+    dispatch_scheduled_telegram_output(store, cfg, telegram_client, request, &mut state)?;
+
+    if cfg.slack_channel_id.as_deref().is_some() && !state.has("slack") {
+        match build_slack_client(cfg) {
+            Ok(slack_client) => {
+                if let Err(err) = dispatch_slack_output(
+                    &slack_client,
+                    cfg,
+                    cfg.slack_channel_id.as_deref().unwrap_or_default(),
+                    request.output,
+                    None,
+                    None,
+                ) {
+                    tracing::warn!("failed to mirror scheduled task output to slack: {err:#}");
+                }
+            }
+            Err(err) => {
+                tracing::warn!("failed to build slack client for scheduled task output: {err:#}");
+            }
+        }
+        state.mark("slack");
+        persist_scheduled_delivery_state(store, request.scheduled_task_id, &state)?;
+    }
+
+    let markers = parse_markers(request.output);
+    let mut expected_ops: Vec<String> = Vec::new();
+    if markers.telegram_reply.as_ref().is_some() || request.progress_message_id.is_some() {
+        expected_ops.push("telegram:text".to_string());
+    }
+    if cfg.tts_cmd_template.is_some()
+        && markers
+            .voice_reply
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+    {
+        expected_ops.push("telegram:voice".to_string());
+    }
+    expected_ops.extend(
+        markers
+            .send_photo
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| format!("telegram:photo:{idx}")),
+    );
+    expected_ops.extend(
+        markers
+            .send_document
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| format!("telegram:document:{idx}")),
+    );
+    expected_ops.extend(
+        markers
+            .send_video
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| format!("telegram:video:{idx}")),
+    );
+    if cfg.slack_channel_id.as_deref().is_some() {
+        expected_ops.push("slack".to_string());
+    }
+
+    Ok(expected_ops.iter().all(|op| state.has(op)))
+}
+
 #[derive(Debug)]
 enum TaskCompletion {
     AwaitingApproval,
@@ -934,19 +1222,27 @@ enum TaskCompletion {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::thread::JoinHandle;
     use std::time::{Duration, Instant};
 
     use coconutclaw_config::{AgentProvider, RuntimeConfig};
     use serde_json::json;
 
     use super::{
-        DispatchTarget, SessionKey, SessionScheduler, TaskRequest,
-        cleanup_attachment_from_resume_payload,
+        DispatchTarget, ScheduledTaskDispatch, SessionKey, SessionScheduler, TaskRequest,
+        cleanup_attachment_from_resume_payload, dispatch_scheduled_task_output,
     };
     use crate::store::Store;
+    use crate::telegram::build_telegram_client;
     use crate::{InputType, QuotedMessage, TurnInput};
 
     fn write_fake_provider_script(
@@ -1046,6 +1342,85 @@ mod tests {
                 "tasks did not reach terminal state"
             );
             std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    struct FakeTelegramServer {
+        base_url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        handle: Option<JoinHandle<()>>,
+    }
+
+    impl FakeTelegramServer {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake telegram server");
+            listener
+                .set_nonblocking(true)
+                .expect("set nonblocking listener");
+            let addr = listener.local_addr().expect("listener addr");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let requests_clone = Arc::clone(&requests);
+            let stop_clone = Arc::clone(&stop);
+            let handle = std::thread::spawn(move || {
+                while !stop_clone.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+                            let mut buf = [0_u8; 8192];
+                            let read = stream.read(&mut buf).unwrap_or(0);
+                            let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                            let path = request
+                                .lines()
+                                .next()
+                                .and_then(|line| line.split_whitespace().nth(1))
+                                .unwrap_or("/")
+                                .to_string();
+                            requests_clone.lock().expect("requests lock").push(path);
+                            let body =
+                                r#"{"ok":true,"result":{"message_id":123,"message_thread_id":0}}"#;
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                            let _ = stream.flush();
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                base_url: format!("http://{addr}/bot123:token"),
+                requests,
+                stop,
+                handle: Some(handle),
+            }
+        }
+
+        fn request_count(&self) -> usize {
+            self.requests.lock().expect("requests lock").len()
+        }
+    }
+
+    impl Drop for FakeTelegramServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = std::net::TcpStream::connect(
+                self.base_url
+                    .trim_start_matches("http://")
+                    .split('/')
+                    .next()
+                    .unwrap_or_default(),
+            );
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
         }
     }
 
@@ -1310,6 +1685,75 @@ if ($context -match "fifo-second") {{
     }
 
     #[test]
+    fn scheduled_delivery_state_skips_already_completed_replay_operations() {
+        let server = FakeTelegramServer::start();
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+        let mut cfg = RuntimeConfig::test_config();
+        cfg.telegram_api_base = Some(server.base_url.clone());
+        cfg.slack_channel_id = None;
+
+        let photo = tmp_dir.path().join("photo.jpg");
+        let doc = tmp_dir.path().join("report.txt");
+        fs::write(&photo, "photo").expect("write photo");
+        fs::write(&doc, "report").expect("write doc");
+
+        let store = Store::open(&cfg).expect("store");
+        store
+            .insert_scheduled_task(
+                "2026-04-23T20:00:00+1200",
+                "agent",
+                "Check backups.",
+                "09:00",
+                true,
+            )
+            .expect("insert schedule");
+        let client = build_telegram_client(&cfg).expect("telegram client");
+        let output = format!(
+            "TELEGRAM_REPLY: Backup complete\nSEND_PHOTO: {}\nSEND_DOCUMENT: {}\n",
+            photo.display(),
+            doc.display()
+        );
+
+        assert!(
+            dispatch_scheduled_task_output(
+                &store,
+                &cfg,
+                &client,
+                ScheduledTaskDispatch {
+                    scheduled_task_id: 1,
+                    chat_id_override: Some("321"),
+                    output: &output,
+                    progress_message_id: Some("42"),
+                    delivery_state_raw: None,
+                },
+            )
+            .expect("first dispatch")
+        );
+        let first_count = server.request_count();
+        assert_eq!(first_count, 3);
+
+        let delivery_state = store.list_active_scheduled_tasks().expect("list schedules")[0]
+            .delivery_state
+            .clone();
+        assert!(
+            dispatch_scheduled_task_output(
+                &store,
+                &cfg,
+                &client,
+                ScheduledTaskDispatch {
+                    scheduled_task_id: 1,
+                    chat_id_override: Some("321"),
+                    output: &output,
+                    progress_message_id: Some("42"),
+                    delivery_state_raw: delivery_state.as_deref(),
+                },
+            )
+            .expect("second dispatch")
+        );
+        assert_eq!(server.request_count(), first_count);
+    }
+
+    #[test]
     fn telegram_chats_can_run_in_parallel() {
         let tmp_dir = tempfile::tempdir().expect("tempdir");
         let markers_dir = tmp_dir.path().join("telegram-parallel-markers");
@@ -1535,6 +1979,7 @@ if ($context -match "telegram-fifo-second") {{
                 prompt: "session one".to_string(),
                 created_at: "2026-04-22T10:00:00+0000".to_string(),
                 progress_message_id: None,
+                scheduled_task_id: None,
             })
             .expect("insert task one");
         store
@@ -1547,6 +1992,7 @@ if ($context -match "telegram-fifo-second") {{
                 prompt: "session two".to_string(),
                 created_at: "2026-04-22T10:00:01+0000".to_string(),
                 progress_message_id: None,
+                scheduled_task_id: None,
             })
             .expect("insert task two");
 

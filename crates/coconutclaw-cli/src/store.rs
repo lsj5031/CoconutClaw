@@ -21,6 +21,8 @@ pub(crate) struct TurnRecord {
     pub(crate) update_id: Option<String>,
     pub(crate) duration_ms: Option<i64>,
     pub(crate) channel: String,
+    pub(crate) task_run_id: Option<i64>,
+    pub(crate) side_effects_applied: bool,
 }
 
 #[derive(Debug)]
@@ -34,6 +36,18 @@ pub(crate) struct ScheduledTask {
     pub(crate) last_run_ts: Option<String>,
     pub(crate) done: bool,
     pub(crate) pending_output: Option<String>,
+    pub(crate) delivery_state: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StoredTurnOutput {
+    pub(crate) id: i64,
+    pub(crate) ts: String,
+    pub(crate) provider_raw: String,
+    pub(crate) telegram_reply: String,
+    pub(crate) voice_reply: String,
+    pub(crate) status: String,
+    pub(crate) side_effects_applied: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +100,7 @@ pub(crate) struct TaskRun {
     pub(crate) last_progress: Option<String>,
     pub(crate) error_summary: Option<String>,
     pub(crate) result_summary: Option<String>,
+    pub(crate) scheduled_task_id: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +132,7 @@ pub(crate) struct InsertTaskRunParams {
     pub(crate) prompt: String,
     pub(crate) created_at: String,
     pub(crate) progress_message_id: Option<String>,
+    pub(crate) scheduled_task_id: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -230,7 +246,8 @@ impl Store {
                     progress_message_id TEXT,
                     last_progress TEXT,
                     error_summary TEXT,
-                    result_summary TEXT
+                    result_summary TEXT,
+                    scheduled_task_id INTEGER
                  );
                  CREATE INDEX IF NOT EXISTS idx_task_runs_session_status ON task_runs(session_id, status, id DESC);
                  CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status, id DESC);
@@ -253,6 +270,82 @@ impl Store {
                  CREATE INDEX IF NOT EXISTS idx_approvals_task_status ON approvals(task_run_id, status, id DESC);",
             )?;
             self.kv_set("schema_version", "4")?;
+        }
+
+        if current < 5 {
+            match self.conn.execute(
+                "ALTER TABLE task_runs ADD COLUMN scheduled_task_id INTEGER",
+                [],
+            ) {
+                Ok(_) => {}
+                Err(err) => {
+                    let msg = err.to_string();
+                    if !msg.contains("duplicate column") {
+                        return Err(err.into());
+                    }
+                }
+            }
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_runs_scheduled_task_status
+                 ON task_runs(scheduled_task_id, status, id DESC)",
+                [],
+            )?;
+            self.kv_set("schema_version", "5")?;
+        }
+
+        if current < 6 {
+            for sql in [
+                "ALTER TABLE turns ADD COLUMN task_run_id INTEGER",
+                "ALTER TABLE turns ADD COLUMN side_effects_applied INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE scheduled_tasks ADD COLUMN delivery_state TEXT",
+            ] {
+                match self.conn.execute(sql, []) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        let msg = err.to_string();
+                        if !msg.contains("duplicate column") {
+                            return Err(err.into());
+                        }
+                    }
+                }
+            }
+            self.kv_set("schema_version", "6")?;
+        }
+
+        if current < 7 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memory_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    append_index INTEGER NOT NULL
+                 );
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_entries_turn_append_unique
+                   ON memory_entries(turn_id, append_index);",
+            )?;
+            for sql in [
+                "ALTER TABLE tasks ADD COLUMN turn_id INTEGER",
+                "ALTER TABLE tasks ADD COLUMN append_index INTEGER",
+                "ALTER TABLE tasks ADD COLUMN managed_file INTEGER NOT NULL DEFAULT 0",
+            ] {
+                match self.conn.execute(sql, []) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        let msg = err.to_string();
+                        if !msg.contains("duplicate column") {
+                            return Err(err.into());
+                        }
+                    }
+                }
+            }
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_turn_append_unique
+                 ON tasks(turn_id, append_index)",
+                [],
+            )?;
+            self.kv_set("schema_version", "7")?;
         }
 
         Ok(())
@@ -305,10 +398,10 @@ impl Store {
             .map(|dt| dt.timestamp()))
     }
 
-    pub(crate) fn insert_turn(&self, turn: &TurnRecord) -> Result<bool> {
+    pub(crate) fn insert_turn(&self, turn: &TurnRecord) -> Result<Option<i64>> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, channel)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, channel, task_run_id, side_effects_applied)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 turn.ts,
                 turn.chat_id,
@@ -322,26 +415,54 @@ impl Store {
                 turn.update_id,
                 turn.duration_ms,
                 turn.channel,
+                turn.task_run_id,
+                turn.side_effects_applied as i32,
             ],
         )?;
-        Ok(self.conn.changes() > 0)
+        if self.conn.changes() > 0 {
+            Ok(Some(self.conn.last_insert_rowid()))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub(crate) fn insert_tasks(&mut self, ts: &str, source: &str, lines: &[String]) -> Result<()> {
-        if lines.is_empty() {
+    pub(crate) fn insert_memory_and_tasks(
+        &mut self,
+        ts: &str,
+        source: &str,
+        turn_id: Option<i64>,
+        memory_lines: &[String],
+        task_lines: &[String],
+    ) -> Result<()> {
+        if memory_lines.is_empty() && task_lines.is_empty() {
             return Ok(());
         }
 
         let tx = self.conn.transaction()?;
 
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT INTO tasks(ts, source, content, done) VALUES(?1, ?2, ?3, 0)",
-            )?;
-
-            for line in lines {
-                stmt.execute(params![ts, source, line])?;
+        if let Some(turn_id) = turn_id {
+            if !memory_lines.is_empty() {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR IGNORE INTO memory_entries(ts, source, content, turn_id, append_index)
+                     VALUES(?1, ?2, ?3, ?4, ?5)",
+                )?;
+                for (append_index, line) in memory_lines.iter().enumerate() {
+                    stmt.execute(params![ts, source, line, turn_id, append_index as i64])?;
+                }
             }
+
+            if !task_lines.is_empty() {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR IGNORE INTO tasks(ts, source, content, done, turn_id, append_index, managed_file)
+                     VALUES(?1, ?2, ?3, 0, ?4, ?5, 1)",
+                )?;
+
+                for (append_index, line) in task_lines.iter().enumerate() {
+                    stmt.execute(params![ts, source, line, turn_id, append_index as i64])?;
+                }
+            }
+        } else if !memory_lines.is_empty() || !task_lines.is_empty() {
+            anyhow::bail!("memory/task appends require a persisted turn id");
         }
 
         tx.commit()?;
@@ -368,8 +489,8 @@ impl Store {
         }
 
         self.conn.execute(
-            "INSERT INTO scheduled_tasks(ts, source, prompt, schedule_time, recurring, done, pending_output)
-             VALUES(?1, ?2, ?3, ?4, ?5, 0, NULL)",
+            "INSERT INTO scheduled_tasks(ts, source, prompt, schedule_time, recurring, done, pending_output, delivery_state)
+             VALUES(?1, ?2, ?3, ?4, ?5, 0, NULL, NULL)",
             params![ts, source, prompt, schedule_time, recurring as i32],
         )?;
         Ok(ScheduledTaskInsertResult::Inserted)
@@ -377,7 +498,7 @@ impl Store {
 
     pub(crate) fn list_active_scheduled_tasks(&self) -> Result<Vec<ScheduledTask>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output
+            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output, delivery_state
              FROM scheduled_tasks
              WHERE done = 0
              ORDER BY schedule_time ASC, id ASC",
@@ -395,6 +516,7 @@ impl Store {
                 last_run_ts: row.get(6)?,
                 done: row.get::<_, i32>(7)? != 0,
                 pending_output: row.get(8)?,
+                delivery_state: row.get(9)?,
             });
         }
         Ok(tasks)
@@ -406,7 +528,7 @@ impl Store {
         today: &str,
     ) -> Result<Vec<ScheduledTask>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output
+            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output, delivery_state
              FROM scheduled_tasks
              WHERE schedule_time <= ?1
                AND done = 0
@@ -432,6 +554,7 @@ impl Store {
                 last_run_ts: row.get(6)?,
                 done: row.get::<_, i32>(7)? != 0,
                 pending_output: row.get(8)?,
+                delivery_state: row.get(9)?,
             });
         }
         Ok(tasks)
@@ -439,7 +562,12 @@ impl Store {
 
     pub(crate) fn mark_scheduled_task_executed(&self, id: i64, ts: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE scheduled_tasks SET last_run_ts = ?1, done = CASE WHEN recurring = 0 THEN 1 ELSE 0 END, pending_output = NULL WHERE id = ?2",
+            "UPDATE scheduled_tasks
+             SET last_run_ts = ?1,
+                 done = CASE WHEN recurring = 0 THEN 1 ELSE 0 END,
+                 pending_output = NULL,
+                 delivery_state = NULL
+             WHERE id = ?2",
             params![ts, id],
         )?;
         Ok(())
@@ -448,8 +576,23 @@ impl Store {
     #[allow(dead_code)]
     pub(crate) fn set_scheduled_task_pending_output(&self, id: i64, output: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE scheduled_tasks SET pending_output = ?1 WHERE id = ?2",
+            "UPDATE scheduled_tasks
+             SET pending_output = ?1,
+                 delivery_state = NULL
+             WHERE id = ?2",
             params![output, id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn set_scheduled_task_delivery_state(
+        &self,
+        id: i64,
+        delivery_state: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE scheduled_tasks SET delivery_state = ?1 WHERE id = ?2",
+            params![delivery_state, id],
         )?;
         Ok(())
     }
@@ -509,20 +652,101 @@ impl Store {
         Ok(Some(rendered.trim_end().to_string()))
     }
 
-    pub(crate) fn update_turn_reply_by_update_id(
+    pub(crate) fn turn_output_for_task_run(
         &self,
-        update_id: &str,
+        task_run_id: i64,
+    ) -> Result<Option<StoredTurnOutput>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, provider_raw, telegram_reply, voice_reply, status, side_effects_applied
+             FROM turns
+             WHERE task_run_id = ?1
+             ORDER BY id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![task_run_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(StoredTurnOutput {
+            id: row.get(0)?,
+            ts: row.get(1)?,
+            provider_raw: row.get(2)?,
+            telegram_reply: row.get(3)?,
+            voice_reply: row.get(4)?,
+            status: row.get(5)?,
+            side_effects_applied: row.get::<_, i32>(6)? != 0,
+        }))
+    }
+
+    pub(crate) fn managed_memory_entries(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts, content
+             FROM memory_entries
+             ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next()? {
+            entries.push((row.get(0)?, row.get(1)?));
+        }
+        Ok(entries)
+    }
+
+    pub(crate) fn managed_pending_task_entries(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT content
+             FROM tasks
+             WHERE managed_file = 1
+               AND done = 0
+             ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next()? {
+            entries.push(row.get(0)?);
+        }
+        Ok(entries)
+    }
+
+    pub(crate) fn update_turn_reply_and_side_effects_by_id(
+        &self,
+        turn_id: i64,
         telegram_reply: &str,
         voice_reply: &str,
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE turns
              SET telegram_reply = ?2,
-                 voice_reply = ?3
-             WHERE update_id = ?1",
-            params![update_id, telegram_reply, voice_reply],
+                 voice_reply = ?3,
+                 side_effects_applied = 1
+             WHERE id = ?1",
+            params![turn_id, telegram_reply, voice_reply],
         )?;
         Ok(())
+    }
+
+    pub(crate) fn pending_turn_side_effects(&self) -> Result<Vec<StoredTurnOutput>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, provider_raw, telegram_reply, voice_reply, status, side_effects_applied
+             FROM turns
+             WHERE side_effects_applied = 0
+               AND status NOT IN ('cancelled', 'boundary')
+             ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut turns = Vec::new();
+        while let Some(row) = rows.next()? {
+            turns.push(StoredTurnOutput {
+                id: row.get(0)?,
+                ts: row.get(1)?,
+                provider_raw: row.get(2)?,
+                telegram_reply: row.get(3)?,
+                voice_reply: row.get(4)?,
+                status: row.get(5)?,
+                side_effects_applied: row.get::<_, i32>(6)? != 0,
+            });
+        }
+        Ok(turns)
     }
 
     pub(crate) fn kv_get(&self, key: &str) -> Result<Option<String>> {
@@ -586,8 +810,8 @@ impl Store {
         self.conn.execute(
             "INSERT INTO task_runs(
                 session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
-                created_at, progress_message_id
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                created_at, progress_message_id, scheduled_task_id
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 params.session_id,
                 params.channel,
@@ -597,7 +821,8 @@ impl Store {
                 params.prompt,
                 TaskRunStatus::Queued.as_str(),
                 params.created_at,
-                params.progress_message_id
+                params.progress_message_id,
+                params.scheduled_task_id
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -675,7 +900,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
                     created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
-                    last_progress, error_summary, result_summary
+                    last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
              WHERE id = ?1
              LIMIT 1",
@@ -701,6 +926,7 @@ impl Store {
             last_progress: row.get(13)?,
             error_summary: row.get(14)?,
             result_summary: row.get(15)?,
+            scheduled_task_id: row.get(16)?,
         }))
     }
 
@@ -709,7 +935,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
                     created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
-                    last_progress, error_summary, result_summary
+                    last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
              WHERE status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
              ORDER BY id ASC",
@@ -734,6 +960,7 @@ impl Store {
                 last_progress: row.get(13)?,
                 error_summary: row.get(14)?,
                 result_summary: row.get(15)?,
+                scheduled_task_id: row.get(16)?,
             });
         }
         Ok(tasks)
@@ -746,7 +973,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
                     created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
-                    last_progress, error_summary, result_summary
+                    last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
              WHERE session_id = ?1
                AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
@@ -772,6 +999,7 @@ impl Store {
                 last_progress: row.get(13)?,
                 error_summary: row.get(14)?,
                 result_summary: row.get(15)?,
+                scheduled_task_id: row.get(16)?,
             });
         }
         Ok(tasks)
@@ -781,7 +1009,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
                     created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
-                    last_progress, error_summary, result_summary
+                    last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
              WHERE session_id = ?1
                AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
@@ -815,6 +1043,7 @@ impl Store {
             last_progress: row.get(13)?,
             error_summary: row.get(14)?,
             result_summary: row.get(15)?,
+            scheduled_task_id: row.get(16)?,
         }))
     }
 
@@ -825,7 +1054,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
                     created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
-                    last_progress, error_summary, result_summary
+                    last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
              WHERE update_id = ?1
                AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
@@ -853,7 +1082,79 @@ impl Store {
             last_progress: row.get(13)?,
             error_summary: row.get(14)?,
             result_summary: row.get(15)?,
+            scheduled_task_id: row.get(16)?,
         }))
+    }
+
+    pub(crate) fn latest_task_run_for_scheduled_task(
+        &self,
+        scheduled_task_id: i64,
+    ) -> Result<Option<TaskRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
+                    created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
+                    last_progress, error_summary, result_summary, scheduled_task_id
+             FROM task_runs
+             WHERE scheduled_task_id = ?1
+             ORDER BY id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![scheduled_task_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(TaskRun {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            channel: row.get(2)?,
+            source_chat_id: row.get(3)?,
+            source_user_id: row.get(4)?,
+            update_id: row.get(5)?,
+            prompt: row.get(6)?,
+            status: row.get(7)?,
+            created_at: row.get(8)?,
+            started_at: row.get(9)?,
+            finished_at: row.get(10)?,
+            cancel_requested_at: row.get(11)?,
+            progress_message_id: row.get(12)?,
+            last_progress: row.get(13)?,
+            error_summary: row.get(14)?,
+            result_summary: row.get(15)?,
+            scheduled_task_id: row.get(16)?,
+        }))
+    }
+
+    pub(crate) fn reconcile_scheduled_tasks_from_completed_runs(
+        &self,
+        fallback_ts: &str,
+    ) -> Result<usize> {
+        self.conn.execute(
+            "UPDATE scheduled_tasks
+             SET last_run_ts = COALESCE(
+                    (
+                        SELECT finished_at
+                        FROM task_runs
+                        WHERE scheduled_task_id = scheduled_tasks.id
+                          AND status = 'completed'
+                          AND finished_at IS NOT NULL
+                        ORDER BY id DESC
+                        LIMIT 1
+                    ),
+                    ?1
+                 ),
+                 done = CASE WHEN recurring = 0 THEN 1 ELSE 0 END,
+                 pending_output = NULL
+             WHERE done = 0
+               AND pending_output IS NOT NULL
+               AND EXISTS (
+                    SELECT 1
+                    FROM task_runs
+                    WHERE scheduled_task_id = scheduled_tasks.id
+                      AND status = 'completed'
+               )",
+            params![fallback_ts],
+        )?;
+        Ok(self.conn.changes() as usize)
     }
 
     pub(crate) fn create_approval(&self, params: CreateApprovalParams) -> Result<i64> {

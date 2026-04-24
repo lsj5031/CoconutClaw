@@ -245,10 +245,12 @@ pub(crate) fn dispatch_telegram_output(
                 send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
             }
         } else if let Some(message_id) = progress_message_id {
-            let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
+            let _ = telegram_delete_message(client, cfg, chat_id, message_id)
+                .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
         }
     } else if let Some(message_id) = progress_message_id {
-        let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
+        let _ = telegram_delete_message(client, cfg, chat_id, message_id)
+            .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
     }
 
     // Only attempt voice reply if TTS is configured (tts_cmd_template is set)
@@ -313,6 +315,15 @@ pub(crate) fn send_progress_message(cfg: &RuntimeConfig, chat_id: &str) -> Resul
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty());
     Ok(message_id)
+}
+
+pub(crate) fn send_placeholder_message(
+    client: &Client,
+    cfg: &RuntimeConfig,
+    chat_id: &str,
+    text: &str,
+) -> Result<Option<String>> {
+    telegram_send_message(client, cfg, chat_id, text)
 }
 
 pub(crate) fn progress_reply_markup() -> &'static str {
@@ -439,14 +450,20 @@ pub(crate) fn spawn_progress_updater(
             if (elapsed_tick || saw_event) && last_edit.elapsed() >= Duration::from_secs(1) {
                 let text = progress_status_with_events(elapsed, &statuses);
                 let rendered = render_telegram_reply_text(&cfg, &text);
-                let _ = telegram_edit_message_text(
+                if let Err(err) = telegram_edit_message_text(
                     &client,
                     &cfg,
                     &chat_id,
                     &message_id,
                     &rendered,
                     true,
-                );
+                ) {
+                    tracing::warn!(
+                        "failed to update telegram progress message chat_id={} message_id={}: {err:#}",
+                        chat_id,
+                        message_id
+                    );
+                }
                 saw_event = false;
                 last_edit = Instant::now();
             }
@@ -510,7 +527,7 @@ pub(crate) fn should_send_reply_as_document(text: &str) -> bool {
     text.chars().count() > TELEGRAM_TEXT_CHAR_LIMIT
 }
 
-fn send_markdown_reply_document(
+pub(crate) fn send_markdown_reply_document(
     client: &Client,
     cfg: &RuntimeConfig,
     chat_id: &str,
@@ -981,6 +998,7 @@ pub(crate) fn telegram_edit_message_text(
     let url = format!("{base}/editMessageText");
     match telegram_post_form(client, &url, &params, "editMessageText") {
         Ok(_) => Ok(()),
+        Err(err) if telegram_error_is_not_modified(&err) => Ok(()),
         Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
             tracing::warn!("editMessageText markdown parse failed, retrying plain text: {err:#}");
             let retry = strip_parse_mode_param(&params);
@@ -988,6 +1006,26 @@ pub(crate) fn telegram_edit_message_text(
         }
         Err(err) => Err(err),
     }
+}
+
+pub(crate) fn telegram_delete_message(
+    client: &Client,
+    cfg: &RuntimeConfig,
+    chat_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    let base = telegram_api_base(cfg)?;
+    let params = [
+        ("chat_id", chat_id.to_string()),
+        ("message_id", message_id.to_string()),
+    ];
+    let response = client
+        .post(format!("{base}/deleteMessage"))
+        .form(&params)
+        .send()
+        .context("failed to call telegram deleteMessage")?;
+    parse_telegram_response(response, "deleteMessage")?;
+    Ok(())
 }
 
 pub(crate) fn telegram_remove_keyboard(
@@ -1010,6 +1048,12 @@ pub(crate) fn telegram_remove_keyboard(
         .context("failed to call telegram editMessageReplyMarkup")?;
     parse_telegram_response(response, "editMessageReplyMarkup")?;
     Ok(())
+}
+
+fn telegram_error_is_not_modified(err: &anyhow::Error) -> bool {
+    err.to_string()
+        .to_ascii_lowercase()
+        .contains("message is not modified")
 }
 
 pub(crate) fn telegram_answer_callback(
@@ -1422,5 +1466,20 @@ mod tests {
         cfg.telegram_chat_ids = vec!["".to_string(), "999".to_string(), "321".to_string()];
 
         assert_eq!(valid_telegram_chat_id(&cfg), Some("999"));
+    }
+
+    #[test]
+    fn telegram_not_modified_error_is_treated_as_idempotent() {
+        let err = anyhow::anyhow!(
+            "telegram editMessageText failed: Bad Request: message is not modified"
+        );
+        assert!(telegram_error_is_not_modified(&err));
+    }
+
+    #[test]
+    fn unrelated_telegram_error_is_not_treated_as_not_modified() {
+        let err =
+            anyhow::anyhow!("telegram editMessageText failed: Bad Request: message not found");
+        assert!(!telegram_error_is_not_modified(&err));
     }
 }

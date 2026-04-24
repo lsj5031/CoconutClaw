@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS turns (
   voice_reply TEXT,
   status TEXT NOT NULL,
   update_id TEXT,
-  duration_ms INTEGER
+  duration_ms INTEGER,
+  task_run_id INTEGER,
+  side_effects_applied INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_update_id_unique ON turns(update_id);
 
@@ -27,8 +29,21 @@ CREATE TABLE IF NOT EXISTS tasks (
   ts TEXT NOT NULL,
   source TEXT NOT NULL,
   content TEXT NOT NULL,
-  done INTEGER NOT NULL DEFAULT 0
+  done INTEGER NOT NULL DEFAULT 0,
+  turn_id INTEGER,
+  append_index INTEGER,
+  managed_file INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS memory_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  source TEXT NOT NULL,
+  content TEXT NOT NULL,
+  turn_id INTEGER NOT NULL,
+  append_index INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_entries_turn_append_unique ON memory_entries(turn_id, append_index);
 
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +54,8 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   recurring INTEGER NOT NULL DEFAULT 1,
   last_run_ts TEXT,
   done INTEGER NOT NULL DEFAULT 0,
-  pending_output TEXT
+  pending_output TEXT,
+  delivery_state TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_runs (
@@ -58,7 +74,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
   progress_message_id TEXT,
   last_progress TEXT,
   error_summary TEXT,
-  result_summary TEXT
+  result_summary TEXT,
+  scheduled_task_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_task_runs_session_status ON task_runs(session_id, status, id DESC);
 CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status, id DESC);

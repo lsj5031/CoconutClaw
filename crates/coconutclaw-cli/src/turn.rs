@@ -124,6 +124,7 @@ pub(crate) fn process_turn(
         channel,
         chat_id_override,
         update_id,
+        None,
         progress_message_id,
         quoted,
         None,
@@ -140,6 +141,7 @@ pub(crate) fn process_turn_with_status(
     channel: &str,
     chat_id_override: Option<String>,
     update_id: Option<String>,
+    task_run_id: Option<i64>,
     progress_message_id: Option<&str>,
     quoted: &QuotedMessage,
     external_cancel_flag: Option<Arc<AtomicBool>>,
@@ -213,7 +215,7 @@ pub(crate) fn process_turn_with_status(
         } else {
             spawn_progress_updater(
                 cfg.clone(),
-                chat_id.clone(),
+                telegram_progress_chat_id(&chat_id),
                 message_id.to_string(),
                 progress_rx,
                 Arc::clone(&progress_updater_stop),
@@ -292,7 +294,7 @@ pub(crate) fn process_turn_with_status(
         "turn completed"
     );
 
-    let inserted = store.insert_turn(&TurnRecord {
+    let inserted_turn_id = store.insert_turn(&TurnRecord {
         ts: ts.clone(),
         chat_id,
         input_type: input.input_type.to_string(),
@@ -305,11 +307,16 @@ pub(crate) fn process_turn_with_status(
         update_id: update_id.clone(),
         duration_ms: Some(duration_ms),
         channel: channel.to_string(),
+        task_run_id,
+        side_effects_applied: false,
     })?;
 
     let mut telegram_reply = telegram_reply;
-    if inserted && status != TurnStatus::Cancelled {
-        let append_outcome = append_memory_and_tasks(cfg, store, &ts, &markers)?;
+    if let Some(inserted_turn_id) = inserted_turn_id
+        && status != TurnStatus::Cancelled
+    {
+        let append_outcome =
+            append_memory_and_tasks(cfg, store, &ts, Some(inserted_turn_id), &markers)?;
         if !append_outcome.schedule_feedback.is_empty() {
             if !telegram_reply.trim().is_empty() {
                 telegram_reply.push_str(
@@ -322,14 +329,28 @@ pub(crate) fn process_turn_with_status(
                 "
 ",
             ));
-            if let Some(update_id) = update_id.as_deref()
-                && let Err(err) =
-                    store.update_turn_reply_by_update_id(update_id, &telegram_reply, &voice_reply)
-            {
-                tracing::warn!(
-                    "failed to update stored turn reply with schedule feedback: {err:#}"
-                );
-            }
+        }
+
+        let persist_result = store.update_turn_reply_and_side_effects_by_id(
+            inserted_turn_id,
+            &telegram_reply,
+            &voice_reply,
+        );
+        if let Err(err) = persist_result {
+            tracing::warn!(
+                "failed to update stored turn reply/side-effect state after turn processing: {err:#}"
+            );
+        }
+    } else if let Some(inserted_turn_id) = inserted_turn_id
+        && status == TurnStatus::Cancelled
+    {
+        let persist_result = store.update_turn_reply_and_side_effects_by_id(
+            inserted_turn_id,
+            &telegram_reply,
+            &voice_reply,
+        );
+        if let Err(err) = persist_result {
+            tracing::warn!("failed to mark cancelled turn side-effect state as persisted: {err:#}");
         }
     }
 
@@ -340,6 +361,16 @@ pub(crate) fn process_turn_with_status(
         output: render_output(&telegram_reply, &voice_reply, &markers),
         status,
     })
+}
+
+fn telegram_progress_chat_id(chat_id: &str) -> String {
+    chat_id
+        .strip_prefix("telegram:")
+        .unwrap_or(chat_id)
+        .split_once('#')
+        .map(|(root, _)| root)
+        .unwrap_or_else(|| chat_id.strip_prefix("telegram:").unwrap_or(chat_id))
+        .to_string()
 }
 
 pub(crate) fn resolve_turn_result(
@@ -845,5 +876,15 @@ mod tests {
                 .telegram_reply
                 .contains("Agent execution failed locally")
         );
+    }
+
+    #[test]
+    fn telegram_progress_chat_id_strips_session_prefix() {
+        assert_eq!(telegram_progress_chat_id("telegram:321951227"), "321951227");
+    }
+
+    #[test]
+    fn telegram_progress_chat_id_leaves_plain_chat_id_untouched() {
+        assert_eq!(telegram_progress_chat_id("321951227"), "321951227");
     }
 }
