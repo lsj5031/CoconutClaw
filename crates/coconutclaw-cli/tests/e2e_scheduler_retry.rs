@@ -1,13 +1,18 @@
 mod support;
 
-use axum::{Json, Router, body::Bytes, response::IntoResponse, routing::post};
+use axum::{
+    Json, Router,
+    body::Bytes,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use serde_json::json;
 use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use support::write_fake_provider_script;
+use support::{wait_for_http_ready, write_fake_provider_script};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
@@ -84,6 +89,7 @@ if (-not (Test-Path "{state}")) {{
     let fail_first_backup = Arc::new(AtomicBool::new(true));
 
     let app = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
         .route(
             "/botfake_token/setWebhook",
             post({
@@ -151,6 +157,7 @@ if (-not (Test-Path "{state}")) {{
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
+    wait_for_http_ready(&base_url).await;
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_coconutclaw"))
         .arg("--instance-dir")

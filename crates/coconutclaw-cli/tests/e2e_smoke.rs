@@ -1,11 +1,16 @@
 mod support;
 
-use axum::{Json, Router, body::Bytes, response::IntoResponse, routing::post};
+use axum::{
+    Json, Router,
+    body::Bytes,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use serde_json::json;
 use std::fs;
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use support::write_fake_provider_script;
+use support::{wait_for_http_ready, write_fake_provider_script};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
@@ -61,6 +66,7 @@ Write-Output '</message>'
     let (tx, mut rx) = mpsc::channel(100);
 
     let app = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
         .route(
             "/botfake_token/setWebhook",
             post({
@@ -117,6 +123,7 @@ Write-Output '</message>'
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
+    wait_for_http_ready(&base_url).await;
 
     // Spawn CLI
     let mut child = Command::new(env!("CARGO_BIN_EXE_coconutclaw"))
