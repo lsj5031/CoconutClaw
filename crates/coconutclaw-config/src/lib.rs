@@ -816,35 +816,51 @@ pub fn ensure_instance_layout(cfg: &RuntimeConfig) -> Result<()> {
     fs::create_dir_all(&cfg.tasks_dir)
         .with_context(|| format!("failed to create {}", cfg.tasks_dir.display()))?;
 
+    // Only treat `root_dir` as a template source when it actually points at a
+    // CoconutClaw repo checkout. Otherwise `find_project_root` may have fallen
+    // back to the user's cwd and we'd silently seed instance files from
+    // unrelated documents that happen to share these names.
+    let template_root: Option<&Path> = is_project_root(&cfg.root_dir).then_some(&cfg.root_dir);
+
     ensure_file(
         &cfg.instance_dir.join("SOUL.md"),
-        Some(&cfg.root_dir.join("SOUL.md")),
+        template_root.map(|root| root.join("SOUL.md")).as_deref(),
         "You are CoconutClaw, a calm and practical local agent.\n",
     )?;
     ensure_file(
         &cfg.instance_dir.join("MEMORY.md"),
-        Some(&cfg.root_dir.join("MEMORY.md")),
+        None,
         "# Long-Term Memory\n",
     )?;
     ensure_file(
         &cfg.instance_dir.join("TASKS/pending.md"),
-        Some(&cfg.root_dir.join("TASKS/pending.md")),
+        template_root
+            .map(|root| root.join("TASKS/pending.md"))
+            .as_deref(),
         "# Pending Tasks\n",
     )?;
     ensure_file(
         &cfg.instance_dir.join("USER.md"),
-        Some(&cfg.root_dir.join("USER.md")),
+        template_root
+            .map(|root| root.join("USER.md.example"))
+            .as_deref(),
         "# User Profile\n",
     )?;
     if !cfg.config_file_path.exists() {
         ensure_file(
             &cfg.config_file_path,
-            Some(&cfg.root_dir.join("config.toml.example")),
+            template_root
+                .map(|root| root.join("config.toml.example"))
+                .as_deref(),
             DEFAULT_CONFIG_TOML,
         )?;
     }
 
     Ok(())
+}
+
+fn is_project_root(path: &Path) -> bool {
+    path.join("sql/schema.sql").exists()
 }
 
 fn ensure_file(
