@@ -1306,7 +1306,18 @@ if ($context -match "break-store") {{
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        fs::remove_file(&db_parent).expect("remove broken db path");
+        loop {
+            match fs::remove_file(&db_parent) {
+                Ok(()) => break,
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::PermissionDenied
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("remove broken db path: {err}"),
+            }
+        }
         fs::create_dir_all(&db_parent).expect("restore db dir");
 
         let second = scheduler
