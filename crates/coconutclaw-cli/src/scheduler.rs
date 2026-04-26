@@ -1306,24 +1306,24 @@ if ($context -match "break-store") {{
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        loop {
-            match fs::remove_file(&db_parent) {
-                Ok(()) => break,
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::PermissionDenied
-                        && Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(err) => panic!("remove broken db path: {err}"),
-            }
-        }
-        fs::create_dir_all(&db_parent).expect("restore db dir");
-
-        let second = scheduler
-            .enqueue(make_stdout_request(session, "after-repair"))
-            .expect("enqueue second");
-        wait_for_terminal_tasks(&cfg, &[second]);
+        assert!(
+            !scheduler
+                .inner
+                .task_state
+                .lock()
+                .expect("task_state")
+                .contains_key(&first),
+            "failed reopen should clear task state"
+        );
+        assert!(
+            !scheduler
+                .inner
+                .lanes
+                .lock()
+                .expect("lanes")
+                .contains_key(&session_id),
+            "failed reopen should release the session lane"
+        );
     }
 
     #[test]
