@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   last_run_ts TEXT,
   done INTEGER NOT NULL DEFAULT 0,
   pending_output TEXT,
-  delivery_state TEXT
+  delivery_state TEXT,
+  origin_session TEXT,
+  delivery_target TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_runs (

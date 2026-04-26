@@ -17,6 +17,7 @@ use coconutclaw_config::RuntimeConfig;
 use coconutclaw_provider::run_provider;
 
 use crate::context::{append_memory_and_tasks, build_context};
+use crate::delivery::{DeliveryTarget, TaskSource};
 use crate::markers::{
     ParsedMarkers, extract_assistant_text_from_json_stream, extract_error_summary, parse_markers,
     recover_unstructured_reply, render_output, should_retry_provider_failure,
@@ -111,8 +112,8 @@ pub(crate) fn process_turn(
     cfg: &RuntimeConfig,
     store: &mut Store,
     input: TurnInput,
-    channel: &str,
-    chat_id_override: Option<String>,
+    source: &TaskSource,
+    context_chat_id: Option<String>,
     update_id: Option<String>,
     progress_message_id: Option<&str>,
     quoted: &QuotedMessage,
@@ -121,14 +122,17 @@ pub(crate) fn process_turn(
         cfg,
         store,
         input,
-        channel,
-        chat_id_override,
+        source,
+        context_chat_id,
         update_id,
         None,
         progress_message_id,
+        None,
         quoted,
         None,
         true,
+        None,
+        None,
     )?
     .output)
 }
@@ -138,14 +142,17 @@ pub(crate) fn process_turn_with_status(
     cfg: &RuntimeConfig,
     store: &mut Store,
     input: TurnInput,
-    channel: &str,
-    chat_id_override: Option<String>,
+    source: &TaskSource,
+    context_chat_id: Option<String>,
     update_id: Option<String>,
     task_run_id: Option<i64>,
     progress_message_id: Option<&str>,
+    progress_target: Option<&DeliveryTarget>,
     quoted: &QuotedMessage,
     external_cancel_flag: Option<Arc<AtomicBool>>,
     enable_cancel_watchers: bool,
+    origin_session: Option<&str>,
+    delivery_target_json: Option<&str>,
 ) -> Result<ProcessedTurn> {
     let turn_start = Instant::now();
     let _span = tracing::info_span!(
@@ -159,18 +166,45 @@ pub(crate) fn process_turn_with_status(
         clear_cancel_marker(cfg);
     }
     let ts = iso_now(&cfg.timezone);
-    let chat_id = chat_id_override
-        .or_else(|| match channel {
-            "slack" => cfg.slack_channel_id.clone(),
-            _ => valid_telegram_chat_id(cfg).map(ToOwned::to_owned),
+    let context_channel = turn_context_channel(source, &input).to_string();
+    let progress_channel = progress_target
+        .map(DeliveryTarget::transport_name)
+        .unwrap_or(&context_channel);
+    let chat_id = context_chat_id
+        .or_else(|| {
+            progress_target.map(|target| match target {
+                DeliveryTarget::Telegram { chat_id } => chat_id.clone(),
+                DeliveryTarget::Slack { channel_id, .. } => channel_id.clone(),
+                DeliveryTarget::Stdout => "local".to_string(),
+            })
+        })
+        .or_else(|| match source {
+            TaskSource::Slack { .. } => cfg.slack_channel_id.clone(),
+            TaskSource::Telegram => valid_telegram_chat_id(cfg).map(ToOwned::to_owned),
+            TaskSource::Scheduled | TaskSource::Local => Some("local".to_string()),
         })
         .unwrap_or_else(|| "local".to_string());
+    let progress_chat_id = progress_target
+        .map(|target| match target {
+            DeliveryTarget::Telegram { chat_id } => chat_id.clone(),
+            DeliveryTarget::Slack { channel_id, .. } => channel_id.clone(),
+            DeliveryTarget::Stdout => "local".to_string(),
+        })
+        .or_else(|| match source {
+            TaskSource::Slack { channel_id, .. } => Some(channel_id.clone()),
+            TaskSource::Telegram => Some(chat_id.clone()),
+            TaskSource::Scheduled | TaskSource::Local => None,
+        })
+        .unwrap_or_else(|| chat_id.clone());
 
     let context = build_context(cfg, store, &input, &ts, &chat_id, quoted)?;
 
     let cancel_flag = external_cancel_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let cancel_watcher_stop = Arc::new(AtomicBool::new(false));
-    let cancel_watcher = if enable_cancel_watchers && channel == "telegram" && update_id.is_some() {
+    let cancel_watcher = if enable_cancel_watchers
+        && matches!(source, TaskSource::Telegram)
+        && update_id.is_some()
+    {
         maybe_spawn_cancel_watcher(
             cfg,
             store,
@@ -196,11 +230,11 @@ pub(crate) fn process_turn_with_status(
     let progress_updater_stop = Arc::new(AtomicBool::new(false));
     let (progress_sender, progress_updater) = if let Some(message_id) = progress_message_id {
         let (progress_tx, progress_rx) = mpsc::channel::<String>();
-        let updater = if channel == "slack" {
+        let updater = if progress_channel == "slack" {
             match build_slack_client(cfg) {
                 Ok(slack_client) => spawn_slack_progress_updater(
                     slack_client,
-                    chat_id.clone(),
+                    progress_chat_id,
                     message_id.to_string(),
                     progress_rx,
                     Arc::clone(&progress_updater_stop),
@@ -281,7 +315,8 @@ pub(crate) fn process_turn_with_status(
     };
     let duration_ms = turn_start.elapsed().as_millis() as i64;
     let cancelled = cancel_flag.load(Ordering::SeqCst) || exit_code == 130;
-    let turn_result = resolve_turn_result(&raw_output, channel, provider_success, cancelled);
+    let turn_result =
+        resolve_turn_result(&raw_output, &context_channel, provider_success, cancelled);
     let markers = turn_result.markers;
     let telegram_reply = turn_result.telegram_reply;
     let voice_reply = turn_result.voice_reply;
@@ -306,7 +341,7 @@ pub(crate) fn process_turn_with_status(
         status: status.to_string(),
         update_id: update_id.clone(),
         duration_ms: Some(duration_ms),
-        channel: channel.to_string(),
+        channel: context_channel.clone(),
         task_run_id,
         side_effects_applied: false,
     })?;
@@ -315,8 +350,15 @@ pub(crate) fn process_turn_with_status(
     if let Some(inserted_turn_id) = inserted_turn_id
         && status != TurnStatus::Cancelled
     {
-        let append_outcome =
-            append_memory_and_tasks(cfg, store, &ts, Some(inserted_turn_id), &markers)?;
+        let append_outcome = append_memory_and_tasks(
+            cfg,
+            store,
+            &ts,
+            Some(inserted_turn_id),
+            &markers,
+            origin_session,
+            delivery_target_json,
+        )?;
         if !append_outcome.schedule_feedback.is_empty() {
             if !telegram_reply.trim().is_empty() {
                 telegram_reply.push_str(
@@ -361,6 +403,15 @@ pub(crate) fn process_turn_with_status(
         output: render_output(&telegram_reply, &voice_reply, &markers),
         status,
     })
+}
+
+fn turn_context_channel<'a>(source: &TaskSource, input: &'a TurnInput) -> &'a str {
+    let channel = input.channel.trim();
+    if channel.is_empty() {
+        source.channel_name()
+    } else {
+        input.channel.as_str()
+    }
 }
 
 fn telegram_progress_chat_id(chat_id: &str) -> String {
@@ -745,7 +796,38 @@ pub(crate) fn hydrate_slack_turn_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TurnStatus;
+    use crate::{InputType, TurnInput, TurnStatus};
+
+    fn text_input(channel: &str) -> TurnInput {
+        TurnInput {
+            input_type: InputType::Text,
+            user_text: "hello".to_string(),
+            asr_text: String::new(),
+            attachment_type: None,
+            attachment_path: None,
+            attachment_owned: false,
+            supplemental_context: None,
+            channel: channel.to_string(),
+        }
+    }
+
+    #[test]
+    fn scheduled_turn_uses_input_channel_for_context() {
+        let input = text_input("slack");
+        assert_eq!(
+            turn_context_channel(&TaskSource::Scheduled, &input),
+            "slack"
+        );
+    }
+
+    #[test]
+    fn empty_input_channel_falls_back_to_source_channel() {
+        let input = text_input("");
+        assert_eq!(
+            turn_context_channel(&TaskSource::Telegram, &input),
+            "telegram"
+        );
+    }
 
     #[test]
     fn resolve_turn_result_marks_cancelled() {

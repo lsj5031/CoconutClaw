@@ -275,6 +275,8 @@ pub(crate) fn append_memory_and_tasks(
     ts: &str,
     turn_id: Option<i64>,
     markers: &ParsedMarkers,
+    session_id: Option<&str>,
+    delivery_target_json: Option<&str>,
 ) -> Result<AppendOutcome> {
     let mut outcome = AppendOutcome::default();
 
@@ -301,7 +303,15 @@ pub(crate) fn append_memory_and_tasks(
     if !markers.schedule_prompt.is_empty() && cfg.scheduled_tasks_enabled {
         for line in &markers.schedule_prompt {
             if let Some((recurring, time, text)) = parse_schedule_prompt_line(line) {
-                match store.insert_scheduled_task(ts, "agent", &text, &time, recurring) {
+                match store.insert_scheduled_task_with_target(
+                    ts,
+                    "agent",
+                    &text,
+                    &time,
+                    recurring,
+                    session_id,
+                    delivery_target_json,
+                ) {
                     Ok(result) => outcome
                         .schedule_feedback
                         .push(schedule_feedback_line(cfg, result, recurring, &time, &text)),
@@ -547,6 +557,8 @@ mod tests {
             "2026-04-20T08:00:00+0000",
             Some(1),
             &markers,
+            None,
+            None,
         )
         .expect("append schedule prompt");
 
@@ -575,6 +587,8 @@ mod tests {
             "2026-04-20T08:00:00+0000",
             Some(1),
             &markers,
+            None,
+            None,
         )
         .expect("insert schedule");
         let duplicate = append_memory_and_tasks(
@@ -583,6 +597,8 @@ mod tests {
             "2026-04-20T08:01:00+0000",
             Some(2),
             &markers,
+            None,
+            None,
         )
         .expect("insert duplicate schedule");
 

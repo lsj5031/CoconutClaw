@@ -65,6 +65,39 @@ impl SessionKey {
             _ => format!("{}:{}", self.platform.as_str(), self.root_id),
         }
     }
+
+    /// Parse a session ID string and reconstruct a SessionKey.
+    /// Format: "platform:root_id" or "platform:root_id#thread_id"
+    pub(crate) fn from_id(id: String) -> Self {
+        let parts: Vec<&str> = id.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Self::local(&id);
+        }
+
+        let platform_str = parts[0];
+        let rest = parts[1];
+
+        let platform = match platform_str {
+            "telegram" => SessionPlatform::Telegram,
+            "slack" => SessionPlatform::Slack,
+            "scheduled" => SessionPlatform::Scheduled,
+            "local" => SessionPlatform::Local,
+            _ => SessionPlatform::Local,
+        };
+
+        // Check for thread_id suffix
+        let (root_id, thread_id) = if let Some((root, thread)) = rest.split_once('#') {
+            (root.to_string(), Some(thread.to_string()))
+        } else {
+            (rest.to_string(), None)
+        };
+
+        Self {
+            platform,
+            root_id,
+            thread_id,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use chrono::DateTime;
 use coconutclaw_config::RuntimeConfig;
 use rusqlite::{Connection, params};
+use serde_json::json;
 use std::fs;
 
 const SCHEMA_SQL: &str = include_str!("../../../sql/schema.sql");
@@ -37,6 +38,8 @@ pub(crate) struct ScheduledTask {
     pub(crate) done: bool,
     pub(crate) pending_output: Option<String>,
     pub(crate) delivery_state: Option<String>,
+    pub(crate) origin_session: Option<String>,
+    pub(crate) delivery_target: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +50,7 @@ pub(crate) struct StoredTurnOutput {
     pub(crate) telegram_reply: String,
     pub(crate) voice_reply: String,
     pub(crate) status: String,
+    pub(crate) task_run_id: Option<i64>,
     pub(crate) side_effects_applied: bool,
 }
 
@@ -348,6 +352,162 @@ impl Store {
             self.kv_set("schema_version", "7")?;
         }
 
+        if current < 8 {
+            // Migration 8: add unique index on task_runs.update_id for deduplication.
+            // This prevents race conditions where the same update_id could create duplicate task runs.
+            // The partial index WHERE update_id IS NOT NULL allows multiple NULL values (no dedup for those).
+            self.deduplicate_task_run_update_ids()?;
+            self.ensure_task_runs_update_id_unique_index()?;
+            self.kv_set("schema_version", "8")?;
+        }
+
+        if current < 9 {
+            // Migration 9: add origin_session and delivery_target for scheduled task scoping.
+            // - origin_session: tracks which session the scheduled task belongs to (for context)
+            // - delivery_target: JSON-encoded delivery routing (e.g., {"kind":"telegram","chat_id":"123"})
+            for sql in [
+                "ALTER TABLE scheduled_tasks ADD COLUMN origin_session TEXT",
+                "ALTER TABLE scheduled_tasks ADD COLUMN delivery_target TEXT",
+            ] {
+                match self.conn.execute(sql, []) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        let msg = err.to_string();
+                        if !msg.contains("duplicate column") {
+                            return Err(err.into());
+                        }
+                    }
+                }
+            }
+            self.kv_set("schema_version", "9")?;
+        }
+
+        if current < 10 {
+            self.backfill_legacy_scheduled_task_routing()?;
+            self.kv_set("schema_version", "10")?;
+        }
+
+        Ok(())
+    }
+
+    fn deduplicate_task_run_update_ids(&self) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut duplicates = tx.prepare(
+            "SELECT update_id, MAX(id) AS keep_id
+             FROM task_runs
+             WHERE update_id IS NOT NULL
+             GROUP BY update_id
+             HAVING COUNT(*) > 1",
+        )?;
+        let duplicate_groups = duplicates
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(duplicates);
+
+        for (update_id, keep_id) in duplicate_groups {
+            let mut duplicate_rows = tx.prepare(
+                "SELECT id
+                 FROM task_runs
+                 WHERE update_id = ?1
+                   AND id != ?2",
+            )?;
+            let duplicate_ids = duplicate_rows
+                .query_map(params![update_id, keep_id], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(duplicate_rows);
+
+            for duplicate_id in duplicate_ids {
+                tx.execute(
+                    "UPDATE turns
+                     SET task_run_id = ?1
+                     WHERE task_run_id = ?2",
+                    params![keep_id, duplicate_id],
+                )?;
+                tx.execute(
+                    "UPDATE approvals
+                     SET task_run_id = ?1
+                     WHERE task_run_id = ?2",
+                    params![keep_id, duplicate_id],
+                )?;
+                tx.execute("DELETE FROM task_runs WHERE id = ?1", params![duplicate_id])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn ensure_task_runs_update_id_unique_index(&self) -> Result<()> {
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_update_id_unique
+             ON task_runs(update_id) WHERE update_id IS NOT NULL",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn backfill_legacy_scheduled_task_routing(&self) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut tasks = tx.prepare(
+            "SELECT id, ts, prompt, schedule_time, recurring, origin_session, delivery_target
+             FROM scheduled_tasks
+             WHERE origin_session IS NULL
+                OR delivery_target IS NULL
+             ORDER BY id ASC",
+        )?;
+        let scheduled_tasks = tasks
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i32>(4)? != 0,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(tasks);
+
+        for (
+            scheduled_task_id,
+            ts,
+            prompt,
+            schedule_time,
+            recurring,
+            origin_session,
+            delivery_target,
+        ) in scheduled_tasks
+        {
+            let Some((matched_origin_session, matched_delivery_target)) =
+                find_origin_turn_routing_for_schedule(
+                    &tx,
+                    &ts,
+                    &prompt,
+                    &schedule_time,
+                    recurring,
+                )?
+            else {
+                continue;
+            };
+
+            tx.execute(
+                "UPDATE scheduled_tasks
+                 SET origin_session = COALESCE(origin_session, ?2),
+                     delivery_target = COALESCE(delivery_target, ?3)
+                 WHERE id = ?1",
+                params![
+                    scheduled_task_id,
+                    origin_session.or(Some(matched_origin_session)),
+                    delivery_target.or(Some(matched_delivery_target))
+                ],
+            )?;
+        }
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -470,6 +630,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn insert_scheduled_task(
         &self,
         ts: &str,
@@ -478,10 +639,49 @@ impl Store {
         schedule_time: &str,
         recurring: bool,
     ) -> Result<ScheduledTaskInsertResult> {
-        // Deduplicate: skip if same source, prompt, and schedule_time already exists and is not done.
+        self.insert_scheduled_task_with_target(
+            ts,
+            source,
+            prompt,
+            schedule_time,
+            recurring,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert_scheduled_task_with_target(
+        &self,
+        ts: &str,
+        source: &str,
+        prompt: &str,
+        schedule_time: &str,
+        recurring: bool,
+        origin_session: Option<&str>,
+        delivery_target: Option<&str>,
+    ) -> Result<ScheduledTaskInsertResult> {
+        // Deduplicate: reject only when source, schedule shape, origin session, and delivery
+        // target all match an existing active row.
         let existing: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM scheduled_tasks WHERE source = ?1 AND prompt = ?2 AND schedule_time = ?3 AND done = 0",
-            params![source, prompt, schedule_time],
+            "SELECT COUNT(*)
+             FROM scheduled_tasks
+             WHERE source = ?1
+               AND prompt = ?2
+               AND schedule_time = ?3
+               AND done = 0
+               AND COALESCE(origin_session, '') = COALESCE(?4, '')
+               AND (
+                    (delivery_target IS NULL AND ?5 IS NULL)
+                    OR delivery_target = ?5
+               )",
+            params![
+                source,
+                prompt,
+                schedule_time,
+                origin_session,
+                delivery_target
+            ],
             |row| row.get(0),
         )?;
         if existing > 0 {
@@ -489,16 +689,16 @@ impl Store {
         }
 
         self.conn.execute(
-            "INSERT INTO scheduled_tasks(ts, source, prompt, schedule_time, recurring, done, pending_output, delivery_state)
-             VALUES(?1, ?2, ?3, ?4, ?5, 0, NULL, NULL)",
-            params![ts, source, prompt, schedule_time, recurring as i32],
+            "INSERT INTO scheduled_tasks(ts, source, prompt, schedule_time, recurring, done, pending_output, delivery_state, origin_session, delivery_target)
+             VALUES(?1, ?2, ?3, ?4, ?5, 0, NULL, NULL, ?6, ?7)",
+            params![ts, source, prompt, schedule_time, recurring as i32, origin_session, delivery_target],
         )?;
         Ok(ScheduledTaskInsertResult::Inserted)
     }
 
     pub(crate) fn list_active_scheduled_tasks(&self) -> Result<Vec<ScheduledTask>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output, delivery_state
+            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output, delivery_state, origin_session, delivery_target
              FROM scheduled_tasks
              WHERE done = 0
              ORDER BY schedule_time ASC, id ASC",
@@ -517,9 +717,38 @@ impl Store {
                 done: row.get::<_, i32>(7)? != 0,
                 pending_output: row.get(8)?,
                 delivery_state: row.get(9)?,
+                origin_session: row.get(10)?,
+                delivery_target: row.get(11)?,
             });
         }
         Ok(tasks)
+    }
+
+    pub(crate) fn get_scheduled_task(&self, id: i64) -> Result<Option<ScheduledTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output, delivery_state, origin_session, delivery_target
+             FROM scheduled_tasks
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(ScheduledTask {
+            id: row.get(0)?,
+            ts: row.get(1)?,
+            source: row.get(2)?,
+            prompt: row.get(3)?,
+            schedule_time: row.get(4)?,
+            recurring: row.get::<_, i32>(5)? != 0,
+            last_run_ts: row.get(6)?,
+            done: row.get::<_, i32>(7)? != 0,
+            pending_output: row.get(8)?,
+            delivery_state: row.get(9)?,
+            origin_session: row.get(10)?,
+            delivery_target: row.get(11)?,
+        }))
     }
 
     pub(crate) fn get_due_scheduled_tasks(
@@ -528,7 +757,7 @@ impl Store {
         today: &str,
     ) -> Result<Vec<ScheduledTask>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output, delivery_state
+            "SELECT id, ts, source, prompt, schedule_time, recurring, last_run_ts, done, pending_output, delivery_state, origin_session, delivery_target
              FROM scheduled_tasks
              WHERE schedule_time <= ?1
                AND done = 0
@@ -555,6 +784,8 @@ impl Store {
                 done: row.get::<_, i32>(7)? != 0,
                 pending_output: row.get(8)?,
                 delivery_state: row.get(9)?,
+                origin_session: row.get(10)?,
+                delivery_target: row.get(11)?,
             });
         }
         Ok(tasks)
@@ -593,6 +824,22 @@ impl Store {
         self.conn.execute(
             "UPDATE scheduled_tasks SET delivery_state = ?1 WHERE id = ?2",
             params![delivery_state, id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn set_scheduled_task_routing(
+        &self,
+        id: i64,
+        origin_session: Option<&str>,
+        delivery_target: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE scheduled_tasks
+             SET origin_session = COALESCE(origin_session, ?2),
+                 delivery_target = COALESCE(delivery_target, ?3)
+             WHERE id = ?1",
+            params![id, origin_session, delivery_target],
         )?;
         Ok(())
     }
@@ -657,7 +904,7 @@ impl Store {
         task_run_id: i64,
     ) -> Result<Option<StoredTurnOutput>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, provider_raw, telegram_reply, voice_reply, status, side_effects_applied
+            "SELECT id, ts, provider_raw, telegram_reply, voice_reply, status, task_run_id, side_effects_applied
              FROM turns
              WHERE task_run_id = ?1
              ORDER BY id DESC
@@ -674,7 +921,8 @@ impl Store {
             telegram_reply: row.get(3)?,
             voice_reply: row.get(4)?,
             status: row.get(5)?,
-            side_effects_applied: row.get::<_, i32>(6)? != 0,
+            task_run_id: row.get(6)?,
+            side_effects_applied: row.get::<_, i32>(7)? != 0,
         }))
     }
 
@@ -727,7 +975,7 @@ impl Store {
 
     pub(crate) fn pending_turn_side_effects(&self) -> Result<Vec<StoredTurnOutput>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, provider_raw, telegram_reply, voice_reply, status, side_effects_applied
+            "SELECT id, ts, provider_raw, telegram_reply, voice_reply, status, task_run_id, side_effects_applied
              FROM turns
              WHERE side_effects_applied = 0
                AND status NOT IN ('cancelled', 'boundary')
@@ -743,7 +991,8 @@ impl Store {
                 telegram_reply: row.get(3)?,
                 voice_reply: row.get(4)?,
                 status: row.get(5)?,
-                side_effects_applied: row.get::<_, i32>(6)? != 0,
+                task_run_id: row.get(6)?,
+                side_effects_applied: row.get::<_, i32>(7)? != 0,
             });
         }
         Ok(turns)
@@ -807,8 +1056,10 @@ impl Store {
     }
 
     pub(crate) fn insert_task_run(&self, params: InsertTaskRunParams) -> Result<i64> {
+        // Use INSERT OR IGNORE to handle UNIQUE constraint violations gracefully.
+        // This prevents race conditions where the same update_id could create duplicate task runs.
         self.conn.execute(
-            "INSERT INTO task_runs(
+            "INSERT OR IGNORE INTO task_runs(
                 session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
                 created_at, progress_message_id, scheduled_task_id
              ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -825,6 +1076,13 @@ impl Store {
                 params.scheduled_task_id
             ],
         )?;
+        if self.conn.changes() == 0 {
+            // UNIQUE constraint was violated - duplicate update_id detected
+            anyhow::bail!(
+                "duplicate update_id rejected by constraint: {:?}",
+                params.update_id
+            );
+        }
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -1309,5 +1567,285 @@ impl Store {
             params![ts],
         )?;
         Ok(())
+    }
+}
+
+fn find_origin_turn_routing_for_schedule(
+    tx: &rusqlite::Transaction<'_>,
+    ts: &str,
+    prompt: &str,
+    schedule_time: &str,
+    recurring: bool,
+) -> Result<Option<(String, String)>> {
+    let mut turns = tx.prepare(
+        "SELECT chat_id, channel, provider_raw
+         FROM turns
+         WHERE ts = ?1
+           AND status NOT IN ('boundary', 'cancelled')
+         ORDER BY id DESC",
+    )?;
+    let rows = turns
+        .query_map(params![ts], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    for (chat_id, channel, provider_raw) in rows {
+        let markers = parse_markers(&provider_raw);
+        let matched = markers.schedule_prompt.iter().any(|line| {
+            parse_schedule_prompt_for_store(line)
+                .map(|(line_recurring, line_time, line_prompt)| {
+                    line_recurring == recurring
+                        && line_time == schedule_time
+                        && line_prompt == prompt
+                })
+                .unwrap_or(false)
+        });
+        if !matched {
+            continue;
+        }
+
+        let delivery_target = match channel.as_str() {
+            "telegram" => {
+                let chat_id = chat_id
+                    .strip_prefix("telegram:")
+                    .unwrap_or(chat_id.as_str())
+                    .split_once('#')
+                    .map(|(root, _)| root)
+                    .unwrap_or_else(|| {
+                        chat_id
+                            .strip_prefix("telegram:")
+                            .unwrap_or(chat_id.as_str())
+                    });
+                json!({"kind": "telegram", "chat_id": chat_id}).to_string()
+            }
+            "slack" => {
+                let session = chat_id.strip_prefix("slack:").unwrap_or(chat_id.as_str());
+                let (channel_id, thread_ts) = session
+                    .split_once('#')
+                    .map(|(channel_id, thread_ts)| {
+                        (channel_id.to_string(), Some(thread_ts.to_string()))
+                    })
+                    .unwrap_or_else(|| (session.to_string(), None));
+                json!({"kind": "slack", "channel_id": channel_id, "thread_ts": thread_ts})
+                    .to_string()
+            }
+            "local" => json!({"kind": "stdout"}).to_string(),
+            _ => continue,
+        };
+
+        return Ok(Some((chat_id, delivery_target)));
+    }
+
+    Ok(None)
+}
+
+fn parse_schedule_prompt_for_store(line: &str) -> Option<(bool, String, String)> {
+    let (recurring, rest) = if let Some(stripped) = line.strip_prefix("once ") {
+        (false, stripped.trim())
+    } else {
+        (true, line)
+    };
+
+    let (time, prompt) = rest.split_once('|')?;
+    let time = time.trim();
+    let prompt = prompt.trim();
+    let parts: Vec<&str> = time.split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let h = parts[0].parse::<u8>().ok()?;
+    let m = parts[1].parse::<u8>().ok()?;
+    if h > 23 || m > 59 || prompt.is_empty() {
+        return None;
+    }
+    Some((recurring, format!("{h:02}:{m:02}"), prompt.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn store_open_deduplicates_legacy_task_run_update_ids() {
+        let cfg = RuntimeConfig::test_config();
+        let conn = Connection::open(&cfg.sqlite_db_path).expect("open legacy db");
+        conn.execute_batch(
+            "CREATE TABLE kv (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+             );
+             INSERT INTO kv(key, value) VALUES ('schema_version', '7');
+             INSERT INTO kv(key, value) VALUES ('last_update_id', '0');
+             CREATE TABLE task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                source_chat_id TEXT,
+                source_user_id TEXT,
+                update_id TEXT,
+                prompt TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                cancel_requested_at TEXT,
+                progress_message_id TEXT,
+                last_progress TEXT,
+                error_summary TEXT,
+                result_summary TEXT,
+                scheduled_task_id INTEGER
+             );
+             CREATE TABLE turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                input_type TEXT NOT NULL,
+                user_text TEXT,
+                asr_text TEXT,
+                provider_raw TEXT NOT NULL,
+                telegram_reply TEXT,
+                voice_reply TEXT,
+                status TEXT NOT NULL,
+                update_id TEXT,
+                duration_ms INTEGER,
+                task_run_id INTEGER,
+                side_effects_applied INTEGER NOT NULL DEFAULT 0,
+                channel TEXT NOT NULL DEFAULT 'telegram'
+             );
+             CREATE TABLE approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_run_id INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                source_user_id TEXT,
+                channel_id TEXT,
+                thread_ts TEXT,
+                prompt_text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                request_message_ts TEXT,
+                resume_payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                resolved_by_user_id TEXT
+             );",
+        )
+        .expect("create legacy schema");
+        conn.execute(
+            "INSERT INTO task_runs(session_id, channel, source_chat_id, update_id, prompt, status, created_at)
+             VALUES('telegram:321', 'telegram', '321', 'dup-1', 'first', 'completed', '2026-04-01T00:00:00+0000')",
+            [],
+        )
+        .expect("insert first duplicate");
+        let first_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO task_runs(session_id, channel, source_chat_id, update_id, prompt, status, created_at)
+             VALUES('telegram:321', 'telegram', '321', 'dup-1', 'second', 'completed', '2026-04-01T00:00:01+0000')",
+            [],
+        )
+        .expect("insert second duplicate");
+        let keep_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, task_run_id, side_effects_applied, channel)
+             VALUES('2026-04-01T00:00:02+0000', 'telegram:321', 'text', 'hello', '', 'TELEGRAM_REPLY: hi', 'hi', '', 'ok', 'turn-1', 1, ?1, 1, 'telegram')",
+            params![first_id],
+        )
+        .expect("insert turn linked to duplicate");
+        conn.execute(
+            "INSERT INTO approvals(task_run_id, session_id, channel, prompt_text, status, resume_payload, created_at)
+             VALUES(?1, 'telegram:321', 'telegram', 'approve?', 'pending', '{}', '2026-04-01T00:00:03+0000')",
+            params![first_id],
+        )
+        .expect("insert approval linked to duplicate");
+        drop(conn);
+
+        let store = Store::open(&cfg).expect("open migrated store");
+        let duplicate_count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM task_runs WHERE update_id = 'dup-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count deduped rows");
+        assert_eq!(duplicate_count, 1);
+        let migrated_turn_task_run_id: i64 = store
+            .conn
+            .query_row("SELECT task_run_id FROM turns LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .expect("turn task_run_id");
+        assert_eq!(migrated_turn_task_run_id, keep_id);
+        let migrated_approval_task_run_id: i64 = store
+            .conn
+            .query_row("SELECT task_run_id FROM approvals LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .expect("approval task_run_id");
+        assert_eq!(migrated_approval_task_run_id, keep_id);
+        let has_unique_index: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name = 'idx_task_runs_update_id_unique'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check unique index");
+        assert_eq!(has_unique_index, 1);
+        assert!(
+            store
+                .conn
+                .execute(
+                    "INSERT INTO task_runs(session_id, channel, source_chat_id, update_id, prompt, status, created_at)
+                     VALUES('telegram:321', 'telegram', '321', 'dup-1', 'third', 'queued', '2026-04-01T00:00:04+0000')",
+                    [],
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn migration_backfills_legacy_scheduled_task_routing_from_origin_turn() {
+        let cfg = RuntimeConfig::test_config();
+        let store = Store::open(&cfg).expect("store");
+        store
+            .conn
+            .execute("UPDATE kv SET value = '9' WHERE key = 'schema_version'", [])
+            .expect("rewind schema version");
+        store
+            .conn
+            .execute(
+                "INSERT INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, task_run_id, side_effects_applied, channel)
+                 VALUES('2026-04-02T09:00:00+0000', 'slack:C123#171.5', 'text', 'schedule it', '', 'TELEGRAM_REPLY: ok\nSCHEDULE_PROMPT: 09:30|Check backups\n', 'ok', '', 'ok', 'turn-2', 1, NULL, 1, 'slack')",
+                [],
+            )
+            .expect("insert origin turn");
+        store
+            .conn
+            .execute(
+                "INSERT INTO scheduled_tasks(ts, source, prompt, schedule_time, recurring, done, pending_output, delivery_state, origin_session, delivery_target)
+                 VALUES('2026-04-02T09:00:00+0000', 'agent', 'Check backups', '09:30', 1, 0, NULL, NULL, NULL, NULL)",
+                [],
+            )
+            .expect("insert legacy scheduled task");
+        drop(store);
+
+        let reopened = Store::open(&cfg).expect("reopen migrated store");
+        let task = reopened
+            .get_scheduled_task(1)
+            .expect("load scheduled task")
+            .expect("scheduled task exists");
+        assert_eq!(task.origin_session.as_deref(), Some("slack:C123#171.5"));
+        assert_eq!(
+            task.delivery_target.as_deref(),
+            Some(r#"{"channel_id":"C123","kind":"slack","thread_ts":"171.5"}"#)
+        );
     }
 }

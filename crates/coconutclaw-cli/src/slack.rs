@@ -82,8 +82,12 @@ pub(crate) fn valid_slack_channel_id(cfg: &RuntimeConfig) -> Option<&str> {
 // Client
 // ---------------------------------------------------------------------------
 
-fn slack_api_base() -> &'static str {
-    "https://slack.com/api"
+fn slack_api_base() -> String {
+    std::env::var("COCONUTCLAW_SLACK_API_BASE")
+        .ok()
+        .map(|value| value.trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://slack.com/api".to_string())
 }
 
 pub(crate) fn build_slack_user_client(cfg: &RuntimeConfig) -> Result<Option<Client>> {
