@@ -1269,8 +1269,9 @@ if ($context -match "break-store") {{
         cfg.sqlite_db_path = db_parent.join("state.sqlite");
         let scheduler = SessionScheduler::new(cfg.clone());
         let session = SessionKey::local("reopen-failure");
+        let session_id = session.id();
 
-        scheduler
+        let first = scheduler
             .enqueue(make_stdout_request(session.clone(), "break-store"))
             .expect("enqueue first");
 
@@ -1279,6 +1280,28 @@ if ($context -match "break-store") {{
             assert!(
                 Instant::now() < deadline,
                 "timed out waiting for store break marker"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        while {
+            let task_active = scheduler
+                .inner
+                .task_state
+                .lock()
+                .expect("task_state")
+                .contains_key(&first);
+            let lane_active = scheduler
+                .inner
+                .lanes
+                .lock()
+                .expect("lanes")
+                .contains_key(&session_id);
+            task_active || lane_active
+        } {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for failed store reopen cleanup"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
