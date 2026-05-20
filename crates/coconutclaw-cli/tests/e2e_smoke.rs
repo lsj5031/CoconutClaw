@@ -132,6 +132,7 @@ Write-Output 'TELEGRAM_REPLY: Hello from fake provider'
         .env("TELEGRAM_FILE_BASE", &base_url)
         .env("AGENT_PROVIDER", "codex")
         .env("CODEX_BIN", &provider_path)
+        .env("RUST_LOG", "info")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
