@@ -126,14 +126,6 @@ pub(crate) fn fetch_poll_updates(
     fetch_updates(client, cfg, offset, 25, r#"["message","callback_query"]"#)
 }
 
-pub(crate) fn fetch_cancel_updates(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    offset: Option<u64>,
-) -> Result<Vec<Value>> {
-    fetch_updates(client, cfg, offset, 0, r#"["message","callback_query"]"#)
-}
-
 pub(crate) fn fetch_updates(
     client: &Client,
     cfg: &RuntimeConfig,
@@ -227,66 +219,105 @@ pub(crate) fn dispatch_telegram_output(
         return Ok(());
     };
 
-    let markers = parse_markers(output);
-    if let Some(reply) = markers.telegram_reply.as_deref() {
-        let reply = reply.trim();
-        if !reply.is_empty() {
-            let rendered_reply = render_telegram_reply_text(cfg, reply);
-            if should_send_reply_as_document(&rendered_reply) {
-                if let Err(err) =
-                    send_markdown_reply_document(client, cfg, chat_id, reply, progress_message_id)
-                {
-                    tracing::warn!(
-                        "failed to send long reply as markdown document, falling back to text: {err:#}"
-                    );
-                    send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
+    let effects = parse_markers(output).to_effects();
+    let mut has_text_reply = false;
+
+    for effect in &effects {
+        match effect {
+            crate::markers::Effect::TelegramReply(reply) => {
+                has_text_reply = true;
+                let reply = reply.trim();
+                if !reply.is_empty() {
+                    let rendered_reply = render_telegram_reply_text(cfg, reply);
+                    if should_send_reply_as_document(&rendered_reply) {
+                        if let Err(err) = send_markdown_reply_document(
+                            client,
+                            cfg,
+                            chat_id,
+                            reply,
+                            progress_message_id,
+                        ) {
+                            tracing::warn!(
+                                "failed to send long reply as markdown document, falling back to text: {err:#}"
+                            );
+                            send_or_edit_text(
+                                client,
+                                cfg,
+                                chat_id,
+                                &rendered_reply,
+                                progress_message_id,
+                            )?;
+                        }
+                    } else {
+                        send_or_edit_text(
+                            client,
+                            cfg,
+                            chat_id,
+                            &rendered_reply,
+                            progress_message_id,
+                        )?;
+                    }
                 }
-            } else {
-                send_or_edit_text(client, cfg, chat_id, &rendered_reply, progress_message_id)?;
             }
-        } else if let Some(message_id) = progress_message_id {
+            crate::markers::Effect::VoiceReply(voice_reply) => {
+                if cfg.tts_cmd_template.is_some() {
+                    let voice_reply = voice_reply.trim();
+                    if !voice_reply.is_empty()
+                        && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)
+                    {
+                        tracing::warn!("failed to send voice reply: {err:#}");
+                    }
+                }
+            }
+            crate::markers::Effect::SendPhoto(item) => {
+                let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
+                if let Err(err) =
+                    telegram_send_media_file(client, cfg, chat_id, "sendPhoto", "photo", &path)
+                {
+                    tracing::warn!("failed to send photo {}: {err:#}", path.display());
+                }
+            }
+            crate::markers::Effect::SendDocument(item) => {
+                let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
+                if let Err(err) = telegram_send_media_file(
+                    client,
+                    cfg,
+                    chat_id,
+                    "sendDocument",
+                    "document",
+                    &path,
+                ) {
+                    tracing::warn!("failed to send document {}: {err:#}", path.display());
+                }
+            }
+            crate::markers::Effect::SendVideo(item) => {
+                let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
+                if let Err(err) =
+                    telegram_send_media_file(client, cfg, chat_id, "sendVideo", "video", &path)
+                {
+                    tracing::warn!("failed to send video {}: {err:#}", path.display());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // If no text reply but we had a progress message, clean it up
+    if !has_text_reply {
+        if let Some(message_id) = progress_message_id {
             let _ = telegram_delete_message(client, cfg, chat_id, message_id)
                 .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
         }
-    } else if let Some(message_id) = progress_message_id {
-        let _ = telegram_delete_message(client, cfg, chat_id, message_id)
-            .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
-    }
-
-    // Only attempt voice reply if TTS is configured (tts_cmd_template is set)
-    if cfg.tts_cmd_template.is_some()
-        && let Some(voice_reply) = markers.voice_reply.as_deref()
-    {
-        let voice_reply = voice_reply.trim();
-        if !voice_reply.is_empty()
-            && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)
-        {
-            tracing::warn!("failed to send voice reply: {err:#}");
-        }
-    }
-
-    for item in markers.send_photo {
-        let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
-        if let Err(err) =
-            telegram_send_media_file(client, cfg, chat_id, "sendPhoto", "photo", &path)
-        {
-            tracing::warn!("failed to send photo {}: {err:#}", path.display());
-        }
-    }
-    for item in markers.send_document {
-        let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
-        if let Err(err) =
-            telegram_send_media_file(client, cfg, chat_id, "sendDocument", "document", &path)
-        {
-            tracing::warn!("failed to send document {}: {err:#}", path.display());
-        }
-    }
-    for item in markers.send_video {
-        let path = resolve_instance_path(&cfg.instance_dir, PathBuf::from(item));
-        if let Err(err) =
-            telegram_send_media_file(client, cfg, chat_id, "sendVideo", "video", &path)
-        {
-            tracing::warn!("failed to send video {}: {err:#}", path.display());
+    } else if has_text_reply {
+        // If reply was empty but we had a progress message, clean it up
+        let has_empty_reply = effects
+            .iter()
+            .any(|e| matches!(e, crate::markers::Effect::TelegramReply(r) if r.trim().is_empty()));
+        if has_empty_reply {
+            if let Some(message_id) = progress_message_id {
+                let _ = telegram_delete_message(client, cfg, chat_id, message_id)
+                    .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
+            }
         }
     }
 
@@ -1056,22 +1087,6 @@ fn telegram_error_is_not_modified(err: &anyhow::Error) -> bool {
         .contains("message is not modified")
 }
 
-pub(crate) fn telegram_answer_callback(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    callback_query_id: &str,
-) -> Result<()> {
-    let base = telegram_api_base(cfg)?;
-    let params = [("callback_query_id", callback_query_id.to_string())];
-    let response = client
-        .post(format!("{base}/answerCallbackQuery"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram answerCallbackQuery")?;
-    parse_telegram_response(response, "answerCallbackQuery")?;
-    Ok(())
-}
-
 pub(crate) fn send_voice_reply(
     client: &Client,
     cfg: &RuntimeConfig,
@@ -1357,129 +1372,5 @@ pub(crate) fn parse_telegram_response(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn html_bold_and_italic() {
-        let text = "This is **bold** and *italic* text.";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("<b>bold</b>"));
-        assert!(rendered.contains("<i>italic</i>"));
-    }
-
-    #[test]
-    fn html_inline_code() {
-        let text = "Run `echo hello` in the terminal.";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("<code>echo hello</code>"));
-    }
-
-    #[test]
-    fn html_code_block_with_language() {
-        let text = "```rust\nfn main() {}\n```";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("<pre><code class=\"language-rust\">"));
-        assert!(rendered.contains("fn main() {}"));
-        assert!(rendered.contains("</code></pre>"));
-    }
-
-    #[test]
-    fn html_escapes_special_chars() {
-        let text = "x < 10 & y > 5";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("x &lt; 10 &amp; y &gt; 5"));
-    }
-
-    #[test]
-    fn html_unclosed_bold_does_not_crash() {
-        let text = "This is **unclosed bold";
-        let rendered = render_html_reply(text);
-        // pulldown-cmark handles unclosed tags gracefully
-        assert!(!rendered.is_empty());
-    }
-
-    #[test]
-    fn html_link() {
-        let text = "Visit [example](https://example.com) now.";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("<a href=\"https://example.com\">example</a>"));
-    }
-
-    #[test]
-    fn html_unordered_list() {
-        let text = "Items:\n- apple\n- banana";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("• apple"));
-        assert!(rendered.contains("• banana"));
-    }
-
-    #[test]
-    fn html_ordered_list() {
-        let text = "Steps:\n1. first\n2. second";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("1. first"));
-        assert!(rendered.contains("2. second"));
-    }
-
-    #[test]
-    fn html_heading_renders_as_bold() {
-        let text = "# Hello World";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("<b>Hello World</b>"));
-    }
-
-    #[test]
-    fn html_cjk_with_markdown() {
-        let text = "使用 **gemini** 的 `cli` 工具";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("<b>gemini</b>"));
-        assert!(rendered.contains("<code>cli</code>"));
-    }
-
-    #[test]
-    fn html_preserves_xml_tags() {
-        let text =
-            "Here is some <boltArtifact>content</boltArtifact> and <thinking>stuff</thinking>";
-        let rendered = render_html_reply(text);
-        assert!(rendered.contains("&lt;boltArtifact&gt;"));
-        assert!(rendered.contains("&lt;/boltArtifact&gt;"));
-        assert!(rendered.contains("&lt;thinking&gt;"));
-        assert!(rendered.contains("&lt;/thinking&gt;"));
-    }
-
-    #[test]
-    fn test_html_escape() {
-        assert_eq!(html_escape("a & b"), "a &amp; b");
-        assert_eq!(html_escape("a < b"), "a &lt; b");
-        assert_eq!(html_escape("a > b"), "a &gt; b");
-        assert_eq!(html_escape("&<>"), "&amp;&lt;&gt;");
-        assert_eq!(html_escape(""), "");
-        assert_eq!(html_escape("no special chars"), "no special chars");
-        assert_eq!(html_escape("already &amp;"), "already &amp;amp;");
-    }
-
-    #[test]
-    fn valid_telegram_chat_id_falls_back_to_allowlist() {
-        let mut cfg = RuntimeConfig::test_config();
-        cfg.telegram_chat_id = None;
-        cfg.telegram_chat_ids = vec!["".to_string(), "999".to_string(), "321".to_string()];
-
-        assert_eq!(valid_telegram_chat_id(&cfg), Some("999"));
-    }
-
-    #[test]
-    fn telegram_not_modified_error_is_treated_as_idempotent() {
-        let err = anyhow::anyhow!(
-            "telegram editMessageText failed: Bad Request: message is not modified"
-        );
-        assert!(telegram_error_is_not_modified(&err));
-    }
-
-    #[test]
-    fn unrelated_telegram_error_is_not_treated_as_not_modified() {
-        let err =
-            anyhow::anyhow!("telegram editMessageText failed: Bad Request: message not found");
-        assert!(!telegram_error_is_not_modified(&err));
-    }
-}
+#[path = "telegram_tests.rs"]
+mod tests;

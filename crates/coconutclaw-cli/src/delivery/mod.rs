@@ -8,7 +8,9 @@ use coconutclaw_config::RuntimeConfig;
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
 
+use crate::slack::build_slack_client;
 use crate::store::Store;
+use crate::telegram::build_telegram_client;
 
 pub(crate) mod slack;
 pub(crate) mod telegram;
@@ -41,6 +43,73 @@ impl DeliveryTarget {
             Self::Telegram { .. } => "telegram",
             Self::Slack { .. } => "slack",
             Self::Stdout => "local",
+        }
+    }
+
+    /// Return the display identifier for this target: chat_id, channel_id, or "local".
+    pub(crate) fn display_id(&self) -> &str {
+        match self {
+            Self::Telegram { chat_id } => chat_id.as_str(),
+            Self::Slack { channel_id, .. } => channel_id.as_str(),
+            Self::Stdout => "local",
+        }
+    }
+
+    /// Send a placeholder/progress message and return its ID (Telegram, Slack) or None (Stdout).
+    ///
+    /// Encapsulates the per-transport client build + send logic so callers
+    /// don't need to match on `DeliveryTarget` variants themselves.
+    pub(crate) fn send_placeholder(
+        &self,
+        cfg: &RuntimeConfig,
+        telegram_client: &Client,
+        task_label: &str,
+    ) -> Option<String> {
+        match self {
+            Self::Telegram { chat_id } => {
+                match crate::telegram::send_placeholder_message(
+                    telegram_client,
+                    cfg,
+                    chat_id,
+                    task_label,
+                ) {
+                    Ok(Some(message_id)) => Some(message_id),
+                    Ok(None) => None,
+                    Err(err) => {
+                        tracing::warn!(
+                            "failed to create telegram placeholder for {task_label}: {err:#}"
+                        );
+                        None
+                    }
+                }
+            }
+            Self::Slack {
+                channel_id,
+                thread_ts,
+            } => match crate::slack::build_slack_client(cfg) {
+                Ok(slack_client) => {
+                    match crate::slack::send_slack_progress_message(
+                        &slack_client,
+                        channel_id,
+                        thread_ts.as_deref(),
+                    ) {
+                        Ok(message_id) => Some(message_id),
+                        Err(err) => {
+                            tracing::warn!(
+                                "failed to create slack placeholder for {task_label}: {err:#}"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to build slack client for placeholder {task_label}: {err:#}"
+                    );
+                    None
+                }
+            },
+            Self::Stdout => None,
         }
     }
 }
@@ -250,6 +319,42 @@ pub(crate) fn persist_scheduled_delivery_state(
     store.set_scheduled_task_delivery_state(scheduled_task_id, Some(&encoded))
 }
 
+/// Dispatch turn output for immediate (non-scheduled) delivery.
+///
+/// Routes to the appropriate transport based on `DeliveryTarget`,
+/// building the required client internally.
+pub(crate) fn dispatch_immediate_output(
+    cfg: &RuntimeConfig,
+    delivery: &DeliveryTarget,
+    output: &str,
+    progress_message_id: Option<&str>,
+) -> Result<()> {
+    match delivery {
+        DeliveryTarget::Telegram { chat_id } => {
+            let client = build_telegram_client(cfg)?;
+            telegram::dispatch_output(&client, cfg, Some(chat_id), output, progress_message_id)
+        }
+        DeliveryTarget::Slack {
+            channel_id,
+            thread_ts,
+        } => {
+            let client = build_slack_client(cfg)?;
+            slack::dispatch_output(
+                &client,
+                cfg,
+                channel_id,
+                output,
+                progress_message_id,
+                thread_ts.as_deref(),
+            )
+        }
+        DeliveryTarget::Stdout => {
+            println!("{}", output);
+            Ok(())
+        }
+    }
+}
+
 /// Dispatch scheduled task output to the configured delivery surface.
 ///
 /// Marks ops complete only when delivery succeeded (or the op is permanently skippable).
@@ -317,99 +422,5 @@ pub(crate) fn dispatch_scheduled_task_output(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_delivery_target_telegram() {
-        let target = parse_delivery_target(Some(r#"{"kind":"telegram","chat_id":"12345"}"#));
-        assert!(matches!(target, Some(DeliveryTarget::Telegram { chat_id }) if chat_id == "12345"));
-    }
-
-    #[test]
-    fn parse_delivery_target_slack() {
-        let target = parse_delivery_target(Some(
-            r#"{"kind":"slack","channel_id":"C123","thread_ts":"456"}"#,
-        ));
-        match target {
-            Some(DeliveryTarget::Slack {
-                channel_id,
-                thread_ts,
-            }) => {
-                assert_eq!(channel_id, "C123");
-                assert_eq!(thread_ts.as_deref(), Some("456"));
-            }
-            other => panic!("expected slack target, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_delivery_target_stdout() {
-        let target = parse_delivery_target(Some(r#"{"kind":"stdout"}"#));
-        assert!(matches!(target, Some(DeliveryTarget::Stdout)));
-    }
-
-    #[test]
-    fn parse_delivery_target_unknown_returns_none() {
-        let target = parse_delivery_target(Some(r#"{"kind":"unknown"}"#));
-        assert!(target.is_none());
-    }
-
-    #[test]
-    fn parse_delivery_target_none_input() {
-        assert!(parse_delivery_target(None).is_none());
-    }
-
-    #[test]
-    fn serialize_roundtrip() {
-        for target in [
-            DeliveryTarget::Telegram {
-                chat_id: "12345".into(),
-            },
-            DeliveryTarget::Slack {
-                channel_id: "C123".into(),
-                thread_ts: Some("456".into()),
-            },
-            DeliveryTarget::Stdout,
-        ] {
-            let encoded = serialize_delivery_target(&target);
-            let decoded = parse_delivery_target(Some(&encoded)).expect("roundtrip");
-            assert_eq!(decoded, target);
-        }
-    }
-
-    #[test]
-    fn parse_legacy_scheduled_delivery_state() {
-        let state = parse_scheduled_delivery_state(Some(
-            r#"{"completed_ops":["telegram:text","telegram:voice"]}"#,
-        ));
-        assert!(state.has_telegram_op("telegram:text"));
-        assert!(state.has_telegram_op("telegram:voice"));
-        assert!(!state.slack_completed());
-    }
-
-    #[test]
-    fn persisted_scheduled_delivery_state_is_versioned() {
-        let mut state = ScheduledDeliveryState::default();
-        state.mark_telegram_op("telegram:text");
-        state.mark_slack_completed();
-        let encoded = json!({
-            "version": 1,
-            "targets": {
-                "telegram": {
-                    "completed_ops": state.telegram_completed_ops(),
-                },
-                "slack": {
-                    "completed": state.slack_completed(),
-                }
-            }
-        })
-        .to_string();
-        let parsed = parse_scheduled_delivery_state(Some(&encoded));
-        assert_eq!(
-            parsed.telegram_completed_ops(),
-            &["telegram:text".to_string()]
-        );
-        assert!(parsed.slack_completed());
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;

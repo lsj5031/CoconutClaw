@@ -6,8 +6,8 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -612,127 +612,141 @@ pub(crate) fn dispatch_slack_output(
     progress_message_id: Option<&str>,
     thread_ts: Option<&str>,
 ) -> Result<()> {
-    let markers = parse_markers(output);
+    let effects = parse_markers(output).to_effects();
 
-    // 1. Text reply
-    if let Some(reply) = markers.reply() {
-        if !reply.trim().is_empty() {
-            let rendered = render_slack_reply_text(cfg, reply);
+    for effect in &effects {
+        match effect {
+            crate::markers::Effect::TelegramReply(reply) => {
+                if !reply.trim().is_empty() {
+                    let rendered = render_slack_reply_text(cfg, reply);
 
-            match &rendered {
-                SlackRenderedOutput::Text(text) => {
-                    let chunks = split_slack_text(text, SLACK_TEXT_CHAR_LIMIT);
-                    for (i, chunk) in chunks.iter().enumerate() {
-                        if i == 0 {
-                            if let Some(ts) = progress_message_id {
-                                if let Err(err) =
-                                    slack_update_message(client, channel_id, ts, chunk, None)
-                                {
-                                    tracing::warn!(
-                                        "slack chat.update failed: {err:#}, sending new message"
-                                    );
+                    match &rendered {
+                        SlackRenderedOutput::Text(text) => {
+                            let chunks = split_slack_text(text, SLACK_TEXT_CHAR_LIMIT);
+                            for (i, chunk) in chunks.iter().enumerate() {
+                                if i == 0 {
+                                    if let Some(ts) = progress_message_id {
+                                        if let Err(err) = slack_update_message(
+                                            client, channel_id, ts, chunk, None,
+                                        ) {
+                                            tracing::warn!(
+                                                "slack chat.update failed: {err:#}, sending new message"
+                                            );
+                                            slack_post_message(
+                                                client, channel_id, chunk, None, thread_ts,
+                                            )?;
+                                        }
+                                    } else {
+                                        slack_post_message(
+                                            client, channel_id, chunk, None, thread_ts,
+                                        )?;
+                                    }
+                                } else {
                                     slack_post_message(client, channel_id, chunk, None, thread_ts)?;
                                 }
-                            } else {
-                                slack_post_message(client, channel_id, chunk, None, thread_ts)?;
                             }
-                        } else {
-                            slack_post_message(client, channel_id, chunk, None, thread_ts)?;
                         }
-                    }
-                }
-                SlackRenderedOutput::Blocks(blocks_json) => {
-                    let chunks = split_slack_blocks(blocks_json, SLACK_MAX_BLOCKS);
-                    for (i, chunk) in chunks.iter().enumerate() {
-                        if i == 0 {
-                            if let Some(ts) = progress_message_id {
-                                if let Err(err) =
-                                    slack_update_message(client, channel_id, ts, reply, Some(chunk))
-                                {
+                        SlackRenderedOutput::Blocks(blocks_json) => {
+                            let chunks = split_slack_blocks(blocks_json, SLACK_MAX_BLOCKS);
+                            for (i, chunk) in chunks.iter().enumerate() {
+                                if i == 0 {
+                                    if let Some(ts) = progress_message_id {
+                                        if let Err(err) = slack_update_message(
+                                            client,
+                                            channel_id,
+                                            ts,
+                                            reply,
+                                            Some(chunk),
+                                        ) {
+                                            tracing::warn!(
+                                                "slack chat.update (blocks) failed: {err:#}, sending new message"
+                                            );
+                                            slack_post_message(
+                                                client, channel_id, reply, None, thread_ts,
+                                            )?;
+                                        }
+                                    } else if let Err(err) = slack_post_message(
+                                        client,
+                                        channel_id,
+                                        reply,
+                                        Some(chunk),
+                                        thread_ts,
+                                    ) {
+                                        tracing::warn!(
+                                            "slack blocks failed: {err:#}, falling back to text"
+                                        );
+                                        slack_post_message(
+                                            client, channel_id, reply, None, thread_ts,
+                                        )?;
+                                    }
+                                } else if let Err(err) = slack_post_message(
+                                    client,
+                                    channel_id,
+                                    reply,
+                                    Some(chunk),
+                                    thread_ts,
+                                ) {
                                     tracing::warn!(
-                                        "slack chat.update (blocks) failed: {err:#}, sending new message"
+                                        "slack blocks failed: {err:#}, falling back to text"
                                     );
-                                    // Fallback to mrkdwn/plain
                                     slack_post_message(client, channel_id, reply, None, thread_ts)?;
                                 }
-                            } else if let Err(err) = slack_post_message(
-                                client,
-                                channel_id,
-                                reply,
-                                Some(chunk),
-                                thread_ts,
-                            ) {
-                                tracing::warn!(
-                                    "slack blocks failed: {err:#}, falling back to text"
-                                );
-                                slack_post_message(client, channel_id, reply, None, thread_ts)?;
                             }
-                        } else if let Err(err) =
-                            slack_post_message(client, channel_id, reply, Some(chunk), thread_ts)
-                        {
-                            tracing::warn!("slack blocks failed: {err:#}, falling back to text");
-                            slack_post_message(client, channel_id, reply, None, thread_ts)?;
                         }
+                    }
+                } else if let Some(ts) = progress_message_id {
+                    if let Err(err) = slack_delete_message(client, channel_id, ts) {
+                        tracing::warn!("slack delete progress message failed: {err:#}");
                     }
                 }
             }
-        } else if let Some(ts) = progress_message_id {
-            // Empty reply — just remove the progress message
-            if let Err(err) = slack_delete_message(client, channel_id, ts) {
-                tracing::warn!("slack delete progress message failed: {err:#}");
+            crate::markers::Effect::SendPhoto(path_str) => {
+                let path = resolve_instance_path(&cfg.instance_dir, path_str.into());
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "image".to_string());
+                if let Err(err) =
+                    slack_upload_file(client, channel_id, &path, &filename, "Photo", thread_ts)
+                {
+                    tracing::warn!("slack upload photo failed: {err:#}");
+                }
             }
+            crate::markers::Effect::SendDocument(path_str) => {
+                let path = resolve_instance_path(&cfg.instance_dir, path_str.into());
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "document".to_string());
+                if let Err(err) =
+                    slack_upload_file(client, channel_id, &path, &filename, &filename, thread_ts)
+                {
+                    tracing::warn!("slack upload document failed: {err:#}");
+                }
+            }
+            crate::markers::Effect::SendVideo(path_str) => {
+                let path = resolve_instance_path(&cfg.instance_dir, path_str.into());
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "video".to_string());
+                if let Err(err) =
+                    slack_upload_file(client, channel_id, &path, &filename, "Video", thread_ts)
+                {
+                    tracing::warn!("slack upload video failed: {err:#}");
+                }
+            }
+            crate::markers::Effect::VoiceReply(voice_text) => {
+                if !voice_text.trim().is_empty()
+                    && cfg.tts_cmd_template.is_some()
+                    && let Err(err) =
+                        send_slack_voice_reply(client, cfg, channel_id, voice_text, thread_ts)
+                {
+                    tracing::warn!("slack voice reply failed: {err:#}");
+                }
+            }
+            _ => {}
         }
-    }
-
-    // 2. Photos
-    for path_str in &markers.send_photo {
-        let path = resolve_instance_path(&cfg.instance_dir, path_str.into());
-        let filename = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "image".to_string());
-        if let Err(err) =
-            slack_upload_file(client, channel_id, &path, &filename, "Photo", thread_ts)
-        {
-            tracing::warn!("slack upload photo failed: {err:#}");
-        }
-    }
-
-    // 3. Documents
-    for path_str in &markers.send_document {
-        let path = resolve_instance_path(&cfg.instance_dir, path_str.into());
-        let filename = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "document".to_string());
-        if let Err(err) =
-            slack_upload_file(client, channel_id, &path, &filename, &filename, thread_ts)
-        {
-            tracing::warn!("slack upload document failed: {err:#}");
-        }
-    }
-
-    // 4. Videos
-    for path_str in &markers.send_video {
-        let path = resolve_instance_path(&cfg.instance_dir, path_str.into());
-        let filename = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "video".to_string());
-        if let Err(err) =
-            slack_upload_file(client, channel_id, &path, &filename, "Video", thread_ts)
-        {
-            tracing::warn!("slack upload video failed: {err:#}");
-        }
-    }
-
-    // 5. Voice reply
-    if let Some(voice_text) = markers.voice_reply.as_ref()
-        && !voice_text.trim().is_empty()
-        && cfg.tts_cmd_template.is_some()
-        && let Err(err) = send_slack_voice_reply(client, cfg, channel_id, voice_text, thread_ts)
-    {
-        tracing::warn!("slack voice reply failed: {err:#}");
     }
 
     Ok(())
@@ -891,7 +905,7 @@ pub(crate) fn spawn_slack_progress_updater(
     client: Client,
     channel_id: String,
     message_ts: String,
-    status_rx: mpsc::Receiver<String>,
+    status_rx: std::sync::mpsc::Receiver<String>,
     cancel_flag: Arc<AtomicBool>,
     interval_secs: u64,
 ) -> thread::JoinHandle<()> {
@@ -930,7 +944,7 @@ pub(crate) fn spawn_slack_progress_updater(
 /// Includes automatic reconnection with exponential backoff on disconnect.
 pub(crate) fn start_slack_socket_mode(
     cfg: &RuntimeConfig,
-    tx: mpsc::Sender<SlackWebhookTurn>,
+    tx: tokio::sync::mpsc::UnboundedSender<SlackWebhookTurn>,
 ) -> Result<()> {
     let app_token = cfg
         .slack_app_token
@@ -1028,7 +1042,7 @@ fn fetch_socket_mode_url(app_token: &str, cfg: &RuntimeConfig) -> Result<String>
 async fn slack_socket_mode_inner(
     app_token: &str,
     cfg: &RuntimeConfig,
-    tx: &mpsc::Sender<SlackWebhookTurn>,
+    tx: &tokio::sync::mpsc::UnboundedSender<SlackWebhookTurn>,
 ) -> Result<()> {
     // Dynamically fetch the short-lived WSS URL via apps.connections.open.
     // Uses reqwest::blocking which is safe inside rt.block_on() (it spawns its own threads).
@@ -1242,135 +1256,5 @@ fn extract_slack_media(event: &Value) -> Option<SlackMedia> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn format_slack_thread_context_parses_replies() {
-        let json = r#"{
-            "ok": true,
-            "messages": [
-                {"user": "U1", "text": "First message", "ts": "1710000001.000100"},
-                {"user": "U2", "text": "Second message", "ts": "1710000002.000100"}
-            ]
-        }"#;
-
-        let context = super::format_slack_thread_context(json, None).unwrap();
-        assert_eq!(context, "U1: First message\nU2: Second message");
-    }
-
-    #[test]
-    fn format_slack_thread_context_skips_messages_before_boundary() {
-        let json = r#"{
-            "ok": true,
-            "messages": [
-                {"user": "U1", "text": "Old message", "ts": "1710000000.100000"},
-                {"user": "U2", "text": "Fresh message", "ts": "1710000010.100000"}
-            ]
-        }"#;
-
-        let context = super::format_slack_thread_context(json, Some(1710000005.0)).unwrap();
-        assert_eq!(context, "U2: Fresh message");
-    }
-
-    #[test]
-    fn split_slack_text_short() {
-        let chunks = split_slack_text("hello", 100);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], "hello");
-    }
-
-    #[test]
-    fn split_slack_text_long() {
-        let text = "word ".repeat(2000); // ~10,000 chars
-        let chunks = split_slack_text(&text, 4000);
-        assert!(chunks.len() > 1);
-        // Each chunk should have indicator
-        for chunk in &chunks {
-            assert!(chunk.contains("(/") || chunk.len() <= 4000 + INDICATOR_RESERVE);
-        }
-    }
-
-    #[test]
-    fn render_blocks_reply_paragraph() {
-        let result = render_blocks_reply("Hello world").unwrap();
-        let blocks: Vec<Value> = serde_json::from_str(&result).unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0]["type"], "section");
-        assert_eq!(blocks[0]["text"]["text"], "Hello world");
-    }
-
-    #[test]
-    fn render_blocks_reply_code_block() {
-        let input = "```rust\nfn main() {}\n```\n";
-        let result = render_blocks_reply(input).unwrap();
-        let blocks: Vec<Value> = serde_json::from_str(&result).unwrap();
-        assert_eq!(blocks.len(), 1);
-        let text = blocks[0]["text"]["text"].as_str().unwrap();
-        assert!(text.contains("```rust"));
-        assert!(text.contains("fn main()"));
-    }
-
-    #[test]
-    fn render_blocks_reply_heading() {
-        let input = "# Title\nParagraph text\n";
-        let result = render_blocks_reply(input).unwrap();
-        let blocks: Vec<Value> = serde_json::from_str(&result).unwrap();
-        assert!(blocks.len() >= 2);
-        assert!(
-            blocks[0]["text"]["text"]
-                .as_str()
-                .unwrap()
-                .contains("*Title*")
-        );
-    }
-
-    #[test]
-    fn render_blocks_reply_heading_with_formatting() {
-        let input = "# Prefix **Bold Title** Suffix\nParagraph text\n";
-        let result = render_blocks_reply(input).unwrap();
-        let blocks: Vec<Value> = serde_json::from_str(&result).unwrap();
-        assert!(blocks.len() >= 2);
-        let header_text = blocks[0]["text"]["text"].as_str().unwrap();
-        // Print the output and intentionally fail to see it
-        assert_eq!(header_text, "Prefix *Bold Title* Suffix");
-    }
-
-    #[test]
-    fn split_slack_blocks_within_limit() {
-        let blocks: Vec<Value> =
-            vec![json!({"type": "section", "text": {"type": "mrkdwn", "text": "hi"}})];
-        let json = serde_json::to_string(&blocks).unwrap();
-        let chunks = split_slack_blocks(&json, 50);
-        assert_eq!(chunks.len(), 1);
-    }
-
-    #[test]
-    fn parse_slack_response_ok() {
-        let body = r#"{"ok":true,"message":{"ts":"1234.56"}}"#;
-        let v = parse_slack_response(body, "test").unwrap();
-        assert_eq!(v["ok"], true);
-    }
-
-    #[test]
-    fn parse_slack_response_error() {
-        let body = r#"{"ok":false,"error":"channel_not_found"}"#;
-        let result = parse_slack_response(body, "test");
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("channel_not_found")
-        );
-    }
-
-    #[test]
-    fn approval_blocks_encode_the_approval_row_id() {
-        let blocks = super::slack_approval_blocks(42, "deploy production");
-        let elements = blocks[1]["elements"].as_array().expect("elements");
-
-        assert_eq!(elements[0]["value"], "approval:42:approve");
-        assert_eq!(elements[1]["value"], "approval:42:reject");
-    }
-}
+#[path = "slack_tests.rs"]
+mod tests;

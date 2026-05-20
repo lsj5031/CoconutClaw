@@ -10,14 +10,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use coconutclaw_config::{AgentProvider, RuntimeConfig, SlackFormatMode, TelegramParseMode};
 
-use crate::markers::ParsedMarkers;
+use crate::markers::Effect;
 use crate::store::{ScheduledTaskInsertResult, Store};
 use crate::{QuotedMessage, TurnInput};
 
-const MEMORY_MANAGED_START: &str = "<!-- COCONUTCLAW:MANAGED:MEMORY:START -->";
-const MEMORY_MANAGED_END: &str = "<!-- COCONUTCLAW:MANAGED:MEMORY:END -->";
-const TASKS_MANAGED_START: &str = "<!-- COCONUTCLAW:MANAGED:TASKS:START -->";
-const TASKS_MANAGED_END: &str = "<!-- COCONUTCLAW:MANAGED:TASKS:END -->";
+pub(crate) const MEMORY_MANAGED_START: &str = "<!-- COCONUTCLAW:MANAGED:MEMORY:START -->";
+pub(crate) const MEMORY_MANAGED_END: &str = "<!-- COCONUTCLAW:MANAGED:MEMORY:END -->";
+pub(crate) const TASKS_MANAGED_START: &str = "<!-- COCONUTCLAW:MANAGED:TASKS:START -->";
+pub(crate) const TASKS_MANAGED_END: &str = "<!-- COCONUTCLAW:MANAGED:TASKS:END -->";
 
 #[derive(Debug, Default)]
 pub(crate) struct AppendOutcome {
@@ -274,25 +274,48 @@ pub(crate) fn append_memory_and_tasks(
     store: &mut Store,
     ts: &str,
     turn_id: Option<i64>,
-    markers: &ParsedMarkers,
+    effects: &[Effect],
     session_id: Option<&str>,
     delivery_target_json: Option<&str>,
 ) -> Result<AppendOutcome> {
     let mut outcome = AppendOutcome::default();
 
-    if !markers.memory_append.is_empty() || !markers.task_append.is_empty() {
+    let memory_append: Vec<String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::MemoryAppend(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    let task_append: Vec<String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::TaskAppend(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+
+    if !memory_append.is_empty() || !task_append.is_empty() {
         store.insert_memory_and_tasks(
             ts,
             cfg.provider.as_str(),
             turn_id,
-            &markers.memory_append,
-            &markers.task_append,
+            &memory_append,
+            &task_append,
         )?;
         sync_managed_context_files(cfg, store)?;
     }
 
-    if !markers.schedule_prompt.is_empty() && !cfg.scheduled_tasks_enabled {
-        for line in &markers.schedule_prompt {
+    let schedule_prompts: Vec<String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::SchedulePrompt(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+
+    if !schedule_prompts.is_empty() && !cfg.scheduled_tasks_enabled {
+        for line in &schedule_prompts {
             outcome.schedule_feedback.push(format!(
                 "Runtime confirmation: schedule not saved because scheduled tasks are disabled for this instance — {}",
                 truncate_chars(line.trim(), 100)
@@ -300,8 +323,8 @@ pub(crate) fn append_memory_and_tasks(
         }
     }
 
-    if !markers.schedule_prompt.is_empty() && cfg.scheduled_tasks_enabled {
-        for line in &markers.schedule_prompt {
+    if !schedule_prompts.is_empty() && cfg.scheduled_tasks_enabled {
+        for line in &schedule_prompts {
             if let Some((recurring, time, text)) = parse_schedule_prompt_line(line) {
                 match store.insert_scheduled_task_with_target(
                     ts,
@@ -340,12 +363,12 @@ pub(crate) fn append_memory_and_tasks(
 
 pub(crate) fn sync_managed_context_files(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
     let memory_lines = store
-        .managed_memory_entries()?
+        .managed_memory_entries_from_db()?
         .into_iter()
         .map(|(ts, content)| format!("- {ts} | {content}"))
         .collect::<Vec<_>>();
     let task_lines = store
-        .managed_pending_task_entries()?
+        .managed_pending_task_entries_from_db()?
         .into_iter()
         .map(|content| format!("- [ ] {content}"))
         .collect::<Vec<_>>();
@@ -476,190 +499,9 @@ fn parse_schedule_prompt_line(line: &str) -> Option<(bool, String, String)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use coconutclaw_config::RuntimeConfig;
-    use std::fs;
-    use std::path::PathBuf;
+#[path = "context_tests.rs"]
+mod tests;
 
-    #[test]
-    fn truncate_chars_no_truncation() {
-        assert_eq!(truncate_chars("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_chars_truncation() {
-        assert_eq!(truncate_chars("hello world", 8), "hello wo...");
-    }
-
-    #[test]
-    fn truncate_chars_exact_boundary() {
-        assert_eq!(truncate_chars("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_chars_zero_max() {
-        assert_eq!(truncate_chars("hello", 0), "");
-    }
-
-    #[test]
-    fn truncate_chars_empty_input() {
-        assert_eq!(truncate_chars("", 5), "");
-    }
-
-    #[test]
-    fn truncate_chars_multibyte() {
-        assert_eq!(truncate_chars("日本語テスト", 3), "日本語...");
-    }
-
-    #[test]
-    fn truncate_chars_multibyte_no_truncation() {
-        let s = "日本語テスト";
-        assert_eq!(truncate_chars(s, 10), s);
-    }
-
-    #[test]
-    fn read_or_default_missing_file() {
-        let path = PathBuf::from("/nonexistent/path/file.txt");
-        assert_eq!(read_or_default(&path, "fallback"), "fallback");
-    }
-
-    #[test]
-    fn read_or_default_existing_file() {
-        let dir = std::env::temp_dir().join("coconutclaw_test_read_or_default");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test_file.txt");
-        std::fs::write(&path, "file content").unwrap();
-        assert_eq!(read_or_default(&path, "fallback"), "file content");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn parse_schedule_prompt_line_normalizes_time_and_once_prefix() {
-        assert_eq!(
-            parse_schedule_prompt_line("once 9:05|Check backups"),
-            Some((false, "09:05".to_string(), "Check backups".to_string()))
-        );
-    }
-
-    #[test]
-    fn append_memory_and_tasks_stores_normalized_scheduled_time() {
-        let cfg = RuntimeConfig::test_config();
-        let mut store = Store::open(&cfg).expect("store");
-        let markers = ParsedMarkers {
-            schedule_prompt: vec!["9:00|Check backups".to_string()],
-            ..ParsedMarkers::default()
-        };
-
-        let outcome = append_memory_and_tasks(
-            &cfg,
-            &mut store,
-            "2026-04-20T08:00:00+0000",
-            Some(1),
-            &markers,
-            None,
-            None,
-        )
-        .expect("append schedule prompt");
-
-        let due = store
-            .get_due_scheduled_tasks("10:00", "2026-04-20")
-            .expect("get due scheduled tasks");
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].schedule_time, "09:00");
-        assert_eq!(due[0].prompt, "Check backups");
-        assert_eq!(outcome.schedule_feedback.len(), 1);
-        assert!(outcome.schedule_feedback[0].contains("saved daily schedule at 09:00"));
-    }
-
-    #[test]
-    fn append_memory_and_tasks_reports_duplicate_schedules() {
-        let cfg = RuntimeConfig::test_config();
-        let mut store = Store::open(&cfg).expect("store");
-        let markers = ParsedMarkers {
-            schedule_prompt: vec!["9:00|Check backups".to_string()],
-            ..ParsedMarkers::default()
-        };
-
-        append_memory_and_tasks(
-            &cfg,
-            &mut store,
-            "2026-04-20T08:00:00+0000",
-            Some(1),
-            &markers,
-            None,
-            None,
-        )
-        .expect("insert schedule");
-        let duplicate = append_memory_and_tasks(
-            &cfg,
-            &mut store,
-            "2026-04-20T08:01:00+0000",
-            Some(2),
-            &markers,
-            None,
-            None,
-        )
-        .expect("insert duplicate schedule");
-
-        assert_eq!(duplicate.schedule_feedback.len(), 1);
-        assert!(duplicate.schedule_feedback[0].contains("already active daily schedule"));
-    }
-
-    #[test]
-    fn strip_managed_section_preserves_manual_content() {
-        let existing = format!(
-            "# Long-Term Memory\nmanual note\n\n{MEMORY_MANAGED_START}\n- generated\n{MEMORY_MANAGED_END}\n"
-        );
-        assert_eq!(
-            strip_managed_section(&existing, MEMORY_MANAGED_START, MEMORY_MANAGED_END),
-            "# Long-Term Memory\nmanual note"
-        );
-    }
-
-    #[test]
-    fn rewrite_managed_markdown_file_preserves_manual_content() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("MEMORY.md");
-        fs::write(&path, "# Long-Term Memory\nmanual note\n").expect("seed file");
-
-        rewrite_managed_markdown_file(
-            &path,
-            "# Long-Term Memory\n",
-            MEMORY_MANAGED_START,
-            MEMORY_MANAGED_END,
-            &["- 2026-04-24T10:00:00+0000 | remembered".to_string()],
-        )
-        .expect("rewrite managed file");
-
-        let rendered = fs::read_to_string(&path).expect("read rendered file");
-        assert!(rendered.contains("manual note"));
-        assert!(rendered.contains(MEMORY_MANAGED_START));
-        assert!(rendered.contains("remembered"));
-    }
-
-    #[test]
-    fn sync_managed_context_files_renders_db_backed_sections() {
-        let cfg = RuntimeConfig::test_config();
-        let mut store = Store::open(&cfg).expect("store");
-        store
-            .insert_memory_and_tasks(
-                "2026-04-24T10:00:00+0000",
-                "codex",
-                Some(7),
-                &["remember this".to_string()],
-                &["do that".to_string()],
-            )
-            .expect("insert managed entries");
-
-        sync_managed_context_files(&cfg, &store).expect("sync context files");
-
-        let memory = fs::read_to_string(cfg.instance_dir.join("MEMORY.md")).expect("read memory");
-        let tasks =
-            fs::read_to_string(cfg.instance_dir.join("TASKS/pending.md")).expect("read tasks");
-        assert!(memory.contains(MEMORY_MANAGED_START));
-        assert!(memory.contains("- 2026-04-24T10:00:00+0000 | remember this"));
-        assert!(tasks.contains(TASKS_MANAGED_START));
-        assert!(tasks.contains("- [ ] do that"));
-    }
-}
+#[cfg(test)]
+#[path = "context_integration_test.rs"]
+mod integration_tests;

@@ -9,17 +9,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use coconutclaw_config::RuntimeConfig;
 use coconutclaw_provider::run_provider;
 
+use crate::cancel::CancelRouter;
 use crate::context::{append_memory_and_tasks, build_context};
 use crate::delivery::{DeliveryTarget, TaskSource};
 use crate::markers::{
-    ParsedMarkers, extract_assistant_text_from_json_stream, extract_error_summary, parse_markers,
+    extract_assistant_text_from_json_stream, extract_error_summary, parse_markers,
     recover_unstructured_reply, render_output, should_retry_provider_failure,
 };
 use crate::slack::{
@@ -31,26 +31,8 @@ use crate::telegram::{
 };
 use crate::{
     IncomingMedia, InputType, QuotedMessage, TurnInput, TurnResult, TurnStatus,
-    asr_feature_enabled, cancel_marker_path, clear_cancel_marker, command_exists, iso_now,
-    maybe_spawn_cancel_watcher, resolve_instance_path,
+    asr_feature_enabled, clear_cancel_marker, command_exists, iso_now, resolve_instance_path,
 };
-
-fn spawn_cancel_marker_watcher(
-    cfg: &RuntimeConfig,
-    cancel_flag: Arc<AtomicBool>,
-    stop_flag: Arc<AtomicBool>,
-) -> thread::JoinHandle<()> {
-    let marker_path = cancel_marker_path(cfg);
-    thread::spawn(move || {
-        while !stop_flag.load(Ordering::SeqCst) && !cancel_flag.load(Ordering::SeqCst) {
-            if marker_path.exists() {
-                cancel_flag.store(true, Ordering::SeqCst);
-                break;
-            }
-            thread::sleep(Duration::from_millis(150));
-        }
-    })
-}
 
 fn run_asr_script(cfg: &RuntimeConfig, audio_path: &Path) -> Result<String> {
     let _span = tracing::info_span!("asr", path = %audio_path.display()).entered();
@@ -117,6 +99,7 @@ pub(crate) fn process_turn(
     update_id: Option<String>,
     progress_message_id: Option<&str>,
     quoted: &QuotedMessage,
+    cancel_router: Option<Arc<CancelRouter>>,
 ) -> Result<String> {
     Ok(process_turn_with_status(
         cfg,
@@ -130,7 +113,7 @@ pub(crate) fn process_turn(
         None,
         quoted,
         None,
-        true,
+        cancel_router,
         None,
         None,
     )?
@@ -150,7 +133,7 @@ pub(crate) fn process_turn_with_status(
     progress_target: Option<&DeliveryTarget>,
     quoted: &QuotedMessage,
     external_cancel_flag: Option<Arc<AtomicBool>>,
-    enable_cancel_watchers: bool,
+    cancel_router: Option<Arc<CancelRouter>>,
     origin_session: Option<&str>,
     delivery_target_json: Option<&str>,
 ) -> Result<ProcessedTurn> {
@@ -162,22 +145,14 @@ pub(crate) fn process_turn_with_status(
     )
     .entered();
 
-    if enable_cancel_watchers {
-        clear_cancel_marker(cfg);
-    }
+    clear_cancel_marker(cfg);
     let ts = iso_now(&cfg.timezone);
     let context_channel = turn_context_channel(source, &input).to_string();
     let progress_channel = progress_target
         .map(DeliveryTarget::transport_name)
         .unwrap_or(&context_channel);
     let chat_id = context_chat_id
-        .or_else(|| {
-            progress_target.map(|target| match target {
-                DeliveryTarget::Telegram { chat_id } => chat_id.clone(),
-                DeliveryTarget::Slack { channel_id, .. } => channel_id.clone(),
-                DeliveryTarget::Stdout => "local".to_string(),
-            })
-        })
+        .or_else(|| progress_target.map(|target| target.display_id().to_owned()))
         .or_else(|| match source {
             TaskSource::Slack { .. } => cfg.slack_channel_id.clone(),
             TaskSource::Telegram => valid_telegram_chat_id(cfg).map(ToOwned::to_owned),
@@ -185,11 +160,7 @@ pub(crate) fn process_turn_with_status(
         })
         .unwrap_or_else(|| "local".to_string());
     let progress_chat_id = progress_target
-        .map(|target| match target {
-            DeliveryTarget::Telegram { chat_id } => chat_id.clone(),
-            DeliveryTarget::Slack { channel_id, .. } => channel_id.clone(),
-            DeliveryTarget::Stdout => "local".to_string(),
-        })
+        .map(|target| target.display_id().to_owned())
         .or_else(|| match source {
             TaskSource::Slack { channel_id, .. } => Some(channel_id.clone()),
             TaskSource::Telegram => Some(chat_id.clone()),
@@ -200,33 +171,9 @@ pub(crate) fn process_turn_with_status(
     let context = build_context(cfg, store, &input, &ts, &chat_id, quoted)?;
 
     let cancel_flag = external_cancel_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-    let cancel_watcher_stop = Arc::new(AtomicBool::new(false));
-    let cancel_watcher = if enable_cancel_watchers
-        && matches!(source, TaskSource::Telegram)
-        && update_id.is_some()
-    {
-        maybe_spawn_cancel_watcher(
-            cfg,
-            store,
-            update_id.clone(),
-            Arc::clone(&cancel_flag),
-            Arc::clone(&cancel_watcher_stop),
-        )
-        .ok()
-        .flatten()
-    } else {
-        None
-    };
-    let marker_watcher_stop = Arc::new(AtomicBool::new(false));
-    let marker_watcher = if enable_cancel_watchers {
-        Some(spawn_cancel_marker_watcher(
-            cfg,
-            Arc::clone(&cancel_flag),
-            Arc::clone(&marker_watcher_stop),
-        ))
-    } else {
-        None
-    };
+    if let Some(router) = &cancel_router {
+        router.register(Arc::clone(&cancel_flag));
+    }
     let progress_updater_stop = Arc::new(AtomicBool::new(false));
     let (progress_sender, progress_updater) = if let Some(message_id) = progress_message_id {
         let (progress_tx, progress_rx) = mpsc::channel::<String>();
@@ -295,14 +242,6 @@ pub(crate) fn process_turn_with_status(
             None,
         );
     }
-    cancel_watcher_stop.store(true, Ordering::SeqCst);
-    if let Some(handle) = cancel_watcher {
-        let _ = handle.join();
-    }
-    marker_watcher_stop.store(true, Ordering::SeqCst);
-    if let Some(handle) = marker_watcher {
-        let _ = handle.join();
-    }
     drop(progress_sender);
     progress_updater_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = progress_updater {
@@ -317,7 +256,7 @@ pub(crate) fn process_turn_with_status(
     let cancelled = cancel_flag.load(Ordering::SeqCst) || exit_code == 130;
     let turn_result =
         resolve_turn_result(&raw_output, &context_channel, provider_success, cancelled);
-    let markers = turn_result.markers;
+    let effects = turn_result.effects;
     let telegram_reply = turn_result.telegram_reply;
     let voice_reply = turn_result.voice_reply;
     let status = turn_result.status;
@@ -355,7 +294,7 @@ pub(crate) fn process_turn_with_status(
             store,
             &ts,
             Some(inserted_turn_id),
-            &markers,
+            &effects,
             origin_session,
             delivery_target_json,
         )?;
@@ -396,11 +335,11 @@ pub(crate) fn process_turn_with_status(
         }
     }
 
-    if enable_cancel_watchers {
+    if cancel_router.is_some() {
         clear_cancel_marker(cfg);
     }
     Ok(ProcessedTurn {
-        output: render_output(&telegram_reply, &voice_reply, &markers),
+        output: render_output(&telegram_reply, &voice_reply, &effects),
         status,
     })
 }
@@ -434,7 +373,7 @@ pub(crate) fn resolve_turn_result(
 
     if cancelled {
         return TurnResult {
-            markers: ParsedMarkers::default(),
+            effects: vec![],
             telegram_reply: "❌ Cancelled.".to_string(),
             voice_reply: String::new(),
             status: TurnStatus::Cancelled,
@@ -467,9 +406,10 @@ pub(crate) fn resolve_turn_result(
     let markers = parse_markers(raw_output);
     let telegram_reply = markers.reply().cloned().unwrap_or_default();
     let voice_reply = markers.voice_reply.clone().unwrap_or_default();
+    let effects = markers.to_effects();
     if !telegram_reply.trim().is_empty() || !voice_reply.trim().is_empty() {
         return TurnResult {
-            markers,
+            effects,
             telegram_reply,
             voice_reply,
             status: if provider_success {
@@ -484,7 +424,7 @@ pub(crate) fn resolve_turn_result(
     if provider_success {
         if let Some(recovered) = recover_unstructured_reply(&cleaned) {
             return TurnResult {
-                markers,
+                effects,
                 telegram_reply: recovered,
                 voice_reply: String::new(),
                 status: TurnStatus::ParseRecovered,
@@ -494,7 +434,7 @@ pub(crate) fn resolve_turn_result(
         // If it's just raw text without markers, and no specific unstructured JSON format
         // was found, return the text directly instead of an error message.
         return TurnResult {
-            markers,
+            effects,
             telegram_reply: if cleaned.is_empty() {
                 "I could not parse structured markers from the model output.".to_string()
             } else {
@@ -512,7 +452,7 @@ pub(crate) fn resolve_turn_result(
 
     if let Some(recovered) = extract_assistant_text_from_json_stream(&cleaned) {
         return TurnResult {
-            markers,
+            effects,
             telegram_reply: recovered,
             voice_reply: String::new(),
             status: TurnStatus::AgentErrorRecovered,
@@ -525,7 +465,7 @@ pub(crate) fn resolve_turn_result(
     // prefix — a partial response is more useful than "Agent execution failed locally."
     if let Some(recovered) = recover_unstructured_reply(&cleaned) {
         return TurnResult {
-            markers,
+            effects,
             telegram_reply: recovered,
             voice_reply: String::new(),
             status: TurnStatus::AgentErrorRecovered,
@@ -542,7 +482,7 @@ pub(crate) fn resolve_turn_result(
         })
         .unwrap_or_else(|| "Please check local logs and retry.".to_string());
     TurnResult {
-        markers,
+        effects,
         telegram_reply: format!("Agent execution failed locally. {err_line}"),
         voice_reply: String::new(),
         status: TurnStatus::AgentError,
@@ -794,179 +734,5 @@ pub(crate) fn hydrate_slack_turn_input(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{InputType, TurnInput, TurnStatus};
-
-    fn text_input(channel: &str) -> TurnInput {
-        TurnInput {
-            input_type: InputType::Text,
-            user_text: "hello".to_string(),
-            asr_text: String::new(),
-            attachment_type: None,
-            attachment_path: None,
-            attachment_owned: false,
-            supplemental_context: None,
-            channel: channel.to_string(),
-        }
-    }
-
-    #[test]
-    fn scheduled_turn_uses_input_channel_for_context() {
-        let input = text_input("slack");
-        assert_eq!(
-            turn_context_channel(&TaskSource::Scheduled, &input),
-            "slack"
-        );
-    }
-
-    #[test]
-    fn empty_input_channel_falls_back_to_source_channel() {
-        let input = text_input("");
-        assert_eq!(
-            turn_context_channel(&TaskSource::Telegram, &input),
-            "telegram"
-        );
-    }
-
-    #[test]
-    fn resolve_turn_result_marks_cancelled() {
-        let result = resolve_turn_result("TELEGRAM_REPLY: hi", "telegram", true, true);
-        assert_eq!(result.status, TurnStatus::Cancelled);
-        assert_eq!(result.telegram_reply, "❌ Cancelled.");
-        assert!(result.markers.telegram_reply.is_none());
-    }
-
-    #[test]
-    fn resolve_turn_result_marks_parse_recovered() {
-        let result = resolve_turn_result("plain reply", "telegram", true, false);
-        assert_eq!(result.status, TurnStatus::ParseRecovered);
-        assert_eq!(result.telegram_reply, "plain reply");
-    }
-
-    #[test]
-    fn resolve_turn_result_marks_agent_error_recovered() {
-        let payload = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Recovered"}]}}"#;
-        let result = resolve_turn_result(payload, "telegram", false, false);
-        assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
-        assert_eq!(result.telegram_reply, "Recovered");
-    }
-
-    #[test]
-    fn resolve_turn_result_marks_agent_error_when_unrecoverable() {
-        // A JSON event stream with no assistant text — truly unrecoverable.
-        let payload = r#"{"type":"system","status":"starting"}
-{"type":"error","code":"internal","message":"unexpected crash"}"#;
-        let result = resolve_turn_result(payload, "telegram", false, false);
-        assert_eq!(result.status, TurnStatus::AgentError);
-        assert!(
-            result
-                .telegram_reply
-                .contains("Agent execution failed locally")
-        );
-    }
-
-    #[test]
-    fn resolve_turn_result_uses_turn_failed_error_message() {
-        let payload = r#"{"type":"thread.started","thread_id":"abc"}
-{"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window."}}"#;
-        let result = resolve_turn_result(payload, "telegram", false, false);
-        assert_eq!(result.status, TurnStatus::AgentError);
-        assert!(result.telegram_reply.contains("context window"));
-        assert!(
-            !result
-                .telegram_reply
-                .contains(r#"{"type":"thread.started""#)
-        );
-    }
-
-    #[test]
-    fn resolve_turn_result_empty_raw_output() {
-        let result = resolve_turn_result("", "telegram", true, false);
-        assert_eq!(result.status, TurnStatus::ParseFallback);
-        assert_eq!(
-            result.telegram_reply,
-            "I could not parse structured markers from the model output."
-        );
-    }
-
-    #[test]
-    fn resolve_turn_result_think_tag_strip_after() {
-        let raw_output = "<think> I am thinking about </think> TELEGRAM_REPLY: Hello";
-        let result = resolve_turn_result(raw_output, "telegram", true, false);
-        assert_eq!(result.status, TurnStatus::Ok);
-        assert_eq!(result.telegram_reply, "Hello");
-    }
-
-    #[test]
-    fn resolve_turn_result_think_tag_multiple() {
-        let raw_output = "<think> thought 1 </think> TELEGRAM_REPLY: some text \n<think> thought 2 </think> TELEGRAM_REPLY: Hello";
-        let result = resolve_turn_result(raw_output, "telegram", true, false);
-        assert_eq!(result.status, TurnStatus::Ok);
-        assert_eq!(result.telegram_reply, "some text\n\nHello");
-    }
-
-    #[test]
-    fn resolve_turn_result_think_tag_unclosed() {
-        let raw_output =
-            "<think> thought 1 </think> some text <think> thought 2 TELEGRAM_REPLY: Hello";
-        let result = resolve_turn_result(raw_output, "telegram", true, false);
-        assert_eq!(result.status, TurnStatus::ParseRecovered);
-        assert_eq!(result.telegram_reply, "some text");
-    }
-
-    #[test]
-    fn resolve_turn_result_valid_markers_but_provider_failed() {
-        let raw_output = "TELEGRAM_REPLY: I crashed but here is a reply";
-        let result = resolve_turn_result(raw_output, "telegram", false, false);
-        assert_eq!(result.status, TurnStatus::AgentError);
-        assert_eq!(result.telegram_reply, "I crashed but here is a reply");
-    }
-
-    #[test]
-    fn resolve_turn_result_agent_error_blank_output() {
-        let result = resolve_turn_result("   \n  \t", "telegram", false, false);
-        assert_eq!(result.status, TurnStatus::AgentError);
-        assert!(
-            result
-                .telegram_reply
-                .contains("Agent execution failed locally. Please check local logs and retry.")
-        );
-    }
-
-    #[test]
-    fn resolve_turn_result_recovers_plain_text_from_failed_provider() {
-        let raw_output = "\n   \n\nReal error message here\nMore details";
-        let result = resolve_turn_result(raw_output, "telegram", false, false);
-        assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
-        assert!(result.telegram_reply.contains("Real error message here"));
-        assert!(
-            !result
-                .telegram_reply
-                .contains("Agent execution failed locally")
-        );
-    }
-
-    #[test]
-    fn resolve_turn_result_recovers_plain_text_on_provider_failure() {
-        let raw = "I can see several issues with the free-migration branch. Let me update the todo and provide a comprehensive summary:";
-        let result = resolve_turn_result(raw, "telegram", false, false);
-        assert_eq!(result.status, TurnStatus::AgentErrorRecovered);
-        assert!(result.telegram_reply.contains("free-migration"));
-        assert!(
-            !result
-                .telegram_reply
-                .contains("Agent execution failed locally")
-        );
-    }
-
-    #[test]
-    fn telegram_progress_chat_id_strips_session_prefix() {
-        assert_eq!(telegram_progress_chat_id("telegram:321951227"), "321951227");
-    }
-
-    #[test]
-    fn telegram_progress_chat_id_leaves_plain_chat_id_untouched() {
-        assert_eq!(telegram_progress_chat_id("321951227"), "321951227");
-    }
-}
+#[path = "turn_tests.rs"]
+mod tests;

@@ -15,7 +15,6 @@ chrono.workspace = true
 chrono-tz.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
-fs2.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
@@ -32,6 +31,7 @@ futures-util.workspace = true
 subtle = "2.6.1"
 coconutclaw-config = { path = "../coconutclaw-config" }
 coconutclaw-provider = { path = "../coconutclaw-provider" }
+notify = "8.2.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"

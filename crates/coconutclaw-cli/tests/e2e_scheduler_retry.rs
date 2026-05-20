@@ -8,6 +8,8 @@ use axum::{
 };
 use serde_json::json;
 use std::fs;
+use std::io::{BufRead, Read, Write};
+use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -172,6 +174,23 @@ if (-not (Test-Path "{state}")) {{
         .spawn()
         .unwrap();
 
+    // Spawn a background thread to scan stderr for the webhook listening address.
+    let stderr = child.stderr.take().unwrap();
+    let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stderr);
+        let mut sent_url = false;
+        for line in reader.lines().map_while(Result::ok) {
+            let marker = "webhook server listening on ";
+            if !sent_url && let Some(pos) = line.find(marker) {
+                let rest = &line[pos + marker.len()..];
+                let _ = url_tx.send(format!("http://{rest}"));
+                sent_url = true;
+            }
+        }
+    });
+
+    // Wait for setWebhook
     let mut webhook_set = false;
     let mut my_commands_set = false;
     for _ in 0..50 {
@@ -198,21 +217,64 @@ if (-not (Test-Path "{state}")) {{
         );
     }
 
-    let runtime_dir = instance_dir.join("runtime");
-    fs::create_dir_all(&runtime_dir).unwrap();
-    let updates_file = runtime_dir.join("webhook_updates.jsonl");
-    fs::write(
-        &updates_file,
-        r#"{"update_id":1,"message":{"message_id":1,"chat":{"id":123456},"text":"hello"}}
-"#,
-    )
+    // Get the webhook URL from the stderr reader thread.
+    let webhook_url = url_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("could not find webhook listening address in stderr");
+
+    // Parse host:port from the URL for raw TCP connection.
+    let host_port = webhook_url
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let webhook_path = webhook_url
+        .trim_start_matches("http://")
+        .find('/')
+        .map(|i| &webhook_url.trim_start_matches("http://")[i..])
+        .unwrap_or("/");
+
+    // POST webhook update via raw TCP (replaces dead webhook_updates.jsonl file write).
+    let body = r#"{"update_id":1,"message":{"message_id":1,"chat":{"id":123456},"text":"hello"}}"#;
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        webhook_path,
+        host_port,
+        body.len(),
+        body
+    );
+
+    let host_port_clone = host_port.clone();
+    tokio::task::spawn_blocking(move || {
+        // Retry connecting for up to 10 seconds
+        let mut stream = None;
+        for _ in 0..100 {
+            match TcpStream::connect(&host_port_clone) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        let mut stream = stream.expect("could not connect to webhook server");
+        stream
+            .write_all(request.as_bytes())
+            .expect("write webhook request");
+        let mut buf = [0u8; 512];
+        let _ = stream.read(&mut buf);
+    })
+    .await
     .unwrap();
 
     let mut initial_reply_sent = false;
     let mut scheduler_reply_failed = false;
     let mut scheduler_reply_sent = false;
 
-    for _ in 0..150 {
+    for _ in 0..300 {
         if let Ok(Some((endpoint, body))) =
             tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
         {

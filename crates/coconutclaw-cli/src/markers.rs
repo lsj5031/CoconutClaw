@@ -1,5 +1,94 @@
 use serde_json::Value;
 
+/// Typed output effect produced by the AI provider.
+///
+/// Every marker line the model emits (`TELEGRAM_REPLY:`, `SEND_PHOTO:`, …)
+/// compiles to one `Effect`.  Transports iterate over `Effect`s instead of
+/// inspecting raw marker fields — adding a new transport becomes "match one
+/// enum variant", not "grep for marker name across the codebase".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Effect {
+    TelegramReply(String),
+    VoiceReply(String),
+    SendPhoto(String),
+    SendDocument(String),
+    SendVideo(String),
+    SendApproval(String),
+    MemoryAppend(String),
+    TaskAppend(String),
+    SchedulePrompt(String),
+    /// Incremental text delta for streaming replies.
+    /// Paves the way for live token streaming to transports
+    /// once providers can emit structured token events.
+    /// Forward-looking: not yet wired to any provider's token stream.
+    #[allow(dead_code)]
+    ReplyDelta(String),
+}
+
+impl Effect {
+    /// Human-readable label for logging / debug.
+    #[allow(dead_code)]
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::TelegramReply(_) => "telegram_reply",
+            Self::VoiceReply(_) => "voice_reply",
+            Self::SendPhoto(_) => "send_photo",
+            Self::SendDocument(_) => "send_document",
+            Self::SendVideo(_) => "send_video",
+            Self::SendApproval(_) => "send_approval",
+            Self::MemoryAppend(_) => "memory_append",
+            Self::TaskAppend(_) => "task_append",
+            Self::SchedulePrompt(_) => "schedule_prompt",
+            Self::ReplyDelta(_) => "reply_delta",
+        }
+    }
+
+    /// The payload string carried by the effect.
+    #[allow(dead_code)]
+    pub(crate) fn payload(&self) -> &str {
+        match self {
+            Self::TelegramReply(s)
+            | Self::VoiceReply(s)
+            | Self::SendPhoto(s)
+            | Self::SendDocument(s)
+            | Self::SendVideo(s)
+            | Self::SendApproval(s)
+            | Self::MemoryAppend(s)
+            | Self::TaskAppend(s)
+            | Self::SchedulePrompt(s)
+            | Self::ReplyDelta(s) => s.as_str(),
+        }
+    }
+}
+
+/// Render a slice of `Effect`s back to the text-marker wire format.
+/// Used when persisting or re-serialising marker output.
+pub(crate) fn render_effects(effects: &[Effect]) -> String {
+    let mut lines = Vec::new();
+    for effect in effects {
+        let marker = match effect {
+            Effect::TelegramReply(_) => "TELEGRAM_REPLY: ",
+            Effect::VoiceReply(_) => "VOICE_REPLY: ",
+            Effect::SendPhoto(_) => "SEND_PHOTO: ",
+            Effect::SendDocument(_) => "SEND_DOCUMENT: ",
+            Effect::SendVideo(_) => "SEND_VIDEO: ",
+            Effect::SendApproval(_) => "SEND_APPROVAL: ",
+            Effect::MemoryAppend(_) => "MEMORY_APPEND: ",
+            Effect::TaskAppend(_) => "TASK_APPEND: ",
+            Effect::SchedulePrompt(_) => "SCHEDULE_PROMPT: ",
+            Effect::ReplyDelta(_) => "REPLY_DELTA: ",
+        };
+        lines.push(format!("{marker}{}", effect.payload()));
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        let mut out = lines.join("\n");
+        out.push('\n');
+        out
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ParsedMarkers {
     pub(crate) telegram_reply: Option<String>,
@@ -19,39 +108,76 @@ impl ParsedMarkers {
     pub(crate) fn reply(&self) -> Option<&String> {
         self.telegram_reply.as_ref()
     }
+
+    /// Compile parsed markers into a typed `Vec<Effect>`.
+    ///
+    /// Call this once after parsing so transports can `match` on variants
+    /// instead of reaching into marker fields.
+    pub(crate) fn to_effects(&self) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        if let Some(ref text) = self.telegram_reply {
+            effects.push(Effect::TelegramReply(text.clone()));
+        }
+        if let Some(ref text) = self.voice_reply {
+            effects.push(Effect::VoiceReply(text.clone()));
+        }
+        for path in &self.send_photo {
+            effects.push(Effect::SendPhoto(path.clone()));
+        }
+        for path in &self.send_document {
+            effects.push(Effect::SendDocument(path.clone()));
+        }
+        for path in &self.send_video {
+            effects.push(Effect::SendVideo(path.clone()));
+        }
+        for text in &self.send_approval {
+            effects.push(Effect::SendApproval(text.clone()));
+        }
+        for text in &self.memory_append {
+            effects.push(Effect::MemoryAppend(text.clone()));
+        }
+        for text in &self.task_append {
+            effects.push(Effect::TaskAppend(text.clone()));
+        }
+        for text in &self.schedule_prompt {
+            effects.push(Effect::SchedulePrompt(text.clone()));
+        }
+        effects
+    }
+
+    /// True when the markers include at least one output the transport layer
+    /// should act on (text, voice, or media).
+    #[allow(dead_code)]
+    pub(crate) fn has_output(&self) -> bool {
+        self.telegram_reply.is_some()
+            || self.voice_reply.is_some()
+            || !self.send_photo.is_empty()
+            || !self.send_document.is_empty()
+            || !self.send_video.is_empty()
+    }
 }
 
-pub(crate) fn render_output(reply: &str, voice_reply: &str, markers: &ParsedMarkers) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("TELEGRAM_REPLY: {reply}"));
-
+/// Render a reply (with optional voice) and extra effects into the text-marker wire format.
+///
+/// The `reply` and `voice_reply` parameters provide the main text output.
+/// `effects` supplies media, approval, memory, task, and schedule markers.
+/// TelegramReply/VoiceReply effects in `effects` are intentionally ignored —
+/// the separate `reply`/`voice_reply` params take precedence.
+pub(crate) fn render_output(reply: &str, voice_reply: &str, effects: &[Effect]) -> String {
+    let mut all = Vec::with_capacity(effects.len() + 2);
+    all.push(Effect::TelegramReply(reply.to_string()));
     if !voice_reply.trim().is_empty() {
-        lines.push(format!("VOICE_REPLY: {voice_reply}"));
+        all.push(Effect::VoiceReply(voice_reply.to_string()));
     }
-
-    for line in &markers.send_photo {
-        lines.push(format!("SEND_PHOTO: {line}"));
+    for e in effects {
+        if !matches!(
+            e,
+            Effect::TelegramReply(_) | Effect::VoiceReply(_) | Effect::ReplyDelta(_)
+        ) {
+            all.push(e.clone());
+        }
     }
-    for line in &markers.send_document {
-        lines.push(format!("SEND_DOCUMENT: {line}"));
-    }
-    for line in &markers.send_video {
-        lines.push(format!("SEND_VIDEO: {line}"));
-    }
-    for line in &markers.send_approval {
-        lines.push(format!("SEND_APPROVAL: {line}"));
-    }
-    for line in &markers.memory_append {
-        lines.push(format!("MEMORY_APPEND: {line}"));
-    }
-    for line in &markers.task_append {
-        lines.push(format!("TASK_APPEND: {line}"));
-    }
-    for line in &markers.schedule_prompt {
-        lines.push(format!("SCHEDULE_PROMPT: {line}"));
-    }
-
-    lines.join("\n") + "\n"
+    render_effects(&all)
 }
 
 pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
@@ -488,242 +614,5 @@ fn normalize_inline_escapes(input: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_should_retry_provider_failure_plain_text() {
-        assert!(should_retry_provider_failure("network failure"));
-        assert!(should_retry_provider_failure("connection reset by peer"));
-        assert!(should_retry_provider_failure("timed out"));
-        assert!(should_retry_provider_failure("temporarily unavailable"));
-        assert!(should_retry_provider_failure("rate limit exceeded"));
-    }
-
-    #[test]
-    fn test_should_not_retry_plain_text() {
-        assert!(!should_retry_provider_failure("invalid credentials"));
-        assert!(!should_retry_provider_failure("bad request"));
-        assert!(!should_retry_provider_failure("syntax error"));
-    }
-
-    #[test]
-    fn test_should_retry_provider_failure_json_agent_end() {
-        let json = r#"{"type": "agent_end", "error": "network failure"}"#;
-        assert!(should_retry_provider_failure(json));
-    }
-
-    #[test]
-    fn test_should_retry_provider_failure_json_turn_failed() {
-        let json = r#"{"type": "turn.failed", "error": {"message": "connection reset"}}"#;
-        assert!(should_retry_provider_failure(json));
-    }
-
-    #[test]
-    fn test_should_retry_provider_failure_json_turn_end() {
-        let json = r#"{"type": "turn_end", "message": {"errorMessage": "timed out"}}"#;
-        assert!(should_retry_provider_failure(json));
-    }
-
-    #[test]
-    fn test_should_retry_mixed_json_and_plain_text() {
-        let output = "{\"type\": \"progress\", \"content\": \"Thinking...\"}\nError: connection reset by peer";
-        assert!(
-            should_retry_provider_failure(output),
-            "Should fall back to raw output and find 'connection reset' despite being a JSON stream initially"
-        );
-    }
-
-    #[test]
-    fn test_should_retry_unrecognized_json_error() {
-        let output = r#"{"type": "fatal_error", "message": "network failure"}"#;
-        assert!(
-            should_retry_provider_failure(output),
-            "Should fall back to raw output for unrecognized JSON error types"
-        );
-    }
-
-    #[test]
-    fn test_should_retry_multiple_errors_in_stream() {
-        let output = "{\"type\": \"turn.failed\", \"error\": {\"message\": \"connection reset\"}}\n{\"type\": \"agent_end\", \"error\": \"unknown error\"}";
-        assert!(
-            should_retry_provider_failure(output),
-            "Should retry if ANY error in the stream is retryable"
-        );
-    }
-
-    #[test]
-    fn test_recover_unstructured_reply_empty() {
-        assert_eq!(recover_unstructured_reply(""), None);
-        assert_eq!(recover_unstructured_reply("   "), None);
-        assert_eq!(recover_unstructured_reply("\n\n"), None);
-    }
-
-    #[test]
-    fn test_recover_unstructured_reply_plain_text() {
-        assert_eq!(
-            recover_unstructured_reply("Hello, world!"),
-            Some("Hello, world!".to_string())
-        );
-        assert_eq!(
-            recover_unstructured_reply("  Hello, world!  \n"),
-            Some("Hello, world!".to_string())
-        );
-    }
-
-    #[test]
-    fn test_recover_unstructured_reply_json_assistant() {
-        let json_stream = r#"
-{"type":"message_start"}
-{"type":"message","message":{"role":"assistant","content":"I am an assistant"}}
-{"type":"message_end","message":{"role":"assistant","content":"I am an assistant"}}
-"#;
-        assert_eq!(
-            recover_unstructured_reply(json_stream),
-            Some("I am an assistant".to_string())
-        );
-    }
-
-    #[test]
-    fn test_recover_unstructured_reply_json_stream_no_assistant() {
-        let json_stream = r#"
-{"type":"agent_start"}
-{"type":"turn_start"}
-{"type":"progress"}
-"#;
-        assert_eq!(recover_unstructured_reply(json_stream), None);
-    }
-
-    #[test]
-    fn test_recover_unstructured_reply_not_json_stream() {
-        let not_json_stream = r#"
-This is just some text.
-It has some { curly braces }
-{"but": "it's not a valid json stream of typed events"}
-"#;
-        assert_eq!(
-            recover_unstructured_reply(not_json_stream),
-            Some(not_json_stream.trim().to_string())
-        );
-    }
-
-    #[test]
-    fn extract_error_summary_empty_payload() {
-        assert_eq!(extract_error_summary(""), None);
-    }
-
-    #[test]
-    fn extract_error_summary_non_json_lines() {
-        let payload = "not json\nstill not json";
-        assert_eq!(extract_error_summary(payload), None);
-    }
-
-    #[test]
-    fn parse_markers_recovers_first_line_embedded_marker() {
-        let payload = concat!(
-            "\"\"\"I will research the details first.",
-            "TELEGRAM_REPLY: Parsed reply line one\n",
-            "line two\n",
-            "MEMORY_APPEND: saved item"
-        );
-
-        let markers = parse_markers(payload);
-
-        assert_eq!(
-            markers.telegram_reply.as_deref(),
-            Some("Parsed reply line one\nline two")
-        );
-        assert_eq!(markers.memory_append, vec!["saved item".to_string()]);
-    }
-
-    #[test]
-    fn parse_markers_collects_send_approval() {
-        let payload = "TELEGRAM_REPLY: Ready
-SEND_APPROVAL: Delete prod data";
-        let markers = parse_markers(payload);
-        assert_eq!(markers.send_approval, vec!["Delete prod data".to_string()]);
-    }
-
-    #[test]
-    fn parse_markers_does_not_recover_later_inline_marker_mentions() {
-        let payload =
-            "This plain reply mentions TELEGRAM_REPLY: literally, but it is not structured.";
-
-        let markers = parse_markers(payload);
-
-        assert!(markers.telegram_reply.is_none());
-        assert!(markers.memory_append.is_empty());
-    }
-
-    #[test]
-    fn extract_error_summary_json_missing_type() {
-        let payload = r#"{"no_type":"here"}"#;
-        assert_eq!(extract_error_summary(payload), None);
-    }
-
-    #[test]
-    fn extract_error_summary_agent_end() {
-        let payload = r#"{"type":"agent_end","error":"something went wrong"}"#;
-        assert_eq!(
-            extract_error_summary(payload).as_deref(),
-            Some("something went wrong")
-        );
-    }
-
-    #[test]
-    fn extract_error_summary_turn_failed_object() {
-        let payload = r#"{"type":"turn.failed","error":{"message":"turn failed message"}}"#;
-        assert_eq!(
-            extract_error_summary(payload).as_deref(),
-            Some("turn failed message")
-        );
-    }
-
-    #[test]
-    fn extract_error_summary_turn_failed_string() {
-        let payload = r#"{"type":"turn.failed","error":"direct error string"}"#;
-        assert_eq!(
-            extract_error_summary(payload).as_deref(),
-            Some("direct error string")
-        );
-    }
-
-    #[test]
-    fn extract_error_summary_turn_end() {
-        let payload = r#"{"type":"turn_end","message":{"errorMessage":"turn end error"}}"#;
-        assert_eq!(
-            extract_error_summary(payload).as_deref(),
-            Some("turn end error")
-        );
-    }
-
-    #[test]
-    fn extract_error_summary_prefers_last_valid_event() {
-        let payload = r#"{"type":"turn_end","message":{"errorMessage":"first error"}}
-{"type":"agent_end","error":"second error"}"#;
-        assert_eq!(
-            extract_error_summary(payload).as_deref(),
-            Some("second error")
-        );
-    }
-
-    #[test]
-    fn extract_error_summary_ignores_whitespace_errors() {
-        let payload = r#"{"type":"agent_end","error":"   "}"#;
-        assert_eq!(extract_error_summary(payload), None);
-    }
-
-    #[test]
-    fn extract_error_summary_complex_mix() {
-        let payload = r#"{"type":"other"}
-not json
-{"type":"turn.failed","error":{"no_message":"here"}}
-{"type":"turn_end","message":{"errorMessage":"actual error"}}
-{"type":"agent_end","error":""}
-{"type":"agent_end","no_error":"field"}"#;
-        assert_eq!(
-            extract_error_summary(payload).as_deref(),
-            Some("actual error")
-        );
-    }
-}
+#[path = "markers_tests.rs"]
+mod tests;
