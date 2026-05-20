@@ -331,6 +331,7 @@ fn mac_install(
         .with_context(|| format!("failed to create {}", log_dir.display()))?;
 
     let binary = resolve_binary_path()?;
+    let env_path = launchd_path();
     let run_args = prefixed_program_arguments(&binary, &service_command_args(cfg, "run"));
     let heartbeat_args =
         prefixed_program_arguments(&binary, &service_command_args(cfg, "heartbeat"));
@@ -347,6 +348,7 @@ fn mac_install(
             &names.run_label,
             &run_args,
             &cfg.root_dir,
+            &env_path,
             &log_dir.join(format!("{}.log", names.run_label)),
             &log_dir.join(format!("{}.err.log", names.run_label)),
         ),
@@ -359,6 +361,7 @@ fn mac_install(
             &names.heartbeat_label,
             &heartbeat_args,
             &cfg.root_dir,
+            &env_path,
             heartbeat,
             &log_dir.join(format!("{}.log", names.heartbeat_label)),
             &log_dir.join(format!("{}.err.log", names.heartbeat_label)),
@@ -372,6 +375,7 @@ fn mac_install(
             &names.reflection_label,
             &reflection_args,
             &cfg.root_dir,
+            &env_path,
             reflection,
             &log_dir.join(format!("{}.log", names.reflection_label)),
             &log_dir.join(format!("{}.err.log", names.reflection_label)),
@@ -398,22 +402,6 @@ fn mac_start(names: &ServiceNames) -> Result<()> {
             &format!("{domain}/{}", names.run_label),
         ]),
         "launchctl kickstart run",
-    )?;
-    run_best_effort(
-        Command::new("launchctl").args([
-            "kickstart",
-            "-k",
-            &format!("{domain}/{}", names.heartbeat_label),
-        ]),
-        "launchctl kickstart heartbeat",
-    )?;
-    run_best_effort(
-        Command::new("launchctl").args([
-            "kickstart",
-            "-k",
-            &format!("{domain}/{}", names.reflection_label),
-        ]),
-        "launchctl kickstart reflection",
     )
 }
 
@@ -490,14 +478,16 @@ fn render_run_plist(
     label: &str,
     args: &[String],
     working_dir: &Path,
+    env_path: &str,
     stdout_path: &Path,
     stderr_path: &Path,
 ) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{}</string>\n  <key>ProgramArguments</key>\n  <array>\n{}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>{}</string>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>StandardOutPath</key>\n  <string>{}</string>\n  <key>StandardErrorPath</key>\n  <string>{}</string>\n</dict>\n</plist>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{}</string>\n  <key>ProgramArguments</key>\n  <array>\n{}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>{}</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>{}</string>\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>StandardOutPath</key>\n  <string>{}</string>\n  <key>StandardErrorPath</key>\n  <string>{}</string>\n</dict>\n</plist>\n",
         xml_escape(label),
         plist_program_arguments(args),
         xml_escape(&working_dir.display().to_string()),
+        xml_escape(env_path),
         xml_escape(&stdout_path.display().to_string()),
         xml_escape(&stderr_path.display().to_string())
     )
@@ -507,20 +497,31 @@ fn render_timer_plist(
     label: &str,
     args: &[String],
     working_dir: &Path,
+    env_path: &str,
     time: TimeOfDay,
     stdout_path: &Path,
     stderr_path: &Path,
 ) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{}</string>\n  <key>ProgramArguments</key>\n  <array>\n{}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>{}</string>\n  <key>StartCalendarInterval</key>\n  <dict>\n    <key>Hour</key>\n    <integer>{}</integer>\n    <key>Minute</key>\n    <integer>{}</integer>\n  </dict>\n  <key>StandardOutPath</key>\n  <string>{}</string>\n  <key>StandardErrorPath</key>\n  <string>{}</string>\n</dict>\n</plist>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{}</string>\n  <key>ProgramArguments</key>\n  <array>\n{}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>{}</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>{}</string>\n  </dict>\n  <key>StartCalendarInterval</key>\n  <dict>\n    <key>Hour</key>\n    <integer>{}</integer>\n    <key>Minute</key>\n    <integer>{}</integer>\n  </dict>\n  <key>StandardOutPath</key>\n  <string>{}</string>\n  <key>StandardErrorPath</key>\n  <string>{}</string>\n</dict>\n</plist>\n",
         xml_escape(label),
         plist_program_arguments(args),
         xml_escape(&working_dir.display().to_string()),
+        xml_escape(env_path),
         time.hour,
         time.minute,
         xml_escape(&stdout_path.display().to_string()),
         xml_escape(&stderr_path.display().to_string())
     )
+}
+
+fn launchd_path() -> String {
+    env::var("PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string()
+        })
 }
 
 fn plist_program_arguments(args: &[String]) -> String {

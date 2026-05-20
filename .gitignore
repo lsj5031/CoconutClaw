@@ -6,6 +6,7 @@ state.db
 state/
 TASKS/
 LOGS/*.md
+LOGS/*.log
 !LOGS/.gitkeep
 runtime/
 tmp/
