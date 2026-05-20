@@ -53,7 +53,7 @@ In short: backlog items **1, 2, 3, 4, 5, 6, 7, 8, 10** are landed; **9** is part
 - Provider abstraction is now a `trait ProviderRunner` with one shared driver
   `run_provider_impl<P>` in `crates/coconutclaw-provider/src/lib.rs`. Six
   runner structs (`CodexRunner`, `PiRunner`, `ClaudeRunner`, `OpenCodeRunner`,
-  `GeminiRunner`, `FactoryRunner`) each implement `build_cmd`,
+  `AntigravityRunner`, `FactoryRunner`) each implement `build_cmd`,
   `progress_parser`, `extract_final`, `prefer_stdout`, `has_dangerous_flag`.
   Public entry point still returns `ProviderOutput { raw_output, success,
   exit_code }`.
@@ -154,7 +154,7 @@ parsing + dispatch glue. Worth a second pass once the `Transport` trait
 
 ### 2. Provider runners were five copies of the same shape — **[DONE]**
 
-**Before:** `run_codex` / `run_claude` / `run_opencode` / `run_gemini` /
+**Before:** `run_codex` / `run_claude` / `run_opencode` / `run_antigravity` /
 `run_factory` / `run_pi` all duplicated "build cmd → optional YOLO retry →
 `run_provider_process` → `extract_json_or_fallback` → `finalize_output`".
 

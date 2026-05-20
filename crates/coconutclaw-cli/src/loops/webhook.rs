@@ -33,6 +33,7 @@ use crate::webhook::{extract_update_id_from_json, extract_update_id_from_value, 
 
 use super::slack_socket::drain_slack_socket_turns;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_webhook_loop(
     cfg: &RuntimeConfig,
     store: &mut Store,
@@ -245,13 +246,10 @@ pub(crate) fn drain_webhook_channel(
             }
         };
 
-        match extract_update_id_from_json(&line) {
-            Err(err) => {
-                tracing::warn!("dropping malformed webhook channel entry: {err:#}");
-                progressed = true;
-                continue;
-            }
-            Ok(_) => {}
+        if let Err(err) = extract_update_id_from_json(&line) {
+            tracing::warn!("dropping malformed webhook channel entry: {err:#}");
+            progressed = true;
+            continue;
         }
 
         let outcome = match process_webhook_line(cfg, store, scheduler, &line) {

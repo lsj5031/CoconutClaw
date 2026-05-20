@@ -530,25 +530,24 @@ impl SessionScheduler {
                     channel_id,
                     thread_ts,
                 } = &request.delivery
-                {
-                    if let Some(prompt) = effects.iter().find_map(|e| match e {
+                    && let Some(prompt) = effects.iter().find_map(|e| match e {
                         crate::markers::Effect::SendApproval(p) => Some(p.as_str()),
                         _ => None,
-                    }) {
-                        let client = build_slack_client(&self.inner.cfg)?;
-                        create_slack_approval_request(
-                            &store,
-                            &client,
-                            &request,
-                            &input,
-                            task_id,
-                            channel_id,
-                            thread_ts.as_deref(),
-                            prompt,
-                            &self.inner.cfg.timezone,
-                        )?;
-                        return Ok(TaskCompletion::AwaitingApproval);
-                    }
+                    })
+                {
+                    let client = build_slack_client(&self.inner.cfg)?;
+                    create_slack_approval_request(
+                        &store,
+                        &client,
+                        &request,
+                        &input,
+                        task_id,
+                        channel_id,
+                        thread_ts.as_deref(),
+                        prompt,
+                        &self.inner.cfg.timezone,
+                    )?;
+                    return Ok(TaskCompletion::AwaitingApproval);
                 }
             }
 

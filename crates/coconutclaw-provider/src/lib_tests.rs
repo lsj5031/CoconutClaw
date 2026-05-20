@@ -1,7 +1,7 @@
 use super::{
-    extract_claude_json_final, extract_factory_json_final, extract_gemini_json_final,
-    extract_opencode_json_final, extract_pi_json_final, parse_bin_with_env, parse_claude_json_line,
-    parse_codex_progress_line, parse_factory_json_line, parse_gemini_json_line,
+    extract_antigravity_json_final, extract_claude_json_final, extract_factory_json_final,
+    extract_opencode_json_final, extract_pi_json_final, parse_antigravity_json_line,
+    parse_bin_with_env, parse_claude_json_line, parse_codex_progress_line, parse_factory_json_line,
     parse_opencode_json_line, parse_pi_progress_line, run_provider, shorten_status_text,
     split_command_spec, tool_arg_summary,
 };
@@ -685,96 +685,96 @@ fn run_opencode_keeps_permission_override_when_retrying_without_legacy_flag() {
 }
 
 #[test]
-fn parse_gemini_init() {
-    let line = r#"{"type":"init","session_id":"abc","model":"gemini-2.5-pro"}"#;
+fn parse_antigravity_init() {
+    let line = r#"{"type":"init","session_id":"abc","model":"antigravity-2.5-pro"}"#;
     assert_eq!(
-        parse_gemini_json_line(line).as_deref(),
+        parse_antigravity_json_line(line).as_deref(),
         Some("Processing...")
     );
 }
 
 #[test]
-fn parse_gemini_tool_use() {
+fn parse_antigravity_tool_use() {
     let line = r#"{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}"#;
     assert_eq!(
-        parse_gemini_json_line(line).as_deref(),
+        parse_antigravity_json_line(line).as_deref(),
         Some("▶ Bash: ls -la")
     );
 }
 
 #[test]
-fn parse_gemini_tool_result() {
+fn parse_antigravity_tool_result() {
     let line = r#"{"type":"tool_result","output":"hello\n"}"#;
     assert_eq!(
-        parse_gemini_json_line(line).as_deref(),
+        parse_antigravity_json_line(line).as_deref(),
         Some("✓ tool: hello")
     );
 }
 
 #[test]
-fn parse_gemini_tool_result_with_name_and_input() {
+fn parse_antigravity_tool_result_with_name_and_input() {
     let line = r#"{"type":"tool_result","name":"run_shell_command","input":{"command":"ls -la"},"output":"done"}"#;
     assert_eq!(
-        parse_gemini_json_line(line).as_deref(),
+        parse_antigravity_json_line(line).as_deref(),
         Some("✓ run_shell_command: ls -la")
     );
 }
 
 #[test]
-fn parse_gemini_assistant_message() {
+fn parse_antigravity_assistant_message() {
     let line =
         r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"hello"}]}"#;
     assert_eq!(
-        parse_gemini_json_line(line).as_deref(),
+        parse_antigravity_json_line(line).as_deref(),
         Some("Drafting response...")
     );
 }
 
 #[test]
-fn parse_gemini_error() {
+fn parse_antigravity_error() {
     let line = r#"{"type":"error","message":"API rate limit"}"#;
     assert_eq!(
-        parse_gemini_json_line(line).as_deref(),
+        parse_antigravity_json_line(line).as_deref(),
         Some("⚠ API rate limit")
     );
 }
 
 #[test]
-fn extract_gemini_json_final_prefers_result() {
+fn extract_antigravity_json_final_prefers_result() {
     let raw = r#"{"type":"init","session_id":"s1"}
 {"type":"message","role":"assistant","content":[{"type":"text","text":"not-final"}]}
 {"type":"result","response":"TELEGRAM_REPLY: final answer","stats":{}}
 "#;
-    let text = extract_gemini_json_final(raw);
+    let text = extract_antigravity_json_final(raw);
     assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: final answer"));
 }
 
 #[test]
-fn extract_gemini_json_final_falls_back_to_message() {
+fn extract_antigravity_json_final_falls_back_to_message() {
     let raw = r#"{"type":"init","session_id":"s1"}
 {"type":"message","role":"assistant","content":[{"type":"text","text":"TELEGRAM_REPLY: from message"}]}
 "#;
-    let text = extract_gemini_json_final(raw);
+    let text = extract_antigravity_json_final(raw);
     assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: from message"));
 }
 
 #[test]
-fn extract_gemini_json_final_string_content() {
+fn extract_antigravity_json_final_string_content() {
     let raw = r#"{"type":"message","role":"assistant","content":"TELEGRAM_REPLY: plain string"}
 "#;
-    let text = extract_gemini_json_final(raw);
+    let text = extract_antigravity_json_final(raw);
     assert_eq!(text.as_deref(), Some("TELEGRAM_REPLY: plain string"));
 }
 
 #[test]
-fn extract_gemini_json_final_accumulates_deltas() {
-    let raw = r#"{"type":"init","session_id":"s1","model":"gemini-3.1-pro-preview"}
+fn extract_antigravity_json_final_accumulates_deltas() {
+    let raw = r#"{"type":"init","session_id":"s1","model":"antigravity-3.1-pro-preview"}
 {"type":"message","role":"user","content":"say hello"}
 {"type":"message","role":"assistant","content":"TELEGRAM_REPLY: This is a test reply with","delta":true}
 {"type":"message","role":"assistant","content":" multiple sentences. The quick brown fox.","delta":true}
 {"type":"result","status":"success","stats":{"total_tokens":100}}
 "#;
-    let text = extract_gemini_json_final(raw);
+    let text = extract_antigravity_json_final(raw);
     assert_eq!(
         text.as_deref(),
         Some("TELEGRAM_REPLY: This is a test reply with multiple sentences. The quick brown fox.")
@@ -782,31 +782,31 @@ fn extract_gemini_json_final_accumulates_deltas() {
 }
 
 #[test]
-fn run_gemini_prefers_stdout_over_stderr_banner_for_plain_text() {
+fn run_antigravity_prefers_stdout_over_stderr_banner_for_plain_text() {
     let mut config = RuntimeConfig::test_config();
-    config.provider = AgentProvider::Gemini;
+    config.provider = AgentProvider::Antigravity;
     config.exec_policy = "yolo".to_string();
 
     let script = r#"#!/bin/sh
-printf 'TELEGRAM_REPLY: hello from fake gemini\n'
+printf 'TELEGRAM_REPLY: hello from fake antigravity\n'
 printf 'YOLO mode is enabled. All tool calls will be automatically approved.\n' >&2
 printf 'YOLO mode is enabled. All tool calls will be automatically approved.\n' >&2
 "#;
     let windows_script = r#"
-Write-Output 'TELEGRAM_REPLY: hello from fake gemini'
+Write-Output 'TELEGRAM_REPLY: hello from fake antigravity'
 [Console]::Error.WriteLine('YOLO mode is enabled. All tool calls will be automatically approved.')
 [Console]::Error.WriteLine('YOLO mode is enabled. All tool calls will be automatically approved.')
 "#;
 
-    config.gemini.bin =
-        write_test_provider_script(&config.root_dir, "fake-gemini", script, windows_script);
+    config.antigravity.bin =
+        write_test_provider_script(&config.root_dir, "fake-antigravity", script, windows_script);
 
     let output =
-        run_provider(None, &config, "hello", None, None, Some(5)).expect("run fake gemini");
+        run_provider(None, &config, "hello", None, None, Some(5)).expect("run fake antigravity");
     assert!(output.success);
     assert_eq!(
         output.raw_output.trim(),
-        "TELEGRAM_REPLY: hello from fake gemini"
+        "TELEGRAM_REPLY: hello from fake antigravity"
     );
 }
 

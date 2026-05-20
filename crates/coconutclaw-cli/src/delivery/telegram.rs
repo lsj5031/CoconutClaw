@@ -38,10 +38,10 @@ pub(crate) fn scheduled_delivery_has_expected_ops(
     for effect in &effects {
         match effect {
             crate::markers::Effect::TelegramReply(_) => has_text = true,
-            crate::markers::Effect::VoiceReply(v) => {
-                if cfg.tts_cmd_template.is_some() && !v.trim().is_empty() {
-                    has_voice = true;
-                }
+            crate::markers::Effect::VoiceReply(v)
+                if cfg.tts_cmd_template.is_some() && !v.trim().is_empty() =>
+            {
+                has_voice = true;
             }
             crate::markers::Effect::SendPhoto(_)
             | crate::markers::Effect::SendDocument(_)
@@ -153,38 +153,32 @@ pub(crate) fn dispatch_scheduled_output(
                     persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
                 }
             }
-            crate::markers::Effect::VoiceReply(voice_reply) => {
-                if cfg.tts_cmd_template.is_some() {
-                    let voice_reply = voice_reply.trim();
-                    if !voice_reply.is_empty() && !state.has_telegram_op("telegram:voice") {
-                        if let Some(chat_id) = chat_id {
-                            match send_voice_reply(client, cfg, chat_id, voice_reply) {
-                                Ok(()) => {
-                                    state.mark_telegram_op("telegram:voice");
-                                    persist_scheduled_delivery_state(
-                                        store,
-                                        request.scheduled_task_id,
-                                        state,
-                                    )?;
-                                }
-                                Err(err) => {
-                                    tracing::warn!(
-                                        "scheduled telegram voice dispatch failed (will retry): {err:#}"
-                                    );
-                                    all_ok = false;
-                                }
+            crate::markers::Effect::VoiceReply(voice_reply) if cfg.tts_cmd_template.is_some() => {
+                let voice_reply = voice_reply.trim();
+                if !voice_reply.is_empty() && !state.has_telegram_op("telegram:voice") {
+                    if let Some(chat_id) = chat_id {
+                        match send_voice_reply(client, cfg, chat_id, voice_reply) {
+                            Ok(()) => {
+                                state.mark_telegram_op("telegram:voice");
+                                persist_scheduled_delivery_state(
+                                    store,
+                                    request.scheduled_task_id,
+                                    state,
+                                )?;
                             }
-                        } else {
-                            tracing::warn!(
-                                "cannot dispatch scheduled telegram voice output: no chat_id available"
-                            );
-                            state.mark_telegram_op("telegram:voice");
-                            persist_scheduled_delivery_state(
-                                store,
-                                request.scheduled_task_id,
-                                state,
-                            )?;
+                            Err(err) => {
+                                tracing::warn!(
+                                    "scheduled telegram voice dispatch failed (will retry): {err:#}"
+                                );
+                                all_ok = false;
+                            }
                         }
+                    } else {
+                        tracing::warn!(
+                            "cannot dispatch scheduled telegram voice output: no chat_id available"
+                        );
+                        state.mark_telegram_op("telegram:voice");
+                        persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
                     }
                 }
             }

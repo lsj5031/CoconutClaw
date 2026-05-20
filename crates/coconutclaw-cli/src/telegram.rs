@@ -259,14 +259,12 @@ pub(crate) fn dispatch_telegram_output(
                     }
                 }
             }
-            crate::markers::Effect::VoiceReply(voice_reply) => {
-                if cfg.tts_cmd_template.is_some() {
-                    let voice_reply = voice_reply.trim();
-                    if !voice_reply.is_empty()
-                        && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)
-                    {
-                        tracing::warn!("failed to send voice reply: {err:#}");
-                    }
+            crate::markers::Effect::VoiceReply(voice_reply) if cfg.tts_cmd_template.is_some() => {
+                let voice_reply = voice_reply.trim();
+                if !voice_reply.is_empty()
+                    && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)
+                {
+                    tracing::warn!("failed to send voice reply: {err:#}");
                 }
             }
             crate::markers::Effect::SendPhoto(item) => {
@@ -308,16 +306,14 @@ pub(crate) fn dispatch_telegram_output(
             let _ = telegram_delete_message(client, cfg, chat_id, message_id)
                 .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
         }
-    } else if has_text_reply {
+    } else {
         // If reply was empty but we had a progress message, clean it up
         let has_empty_reply = effects
             .iter()
             .any(|e| matches!(e, crate::markers::Effect::TelegramReply(r) if r.trim().is_empty()));
-        if has_empty_reply {
-            if let Some(message_id) = progress_message_id {
-                let _ = telegram_delete_message(client, cfg, chat_id, message_id)
-                    .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
-            }
+        if has_empty_reply && let Some(message_id) = progress_message_id {
+            let _ = telegram_delete_message(client, cfg, chat_id, message_id)
+                .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
         }
     }
 

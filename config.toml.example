@@ -41,6 +41,11 @@ TTS_MAX_CHARS = 260
 # Agent provider switch
 AGENT_PROVIDER = "codex"
 
+# Antigravity provider settings
+ANTIGRAVITY_BIN = "antigravity"
+ANTIGRAVITY_MODEL = ""
+ANTIGRAVITY_REASONING_EFFORT = ""
+
 # Codex provider settings
 CODEX_BIN = "codex"
 CODEX_MODEL = ""

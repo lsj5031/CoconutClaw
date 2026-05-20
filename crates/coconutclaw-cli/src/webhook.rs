@@ -168,12 +168,11 @@ async fn webhook_post_handler(
     }
 
     // Detect cancel commands inline and signal the cancel marker.
-    if let Ok(value) = serde_json::from_str::<Value>(body_text) {
-        if telegram_cancel_requested(&value) {
-            if let Err(err) = signal_cancel_marker(cfg) {
-                tracing::warn!("failed to set cancel marker from telegram webhook: {err:#}");
-            }
-        }
+    if let Ok(value) = serde_json::from_str::<Value>(body_text)
+        && telegram_cancel_requested(&value)
+        && let Err(err) = signal_cancel_marker(cfg)
+    {
+        tracing::warn!("failed to set cancel marker from telegram webhook: {err:#}");
     }
 
     if let Err(err) = state.tx.send(body_text.to_string()) {

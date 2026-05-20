@@ -694,10 +694,10 @@ pub(crate) fn dispatch_slack_output(
                             }
                         }
                     }
-                } else if let Some(ts) = progress_message_id {
-                    if let Err(err) = slack_delete_message(client, channel_id, ts) {
-                        tracing::warn!("slack delete progress message failed: {err:#}");
-                    }
+                } else if let Some(ts) = progress_message_id
+                    && let Err(err) = slack_delete_message(client, channel_id, ts)
+                {
+                    tracing::warn!("slack delete progress message failed: {err:#}");
                 }
             }
             crate::markers::Effect::SendPhoto(path_str) => {

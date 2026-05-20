@@ -15,7 +15,7 @@ Primary runtime is `coconutclaw` (`crates/coconutclaw-cli/src/main.rs`).
 
 - `crates/coconutclaw-cli` — main runtime loop, Telegram I/O, context building, marker parsing, storage.
 - `crates/coconutclaw-config` — runtime config loading and instance layout.
-- `crates/coconutclaw-provider` — provider execution (`codex` / `pi`) and progress extraction.
+- `crates/coconutclaw-provider` — provider execution (`codex` / `pi` / `antigravity`) and progress extraction.
 - `sql/schema.sql` — SQLite schema (`kv`, `turns`, `tasks`).
 - Helper scripts kept by design:
   - `scripts/asr.sh`

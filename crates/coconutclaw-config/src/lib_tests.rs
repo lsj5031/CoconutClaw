@@ -248,6 +248,27 @@ WEBHOOK_PATH = \"/telegram/webhook\"\n",
 }
 
 #[test]
+fn antigravity_provider_loads_from_config() {
+    let instance_dir = unique_dir();
+    write_config(
+        &instance_dir,
+        "TELEGRAM_BOT_TOKEN = \"123:token\"\n\
+TELEGRAM_CHAT_ID = \"321\"\n\
+AGENT_PROVIDER = \"antigravity\"\n\
+ANTIGRAVITY_BIN = \"antigravity\"\n\
+ANTIGRAVITY_MODEL = \"antigravity-pro\"\n\
+ANTIGRAVITY_REASONING_EFFORT = \"high\"\n",
+    );
+
+    let cfg = load_runtime_config_isolated(instance_dir).expect("config");
+
+    assert_eq!(cfg.provider, AgentProvider::Antigravity);
+    assert_eq!(cfg.antigravity.bin, "antigravity");
+    assert_eq!(cfg.antigravity.model.as_deref(), Some("antigravity-pro"));
+    assert_eq!(cfg.antigravity.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
 fn toml_scalar_to_string_works() {
     assert_eq!(
         toml_scalar_to_string(&toml::Value::String("hello".to_string())),

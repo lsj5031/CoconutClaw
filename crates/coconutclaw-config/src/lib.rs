@@ -15,7 +15,7 @@ pub enum AgentProvider {
     Pi,
     Claude,
     OpenCode,
-    Gemini,
+    Antigravity,
     Factory,
 }
 
@@ -26,10 +26,10 @@ impl AgentProvider {
             "pi" => Ok(Self::Pi),
             "claude" => Ok(Self::Claude),
             "opencode" => Ok(Self::OpenCode),
-            "gemini" => Ok(Self::Gemini),
+            "antigravity" => Ok(Self::Antigravity),
             "factory" => Ok(Self::Factory),
             other => bail!(
-                "invalid AGENT_PROVIDER: {other} (expected codex, pi, claude, opencode, gemini, or factory)"
+                "invalid AGENT_PROVIDER: {other} (expected codex, pi, claude, opencode, antigravity, or factory)"
             ),
         }
     }
@@ -40,7 +40,7 @@ impl AgentProvider {
             Self::Pi => "pi",
             Self::Claude => "claude",
             Self::OpenCode => "opencode",
-            Self::Gemini => "gemini",
+            Self::Antigravity => "antigravity",
             Self::Factory => "factory",
         }
     }
@@ -107,16 +107,16 @@ impl Default for OpenCodeConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct GeminiConfig {
+pub struct AntigravityConfig {
     pub bin: String,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
 }
 
-impl Default for GeminiConfig {
+impl Default for AntigravityConfig {
     fn default() -> Self {
         Self {
-            bin: "gemini".to_string(),
+            bin: "antigravity".to_string(),
             model: None,
             reasoning_effort: None,
         }
@@ -218,7 +218,7 @@ pub struct RuntimeConfig {
     pub pi: PiConfig,
     pub claude: ClaudeConfig,
     pub opencode: OpenCodeConfig,
-    pub gemini: GeminiConfig,
+    pub antigravity: AntigravityConfig,
     pub factory: FactoryConfig,
     pub config_file_path: PathBuf,
 }
@@ -282,7 +282,7 @@ SCHEDULED_TASKS_ENABLED = true
 CLAUDE_BIN = "claude"
 OPENCODE_BIN = "opencode"
 OPENCODE_SKIP_PERMISSIONS = ""
-GEMINI_BIN = "gemini"
+ANTIGRAVITY_BIN = "antigravity"
 FACTORY_BIN = "droid"
 "#;
 
@@ -319,9 +319,9 @@ const MIGRATABLE_ENV_KEYS: &[&str] = &[
     "OPENCODE_MODEL",
     "OPENCODE_REASONING_EFFORT",
     "OPENCODE_SKIP_PERMISSIONS",
-    "GEMINI_BIN",
-    "GEMINI_MODEL",
-    "GEMINI_REASONING_EFFORT",
+    "ANTIGRAVITY_BIN",
+    "ANTIGRAVITY_MODEL",
+    "ANTIGRAVITY_REASONING_EFFORT",
     "FACTORY_BIN",
     "FACTORY_MODEL",
     "FACTORY_REASONING_EFFORT",
@@ -485,7 +485,7 @@ impl RuntimeConfig {
             pi: PiConfig::default(),
             claude: ClaudeConfig::default(),
             opencode: OpenCodeConfig::default(),
-            gemini: GeminiConfig::default(),
+            antigravity: AntigravityConfig::default(),
             factory: FactoryConfig::default(),
             config_file_path: root.join("config.toml"),
         };
@@ -771,14 +771,15 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
                 }
             },
         },
-        gemini: GeminiConfig {
-            bin: pick_value("GEMINI_BIN", &config_file).unwrap_or_else(|| "gemini".to_string()),
-            model: pick_value("GEMINI_MODEL", &config_file)
+        antigravity: AntigravityConfig {
+            bin: pick_value("ANTIGRAVITY_BIN", &config_file)
+                .unwrap_or_else(|| "antigravity".to_string()),
+            model: pick_value("ANTIGRAVITY_MODEL", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
-            reasoning_effort: pick_value("GEMINI_REASONING_EFFORT", &config_file)
+            reasoning_effort: pick_value("ANTIGRAVITY_REASONING_EFFORT", &config_file)
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())

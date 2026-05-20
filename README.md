@@ -108,7 +108,7 @@ TELEGRAM_CHAT_ID = "your_chat_id"
 
 ### Advanced Options
 ```toml
-# AI Provider: codex, pi, claude, opencode, gemini, or factory
+# AI Provider: codex, pi, claude, opencode, antigravity, or factory
 AGENT_PROVIDER = "codex"
 
 # Telegram formatting: off | MarkdownV2 | Html
@@ -124,7 +124,7 @@ TELEGRAM_PARSE_FALLBACK = "plain"
 | **Pi** | `pi` | General reasoning and multimodal (vision) tasks. |
 | **Claude** | `claude` | Integration with Claude Code CLI. |
 | **OpenCode** | `opencode` | Support for OpenCode CLI tools. |
-| **Gemini** | `gemini` | Integration with Gemini CLI. |
+| **Antigravity** | `antigravity` | Integration with the Antigravity CLI. |
 | **Factory** | `factory` | Powered by Factory.ai's `droid` CLI. |
 
 ---

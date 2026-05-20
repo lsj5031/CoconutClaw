@@ -100,7 +100,7 @@ struct ClaudeRunner;
 
 struct OpenCodeRunner;
 
-struct GeminiRunner;
+struct AntigravityRunner;
 
 struct FactoryRunner;
 
@@ -319,22 +319,22 @@ impl ProviderRunner for OpenCodeRunner {
 }
 
 // ---------------------------------------------------------------------------
-// Gemini impl
+// Antigravity impl
 // ---------------------------------------------------------------------------
 
-impl ProviderRunner for GeminiRunner {
+impl ProviderRunner for AntigravityRunner {
     fn bin_name(&self) -> &str {
-        "gemini"
+        "antigravity"
     }
 
     fn build_cmd(&self, ctx: &ProviderCtx, _include_dangerous: bool) -> std::io::Result<Command> {
-        let mut cmd = new_provider_command(&ctx.config.gemini.bin);
+        let mut cmd = new_provider_command(&ctx.config.antigravity.bin);
         cmd.arg("-p");
 
         if ctx.config.exec_policy.eq_ignore_ascii_case("yolo") {
             cmd.arg("--yolo");
         }
-        if let Some(model) = &ctx.config.gemini.model {
+        if let Some(model) = &ctx.config.antigravity.model {
             cmd.arg("--model").arg(model);
         }
         if ctx.progress_tx.is_some() {
@@ -345,11 +345,11 @@ impl ProviderRunner for GeminiRunner {
     }
 
     fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {
-        Some(parse_gemini_json_line)
+        Some(parse_antigravity_json_line)
     }
 
     fn extract_final(&self, run_result: &RunResult, _ctx: &ProviderCtx) -> Option<String> {
-        extract_json_or_fallback(run_result, extract_gemini_json_final, true)
+        extract_json_or_fallback(run_result, extract_antigravity_json_final, true)
     }
 
     fn prefer_stdout(&self) -> bool {
@@ -427,7 +427,7 @@ pub fn run_provider(
         AgentProvider::Pi => run_provider_impl(&PiRunner, &ctx),
         AgentProvider::Claude => run_provider_impl(&ClaudeRunner, &ctx),
         AgentProvider::OpenCode => run_provider_impl(&OpenCodeRunner, &ctx),
-        AgentProvider::Gemini => run_provider_impl(&GeminiRunner, &ctx),
+        AgentProvider::Antigravity => run_provider_impl(&AntigravityRunner, &ctx),
         AgentProvider::Factory => run_provider_impl(&FactoryRunner, &ctx),
     }
 }
@@ -1529,7 +1529,7 @@ fn trim_to_first_marker(text: &str) -> Option<String> {
     Some(trimmed[start..].trim().to_string())
 }
 
-fn parse_gemini_json_line(line: &str) -> Option<String> {
+fn parse_antigravity_json_line(line: &str) -> Option<String> {
     let value: Value = serde_json::from_str(line).ok()?;
     let event_type = value.get("type")?.as_str()?;
 
@@ -1600,7 +1600,7 @@ fn parse_gemini_json_line(line: &str) -> Option<String> {
     None
 }
 
-fn extract_gemini_json_final(raw: &str) -> Option<String> {
+fn extract_antigravity_json_final(raw: &str) -> Option<String> {
     let mut result_text: Option<String> = None;
     let mut assistant_text = String::new();
 

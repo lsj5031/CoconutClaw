@@ -71,9 +71,9 @@ fn html_heading_renders_as_bold() {
 
 #[test]
 fn html_cjk_with_markdown() {
-    let text = "使用 **gemini** 的 `cli` 工具";
+    let text = "使用 **antigravity** 的 `cli` 工具";
     let rendered = render_html_reply(text);
-    assert!(rendered.contains("<b>gemini</b>"));
+    assert!(rendered.contains("<b>antigravity</b>"));
     assert!(rendered.contains("<code>cli</code>"));
 }
 
