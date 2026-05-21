@@ -38,13 +38,17 @@ pub(crate) fn run_webhook_loop(
     cfg: &RuntimeConfig,
     store: &mut Store,
     scheduler: &SessionScheduler,
-    telegram_client: &Client,
+    telegram_client: Option<&Client>,
     shutdown: &Arc<AtomicBool>,
     mut webhook_rx: mpsc::UnboundedReceiver<String>,
     webhook_tx: &mpsc::UnboundedSender<String>,
     mut slack_rx: Option<&mut mpsc::UnboundedReceiver<SlackWebhookTurn>>,
 ) -> Result<()> {
-    register_telegram_webhook(telegram_client, cfg)?;
+    if let Some(client) = telegram_client {
+        register_telegram_webhook(client, cfg)?;
+    } else {
+        tracing::info!("telegram webhook disabled: TELEGRAM_BOT_TOKEN not configured");
+    }
 
     // A tokio mpsc sender is created before this call and passed to spawn_webhook_http_server.
     // The receiver is passed here so the main loop can drain it.
@@ -88,7 +92,7 @@ pub(crate) fn restore_inflight_update(
     cfg: &RuntimeConfig,
     store: &mut Store,
     scheduler: &SessionScheduler,
-    telegram_client: &Client,
+    telegram_client: Option<&Client>,
 ) -> Result<()> {
     let Some(inflight_json) = store.kv_get("inflight_update_json")? else {
         return Ok(());
@@ -224,7 +228,7 @@ pub(crate) fn drain_webhook_channel(
     cfg: &RuntimeConfig,
     store: &mut Store,
     scheduler: &SessionScheduler,
-    telegram_client: &Client,
+    telegram_client: Option<&Client>,
     shutdown: &Arc<AtomicBool>,
     rx: &mut mpsc::UnboundedReceiver<String>,
     tx: &mpsc::UnboundedSender<String>,

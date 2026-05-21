@@ -1,16 +1,29 @@
 # Core Telegram settings
 TELEGRAM_BOT_TOKEN = "replace_me"
 TELEGRAM_CHAT_ID = "replace_me"
+# TELEGRAM_CHAT_IDS = "123456789,987654321"
 
-# Telegram text formatting: off | MarkdownV2
+# Telegram text formatting: off | MarkdownV2 | Html
 TELEGRAM_PARSE_MODE = "off"
 # plain | none
 TELEGRAM_PARSE_FALLBACK = "plain"
+
+# Slack integration (optional — uncomment to enable)
+# SLACK_BOT_TOKEN = "xoxb-..."
+# SLACK_USER_TOKEN = "xoxp-..."
+# SLACK_APP_TOKEN = "xapp-..."
+# SLACK_CHANNEL_ID = "C01234567"
+# SLACK_SIGNING_SECRET = "..."
+# SLACK_ADMIN_USER_IDS = "U123,U456"
+# SLACK_API_TIMEOUT_SECS = 30
+# SLACK_FORMAT_MODE = "mrkdwn"
+# SLACK_FORMAT_FALLBACK = "plain"
 
 # Runtime location
 TIMEZONE = "UTC"
 SQLITE_DB_PATH = "./state.db"
 LOG_DIR = "./LOGS"
+ALLOWLIST_PATH = "./config/allowlist.txt"
 
 # Polling mode
 POLL_INTERVAL_SECONDS = 2
@@ -38,28 +51,50 @@ TTS_CMD_TEMPLATE = ""
 VOICE_BITRATE = "32k"
 TTS_MAX_CHARS = 260
 
-# Agent provider switch
+# Agent provider switch: codex | pi | claude | opencode | antigravity | factory
 AGENT_PROVIDER = "codex"
+EXEC_POLICY = "yolo"
+
+# Codex provider settings
+CODEX_BIN = "codex"
+CODEX_MODEL = ""
+
+# pi provider settings
+PI_BIN = "pi"
+PI_MODEL = ""
+PI_REASONING_EFFORT = ""
+PI_NO_EXTENSIONS = "off"
+
+# Claude provider settings
+CLAUDE_BIN = "claude"
+CLAUDE_MODEL = ""
+CLAUDE_REASONING_EFFORT = ""
+
+# OpenCode provider settings
+OPENCODE_BIN = "opencode"
+OPENCODE_MODEL = ""
+OPENCODE_REASONING_EFFORT = ""
+OPENCODE_SKIP_PERMISSIONS = ""
 
 # Antigravity provider settings
 ANTIGRAVITY_BIN = "antigravity"
 ANTIGRAVITY_MODEL = ""
 ANTIGRAVITY_REASONING_EFFORT = ""
 
-# Codex provider settings
-CODEX_BIN = "codex"
-CODEX_MODEL = ""
-EXEC_POLICY = "yolo"
-OPENCODE_SKIP_PERMISSIONS = ""
-ALLOWLIST_PATH = "./config/allowlist.txt"
+# Factory provider settings
+FACTORY_BIN = "droid"
+FACTORY_MODEL = ""
+FACTORY_REASONING_EFFORT = ""
 
-# pi provider settings
-PI_BIN = "pi"
-PI_PROVIDER = ""
-PI_MODEL = ""
-PI_EXTRA_ARGS = ""
+# Runtime tuning
+CONTEXT_TURNS = 8
+PROVIDER_MAX_RETRIES = 1
+PROGRESS_UPDATE_INTERVAL = 3
+TELEGRAM_API_TIMEOUT_SECS = 30
+TELEGRAM_API_RETRY_ATTEMPTS = 3
+PROVIDER_TIMEOUT_SECS = 300
 
-# Rust timer features
+# Nightly reflection
 NIGHTLY_REFLECTION_FILE = "./LOGS/nightly_reflection.md"
 NIGHTLY_REFLECTION_SKIP_AGENT = "off"
 NIGHTLY_REFLECTION_PROMPT = ""

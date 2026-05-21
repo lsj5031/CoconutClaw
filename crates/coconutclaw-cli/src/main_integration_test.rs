@@ -321,7 +321,7 @@ fn due_scheduled_task_with_active_run_is_not_enqueued_twice() {
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let client = build_telegram_client(&cfg).expect("telegram client");
 
-    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
         .expect("run due scheduled tasks");
 
     assert_eq!(
@@ -367,7 +367,7 @@ fn due_scheduled_task_retry_with_active_run_is_not_dispatched_twice() {
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let client = build_telegram_client(&cfg).expect("telegram client");
 
-    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
         .expect("run due scheduled tasks");
 
     let schedules = store
@@ -412,7 +412,7 @@ fn scheduled_task_retry_uses_persisted_telegram_target() {
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let client = build_telegram_client(&cfg).expect("telegram client");
 
-    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
         .expect("run due scheduled tasks");
 
     let requests = server.requests();
@@ -471,7 +471,7 @@ fn scheduled_task_retry_uses_persisted_slack_target() {
         let scheduler = SessionScheduler::new(cfg.clone(), None);
         let client = build_telegram_client(&cfg).expect("telegram client");
 
-        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
             .expect("run due scheduled tasks");
 
         let requests = server.requests();
@@ -949,7 +949,7 @@ fn legacy_scheduled_task_retry_uses_inferred_slack_target_from_last_run() {
         let scheduler = SessionScheduler::new(cfg.clone(), None);
         let client = build_telegram_client(&cfg).expect("telegram client");
 
-        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
             .expect("run due scheduled tasks");
 
         let requests = server.requests();
@@ -1005,7 +1005,7 @@ fn legacy_scheduled_task_uses_unique_configured_slack_target_when_no_metadata_re
         let scheduler = SessionScheduler::new(cfg.clone(), None);
         let client = build_telegram_client(&cfg).expect("telegram client");
 
-        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
             .expect("run due scheduled tasks");
 
         let requests = server.requests();
@@ -1068,7 +1068,7 @@ fn legacy_scheduled_task_with_ambiguous_config_is_left_pending() {
         let scheduler = SessionScheduler::new(cfg.clone(), None);
         let client = build_telegram_client(&cfg).expect("telegram client");
 
-        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, &client)
+        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
             .expect("run due scheduled tasks");
 
         assert!(

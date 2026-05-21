@@ -285,6 +285,74 @@ fn build_resume_payload_keeps_attachment_ownership() {
 }
 
 #[test]
+fn scheduled_stdout_task_completion_does_not_require_telegram_config() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let provider_bin = write_fake_provider_script(
+        tmp_dir.path(),
+        "scheduled-stdout-provider",
+        r#"#!/bin/bash
+for ((i=1; i<=$#; i++)); do
+if [[ "${!i}" == "--output-last-message" ]]; then
+    j=$((i + 1))
+    OUT_FILE="${!j}"
+fi
+done
+printf 'TELEGRAM_REPLY: scheduled done\n' > "$OUT_FILE"
+"#,
+        r#"$outFile = ""
+for ($i = 0; $i -lt $args.Count; $i++) {
+if ($args[$i] -eq "--output-last-message") {
+    $outFile = $args[$i + 1]
+    $i++
+}
+}
+"TELEGRAM_REPLY: scheduled done" | Set-Content -Path $outFile
+"#,
+    );
+    let mut cfg = scheduler_test_config(provider_bin);
+    cfg.telegram_bot_token = None;
+    cfg.telegram_chat_id = None;
+    cfg.telegram_chat_ids.clear();
+
+    let store = Store::open(&cfg).expect("store");
+    store
+        .insert_scheduled_task(
+            "2026-04-23T20:00:00+1200",
+            "agent",
+            "scheduled without telegram",
+            "09:00",
+            false,
+        )
+        .expect("insert schedule");
+    let scheduled_task_id = store.list_active_scheduled_tasks().expect("list schedules")[0].id;
+
+    let scheduler = SessionScheduler::new(cfg.clone(), None);
+    let mut request = make_stdout_request(
+        SessionKey::scheduled(&format!("task-{scheduled_task_id}")),
+        "scheduled without telegram",
+    );
+    request.source = TaskSource::Scheduled;
+    request.scheduled_task_id = Some(scheduled_task_id);
+    request.persisted_delivery_target = Some(DeliveryTarget::Stdout);
+
+    let task_id = scheduler.enqueue(request).expect("enqueue scheduled task");
+    wait_for_terminal_tasks(&cfg, &[task_id]);
+
+    let store = Store::open(&cfg).expect("store reopen");
+    let task = store
+        .get_task_run(task_id)
+        .expect("get task")
+        .expect("task run");
+    assert_eq!(task.status, "completed");
+    assert!(
+        store
+            .list_active_scheduled_tasks()
+            .expect("list schedules")
+            .is_empty()
+    );
+}
+
+#[test]
 fn different_sessions_can_run_in_parallel() {
     let tmp_dir = tempfile::tempdir().expect("tempdir");
     let markers_dir = tmp_dir.path().join("parallel-markers");
@@ -626,7 +694,7 @@ fn scheduled_delivery_state_skips_already_completed_replay_operations() {
         dispatch_scheduled_task_output(
             &store,
             &cfg,
-            &client,
+            Some(&client),
             ScheduledTaskDispatch {
                 scheduled_task_id: 1,
                 delivery_target: Some(&delivery_target),
@@ -654,7 +722,7 @@ fn scheduled_delivery_state_skips_already_completed_replay_operations() {
         dispatch_scheduled_task_output(
             &store,
             &cfg,
-            &client,
+            Some(&client),
             ScheduledTaskDispatch {
                 scheduled_task_id: 1,
                 delivery_target: Some(&delivery_target),

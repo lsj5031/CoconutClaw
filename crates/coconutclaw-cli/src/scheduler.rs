@@ -20,7 +20,7 @@ use crate::markers::parse_markers;
 use crate::session::SessionKey;
 use crate::slack::{SlackMedia, build_slack_client};
 use crate::store::{Store, TaskRunStatus};
-use crate::telegram::build_telegram_client;
+use crate::telegram::{build_telegram_client, valid_telegram_token};
 use crate::turn::{hydrate_slack_turn_input, hydrate_turn_input, process_turn_with_status};
 use crate::{IncomingMedia, QuotedMessage, TurnInput, iso_now, shorten_log_text};
 
@@ -497,11 +497,20 @@ impl SessionScheduler {
 
             let effects = parse_markers(&processed.output).to_effects();
             if let Some(scheduled_task_id) = request.scheduled_task_id {
-                let client = build_telegram_client(&self.inner.cfg)?;
+                let telegram_client = match request.persisted_delivery_target.as_ref() {
+                    Some(DeliveryTarget::Slack { .. }) | Some(DeliveryTarget::Stdout) => None,
+                    Some(DeliveryTarget::Telegram { .. }) | None => {
+                        if valid_telegram_token(&self.inner.cfg).is_some() {
+                            Some(build_telegram_client(&self.inner.cfg)?)
+                        } else {
+                            None
+                        }
+                    }
+                };
                 let delivered = dispatch_scheduled_task_output(
                     &store,
                     &self.inner.cfg,
-                    &client,
+                    telegram_client.as_ref(),
                     ScheduledTaskDispatch {
                         scheduled_task_id,
                         delivery_target: request.persisted_delivery_target.as_ref(),

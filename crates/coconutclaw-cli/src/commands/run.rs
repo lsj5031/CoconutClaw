@@ -11,6 +11,23 @@ use crate::store::Store;
 use crate::types::QuotedMessage;
 use crate::util::iso_now;
 
+fn telegram_configured(cfg: &RuntimeConfig) -> bool {
+    crate::telegram::valid_telegram_token(cfg).is_some()
+}
+
+fn slack_socket_configured(cfg: &RuntimeConfig) -> bool {
+    crate::slack::valid_slack_token(cfg).is_some()
+        && cfg
+            .slack_app_token
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|token| !token.is_empty() && token.starts_with("xapp-"))
+}
+
+fn slack_webhook_configured(cfg: &RuntimeConfig) -> bool {
+    cfg.webhook_mode && crate::slack::valid_slack_token(cfg).is_some()
+}
+
 pub(crate) fn install_shutdown_handler() -> Result<Arc<AtomicBool>> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let signal_flag = Arc::clone(&shutdown);
@@ -77,11 +94,28 @@ pub(crate) fn run_run(
     }
 
     let shutdown = install_shutdown_handler()?;
-    let telegram_client = crate::telegram::build_telegram_client(cfg)?;
 
-    if let Err(err) = crate::telegram::register_bot_commands(&telegram_client, cfg) {
-        tracing::warn!("failed to register bot menu commands: {err:#}");
+    let has_telegram = telegram_configured(cfg);
+    let has_slack_socket = slack_socket_configured(cfg);
+    let has_slack_webhook = slack_webhook_configured(cfg);
+    let has_any_transport = has_telegram || has_slack_socket || has_slack_webhook;
+
+    if !has_any_transport {
+        anyhow::bail!(
+            "no transport configured; set TELEGRAM_BOT_TOKEN or Slack settings such as SLACK_BOT_TOKEN + SLACK_APP_TOKEN"
+        );
     }
+
+    let telegram_client = if has_telegram {
+        let client = crate::telegram::build_telegram_client(cfg)?;
+        if let Err(err) = crate::telegram::register_bot_commands(&client, cfg) {
+            tracing::warn!("failed to register bot menu commands: {err:#}");
+        }
+        Some(client)
+    } else {
+        tracing::info!("telegram transport disabled: TELEGRAM_BOT_TOKEN not configured");
+        None
+    };
 
     // Start the long-lived CancelRouter. If it fails, proceed without it —
     // cancel-by-marker simply won't work, but the runtime is still usable.
@@ -130,7 +164,7 @@ pub(crate) fn run_run(
 
     // Attempt to recover any in-flight update from a previous crash before entering loops
     if let Err(err) =
-        crate::loops::restore_inflight_update(cfg, store, &scheduler, &telegram_client)
+        crate::loops::restore_inflight_update(cfg, store, &scheduler, telegram_client.as_ref())
     {
         tracing::warn!("failed to restore inflight update on startup: {err:#}");
     }
@@ -151,7 +185,7 @@ pub(crate) fn run_run(
             cfg,
             store,
             &scheduler,
-            &telegram_client,
+            telegram_client.as_ref(),
             &shutdown,
             webhook_rx,
             &drain_tx,
@@ -160,12 +194,15 @@ pub(crate) fn run_run(
         return Ok(());
     }
 
-    crate::loops::run_poll_loop(
-        cfg,
-        store,
-        &scheduler,
-        &telegram_client,
-        &shutdown,
-        slack_rx.as_mut(),
-    )
+    match (telegram_client.as_ref(), slack_rx.as_mut()) {
+        (Some(client), slack_rx) => {
+            crate::loops::run_poll_loop(cfg, store, &scheduler, client, &shutdown, slack_rx)
+        }
+        (None, Some(slack_rx)) => {
+            crate::loops::run_slack_socket_loop(cfg, store, &scheduler, &shutdown, slack_rx)
+        }
+        (None, None) => {
+            unreachable!("no transport configured but passed initial check");
+        }
+    }
 }

@@ -47,9 +47,12 @@ pub(crate) fn run_poll_loop(
                 drain_slack_socket_turns(cfg, store, scheduler, rx);
             }
             // Run any due scheduled tasks before sleeping
-            if let Err(err) =
-                crate::scheduling::run_due_scheduled_tasks(cfg, store, scheduler, telegram_client)
-            {
+            if let Err(err) = crate::scheduling::run_due_scheduled_tasks(
+                cfg,
+                store,
+                scheduler,
+                Some(telegram_client),
+            ) {
                 tracing::warn!("scheduled task execution failed: {err:#}");
             }
             thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
@@ -133,7 +136,7 @@ pub(crate) fn run_poll_loop(
 
         // Run any due scheduled tasks
         if let Err(err) =
-            crate::scheduling::run_due_scheduled_tasks(cfg, store, scheduler, telegram_client)
+            crate::scheduling::run_due_scheduled_tasks(cfg, store, scheduler, Some(telegram_client))
         {
             tracing::warn!("scheduled task execution failed: {err:#}");
         }

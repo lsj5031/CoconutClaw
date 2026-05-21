@@ -21,6 +21,7 @@ MEMORY.md
 .factory/
 .hermes/
 .omc/
+.omx/
 .pi/
 .wrangler/
 

@@ -62,17 +62,18 @@ impl DeliveryTarget {
     pub(crate) fn send_placeholder(
         &self,
         cfg: &RuntimeConfig,
-        telegram_client: &Client,
+        telegram_client: Option<&Client>,
         task_label: &str,
     ) -> Option<String> {
         match self {
             Self::Telegram { chat_id } => {
-                match crate::telegram::send_placeholder_message(
-                    telegram_client,
-                    cfg,
-                    chat_id,
-                    task_label,
-                ) {
+                let Some(client) = telegram_client else {
+                    tracing::warn!(
+                        "cannot send telegram placeholder for {task_label}: telegram client not configured"
+                    );
+                    return None;
+                };
+                match crate::telegram::send_placeholder_message(client, cfg, chat_id, task_label) {
                     Ok(Some(message_id)) => Some(message_id),
                     Ok(None) => None,
                     Err(err) => {
@@ -361,17 +362,24 @@ pub(crate) fn dispatch_immediate_output(
 pub(crate) fn dispatch_scheduled_task_output(
     store: &Store,
     cfg: &RuntimeConfig,
-    telegram_client: &Client,
+    telegram_client: Option<&Client>,
     request: ScheduledTaskDispatch<'_>,
 ) -> Result<ScheduledDeliveryResult> {
     let mut state = parse_scheduled_delivery_state(request.delivery_state_raw);
 
     match request.delivery_target {
         Some(DeliveryTarget::Telegram { chat_id }) => {
+            let Some(client) = telegram_client else {
+                tracing::warn!(
+                    scheduled_task_id = request.scheduled_task_id,
+                    "cannot dispatch scheduled task to telegram: telegram client not configured"
+                );
+                return Ok(ScheduledDeliveryResult::RetryableFailure);
+            };
             let delivered = telegram::dispatch_scheduled_output(
                 store,
                 cfg,
-                telegram_client,
+                client,
                 request,
                 &mut state,
                 Some(chat_id.as_str()),
@@ -398,10 +406,25 @@ pub(crate) fn dispatch_scheduled_task_output(
             Ok(ScheduledDeliveryResult::Delivered)
         }
         None => {
+            let Some(client) = telegram_client else {
+                tracing::warn!(
+                    scheduled_task_id = request.scheduled_task_id,
+                    "cannot dispatch scheduled task (no target): telegram client not configured"
+                );
+                return if telegram::scheduled_delivery_has_expected_ops(
+                    cfg,
+                    request.output,
+                    request.progress_message_id,
+                ) {
+                    Ok(ScheduledDeliveryResult::RetryableFailure)
+                } else {
+                    Ok(ScheduledDeliveryResult::SkippedPermanent)
+                };
+            };
             let delivered = telegram::dispatch_scheduled_output(
                 store,
                 cfg,
-                telegram_client,
+                client,
                 request,
                 &mut state,
                 crate::telegram::valid_telegram_chat_id(cfg),

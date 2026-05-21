@@ -378,7 +378,7 @@ pub(crate) fn process_slack_socket_turn(
 
 pub(crate) fn dispatch_process_outcome(
     cfg: &RuntimeConfig,
-    telegram_client: &reqwest::blocking::Client,
+    telegram_client: Option<&reqwest::blocking::Client>,
     outcome: &ProcessOutcome,
     output: &str,
 ) -> Result<()> {
@@ -397,12 +397,18 @@ pub(crate) fn dispatch_process_outcome(
                 outcome.output_thread_ts.as_deref(),
             )
         }
-        _ => crate::telegram::dispatch_telegram_output(
-            telegram_client,
-            cfg,
-            outcome.chat_id.as_deref(),
-            output,
-            outcome.progress_message_id.as_deref(),
-        ),
+        _ => {
+            let Some(client) = telegram_client else {
+                tracing::warn!("cannot dispatch telegram output: telegram client not configured");
+                return Ok(());
+            };
+            crate::telegram::dispatch_telegram_output(
+                client,
+                cfg,
+                outcome.chat_id.as_deref(),
+                output,
+                outcome.progress_message_id.as_deref(),
+            )
+        }
     }
 }

@@ -187,7 +187,7 @@ pub(crate) fn run_due_scheduled_tasks(
     cfg: &RuntimeConfig,
     store: &mut Store,
     scheduler: &SessionScheduler,
-    telegram_client: &Client,
+    telegram_client: Option<&Client>,
 ) -> Result<()> {
     if !cfg.scheduled_tasks_enabled {
         return Ok(());
