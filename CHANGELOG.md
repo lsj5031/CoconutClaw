@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bumped actions/checkout to v6 for Node.js 24 compatibility.
 
 ### Fixed
+- OpenCode provider DB contention: runtime now sets `OPENCODE_DB` to a per-instance path
+  (`{instance_dir}/opencode.db`) so coconutclaw instances no longer conflict with
+  opencode TUI sessions sharing the default SQLite database.
 - macOS launchd service environment handling.
 - Deterministic webhook end-to-end test logging.
 - Windows release lane assertion instead of path patching.

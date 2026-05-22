@@ -298,6 +298,8 @@ impl ProviderRunner for OpenCodeRunner {
         if yolo_mode {
             cmd.env("OPENCODE_PERMISSION", r#"{"*":"allow"}"#);
         }
+        let opencode_db_path = ctx.config.instance_dir.join("opencode.db");
+        cmd.env("OPENCODE_DB", &opencode_db_path);
         if include_dangerous {
             cmd.arg("--dangerously-skip-permissions");
         }

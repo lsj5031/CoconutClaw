@@ -658,12 +658,13 @@ fn run_opencode_keeps_permission_override_when_retrying_without_legacy_flag() {
     config.opencode.skip_permissions = Some(true);
 
     let log_path = config.root_dir.join("fake-opencode.log");
+    let expected_db = config.instance_dir.join("opencode.db");
     let script = format!(
-        "#!/bin/sh\nlog=\"{}\"\nprintf 'args:%s\\n' \"$*\" >> \"$log\"\nprintf 'permission:%s\\n' \"${{OPENCODE_PERMISSION:-}}\" >> \"$log\"\nif printf '%s\\n' \"$*\" | grep -q -- '--dangerously-skip-permissions'; then\n  echo \"unexpected argument '--dangerously-skip-permissions'\" >&2\n  exit 1\nfi\ncat <<'EOF'\n{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello from fake opencode\"}}}}\nEOF\n",
+        "#!/bin/sh\nlog=\"{}\"\nprintf 'args:%s\\n' \"$*\" >> \"$log\"\nprintf 'permission:%s\\n' \"${{OPENCODE_PERMISSION:-}}\" >> \"$log\"\nprintf 'db:%s\\n' \"${{OPENCODE_DB:-}}\" >> \"$log\"\nif printf '%s\\n' \"$*\" | grep -q -- '--dangerously-skip-permissions'; then\n  echo \"unexpected argument '--dangerously-skip-permissions'\" >&2\n  exit 1\nfi\ncat <<'EOF'\n{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello from fake opencode\"}}}}\nEOF\n",
         log_path.display()
     );
     let windows_script = format!(
-        "$log = \"{}\"\nAdd-Content -Path $log -Value \"args:$($args -join ' ')\"\nAdd-Content -Path $log -Value \"permission:$env:OPENCODE_PERMISSION\"\nif ($args -contains '--dangerously-skip-permissions') {{\n    [Console]::Error.WriteLine(\"unexpected argument '--dangerously-skip-permissions'\")\n    exit 1\n}}\nWrite-Output '{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello from fake opencode\"}}}}'\n",
+        "$log = \"{}\"\nAdd-Content -Path $log -Value \"args:$($args -join ' ')\"\nAdd-Content -Path $log -Value \"permission:$env:OPENCODE_PERMISSION\"\nAdd-Content -Path $log -Value \"db:${{env:OPENCODE_DB}}\"\nif ($args -contains '--dangerously-skip-permissions') {{\n    [Console]::Error.WriteLine(\"unexpected argument '--dangerously-skip-permissions'\")\n    exit 1\n}}\nWrite-Output '{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello from fake opencode\"}}}}'\n",
         log_path.display()
     );
 
@@ -682,6 +683,13 @@ fn run_opencode_keeps_permission_override_when_retrying_without_legacy_flag() {
     assert!(log.contains("args:run --dangerously-skip-permissions --format json hello"));
     assert!(log.contains("args:run --format json hello"));
     assert_eq!(log.matches("permission:{\"*\":\"allow\"}").count(), 2);
+    assert_eq!(
+        log.matches(&format!("db:{}", expected_db.display()))
+            .count(),
+        2,
+        "expected OPENCODE_DB={} on both invocations, got log:\n{log}",
+        expected_db.display()
+    );
 }
 
 #[test]
@@ -835,6 +843,42 @@ fn shorten_status_text_multibyte_no_truncation() {
 fn shorten_status_text_multibyte_truncation() {
     let cjk = "日本語テストです";
     assert_eq!(shorten_status_text(cjk, 5), "日本...");
+}
+
+#[test]
+fn run_opencode_sets_per_instance_db_path() {
+    let mut config = RuntimeConfig::test_config();
+    config.provider = AgentProvider::OpenCode;
+
+    let log_path = config.root_dir.join("fake-opencode-db.log");
+    let script = format!(
+        "#!/bin/sh\nlog=\"{}\"\nprintf 'db:%s\\n' \"${{OPENCODE_DB:-}}\" >> \"$log\"\ncat <<'EOF'\n{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello\"}}}}\nEOF\n",
+        log_path.display()
+    );
+    let windows_script = format!(
+        "$log = \"{}\"\nAdd-Content -Path $log -Value \"db:${{env:OPENCODE_DB}}\"\nWrite-Output '{{\"type\":\"text\",\"timestamp\":1,\"sessionID\":\"s1\",\"part\":{{\"type\":\"text\",\"text\":\"TELEGRAM_REPLY: hello\"}}}}'\n",
+        log_path.display()
+    );
+
+    config.opencode.bin = write_test_provider_script(
+        &config.root_dir,
+        "fake-opencode-db",
+        &script,
+        &windows_script,
+    );
+
+    let output = run_provider(None, &config, "hello", None, None, Some(5))
+        .expect("run fake opencode provider");
+    assert!(output.success);
+    assert_eq!(output.raw_output, "TELEGRAM_REPLY: hello");
+
+    let log = fs::read_to_string(&log_path).expect("read fake opencode log");
+    let expected_db = config.instance_dir.join("opencode.db");
+    assert!(
+        log.contains(&format!("db:{}", expected_db.display())),
+        "expected OPENCODE_DB={}, got log:\n{log}",
+        expected_db.display()
+    );
 }
 
 #[test]
