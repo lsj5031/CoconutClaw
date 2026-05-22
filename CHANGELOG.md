@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-05-21
+
+### Fixed
+- Scheduled task progress updater now uses the delivery target chat ID instead of the
+  session ID, eliminating "chat not found" errors when editing progress messages for
+  freshly-recovered scheduled tasks.
+- OpenCode provider DB contention: runtime now sets `OPENCODE_DB` to a per-instance path
+  (`{instance_dir}/opencode.db`) so coconutclaw instances no longer conflict with
+  opencode TUI sessions sharing the default SQLite database.
+
 ## [0.4.0] - 2026-04-21
 
 ### Added
@@ -20,9 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bumped actions/checkout to v6 for Node.js 24 compatibility.
 
 ### Fixed
-- OpenCode provider DB contention: runtime now sets `OPENCODE_DB` to a per-instance path
-  (`{instance_dir}/opencode.db`) so coconutclaw instances no longer conflict with
-  opencode TUI sessions sharing the default SQLite database.
 - macOS launchd service environment handling.
 - Deterministic webhook end-to-end test logging.
 - Windows release lane assertion instead of path patching.
