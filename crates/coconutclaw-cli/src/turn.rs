@@ -196,7 +196,7 @@ pub(crate) fn process_turn_with_status(
         } else {
             spawn_progress_updater(
                 cfg.clone(),
-                telegram_progress_chat_id(&chat_id),
+                telegram_progress_chat_id(&progress_chat_id),
                 message_id.to_string(),
                 progress_rx,
                 Arc::clone(&progress_updater_stop),
