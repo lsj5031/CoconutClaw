@@ -372,7 +372,11 @@ if [[ "${{!i}}" == "--output-last-message" ]]; then
     OUT_FILE="${{!j}}"
 fi
 done
-CONTEXT="${{@: -1}}"
+if [[ "${{@: -1}}" == "-" ]]; then
+    CONTEXT="$(cat)"
+else
+    CONTEXT="${{@: -1}}"
+fi
 if [[ "$CONTEXT" == *"parallel-one"* ]]; then
 touch "{start_one}"
 for _ in $(seq 1 40); do
@@ -410,7 +414,11 @@ if ($args[$i] -eq "--output-last-message") {{
     $i++
 }}
 }}
-$context = $args[$args.Count - 1]
+if ($args[$args.Count - 1] -eq "-") {{
+    $context = [Console]::In.ReadToEnd()
+}} else {{
+    $context = $args[$args.Count - 1]
+}}
 if ($context -match "parallel-one") {{
 New-Item -ItemType File -Path "{start_one}" -Force | Out-Null
 for ($i = 0; $i -lt 40; $i++) {{
@@ -480,7 +488,11 @@ if [[ "${{!i}}" == "--output-last-message" ]]; then
     OUT_FILE="${{!j}}"
 fi
 done
-CONTEXT="${{@: -1}}"
+if [[ "${{@: -1}}" == "-" ]]; then
+    CONTEXT="$(cat)"
+else
+    CONTEXT="${{@: -1}}"
+fi
 if [[ "$CONTEXT" == *"fifo-second"* ]]; then
 printf 'start:second\n' >> "{events}"
 printf 'done:second\n' >> "{events}"
@@ -504,7 +516,11 @@ if ($args[$i] -eq "--output-last-message") {{
     $i++
 }}
 }}
-$context = $args[$args.Count - 1]
+if ($args[$args.Count - 1] -eq "-") {{
+    $context = [Console]::In.ReadToEnd()
+}} else {{
+    $context = $args[$args.Count - 1]
+}}
 if ($context -match "fifo-second") {{
 "start:second" | Add-Content -Path "{events}"
 "done:second" | Add-Content -Path "{events}"
@@ -559,7 +575,11 @@ if [[ "${{!i}}" == "--output-last-message" ]]; then
     OUT_FILE="${{!j}}"
 fi
 done
-CONTEXT="${{@: -1}}"
+if [[ "${{@: -1}}" == "-" ]]; then
+    CONTEXT="$(cat)"
+else
+    CONTEXT="${{@: -1}}"
+fi
 if [[ "$CONTEXT" == *"break-store"* ]]; then
 rm -rf "{db_parent}"
 touch "{db_parent}"
@@ -580,7 +600,11 @@ if ($args[$i] -eq "--output-last-message") {{
     $i++
 }}
 }}
-$context = $args[$args.Count - 1]
+if ($args[$args.Count - 1] -eq "-") {{
+    $context = [Console]::In.ReadToEnd()
+}} else {{
+    $context = $args[$args.Count - 1]
+}}
 if ($context -match "break-store") {{
 if (Test-Path "{db_parent}") {{
     Remove-Item -LiteralPath "{db_parent}" -Recurse -Force
@@ -757,7 +781,11 @@ if [[ "${{!i}}" == "--output-last-message" ]]; then
     OUT_FILE="${{!j}}"
 fi
 done
-CONTEXT="${{@: -1}}"
+if [[ "${{@: -1}}" == "-" ]]; then
+    CONTEXT="$(cat)"
+else
+    CONTEXT="${{@: -1}}"
+fi
 if [[ "$CONTEXT" == *"telegram-parallel-one"* ]]; then
 touch "{start_one}"
 for _ in $(seq 1 40); do
@@ -795,7 +823,11 @@ if ($args[$i] -eq "--output-last-message") {{
     $i++
 }}
 }}
-$context = $args[$args.Count - 1]
+if ($args[$args.Count - 1] -eq "-") {{
+    $context = [Console]::In.ReadToEnd()
+}} else {{
+    $context = $args[$args.Count - 1]
+}}
 if ($context -match "telegram-parallel-one") {{
 New-Item -ItemType File -Path "{start_one}" -Force | Out-Null
 for ($i = 0; $i -lt 40; $i++) {{
@@ -867,7 +899,11 @@ if [[ "${{!i}}" == "--output-last-message" ]]; then
     OUT_FILE="${{!j}}"
 fi
 done
-CONTEXT="${{@: -1}}"
+if [[ "${{@: -1}}" == "-" ]]; then
+    CONTEXT="$(cat)"
+else
+    CONTEXT="${{@: -1}}"
+fi
 if [[ "$CONTEXT" == *"telegram-fifo-second"* ]]; then
 printf 'start:second\n' >> "{events}"
 printf 'done:second\n' >> "{events}"
@@ -891,7 +927,11 @@ if ($args[$i] -eq "--output-last-message") {{
     $i++
 }}
 }}
-$context = $args[$args.Count - 1]
+if ($args[$args.Count - 1] -eq "-") {{
+    $context = [Console]::In.ReadToEnd()
+}} else {{
+    $context = $args[$args.Count - 1]
+}}
 if ($context -match "telegram-fifo-second") {{
 "start:second" | Add-Content -Path "{events}"
 "done:second" | Add-Content -Path "{events}"

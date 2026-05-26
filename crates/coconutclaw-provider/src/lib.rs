@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -50,6 +50,13 @@ trait ProviderRunner {
     /// Build the CLI command. The caller decides whether to include the
     /// dangerous/skip-permissions flag based on `has_dangerous_flag()`.
     fn build_cmd(&self, ctx: &ProviderCtx, include_dangerous: bool) -> std::io::Result<Command>;
+
+    /// Whether the provider prompt should be supplied over stdin instead of as
+    /// a command-line argument. This avoids OS argv limits for CLIs that
+    /// support stdin prompts.
+    fn context_via_stdin(&self) -> bool {
+        false
+    }
 
     /// Optional line-by-line JSON progress parser.
     fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {
@@ -137,8 +144,12 @@ impl ProviderRunner for CodexRunner {
         if ctx.progress_tx.is_some() {
             cmd.arg("--json");
         }
-        cmd.arg(ctx.context);
+        cmd.arg("-");
         Ok(cmd)
+    }
+
+    fn context_via_stdin(&self) -> bool {
+        true
     }
 
     fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {
@@ -448,6 +459,11 @@ fn run_provider_impl<P: ProviderRunner>(provider: &P, ctx: &ProviderCtx) -> Resu
             .context("failed to build provider command")?;
         run_provider_process(
             cmd,
+            if provider.context_via_stdin() {
+                Some(ctx.context)
+            } else {
+                None
+            },
             ctx.cancel_flag,
             ctx.progress_tx,
             progress_parser,
@@ -507,21 +523,35 @@ fn new_provider_command(bin_raw: &str) -> Command {
 
 fn run_provider_process(
     mut cmd: Command,
+    stdin_text: Option<&str>,
     cancel_flag: Option<&Arc<AtomicBool>>,
     progress_tx: Option<&Sender<String>>,
     progress_parser: Option<fn(&str) -> Option<String>>,
     bin_name: &str,
     timeout_secs: Option<u64>,
 ) -> Result<RunResult> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    if stdin_text.is_some() {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     configure_child_command(&mut cmd);
 
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to start {bin_name}"))?;
-    run_child_process(
+    let stdin_handle = if let Some(text) = stdin_text {
+        let mut stdin = child.stdin.take().context("failed to take stdin")?;
+        let text = text.to_string();
+        Some(thread::spawn(move || {
+            let _ = stdin.write_all(text.as_bytes());
+        }))
+    } else {
+        None
+    };
+
+    let result = run_child_process(
         child,
         cancel_flag,
         progress_tx.cloned(),
@@ -529,7 +559,11 @@ fn run_provider_process(
         format!("failed waiting for {bin_name} command"),
         format!("failed waiting after {bin_name} kill"),
         timeout_secs,
-    )
+    );
+    if let Some(handle) = stdin_handle {
+        let _ = handle.join();
+    }
+    result
 }
 
 fn fallback_text(run_result: &RunResult, prefer_stdout: bool) -> String {

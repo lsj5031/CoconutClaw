@@ -92,6 +92,47 @@ fn parse_codex_agent_message() {
 }
 
 #[test]
+fn run_codex_sends_large_context_over_stdin() {
+    let mut config = RuntimeConfig::test_config();
+    config.provider = AgentProvider::Codex;
+
+    let log_path = config.root_dir.join("fake-codex.log");
+    let script = format!(
+        "#!/bin/sh\nlog=\"{}\"\nout_file=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --output-last-message) out_file=\"$2\"; shift 2 ;;\n    *) printf 'arg:%s\\n' \"$1\" >> \"$log\"; shift ;;\n  esac\ndone\ninput=$(cat)\nprintf 'stdin_len:%s\\n' \"${{#input}}\" >> \"$log\"\nprintf 'TELEGRAM_REPLY: read %s bytes\\n' \"${{#input}}\" > \"$out_file\"\n",
+        log_path.display()
+    );
+    let windows_script = format!(
+        "$log = \"{}\"\n$outFile = \"\"\nfor ($i = 0; $i -lt $args.Count; $i++) {{\n    if ($args[$i] -eq '--output-last-message') {{\n        $outFile = $args[$i + 1]\n        $i++\n    }} else {{\n        Add-Content -Path $log -Value \"arg:$($args[$i])\"\n    }}\n}}\n$inputText = [Console]::In.ReadToEnd()\nAdd-Content -Path $log -Value \"stdin_len:$($inputText.Length)\"\nSet-Content -Path $outFile -Value \"TELEGRAM_REPLY: read $($inputText.Length) bytes\"\n",
+        log_path.display()
+    );
+    config.codex.bin =
+        write_test_provider_script(&config.root_dir, "fake-codex", &script, &windows_script);
+
+    let context = "x".repeat(200_000);
+    let output = run_provider(None, &config, &context, None, None, Some(5))
+        .expect("run fake codex provider with large stdin context");
+
+    assert!(output.success);
+    assert_eq!(
+        output.raw_output.trim(),
+        "TELEGRAM_REPLY: read 200000 bytes"
+    );
+    let log = fs::read_to_string(&log_path).expect("read fake codex log");
+    assert!(
+        log.contains("arg:-"),
+        "expected '-' prompt marker in log:\n{log}"
+    );
+    assert!(
+        log.contains("stdin_len:200000"),
+        "expected large context on stdin, got log:\n{log}"
+    );
+    assert!(
+        !log.contains(&context),
+        "large context should not appear in argv log"
+    );
+}
+
+#[test]
 fn parse_pi_progress_line_ignores_text_deltas() {
     let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}"#;
     assert!(parse_pi_progress_line(line).is_none());
