@@ -43,16 +43,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   managed_file INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS memory_entries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT NOT NULL,
-  source TEXT NOT NULL,
-  content TEXT NOT NULL,
-  turn_id INTEGER NOT NULL,
-  append_index INTEGER NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_entries_turn_append_unique ON memory_entries(turn_id, append_index);
-
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL,

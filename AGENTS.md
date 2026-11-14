@@ -7,7 +7,8 @@ Telegram polling ↔ Codex, with local history/memory and durable task results.
 - `crates/coconutclaw-config`: single data-directory configuration.
 - `crates/coconutclaw-provider`: existing Codex exec integration, explicit
   session resume, image input, progress, timeout and process-group cancellation.
-- `sql/schema.sql`: additive schema; preserve legacy tables and user records.
+- `sql/schema.sql`, `sql/memory.sql`: SQLite runtime and scoped local memory.
+  No legacy memory imports/projections. Never delete real external user data.
 
 Validate with `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets --locked -- -D warnings`, and
@@ -27,5 +28,6 @@ Supported plain-text marker prefixes:
 - `DELEGATE_TASK:`
 
 Do not restore voice, alternate providers/transports, named assistant management
-or general scheduling. Historical schema columns are compatibility data, not
-supported features. See `docs/migration-phase-0.md`.
+or general scheduling. Historical schema columns do not enable supported
+features. Owner steering dropped legacy memory support after Phase 0; see
+`docs/memory.md`. Phase 0's historical closeout is in `docs/validation-phase-0.md`.

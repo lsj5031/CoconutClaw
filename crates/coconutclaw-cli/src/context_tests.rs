@@ -25,20 +25,20 @@ fn managed_replacement_preserves_surrounding_manual_bytes_and_position() {
     let suffix = "\n  manual suffix\n\n";
     fs::write(
         &path,
-        format!("{prefix}{MEMORY_MANAGED_START}\nold\n{MEMORY_MANAGED_END}{suffix}"),
+        format!("{prefix}{TASKS_MANAGED_START}\nold\n{TASKS_MANAGED_END}{suffix}"),
     )
     .unwrap();
     rewrite_managed_markdown_file(
         &path,
         "",
-        MEMORY_MANAGED_START,
-        MEMORY_MANAGED_END,
+        TASKS_MANAGED_START,
+        TASKS_MANAGED_END,
         &["new".into()],
     )
     .unwrap();
     assert_eq!(
         fs::read_to_string(path).unwrap(),
-        format!("{prefix}{MEMORY_MANAGED_START}\nnew\n{MEMORY_MANAGED_END}{suffix}")
+        format!("{prefix}{TASKS_MANAGED_START}\nnew\n{TASKS_MANAGED_END}{suffix}")
     );
 }
 
@@ -50,8 +50,8 @@ fn projection_crash_child() {
     rewrite_managed_markdown_file(
         &PathBuf::from(path),
         "",
-        MEMORY_MANAGED_START,
-        MEMORY_MANAGED_END,
+        TASKS_MANAGED_START,
+        TASKS_MANAGED_END,
         &["new complete projection".into()],
     )
     .unwrap();
@@ -62,9 +62,8 @@ fn projection_crash_child() {
 fn projection_interruption_is_old_or_new_never_truncated() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("memory.md");
-    let old = format!(
-        "manual prefix\n{MEMORY_MANAGED_START}\nold\n{MEMORY_MANAGED_END}\nmanual suffix\n"
-    );
+    let old =
+        format!("manual prefix\n{TASKS_MANAGED_START}\nold\n{TASKS_MANAGED_END}\nmanual suffix\n");
     for (point, code) in [("before", 73), ("after", 74)] {
         fs::write(&path, &old).unwrap();
         let child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -93,7 +92,7 @@ fn projection_interruption_is_old_or_new_never_truncated() {
 }
 
 #[test]
-fn concurrent_projections_include_both_commits_in_next_context() {
+fn concurrent_task_projections_and_scoped_memory_stay_separate() {
     use std::sync::{Arc, Barrier};
     let cfg = RuntimeConfig::test_config();
     fs::write(cfg.instance_dir.join("MEMORY.md"), "# Manual\nkeep this\n").unwrap();
@@ -132,14 +131,14 @@ fn concurrent_projections_include_both_commits_in_next_context() {
         },
     )
     .unwrap();
-    for expected in [
-        "keep this",
-        "keep that",
-        "memory-0",
-        "memory-1",
-        "task-0",
-        "task-1",
-    ] {
+    for expected in ["keep that", "task-0", "task-1"] {
         assert!(context.contains(expected), "{expected}");
     }
+    for excluded in ["keep this", "memory-0", "memory-1"] {
+        assert!(!context.contains(excluded), "{excluded}");
+    }
+    assert_eq!(
+        fs::read_to_string(cfg.instance_dir.join("MEMORY.md")).unwrap(),
+        "# Manual\nkeep this\n"
+    );
 }

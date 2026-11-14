@@ -25,8 +25,12 @@ chunk delivery, and each successful chunk has its own acknowledgment.
 Owned input attachments remain available until result delivery is acknowledged;
 pending approvals retain their inputs for an explicit resume.
 Crash recovery reconciles final turns, not arbitrary provider execution.
-Memory/task appends use unique turn/append identities; managed Markdown sections
-preserve surrounding manual content, with in-process read/write serialization.
+Memory proposals use unique source-turn/append identities, not managed Markdown.
+Incoming chat commands authorize promotion, direct remembering, correction and
+undo. SQLite transactions own immutable records/history, effective state and
+FTS5 indexing. A small scoped curated layer plus bounded snippets enters context;
+bulk sources require bounded scoped reads. See [local memory](memory.md).
+Task appends still project managed Markdown with in-process read/write serialization.
 Replacements are staged and synced beside the target, renamed atomically, and
 the parent directory is synced on Unix. Recovery materializes results/children
 before reconstructing lanes in durable ID order. It never launches a recovered
@@ -38,6 +42,6 @@ are forcibly killed if needed. Blocking HTTP workers own only requests/response
 buffers, never SQLite/projection state, and can be interrupted by their callers.
 Provider deadlines cover stdin and output draining even after the leader exits.
 
-Legacy database tables/columns are retained for compatibility. They do not enable
-scheduling, voice, Slack or other providers. Historical design documents under
+Historical database tables/columns do not enable scheduling, voice, Slack or
+other providers. No legacy memory import/projection is supported. Historical design documents under
 `superpowers/` and past changelog entries are not current feature documentation.

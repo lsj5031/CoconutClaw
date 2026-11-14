@@ -42,7 +42,160 @@ fn fresh_command_returns_confirmation_output() {
 }
 
 #[test]
-fn pending_turn_side_effects_are_reconciled_into_managed_files() {
+fn incoming_addressed_memory_commands_execute_locally() {
+    let mut cfg = test_config();
+    cfg.telegram_bot_username = Some("ActualBotName".into());
+    // Even a routing regression may only reach a local failure, not live services.
+    cfg.telegram_bot_token = None;
+    cfg.codex.bin = "/bin/false".into();
+    let mut store = Store::open(&cfg).unwrap();
+    let scheduler = SessionScheduler::new(cfg.clone(), None);
+    let text = "/memory@actualbotname remember synthetic addressed fact";
+    let update = serde_json::json!({
+        "update_id": 711, "message": {"chat": {"id": "321"}, "text": text}
+    })
+    .to_string();
+    let first = process_webhook_line(&cfg, &mut store, &scheduler, &update).unwrap();
+    assert!(
+        first
+            .output
+            .as_deref()
+            .unwrap()
+            .contains("remember applied")
+    );
+    let replay = process_webhook_line(&cfg, &mut store, &scheduler, &update).unwrap();
+    assert_eq!(first.output, replay.output);
+    for (id, chat, text) in [
+        (712, "321", "/memory remember synthetic plain fact"),
+        (713, "321", "/memory@ActualBotName search addressed"),
+        (
+            714,
+            "321",
+            "/memory@ActualBotName correct 1 synthetic corrected fact",
+        ),
+        (715, "321", "/memory@ActualBotName undo"),
+    ] {
+        let update = serde_json::json!({
+            "update_id": id, "message": {"chat": {"id": chat}, "text": text}
+        });
+        let outcome =
+            process_webhook_line(&cfg, &mut store, &scheduler, &update.to_string()).unwrap();
+        assert!(outcome.output.is_some(), "{text}");
+        if id == 713 {
+            assert!(outcome.output.unwrap().contains("synthetic addressed fact"));
+        }
+    }
+    for (id, chat, text) in [
+        (716, "321", "/memory@OtherBot remember unauthorized fact"),
+        (
+            717,
+            "999",
+            "/memory@ActualBotName remember unauthorized fact",
+        ),
+        (
+            718,
+            "321",
+            "/memory@ActualBotName@OtherBot remember unauthorized fact",
+        ),
+        (719, "321", "/memory@ remember unauthorized fact"),
+    ] {
+        let update = serde_json::json!({
+            "update_id": id, "message": {"chat": {"id": chat}, "text": text}
+        });
+        assert!(matches!(
+            parse_webhook_action(&cfg, &update.to_string()).unwrap(),
+            WebhookAction::Ignore { .. }
+        ));
+        let outcome =
+            process_webhook_line(&cfg, &mut store, &scheduler, &update.to_string()).unwrap();
+        assert!(outcome.output.is_none());
+    }
+    assert_eq!(store.memory_revision("telegram:321").unwrap(), 4);
+    let provenance: (String, String, String) = store
+        .conn
+        .query_row(
+            "SELECT r.scope,r.content,t.user_text FROM memory_records r
+         JOIN turns t ON t.id=r.source_turn WHERE r.id=1 AND t.status='memory_command'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        provenance,
+        (
+            "telegram:321".into(),
+            "synthetic addressed fact".into(),
+            text.into()
+        )
+    );
+    let ordinary: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM turns WHERE status!='memory_command'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        ordinary, 0,
+        "command sources must stay out of ordinary history"
+    );
+    let tasks: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM task_runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        tasks, 0,
+        "addressed commands must never enqueue provider work"
+    );
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn incoming_memory_commands_are_authorized_scoped_and_replay_safe() {
+    let cfg = test_config();
+    let mut store = Store::open(&cfg).unwrap();
+    let scheduler = SessionScheduler::new(cfg.clone(), None);
+    let update = r#"{"update_id":701,"message":{"chat":{"id":"321"},"text":"/memory remember dispatch scoped fact"}}"#;
+    let first = process_webhook_line(&cfg, &mut store, &scheduler, update).unwrap();
+    assert!(
+        first
+            .output
+            .as_deref()
+            .unwrap()
+            .contains("remember applied")
+    );
+    let replay = process_webhook_line(&cfg, &mut store, &scheduler, update).unwrap();
+    assert_eq!(replay.output, first.output);
+    assert_eq!(store.memory_revision("telegram:321").unwrap(), 1);
+    let disallowed = r#"{"update_id":702,"message":{"chat":{"id":"999"},"text":"/memory remember unauthorized fact"}}"#;
+    let rejected = process_webhook_line(&cfg, &mut store, &scheduler, disallowed).unwrap();
+    assert!(rejected.output.is_none());
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT COUNT(*) FROM memory_records", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    let output = process_webhook_line(
+        &cfg,
+        &mut store,
+        &scheduler,
+        r#"{"update_id":703,"message":{"chat":{"id":"321"},"text":"/memory search scoped"}}"#,
+    )
+    .unwrap();
+    assert!(output.output.unwrap().contains("dispatch scoped fact"));
+    let tasks: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM task_runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tasks, 0, "memory commands must not enqueue agent work");
+}
+
+#[test]
+fn pending_turn_side_effects_reconcile_candidates_and_tasks() {
     let cfg = test_config();
     fs::write(
         cfg.instance_dir.join("MEMORY.md"),
@@ -84,7 +237,25 @@ fn pending_turn_side_effects_are_reconciled_into_managed_files() {
     let memory = fs::read_to_string(cfg.instance_dir.join("MEMORY.md")).expect("read memory");
     let tasks = fs::read_to_string(cfg.instance_dir.join("TASKS/pending.md")).expect("read tasks");
     assert!(memory.contains("manual note"));
-    assert!(memory.contains("remembered fact"));
+    assert!(!memory.contains("remembered fact"));
+    let candidate: (String, i64, String) = store
+        .conn
+        .query_row(
+            "SELECT scope,source_turn,content FROM memory_records",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        candidate,
+        ("telegram:321".into(), turn_id, "remembered fact".into())
+    );
+    assert!(
+        !store
+            .recall_memory("telegram:321", "remembered")
+            .unwrap()
+            .contains("remembered fact")
+    );
     assert!(tasks.contains("manual task note"));
     assert!(tasks.contains("follow up later"));
     assert!(

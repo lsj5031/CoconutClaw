@@ -138,18 +138,6 @@ impl Store {
         }
 
         if current < 7 {
-            self.conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS memory_entries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    turn_id INTEGER NOT NULL,
-                    append_index INTEGER NOT NULL
-                 );
-                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_entries_turn_append_unique
-                   ON memory_entries(turn_id, append_index);",
-            )?;
             for sql in [
                 "ALTER TABLE tasks ADD COLUMN turn_id INTEGER",
                 "ALTER TABLE tasks ADD COLUMN append_index INTEGER",

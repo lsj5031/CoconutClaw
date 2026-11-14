@@ -169,6 +169,16 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
     }
     let media = extract_incoming_media(message);
 
+    if let Some(token) = message_text.split_whitespace().next()
+        && token.starts_with('/')
+        && crate::telegram::command_token(token, cfg.telegram_bot_username.as_deref()).is_none()
+    {
+        return Ok(WebhookAction::Ignore {
+            update_id,
+            reason: "command_address_not_this_bot".to_string(),
+        });
+    }
+
     if message_text.trim().eq_ignore_ascii_case("/fresh") {
         return Ok(WebhookAction::Fresh { update_id, chat_id });
     }

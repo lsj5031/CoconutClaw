@@ -109,7 +109,39 @@ pub(crate) fn process_turn_with_status(
         })
         .unwrap_or_else(|| chat_id.clone());
 
-    let context = build_context(cfg, store, &input, &ts, &chat_id, quoted)?;
+    // Actual incoming user text only. Delegated prompts must never acquire core
+    // memory authority by spelling a command.
+    let token = input.user_text.split_whitespace().next().unwrap_or("");
+    if task_run_id.is_none()
+        && origin_session.is_none()
+        && token.split_once('@').map_or(token, |(command, _)| command) == "/memory"
+    {
+        if crate::telegram::command_token(token, cfg.telegram_bot_username.as_deref()).is_none() {
+            return Ok(ProcessedTurn {
+                output: render_output(
+                    "Memory command address is not verified for this bot. Use plain /memory with local once.",
+                    &[],
+                ),
+                status: TurnStatus::Ok,
+            });
+        }
+        let reply = store.memory_command(&chat_id, &input.user_text, update_id.as_deref(), &ts)?;
+        return Ok(ProcessedTurn {
+            output: render_output(&reply, &[]),
+            status: TurnStatus::Ok,
+        });
+    }
+
+    // Polling commands can change memory while a lane prepares its prompt.
+    // Bind the prompt and native-session generation to one SQLite snapshot,
+    // so an older in-flight prompt never populates a newer memory generation.
+    let (context, revision) = {
+        let snapshot = store.conn.unchecked_transaction()?;
+        let revision = store.memory_revision(&chat_id)?;
+        let context = build_context(cfg, store, &input, &ts, &chat_id, quoted)?;
+        snapshot.commit()?;
+        (context, revision)
+    };
 
     let cancel_flag = external_cancel_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     if let Some(router) = &cancel_router {
@@ -165,10 +197,16 @@ pub(crate) fn process_turn_with_status(
     });
 
     let boundary_id = store.latest_boundary_id(&chat_id, &context_channel)?;
-    let session_key = format!("codex_session:{chat_id}:{boundary_id}");
-    let native_session = store
-        .kv_get(&session_key)?
-        .or(store.kv_get(&format!("codex_session:{history_alias}:{boundary_id}"))?);
+    let session_key = if revision == 0 {
+        format!("codex_session:{chat_id}:{boundary_id}")
+    } else {
+        format!("codex_session:{chat_id}:{boundary_id}:memory:{revision}")
+    };
+    let native_session = store.kv_get(&session_key)?.or(if revision == 0 {
+        store.kv_get(&format!("codex_session:{history_alias}:{boundary_id}"))?
+    } else {
+        None
+    });
     let mut provider_result = run_provider_session(
         input.attachment_path.as_ref(),
         cfg,

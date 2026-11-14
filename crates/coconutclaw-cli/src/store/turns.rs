@@ -15,7 +15,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT ts || ' | in=' || COALESCE(REPLACE(user_text, char(10), ' '), '') || ' | out=' || COALESCE(REPLACE(COALESCE(telegram_reply, voice_reply), char(10), ' '), '')
              FROM turns
-             WHERE status != 'boundary'
+             WHERE status NOT IN ('boundary', 'memory_command')
                AND chat_id IN (?1, ?4)
                AND channel = ?2
                AND id > COALESCE((SELECT MAX(id) FROM turns WHERE status = 'boundary' AND chat_id IN (?1, ?4) AND channel = ?2), 0)
@@ -100,11 +100,14 @@ impl Store {
         if let Some(turn_id) = turn_id {
             if !memory_lines.is_empty() {
                 let mut stmt = tx.prepare_cached(
-                    "INSERT OR IGNORE INTO memory_entries(ts, source, content, turn_id, append_index)
-                     VALUES(?1, ?2, ?3, ?4, ?5)",
+                    "INSERT OR IGNORE INTO memory_records(scope,source_turn,proposal_index,content)
+                     SELECT CASE WHEN chat_id LIKE 'telegram:%' THEN chat_id ELSE 'telegram:'||chat_id END,
+                            id,?2,?3 FROM turns WHERE id=?1 AND channel='telegram'",
                 )?;
                 for (append_index, line) in memory_lines.iter().enumerate() {
-                    stmt.execute(params![ts, source, line, turn_id, append_index as i64])?;
+                    if super::memory::valid_content(line) {
+                        stmt.execute(params![turn_id, append_index as i64, line])?;
+                    }
                 }
             }
 
@@ -212,21 +215,6 @@ impl Store {
             telegram_reply: row.get(3)?,
             status: row.get(4)?,
         }))
-    }
-
-    /// Read managed memory entries from SQLite (used by sync to bridge write gap).
-    pub(crate) fn managed_memory_entries_from_db(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT ts, content
-             FROM memory_entries
-             ORDER BY id ASC",
-        )?;
-        let mut rows = stmt.query([])?;
-        let mut entries = Vec::new();
-        while let Some(row) = rows.next()? {
-            entries.push((row.get(0)?, row.get(1)?));
-        }
-        Ok(entries)
     }
 
     /// Read managed pending task entries from SQLite (used by sync to bridge write gap).

@@ -41,6 +41,8 @@ pub struct RuntimeConfig {
     pub allowlist_path: PathBuf,
     pub timezone: String,
     pub telegram_bot_token: Option<String>,
+    /// Runtime identity from Telegram getMe, never configuration or message text.
+    pub telegram_bot_username: Option<String>,
     pub telegram_chat_id: Option<String>,
     pub telegram_chat_ids: Vec<String>,
     pub telegram_api_base: Option<String>,
@@ -132,6 +134,7 @@ impl RuntimeConfig {
             allowlist_path: root.join("config/allowlist.txt"),
             timezone: "UTC".to_string(),
             telegram_bot_token: Some("123:token".to_string()),
+            telegram_bot_username: None,
             telegram_chat_id: Some("321".to_string()),
             telegram_chat_ids: Vec::new(),
             telegram_api_base: None,
@@ -274,6 +277,7 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         allowlist_path,
         timezone: pick_value("TIMEZONE", &config_file).unwrap_or_else(|| "UTC".to_string()),
         telegram_bot_token: pick_value("TELEGRAM_BOT_TOKEN", &config_file),
+        telegram_bot_username: None,
         telegram_chat_id: pick_value("TELEGRAM_CHAT_ID", &config_file),
         telegram_chat_ids: parse_csv_list(pick_value("TELEGRAM_CHAT_IDS", &config_file)),
         telegram_api_base: normalize_optional(pick_value("TELEGRAM_API_BASE", &config_file)),
@@ -328,23 +332,11 @@ pub fn ensure_instance_layout(cfg: &RuntimeConfig) -> Result<()> {
         "You are CoconutClaw, a calm and practical local agent.\n",
     )?;
     ensure_file(
-        &cfg.instance_dir.join("MEMORY.md"),
-        None,
-        "# Long-Term Memory\n",
-    )?;
-    ensure_file(
         &cfg.instance_dir.join("TASKS/pending.md"),
         template_root
             .map(|root| root.join("TASKS/pending.md"))
             .as_deref(),
         "# Pending Tasks\n",
-    )?;
-    ensure_file(
-        &cfg.instance_dir.join("USER.md"),
-        template_root
-            .map(|root| root.join("USER.md.example"))
-            .as_deref(),
-        "# User Profile\n",
     )?;
     if !cfg.config_file_path.exists() {
         ensure_file(

@@ -24,6 +24,40 @@ use crate::util::value_to_string;
 
 pub(crate) const TELEGRAM_TEXT_CHAR_LIMIT: usize = 4096;
 
+/// Only a verified runtime identity can authorize an addressed command.
+pub(crate) fn command_token<'a>(token: &'a str, username: Option<&str>) -> Option<&'a str> {
+    match token.split_once('@') {
+        Some((command, target)) => username
+            .filter(|name| !name.is_empty() && name.eq_ignore_ascii_case(target))
+            .map(|_| command),
+        None => Some(token),
+    }
+}
+
+pub(crate) fn discover_bot_username(client: &Client, cfg: &RuntimeConfig) -> Result<String> {
+    let base = telegram_api_base(cfg)?;
+    let response = telegram_request(client, cfg, "getMe", || {
+        Ok(client
+            .post(format!("{base}/getMe"))
+            .build()
+            .map_err(reqwest::Error::without_url)?)
+    })?;
+    let value = parse_telegram_response(response, "getMe")?;
+    value
+        .get("result")
+        .filter(|bot| bot.get("is_bot").and_then(Value::as_bool) == Some(true))
+        .and_then(|bot| bot.get("username"))
+        .and_then(Value::as_str)
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
+        })
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("telegram getMe returned no valid bot username"))
+}
+
 pub(crate) fn valid_telegram_token(cfg: &RuntimeConfig) -> Option<&str> {
     cfg.telegram_bot_token
         .as_deref()
@@ -167,6 +201,7 @@ pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Res
         {"command": "fresh", "description": "Start a fresh conversation"},
         {"command": "cancel", "description": "Cancel the current task"},
         {"command": "tasks", "description": "List active tasks"},
+        {"command": "memory", "description": "Remember, search, get, promote, correct or undo chat memory"},
         {"command": "approve", "description": "Approve a request by id"},
         {"command": "reject", "description": "Reject a request by id"},
     ]);

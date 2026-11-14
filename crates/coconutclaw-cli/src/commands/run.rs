@@ -34,6 +34,9 @@ pub(crate) fn run_run(
         bail!("run requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID or TELEGRAM_CHAT_IDS");
     }
     let client = crate::telegram::build_telegram_client(cfg)?;
+    let mut runtime_cfg = cfg.clone();
+    runtime_cfg.telegram_bot_username = Some(crate::telegram::discover_bot_username(&client, cfg)?);
+    let cfg = &runtime_cfg;
     let cancel_router = Some(crate::cancel::CancelRouter::start(cfg)?);
     let scheduler = crate::scheduler::SessionScheduler::new(cfg.clone(), cancel_router);
     let shutdown = install_shutdown_handler(scheduler.clone())?;

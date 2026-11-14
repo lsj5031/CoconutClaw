@@ -8,14 +8,17 @@ use crate::session::SessionKey;
 use crate::store::Store;
 use crate::types::{ProcessOutcome, WebhookTurn};
 
-fn parse_command_parts(text: &str) -> Option<(&str, Option<&str>)> {
+fn parse_command_parts<'a>(
+    text: &'a str,
+    bot_username: Option<&str>,
+) -> Option<(&'a str, Option<&'a str>)> {
     let trimmed = text.trim();
     if !trimmed.starts_with('/') {
         return None;
     }
 
     let mut parts = trimmed.splitn(2, char::is_whitespace);
-    let command = parts.next()?;
+    let command = crate::telegram::command_token(parts.next()?, bot_username)?;
     let arg = parts
         .next()
         .map(str::trim)
@@ -60,12 +63,19 @@ pub(crate) fn maybe_handle_telegram_command(
     chat_id: &str,
     text: &str,
 ) -> Result<Option<ProcessOutcome>> {
-    let Some((command, arg)) = parse_command_parts(text) else {
+    let Some((command, arg)) = parse_command_parts(text, cfg.telegram_bot_username.as_deref())
+    else {
         return Ok(None);
     };
 
     let session = SessionKey::telegram(chat_id);
     let reply = match command {
+        "/memory" => Some(store.memory_command(
+            &session.id(),
+            text,
+            update_id.as_deref(),
+            &crate::iso_now(&cfg.timezone),
+        )?),
         "/fresh" => {
             let ts = crate::util::iso_now(&cfg.timezone);
             match store.insert_boundary_turn(&ts, &session.id(), update_id.as_deref(), "telegram") {

@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use std::fs;
 pub(crate) mod approvals;
 pub(crate) mod kv;
+pub(crate) mod memory;
 pub(crate) mod migrations;
 pub(crate) mod task_runs;
 pub(crate) mod turns;
@@ -144,6 +145,7 @@ impl Store {
             .context("failed to apply sqlite schema")?;
         let store = Self { conn };
         store.run_migrations()?;
+        store.initialize_memory()?;
         Ok(store)
     }
 }

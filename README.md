@@ -36,8 +36,12 @@ not authentication or connectivity.
 - `/fresh` starts a new context/session without deleting history.
 - Images are attached through Codex's image input; documents and videos are
   available as local file paths. No local vision engine or audio transcription.
-- `MEMORY.md`, `USER.md`, `SOUL.md`, `TASKS/pending.md` and SQLite history
-  provide useful local context. Managed memory/task appends are replay-safe.
+- `SOUL.md`, `TASKS/pending.md` and SQLite history provide local context.
+  Chat-scoped SQLite memory has compact curated context and bounded FTS5
+  search/source reads. `MEMORY_APPEND` proposes a candidate, not authority.
+  Use `/memory remember <text>`, `list [before-id]`, `search <text>`, `get <id>`,
+  `promote <id>`, `correct <active-id> <text>` or `undo`.
+  See [local memory](docs/memory.md) for budgets, scope and limitations.
 - A `DELEGATE_TASK` request creates a durable task ID with a separate Codex
   session and no parent conversation history. Its labeled result is delivered
   to, and retained in the history of, the originating chat.

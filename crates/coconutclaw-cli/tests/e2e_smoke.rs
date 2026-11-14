@@ -106,6 +106,8 @@ printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","comman
                 }
             } else if text.contains("/setMyCommands ") {
                 "true"
+            } else if text.contains("/getMe ") {
+                r#"{"is_bot":true,"username":"ActualBotName"}"#
             } else {
                 r#"{"message_id":42}"#
             };
@@ -193,10 +195,19 @@ printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","comman
         })
         .unwrap();
     assert!(progress.contains("persisted-without-placeholder"));
-    assert!(
-        fs::read_to_string(dir.join("MEMORY.md"))
-            .unwrap()
-            .contains("retained memory")
+    let candidate: String = conn
+        .query_row(
+            "SELECT content FROM memory_records WHERE scope='telegram:321'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(candidate, "retained memory");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM memory_active", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
     );
     let before = requests
         .lock()
@@ -242,6 +253,286 @@ fn removed_commands_and_named_instance_flags_are_rejected() {
     for retained in ["run", "once", "doctor", "service"] {
         assert!(help.contains(retained));
     }
+}
+
+fn memory_once(
+    dir: &std::path::Path,
+    provider: &std::path::Path,
+    chat: &str,
+    text: &str,
+) -> String {
+    let result = command(dir)
+        .env("CODEX_BIN", format!("/bin/sh \"{}\"", provider.display()))
+        .args(["once", "--chat-id", chat, "--inject-text", text])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    String::from_utf8(result.stdout).unwrap()
+}
+
+fn memory_provider(dir: &std::path::Path) -> std::path::PathBuf {
+    let provider = dir.join("memory-provider.sh");
+    fs::write(
+        &provider,
+        r#"/bin/cat > "${0%/*}/memory-prompt"
+printf '%s\n' "$@" > "${0%/*}/memory-args"
+printf x >> "${0%/*}/memory-calls"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then shift; out=$1; fi
+  shift
+done
+printf 'TELEGRAM_REPLY: mock memory reply\nMEMORY_APPEND: orchard cultivar green\n' > "$out"
+printf '%s\n' '{"type":"thread.started","thread_id":"memory-mock-session"}'
+"#,
+    )
+    .unwrap();
+    provider
+}
+
+#[test]
+fn actual_once_memory_proposal_promote_search_get_correct_undo_and_direct_remember() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let provider = memory_provider(dir);
+    assert!(
+        memory_once(dir, &provider, "321", "propose orchard note").contains("mock memory reply")
+    );
+    assert!(memory_once(dir, &provider, "321", "/memory list").contains("candidate"));
+    assert!(memory_once(dir, &provider, "321", "/memory get 1").contains("orchard cultivar green"));
+    assert!(!memory_once(dir, &provider, "321", "/memory search orchard").contains("cultivar"));
+    assert!(memory_once(dir, &provider, "654", "/memory promote 1").contains("not found"));
+    assert!(memory_once(dir, &provider, "321", "/memory promote 1").contains("applied"));
+    assert!(
+        memory_once(dir, &provider, "321", "/memory search orchard").contains("cultivar green")
+    );
+    assert!(!memory_once(dir, &provider, "654", "/memory get 1").contains("cultivar"));
+    assert!(
+        memory_once(
+            dir,
+            &provider,
+            "321",
+            "/memory correct 1 orchard cultivar crimson"
+        )
+        .contains("applied")
+    );
+    for addressed in [
+        "/memory@ProbeBot remember synthetic addressed fact",
+        "/memory@OtherBot remember unauthorized fact",
+    ] {
+        assert!(memory_once(dir, &provider, "321", addressed).contains("not verified"));
+    }
+    assert!(!memory_once(dir, &provider, "321", "/memory search green").contains("cultivar green"));
+    assert!(memory_once(dir, &provider, "321", "/memory get 1").contains("not found"));
+    assert!(memory_once(dir, &provider, "321", "/memory get 2").contains("crimson"));
+    assert!(memory_once(dir, &provider, "321", "/memory undo").contains("applied"));
+    assert!(memory_once(dir, &provider, "321", "/memory search green").contains("cultivar green"));
+    assert!(
+        !memory_once(dir, &provider, "321", "/memory search crimson").contains("cultivar crimson")
+    );
+    assert!(
+        memory_once(
+            dir,
+            &provider,
+            "321",
+            "/memory remember prefer concise responses"
+        )
+        .contains("applied")
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("memory-calls")).unwrap(),
+        "x",
+        "commands must not invoke Codex"
+    );
+    memory_once(dir, &provider, "321", "orchard");
+    let prompt = fs::read_to_string(dir.join("memory-prompt")).unwrap();
+    assert!(prompt.contains("prefer concise responses"));
+    assert!(prompt.contains("orchard cultivar green"));
+    assert!(
+        !prompt.contains("orchard cultivar crimson"),
+        "superseded command sources must not reenter prompt history"
+    );
+    assert!(
+        !fs::read_to_string(dir.join("memory-args"))
+            .unwrap()
+            .lines()
+            .any(|l| l == "resume"),
+        "memory revision starts a fresh native session"
+    );
+    memory_once(dir, &provider, "321", "orchard");
+    assert!(
+        fs::read_to_string(dir.join("memory-args"))
+            .unwrap()
+            .lines()
+            .any(|l| l == "resume"),
+        "unchanged revision resumes its own session"
+    );
+    memory_once(
+        dir,
+        &provider,
+        "321",
+        "/memory correct 3 prefer detailed responses",
+    );
+    memory_once(dir, &provider, "321", "orchard");
+    assert!(
+        !fs::read_to_string(dir.join("memory-args"))
+            .unwrap()
+            .lines()
+            .any(|l| l == "resume"),
+        "correction must not resume a session with stale memory"
+    );
+    let db = rusqlite::Connection::open(dir.join("state.db")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM memory_active", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM memory_history", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        5
+    );
+    assert_eq!(
+        db.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+}
+
+#[test]
+fn actual_once_large_corpus_has_fixed_memory_budget_and_scoped_bounded_fetch() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let provider = memory_provider(dir);
+    assert!(
+        command(dir)
+            .args(["doctor", "--json"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    // Seed a heavy corpus with the same SQLite/index triggers the runtime uses.
+    let mut db = rusqlite::Connection::open(dir.join("state.db")).unwrap();
+    let tx = db.transaction().unwrap();
+    tx.execute("INSERT INTO turns(ts,chat_id,input_type,provider_raw,status,channel) VALUES('now','telegram:321','text','','ok','telegram')", []).unwrap();
+    let source = tx.last_insert_rowid();
+    tx.execute("INSERT INTO turns(ts,chat_id,input_type,provider_raw,status,channel) VALUES('now','telegram:654','text','','ok','telegram')", []).unwrap();
+    let other_source = tx.last_insert_rowid();
+    let bulk = format!(
+        "orchard {} full-source-tail",
+        "b".repeat(2048 - "orchard  full-source-tail".len())
+    );
+    assert_eq!(bulk.len(), 2048);
+    for index in 0..5000 {
+        let scope = if index % 2 == 0 {
+            "telegram:321"
+        } else {
+            "telegram:654"
+        };
+        tx.execute(
+            "INSERT INTO memory_records(scope,source_turn,content) VALUES(?1,?2,?3)",
+            rusqlite::params![
+                scope,
+                if index % 2 == 0 { source } else { other_source },
+                bulk
+            ],
+        )
+        .unwrap();
+        let id = tx.last_insert_rowid();
+        tx.execute("INSERT INTO memory_active(record_id) VALUES(?1)", [id])
+            .unwrap();
+    }
+    for _ in 0..8 {
+        tx.execute("INSERT INTO memory_records(scope,source_turn,content,curated) VALUES('telegram:321',?1,?2,1)", rusqlite::params![source, format!("profile {}", "\"".repeat(504))]).unwrap();
+        let id = tx.last_insert_rowid();
+        tx.execute("INSERT INTO memory_active(record_id) VALUES(?1)", [id])
+            .unwrap();
+    }
+    tx.execute(
+        "INSERT INTO memory_records(scope,source_turn,content) VALUES('telegram:321',?1,?2)",
+        rusqlite::params![source, "\"".repeat(2048)],
+    )
+    .unwrap();
+    let escaped_id = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO memory_active(record_id) VALUES(?1)",
+        [escaped_id],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    // Old unscoped files are not read or rewritten, regardless of their size.
+    let manual = "UNSCOPED_MANUAL_SENTINEL".repeat(100_000);
+    fs::write(dir.join("MEMORY.md"), &manual).unwrap();
+    fs::write(dir.join("USER.md"), &manual).unwrap();
+    let start = Instant::now();
+    memory_once(dir, &provider, "321", "orchard");
+    let prompt = fs::read_to_string(dir.join("memory-prompt")).unwrap();
+    let memory = prompt
+        .split("## Curated memory data")
+        .nth(1)
+        .unwrap()
+        .split("## TASKS/pending.md")
+        .next()
+        .unwrap();
+    assert!(
+        memory.len() <= 4700,
+        "fixed payload budgets plus fixed headings: {}",
+        memory.len()
+    );
+    assert!(
+        !prompt.contains("full-source-tail"),
+        "search injects snippets, never whole records"
+    );
+    assert!(!prompt.contains("UNSCOPED_MANUAL_SENTINEL"));
+    assert_eq!(fs::read_to_string(dir.join("MEMORY.md")).unwrap(), manual);
+    let search = memory_once(dir, &provider, "321", "/memory search orchard");
+    assert!(search.len() <= 2100);
+    assert!(search.lines().filter(|line| line.starts_with('#')).count() <= 8);
+    assert!(!search.contains("full-source-tail"));
+    let boundary_query = format!("orchard {}", "z".repeat(504));
+    assert_eq!(boundary_query.len(), 512);
+    assert!(
+        memory_once(
+            dir,
+            &provider,
+            "321",
+            &format!("/memory search {boundary_query}")
+        )
+        .contains("orchard")
+    );
+    let get = memory_once(dir, &provider, "321", "/memory get 1");
+    assert!(get.contains("full-source-tail"));
+    assert!(get.len() <= 8192);
+    let escaped_get = memory_once(dir, &provider, "321", &format!("/memory get {escaped_id}"));
+    assert!(escaped_get.len() > 4096 && escaped_get.len() <= 8192);
+    assert!(!memory_once(dir, &provider, "654", "/memory get 1").contains("full-source-tail"));
+    let listed = memory_once(dir, &provider, "321", "/memory list 5");
+    assert!(listed.contains("#3"));
+    assert!(!listed.contains("#5"));
+    assert!(
+        memory_once(
+            dir,
+            &provider,
+            "321",
+            &format!("/memory search {}", "x".repeat(513))
+        )
+        .contains("exceeds")
+    );
+    assert!(memory_once(dir, &provider, "321", "/memory search \" : * NEAR(").len() <= 2100);
+    eprintln!(
+        "memory heavy fresh-process path: {} ms; memory context {} bytes; search {} bytes; get {} bytes; escaped get {} bytes; 5000 max-size bulk + 8 max-size curated + 1 max-escaped record",
+        start.elapsed().as_millis(),
+        memory.len(),
+        search.len(),
+        get.len(),
+        escaped_get.len()
+    );
 }
 
 #[test]
@@ -438,6 +729,8 @@ wait
                     r#"[{"update_id":1,"message":{"chat":{"id":321},"text":"active"}},{"update_id":2,"message":{"chat":{"id":321},"text":"queued"}}]"#
                 } else if request.contains("setMyCommands") {
                     "true"
+                } else if request.contains("/getMe ") {
+                    r#"{"is_bot":true,"username":"ActualBotName"}"#
                 } else {
                     r#"{"message_id":42}"#
                 };
