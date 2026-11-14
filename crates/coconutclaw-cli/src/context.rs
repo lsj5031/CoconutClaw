@@ -5,24 +5,21 @@
 //! recent turn history, and user input.
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use coconutclaw_config::{AgentProvider, RuntimeConfig, SlackFormatMode, TelegramParseMode};
+use coconutclaw_config::{RuntimeConfig, TelegramParseMode};
 
 use crate::markers::Effect;
-use crate::store::{ScheduledTaskInsertResult, Store};
+use crate::store::Store;
 use crate::{QuotedMessage, TurnInput};
 
+static CONTEXT_FILES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub(crate) const MEMORY_MANAGED_START: &str = "<!-- COCONUTCLAW:MANAGED:MEMORY:START -->";
 pub(crate) const MEMORY_MANAGED_END: &str = "<!-- COCONUTCLAW:MANAGED:MEMORY:END -->";
 pub(crate) const TASKS_MANAGED_START: &str = "<!-- COCONUTCLAW:MANAGED:TASKS:START -->";
 pub(crate) const TASKS_MANAGED_END: &str = "<!-- COCONUTCLAW:MANAGED:TASKS:END -->";
-
-#[derive(Debug, Default)]
-pub(crate) struct AppendOutcome {
-    pub(crate) schedule_feedback: Vec<String>,
-}
 
 pub(crate) fn build_context(
     cfg: &RuntimeConfig,
@@ -33,8 +30,8 @@ pub(crate) fn build_context(
     quoted: &QuotedMessage,
 ) -> Result<String> {
     let channel = input.channel.as_str();
-    let local_visual_mode = cfg.provider == AgentProvider::Pi && cfg.pi.no_extensions;
 
+    let files = CONTEXT_FILES.lock().expect("context files");
     let soul = read_or_default(
         &cfg.instance_dir.join("SOUL.md"),
         "You are CoconutClaw, a calm and practical local agent.\n",
@@ -45,32 +42,12 @@ pub(crate) fn build_context(
         &cfg.instance_dir.join("TASKS/pending.md"),
         "# Pending Tasks\n",
     );
-    let soul = if local_visual_mode {
-        truncate_chars(&soul, 1600)
-    } else {
-        soul
-    };
-    let user = if local_visual_mode {
-        truncate_chars(&user, 900)
-    } else {
-        user
-    };
-    let memory = if local_visual_mode {
-        truncate_chars(&memory, 900)
-    } else {
-        memory
-    };
-    let tasks = if local_visual_mode {
-        truncate_chars(&tasks, 900)
-    } else {
-        tasks
-    };
-
+    drop(files);
     let mut text = String::new();
     text.push_str("# CoconutClaw Runtime Context\n\n");
     text.push_str(&format!("Timestamp: {ts}\n"));
     text.push_str(&format!("Input type: {}\n", input.input_type));
-    text.push_str(&format!("Agent provider: {}\n", cfg.provider.as_str()));
+    text.push_str(&format!("Agent provider: {}\n", "codex"));
     text.push_str(&format!("Exec policy: {}\n", cfg.exec_policy));
     text.push_str(&format!(
         "Allowlist path: {}\n\n",
@@ -102,17 +79,7 @@ pub(crate) fn build_context(
     }
 
     text.push_str("\n## Recent turns\n");
-    let recent_limit = if local_visual_mode {
-        cfg.context_turns.min(2)
-    } else {
-        cfg.context_turns
-    };
-    for line in store.recent_turns_snippet(recent_limit, chat_id, channel)? {
-        let line = if local_visual_mode {
-            truncate_chars(&line, 240)
-        } else {
-            line
-        };
+    for line in store.recent_turns_snippet(cfg.context_turns, chat_id, channel)? {
         text.push_str(&line);
         text.push('\n');
     }
@@ -147,103 +114,49 @@ pub(crate) fn build_context(
     }
 
     text.push_str("\n## Current user input\n");
-    let user_text = if local_visual_mode {
-        truncate_chars(&input.user_text, 1200)
-    } else {
-        input.user_text.clone()
-    };
-    text.push_str(&format!("USER_TEXT: {}\n", user_text));
-    if !input.asr_text.trim().is_empty() {
-        let asr_text = if local_visual_mode {
-            truncate_chars(&input.asr_text, 1200)
-        } else {
-            input.asr_text.clone()
-        };
-        text.push_str(&format!("ASR_TEXT: {}\n", asr_text));
-    }
+    text.push_str(&format!("USER_TEXT: {}\n", input.user_text));
     if let (Some(attachment_type), Some(attachment_path)) =
         (&input.attachment_type, &input.attachment_path)
     {
         text.push_str(&format!("ATTACHMENT_TYPE: {attachment_type}\n"));
-        let local_visual_mode = cfg.provider == AgentProvider::Pi && cfg.pi.no_extensions;
-        if local_visual_mode {
-            text.push_str(&format!(
-                "The user sent a {attachment_type}. It is included in your input as visual data. Analyze it directly and do not read the file with tools.\n"
-            ));
-        } else {
-            text.push_str(&format!("ATTACHMENT_PATH: {}\n", attachment_path.display()));
-            text.push_str(&format!(
-                "The user sent a {attachment_type}. The file is available at the path above. Use tools to inspect or process it when needed.\n"
-            ));
-        }
+        text.push_str(&format!("ATTACHMENT_PATH: {}\n", attachment_path.display()));
+        text.push_str("The attachment is available at this path. Inspect it using Codex tools.\n");
     }
 
     text.push_str("\n## Output requirements\n");
     text.push_str("Return only plain text marker lines. No prose before or after markers.\n");
     text.push_str("Required first line format:\n");
     text.push_str("TELEGRAM_REPLY: <reply text>\n");
-    if channel == "slack" {
-        text.push_str("Use the historical TELEGRAM_REPLY marker for Slack replies too.\n");
-    }
     text.push_str("Optional additional lines:\n");
-    text.push_str("VOICE_REPLY: <spoken reply text>\n");
     text.push_str("SEND_PHOTO: <absolute file path>\n");
     text.push_str("SEND_DOCUMENT: <absolute file path>\n");
     text.push_str("SEND_VIDEO: <absolute file path>\n");
     text.push_str("MEMORY_APPEND: <single memory line>\n");
     text.push_str("TASK_APPEND: <single task line>\n");
-    text.push_str("SCHEDULE_PROMPT: HH:MM|<prompt text> (recurring daily)\n");
-    text.push_str("SCHEDULE_PROMPT: once HH:MM|<prompt text> (one-shot)\n");
+    text.push_str("DELEGATE_TASK: <self-contained task prompt> (separate Codex attempt; result returns here)\n");
+    text.push_str(
+        "SEND_APPROVAL: <what needs approval> (pause; do not perform the action until approved)\n",
+    );
 
-    if channel == "slack" {
-        match cfg.slack_format_mode {
-            SlackFormatMode::Plain => {
-                text.push_str("Use plain text for replies. No formatting.\n");
-                text.push_str("Keep marker prefixes plain and unchanged.\n");
-                text.push_str("Message limit: 40,000 characters.\n");
-            }
-            SlackFormatMode::Mrkdwn => {
-                text.push_str("Use Slack mrkdwn formatting for replies: *bold*, _italic_, ~strikethrough~, `code`, ```code blocks```.\n");
-                text.push_str("Keep marker prefixes plain and unchanged.\n");
-                text.push_str("Message limit: 40,000 characters.\n");
-            }
-            SlackFormatMode::Blocks => {
-                text.push_str("Use Slack Block Kit JSON for rich replies.\n");
-                text.push_str("Wrap the Block Kit blocks array in a ```blocks_json code fence after the TELEGRAM_REPLY: marker.\n");
-                text.push_str(
-                    "Use section blocks with mrkdwn text for paragraphs, code blocks, and lists.\n",
-                );
-                text.push_str(
-                    "Keep marker prefixes (TELEGRAM_REPLY:, SEND_PHOTO:, etc.) OUTSIDE the blocks JSON.\n",
-                );
-                text.push_str(
-                    "Message limit: 50 blocks per message, ~3000 chars per block text field.\n",
-                );
-            }
+    match cfg.telegram_parse_mode {
+        TelegramParseMode::Html => {
+            text.push_str("Rich formatting is enabled for Telegram replies.\n");
+            text.push_str("Use standard Markdown formatting inside marker values (e.g. **bold**, *italic*, `code`, ```code blocks```, [links](url)).\n");
+            text.push_str(
+                "CoconutClaw will automatically convert Markdown to the appropriate format.\n",
+            );
+            text.push_str("Keep marker prefixes plain and unchanged.\n");
         }
-    } else {
-        match cfg.telegram_parse_mode {
-            TelegramParseMode::Html => {
-                text.push_str("Rich formatting is enabled for Telegram replies.\n");
-                text.push_str("Use standard Markdown formatting inside marker values (e.g. **bold**, *italic*, `code`, ```code blocks```, [links](url)).\n");
-                text.push_str(
-                    "CoconutClaw will automatically convert Markdown to the appropriate format.\n",
-                );
-                text.push_str("Keep marker prefixes plain and unchanged.\n");
-            }
-            TelegramParseMode::MarkdownV2 => {
-                text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
-                text.push_str("Use Telegram MarkdownV2 formatting only inside marker values.\n");
-                text.push_str("Use `*bold*`, `_italic_`, and `` `code` `` syntax.\n");
-                text.push_str(
-                    "Do not use CommonMark syntax like `**bold**` or fenced code blocks.\n",
-                );
-                text.push_str("Keep marker prefixes plain and unchanged.\n");
-                text.push_str("Do not use code fences or extra prefixes.\n");
-            }
-            TelegramParseMode::Off => {
-                text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
-            }
+        TelegramParseMode::MarkdownV2 => {
+            text.push_str("MarkdownV2 is enabled for Telegram replies.\n");
+            text.push_str("Use Telegram MarkdownV2 formatting only inside marker values.\n");
+            text.push_str("Use `*bold*`, `_italic_`, and `` `code` `` syntax.\n");
+            text.push_str("Do not use CommonMark syntax like `**bold**` or fenced code blocks.\n");
+            text.push_str("Keep marker prefixes plain and unchanged.\n");
+            text.push_str("Do not use code fences or extra prefixes.\n");
+        }
+        TelegramParseMode::Off => {
+            text.push_str("Do not use markdown, code fences, or extra prefixes.\n");
         }
     }
 
@@ -254,32 +167,15 @@ pub(crate) fn read_or_default(path: &Path, fallback: &str) -> String {
     fs::read_to_string(path).unwrap_or_else(|_| fallback.to_string())
 }
 
-fn truncate_chars(value: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    for (idx, ch) in value.chars().enumerate() {
-        if idx >= max_chars {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
-}
-
 pub(crate) fn append_memory_and_tasks(
     cfg: &RuntimeConfig,
     store: &mut Store,
     ts: &str,
     turn_id: Option<i64>,
     effects: &[Effect],
-    session_id: Option<&str>,
-    delivery_target_json: Option<&str>,
-) -> Result<AppendOutcome> {
-    let mut outcome = AppendOutcome::default();
-
+    _session_id: Option<&str>,
+    _delivery_target_json: Option<&str>,
+) -> Result<()> {
     let memory_append: Vec<String> = effects
         .iter()
         .filter_map(|e| match e {
@@ -296,72 +192,15 @@ pub(crate) fn append_memory_and_tasks(
         .collect();
 
     if !memory_append.is_empty() || !task_append.is_empty() {
-        store.insert_memory_and_tasks(
-            ts,
-            cfg.provider.as_str(),
-            turn_id,
-            &memory_append,
-            &task_append,
-        )?;
+        store.insert_memory_and_tasks(ts, "codex", turn_id, &memory_append, &task_append)?;
         sync_managed_context_files(cfg, store)?;
     }
 
-    let schedule_prompts: Vec<String> = effects
-        .iter()
-        .filter_map(|e| match e {
-            Effect::SchedulePrompt(s) => Some(s.clone()),
-            _ => None,
-        })
-        .collect();
-
-    if !schedule_prompts.is_empty() && !cfg.scheduled_tasks_enabled {
-        for line in &schedule_prompts {
-            outcome.schedule_feedback.push(format!(
-                "Runtime confirmation: schedule not saved because scheduled tasks are disabled for this instance — {}",
-                truncate_chars(line.trim(), 100)
-            ));
-        }
-    }
-
-    if !schedule_prompts.is_empty() && cfg.scheduled_tasks_enabled {
-        for line in &schedule_prompts {
-            if let Some((recurring, time, text)) = parse_schedule_prompt_line(line) {
-                match store.insert_scheduled_task_with_target(
-                    ts,
-                    "agent",
-                    &text,
-                    &time,
-                    recurring,
-                    session_id,
-                    delivery_target_json,
-                ) {
-                    Ok(result) => outcome
-                        .schedule_feedback
-                        .push(schedule_feedback_line(cfg, result, recurring, &time, &text)),
-                    Err(err) => {
-                        tracing::warn!("failed to persist scheduled task: {err:#}");
-                        outcome.schedule_feedback.push(format!(
-                            "Runtime confirmation: failed to save {} schedule at {} ({}) — {}",
-                            if recurring { "daily" } else { "one-shot" },
-                            time,
-                            cfg.timezone,
-                            truncate_chars(&text, 100)
-                        ));
-                    }
-                }
-            } else {
-                outcome.schedule_feedback.push(format!(
-                    "Runtime confirmation: schedule not saved because the format was invalid — {}",
-                    truncate_chars(line.trim(), 100)
-                ));
-            }
-        }
-    }
-
-    Ok(outcome)
+    Ok(())
 }
 
 pub(crate) fn sync_managed_context_files(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+    let _files = CONTEXT_FILES.lock().expect("context files");
     let memory_lines = store
         .managed_memory_entries_from_db()?
         .into_iter()
@@ -402,100 +241,70 @@ fn rewrite_managed_markdown_file(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    let existing = read_or_default(path, fallback);
-    let preserved = strip_managed_section(&existing, start_marker, end_marker);
-    let mut rendered = preserved.trim_end_matches('\n').to_string();
-    if rendered.trim().is_empty() {
-        rendered = fallback.trim_end_matches('\n').to_string();
-    }
-    if !rendered.ends_with('\n') {
-        rendered.push('\n');
-    }
-    if !rendered.ends_with("\n\n") {
-        rendered.push('\n');
-    }
-    rendered.push_str(start_marker);
-    rendered.push('\n');
-    for line in managed_lines {
-        rendered.push_str(line);
-        rendered.push('\n');
-    }
-    rendered.push_str(end_marker);
-    rendered.push('\n');
-
-    fs::write(path, rendered).with_context(|| format!("failed to write {}", path.display()))
-}
-
-fn strip_managed_section(existing: &str, start_marker: &str, end_marker: &str) -> String {
-    let Some(start) = existing.find(start_marker) else {
-        return existing.to_string();
-    };
-    let after_start = &existing[start + start_marker.len()..];
-    let Some(end_offset) = after_start.find(end_marker) else {
-        return existing[..start].trim_end_matches('\n').to_string();
-    };
-    let end = start + start_marker.len() + end_offset + end_marker.len();
-    let mut out = String::new();
-    out.push_str(existing[..start].trim_end_matches('\n'));
-    let suffix = existing[end..].trim_matches('\n');
-    if !suffix.is_empty() {
-        if !out.trim().is_empty() {
-            out.push_str("\n\n");
+    let existing = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fallback.to_string(),
+        Err(error) => {
+            return Err(error).context("failed to read managed projection; original preserved");
         }
-        out.push_str(suffix);
-    }
-    out
-}
-
-fn schedule_feedback_line(
-    cfg: &RuntimeConfig,
-    result: ScheduledTaskInsertResult,
-    recurring: bool,
-    time: &str,
-    text: &str,
-) -> String {
-    let kind = if recurring { "daily" } else { "one-shot" };
-    let action = match result {
-        ScheduledTaskInsertResult::Inserted => "saved",
-        ScheduledTaskInsertResult::Duplicate => "already active",
     };
-    format!(
-        "Runtime confirmation: {action} {kind} schedule at {time} ({}) — {}",
-        cfg.timezone,
-        truncate_chars(text.trim(), 100)
-    )
-}
-
-/// Parse a SCHEDULE_PROMPT value into its components.
-/// Format: `[once ]HH:MM|prompt text`
-/// Returns normalized `(recurring, "HH:MM", "prompt text")` or `None` on parse failure.
-fn parse_schedule_prompt_line(line: &str) -> Option<(bool, String, String)> {
-    let (recurring, rest) = if let Some(stripped) = line.strip_prefix("once ") {
-        (false, stripped.trim())
+    if existing.contains(start_marker) && !existing.contains(end_marker) {
+        anyhow::bail!("incomplete managed section; original preserved for manual reconciliation");
+    }
+    let mut block = format!("{start_marker}\n");
+    for line in managed_lines {
+        block.push_str(line);
+        block.push('\n');
+    }
+    block.push_str(end_marker);
+    let rendered = if let Some(start) = existing.find(start_marker) {
+        let end = existing[start..]
+            .find(end_marker)
+            .context("incomplete managed section")?
+            + start
+            + end_marker.len();
+        format!("{}{}{}", &existing[..start], block, &existing[end..])
     } else {
-        (true, line)
+        let mut rendered = existing;
+        if !rendered.ends_with('\n') {
+            rendered.push('\n');
+        }
+        if !rendered.ends_with("\n\n") {
+            rendered.push('\n');
+        }
+        rendered.push_str(&block);
+        rendered.push('\n');
+        rendered
     };
 
-    let (time, prompt) = rest.split_once('|')?;
-    let time = time.trim();
-    let prompt = prompt.trim();
-
-    // Basic HH:MM validation
-    let parts: Vec<&str> = time.split(':').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let h = parts[0].parse::<u8>().ok()?;
-    let m = parts[1].parse::<u8>().ok()?;
-    if h > 23 || m > 59 {
-        return None;
-    }
-
-    if prompt.is_empty() {
-        None
+    // Replace on the same filesystem, never truncate the live document. Resolve
+    // existing symlinks so custom document locations retain their link identity.
+    let target = if path.is_symlink() {
+        fs::canonicalize(path)?
     } else {
-        Some((recurring, format!("{h:02}:{m:02}"), prompt.to_string()))
+        path.to_path_buf()
+    };
+    let parent = target.parent().context("projection has no parent")?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    if let Ok(metadata) = fs::metadata(&target) {
+        staged.as_file().set_permissions(metadata.permissions())?;
     }
+    staged.write_all(rendered.as_bytes())?;
+    staged.as_file().sync_all()?;
+    #[cfg(test)]
+    if std::env::var("COCONUTCLAW_TEST_PROJECTION_EXIT").as_deref() == Ok("before") {
+        std::process::exit(73);
+    }
+    staged
+        .persist(&target)
+        .map_err(|error| anyhow::anyhow!("failed to replace projection: {}", error.error))?;
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
+    #[cfg(test)]
+    if std::env::var("COCONUTCLAW_TEST_PROJECTION_EXIT").as_deref() == Ok("after") {
+        std::process::exit(74);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

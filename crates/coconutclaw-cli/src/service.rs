@@ -3,10 +3,8 @@ use anyhow::{Context, Result, bail};
 use coconutclaw_config::{CliOverrides, RuntimeConfig};
 use std::env;
 use std::fs;
-use std::hash::{Hash, Hasher};
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 pub fn run_service(cfg: &RuntimeConfig, overrides: &CliOverrides, args: ServiceArgs) -> Result<()> {
     let names = service_names(cfg, overrides)?;
@@ -43,110 +41,21 @@ fn detect_platform() -> Platform {
 #[derive(Debug, Clone)]
 struct ServiceNames {
     run_task: String,
-    heartbeat_task: String,
-    heartbeat_timer: String,
-    reflection_task: String,
-    reflection_timer: String,
     run_label: String,
-    heartbeat_label: String,
-    reflection_label: String,
-    instance_key: String,
 }
 
 fn service_names(cfg: &RuntimeConfig, overrides: &CliOverrides) -> Result<ServiceNames> {
-    let instance_override = overrides
-        .instance
-        .clone()
-        .or_else(|| env::var("COCONUTCLAW_INSTANCE").ok());
-    let instance_dir_override = overrides
-        .instance_dir
-        .clone()
-        .or_else(|| env::var("INSTANCE_DIR").ok().map(PathBuf::from));
-
-    let mut key = String::new();
-    if let Some(instance) = instance_override.as_deref() {
-        let normalized = sanitize_identifier(instance);
-        if !normalized.is_empty() && normalized != "default" {
-            key = normalized;
-        }
-    } else if instance_dir_override.is_some() && !paths_equal(&cfg.instance_dir, &cfg.root_dir) {
-        let base = cfg
-            .instance_dir
-            .file_name()
-            .and_then(|value| value.to_str())
-            .map(sanitize_identifier)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "instance".to_string());
-        let hash = cksum_identifier(cfg.instance_dir.to_string_lossy().as_ref());
-        key = format!("dir-{base}-{hash}");
-    }
-
-    if key.is_empty() {
-        return Ok(ServiceNames {
-            run_task: "coconutclaw.service".to_string(),
-            heartbeat_task: "coconutclaw-heartbeat.service".to_string(),
-            heartbeat_timer: "coconutclaw-heartbeat.timer".to_string(),
-            reflection_task: "coconutclaw-nightly-reflection.service".to_string(),
-            reflection_timer: "coconutclaw-nightly-reflection.timer".to_string(),
-            run_label: "io.coconutclaw.run".to_string(),
-            heartbeat_label: "io.coconutclaw.heartbeat".to_string(),
-            reflection_label: "io.coconutclaw.nightly_reflection".to_string(),
-            instance_key: "default".to_string(),
-        });
-    }
-
-    let label_key = key.replace('_', "-");
+    let _ = (cfg, overrides);
     Ok(ServiceNames {
-        run_task: format!("coconutclaw-{key}.service"),
-        heartbeat_task: format!("coconutclaw-heartbeat-{key}.service"),
-        heartbeat_timer: format!("coconutclaw-heartbeat-{key}.timer"),
-        reflection_task: format!("coconutclaw-nightly-reflection-{key}.service"),
-        reflection_timer: format!("coconutclaw-nightly-reflection-{key}.timer"),
-        run_label: format!("io.coconutclaw.run.{label_key}"),
-        heartbeat_label: format!("io.coconutclaw.heartbeat.{label_key}"),
-        reflection_label: format!("io.coconutclaw.nightly_reflection.{label_key}"),
-        instance_key: key,
+        run_task: "coconutclaw.service".to_string(),
+        run_label: "io.coconutclaw.run".to_string(),
     })
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TimeOfDay {
-    hour: u8,
-    minute: u8,
-}
-
-impl TimeOfDay {
-    fn parse(raw: &str, field_name: &str) -> Result<Self> {
-        let Some((hour_raw, minute_raw)) = raw.split_once(':') else {
-            bail!("invalid {field_name} time: {raw} (expected HH:MM)");
-        };
-        let hour = hour_raw.parse::<u8>().ok().filter(|value| *value <= 23);
-        let minute = minute_raw.parse::<u8>().ok().filter(|value| *value <= 59);
-        let Some(hour) = hour else {
-            bail!("invalid {field_name} time: {raw} (expected HH:MM)");
-        };
-        let Some(minute) = minute else {
-            bail!("invalid {field_name} time: {raw} (expected HH:MM)");
-        };
-        Ok(Self { hour, minute })
-    }
-
-    fn hhmm(self) -> String {
-        format!("{:02}:{:02}", self.hour, self.minute)
-    }
 }
 
 fn run_linux(cfg: &RuntimeConfig, names: &ServiceNames, action: ServiceAction) -> Result<()> {
     require_cmd("systemctl")?;
     match action {
-        ServiceAction::Install {
-            heartbeat,
-            reflection,
-        } => {
-            let heartbeat = TimeOfDay::parse(&heartbeat, "heartbeat")?;
-            let reflection = TimeOfDay::parse(&reflection, "reflection")?;
-            linux_install(cfg, names, heartbeat, reflection)
-        }
+        ServiceAction::Install => linux_install(cfg, names),
         ServiceAction::Start => linux_start(names),
         ServiceAction::Stop => linux_stop(names),
         ServiceAction::Status => linux_status(names),
@@ -154,111 +63,48 @@ fn run_linux(cfg: &RuntimeConfig, names: &ServiceNames, action: ServiceAction) -
     }
 }
 
-fn linux_install(
-    cfg: &RuntimeConfig,
-    names: &ServiceNames,
-    heartbeat: TimeOfDay,
-    reflection: TimeOfDay,
-) -> Result<()> {
+fn linux_install(cfg: &RuntimeConfig, names: &ServiceNames) -> Result<()> {
     let dir = linux_systemd_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
     let binary = resolve_binary_path()?;
     let working_dir = cfg.root_dir.display().to_string();
     let run_exec = systemd_exec_line(&binary, &service_command_args(cfg, "run"));
-    let heartbeat_exec = systemd_exec_line(&binary, &service_command_args(cfg, "heartbeat"));
-    let reflection_exec =
-        systemd_exec_line(&binary, &service_command_args(cfg, "nightly-reflection"));
-
     let run_unit = format!(
         "[Unit]\nDescription=CoconutClaw Telegram Agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory={working_dir}\nExecStart={run_exec}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n"
     );
-    let heartbeat_service = format!(
-        "[Unit]\nDescription=CoconutClaw Daily Heartbeat\n\n[Service]\nType=oneshot\nWorkingDirectory={working_dir}\nExecStart={heartbeat_exec}\n"
-    );
-    let heartbeat_timer = format!(
-        "[Unit]\nDescription=Run CoconutClaw heartbeat daily\n\n[Timer]\nOnCalendar=*-*-* {}:00\nPersistent=true\nUnit={}\n\n[Install]\nWantedBy=timers.target\n",
-        heartbeat.hhmm(),
-        names.heartbeat_task
-    );
-    let reflection_service = format!(
-        "[Unit]\nDescription=CoconutClaw Nightly Reflection\n\n[Service]\nType=oneshot\nWorkingDirectory={working_dir}\nExecStart={reflection_exec}\n"
-    );
-    let reflection_timer = format!(
-        "[Unit]\nDescription=Run CoconutClaw nightly reflection daily\n\n[Timer]\nOnCalendar=*-*-* {}:00\nPersistent=true\nUnit={}\n\n[Install]\nWantedBy=timers.target\n",
-        reflection.hhmm(),
-        names.reflection_task
-    );
-
     fs::write(dir.join(&names.run_task), run_unit)
         .with_context(|| format!("failed to write {}", names.run_task))?;
-    fs::write(dir.join(&names.heartbeat_task), heartbeat_service)
-        .with_context(|| format!("failed to write {}", names.heartbeat_task))?;
-    fs::write(dir.join(&names.heartbeat_timer), heartbeat_timer)
-        .with_context(|| format!("failed to write {}", names.heartbeat_timer))?;
-    fs::write(dir.join(&names.reflection_task), reflection_service)
-        .with_context(|| format!("failed to write {}", names.reflection_task))?;
-    fs::write(dir.join(&names.reflection_timer), reflection_timer)
-        .with_context(|| format!("failed to write {}", names.reflection_timer))?;
-
     run_checked(
         Command::new("systemctl").args(["--user", "daemon-reload"]),
         "systemctl --user daemon-reload",
     )?;
     run_checked(
-        Command::new("systemctl").args([
-            "--user",
-            "enable",
-            &names.run_task,
-            &names.heartbeat_timer,
-            &names.reflection_timer,
-        ]),
+        Command::new("systemctl").args(["--user", "enable", &names.run_task]),
         "systemctl --user enable",
     )?;
 
     println!("installed user systemd units in {}", dir.display());
-    println!("instance key: {}", names.instance_key);
     Ok(())
 }
 
 fn linux_start(names: &ServiceNames) -> Result<()> {
     run_checked(
-        Command::new("systemctl").args([
-            "--user",
-            "start",
-            &names.run_task,
-            &names.heartbeat_timer,
-            &names.reflection_timer,
-        ]),
+        Command::new("systemctl").args(["--user", "start", &names.run_task]),
         "systemctl --user start",
     )
 }
 
 fn linux_stop(names: &ServiceNames) -> Result<()> {
     run_best_effort(
-        Command::new("systemctl").args([
-            "--user",
-            "stop",
-            &names.run_task,
-            &names.heartbeat_timer,
-            &names.reflection_timer,
-        ]),
+        Command::new("systemctl").args(["--user", "stop", &names.run_task]),
         "systemctl --user stop",
     )
 }
 
 fn linux_status(names: &ServiceNames) -> Result<()> {
     run_best_effort(
-        Command::new("systemctl").args([
-            "--user",
-            "status",
-            &names.run_task,
-            &names.heartbeat_task,
-            &names.heartbeat_timer,
-            &names.reflection_task,
-            &names.reflection_timer,
-            "--no-pager",
-        ]),
+        Command::new("systemctl").args(["--user", "status", &names.run_task, "--no-pager"]),
         "systemctl --user status",
     )
 }
@@ -266,24 +112,12 @@ fn linux_status(names: &ServiceNames) -> Result<()> {
 fn linux_uninstall(names: &ServiceNames) -> Result<()> {
     linux_stop(names)?;
     run_best_effort(
-        Command::new("systemctl").args([
-            "--user",
-            "disable",
-            &names.run_task,
-            &names.heartbeat_timer,
-            &names.reflection_timer,
-        ]),
+        Command::new("systemctl").args(["--user", "disable", &names.run_task]),
         "systemctl --user disable",
     )?;
 
     let dir = linux_systemd_dir()?;
-    let files = [
-        dir.join(&names.run_task),
-        dir.join(&names.heartbeat_task),
-        dir.join(&names.heartbeat_timer),
-        dir.join(&names.reflection_task),
-        dir.join(&names.reflection_timer),
-    ];
+    let files = [dir.join(&names.run_task)];
     for path in files {
         if let Err(err) = fs::remove_file(&path)
             && err.kind() != std::io::ErrorKind::NotFound
@@ -303,14 +137,7 @@ fn linux_uninstall(names: &ServiceNames) -> Result<()> {
 fn run_macos(cfg: &RuntimeConfig, names: &ServiceNames, action: ServiceAction) -> Result<()> {
     require_cmd("launchctl")?;
     match action {
-        ServiceAction::Install {
-            heartbeat,
-            reflection,
-        } => {
-            let heartbeat = TimeOfDay::parse(&heartbeat, "heartbeat")?;
-            let reflection = TimeOfDay::parse(&reflection, "reflection")?;
-            mac_install(cfg, names, heartbeat, reflection)
-        }
+        ServiceAction::Install => mac_install(cfg, names),
         ServiceAction::Start => mac_start(names),
         ServiceAction::Stop => mac_stop(names),
         ServiceAction::Status => mac_status(names),
@@ -318,79 +145,44 @@ fn run_macos(cfg: &RuntimeConfig, names: &ServiceNames, action: ServiceAction) -
     }
 }
 
-fn mac_install(
-    cfg: &RuntimeConfig,
-    names: &ServiceNames,
-    heartbeat: TimeOfDay,
-    reflection: TimeOfDay,
-) -> Result<()> {
+fn mac_install(cfg: &RuntimeConfig, names: &ServiceNames) -> Result<()> {
     let dir = mac_launchagents_dir()?;
-    let log_dir = cfg.root_dir.join("LOGS");
+    let log_dir = &cfg.log_dir;
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    fs::create_dir_all(&log_dir)
+    fs::create_dir_all(log_dir)
         .with_context(|| format!("failed to create {}", log_dir.display()))?;
 
     let binary = resolve_binary_path()?;
     let env_path = launchd_path();
-    let run_args = prefixed_program_arguments(&binary, &service_command_args(cfg, "run"));
-    let heartbeat_args =
-        prefixed_program_arguments(&binary, &service_command_args(cfg, "heartbeat"));
-    let reflection_args =
-        prefixed_program_arguments(&binary, &service_command_args(cfg, "nightly-reflection"));
-
     let run_plist = dir.join(format!("{}.plist", names.run_label));
-    let heartbeat_plist = dir.join(format!("{}.plist", names.heartbeat_label));
-    let reflection_plist = dir.join(format!("{}.plist", names.reflection_label));
 
     fs::write(
         &run_plist,
-        render_run_plist(
-            &names.run_label,
-            &run_args,
-            &cfg.root_dir,
-            &env_path,
-            &log_dir.join(format!("{}.log", names.run_label)),
-            &log_dir.join(format!("{}.err.log", names.run_label)),
-        ),
+        configured_run_plist(cfg, names, &binary, &env_path),
     )
     .with_context(|| format!("failed to write {}", run_plist.display()))?;
 
-    fs::write(
-        &heartbeat_plist,
-        render_timer_plist(
-            &names.heartbeat_label,
-            &heartbeat_args,
-            &cfg.root_dir,
-            &env_path,
-            heartbeat,
-            &log_dir.join(format!("{}.log", names.heartbeat_label)),
-            &log_dir.join(format!("{}.err.log", names.heartbeat_label)),
-        ),
-    )
-    .with_context(|| format!("failed to write {}", heartbeat_plist.display()))?;
-
-    fs::write(
-        &reflection_plist,
-        render_timer_plist(
-            &names.reflection_label,
-            &reflection_args,
-            &cfg.root_dir,
-            &env_path,
-            reflection,
-            &log_dir.join(format!("{}.log", names.reflection_label)),
-            &log_dir.join(format!("{}.err.log", names.reflection_label)),
-        ),
-    )
-    .with_context(|| format!("failed to write {}", reflection_plist.display()))?;
-
     let domain = launchctl_domain()?;
     mac_bootstrap_plist(&domain, &run_plist)?;
-    mac_bootstrap_plist(&domain, &heartbeat_plist)?;
-    mac_bootstrap_plist(&domain, &reflection_plist)?;
 
     println!("installed launchd agents in {}", dir.display());
-    println!("instance key: {}", names.instance_key);
     Ok(())
+}
+
+fn configured_run_plist(
+    cfg: &RuntimeConfig,
+    names: &ServiceNames,
+    binary: &Path,
+    env_path: &str,
+) -> String {
+    render_run_plist(
+        &names.run_label,
+        &prefixed_program_arguments(binary, &service_command_args(cfg, "run")),
+        &cfg.root_dir,
+        env_path,
+        &cfg.log_dir.join(format!("{}.log", names.run_label)),
+        &cfg.log_dir.join(format!("{}.err.log", names.run_label)),
+    )
 }
 
 fn mac_start(names: &ServiceNames) -> Result<()> {
@@ -410,15 +202,6 @@ fn mac_stop(names: &ServiceNames) -> Result<()> {
     run_best_effort(
         Command::new("launchctl").args(["bootout", &format!("{domain}/{}", names.run_label)]),
         "launchctl bootout run",
-    )?;
-    run_best_effort(
-        Command::new("launchctl").args(["bootout", &format!("{domain}/{}", names.heartbeat_label)]),
-        "launchctl bootout heartbeat",
-    )?;
-    run_best_effort(
-        Command::new("launchctl")
-            .args(["bootout", &format!("{domain}/{}", names.reflection_label)]),
-        "launchctl bootout reflection",
     )
 }
 
@@ -427,25 +210,13 @@ fn mac_status(names: &ServiceNames) -> Result<()> {
     run_best_effort(
         Command::new("launchctl").args(["print", &format!("{domain}/{}", names.run_label)]),
         "launchctl print run",
-    )?;
-    run_best_effort(
-        Command::new("launchctl").args(["print", &format!("{domain}/{}", names.heartbeat_label)]),
-        "launchctl print heartbeat",
-    )?;
-    run_best_effort(
-        Command::new("launchctl").args(["print", &format!("{domain}/{}", names.reflection_label)]),
-        "launchctl print reflection",
     )
 }
 
 fn mac_uninstall(names: &ServiceNames) -> Result<()> {
     mac_stop(names)?;
     let dir = mac_launchagents_dir()?;
-    for path in [
-        dir.join(format!("{}.plist", names.run_label)),
-        dir.join(format!("{}.plist", names.heartbeat_label)),
-        dir.join(format!("{}.plist", names.reflection_label)),
-    ] {
+    for path in [dir.join(format!("{}.plist", names.run_label))] {
         if let Err(err) = fs::remove_file(&path)
             && err.kind() != std::io::ErrorKind::NotFound
         {
@@ -488,28 +259,6 @@ fn render_run_plist(
         plist_program_arguments(args),
         xml_escape(&working_dir.display().to_string()),
         xml_escape(env_path),
-        xml_escape(&stdout_path.display().to_string()),
-        xml_escape(&stderr_path.display().to_string())
-    )
-}
-
-fn render_timer_plist(
-    label: &str,
-    args: &[String],
-    working_dir: &Path,
-    env_path: &str,
-    time: TimeOfDay,
-    stdout_path: &Path,
-    stderr_path: &Path,
-) -> String {
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{}</string>\n  <key>ProgramArguments</key>\n  <array>\n{}\n  </array>\n  <key>WorkingDirectory</key>\n  <string>{}</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>{}</string>\n  </dict>\n  <key>StartCalendarInterval</key>\n  <dict>\n    <key>Hour</key>\n    <integer>{}</integer>\n    <key>Minute</key>\n    <integer>{}</integer>\n  </dict>\n  <key>StandardOutPath</key>\n  <string>{}</string>\n  <key>StandardErrorPath</key>\n  <string>{}</string>\n</dict>\n</plist>\n",
-        xml_escape(label),
-        plist_program_arguments(args),
-        xml_escape(&working_dir.display().to_string()),
-        xml_escape(env_path),
-        time.hour,
-        time.minute,
         xml_escape(&stdout_path.display().to_string()),
         xml_escape(&stderr_path.display().to_string())
     )
@@ -640,7 +389,7 @@ fn run_best_effort(command: &mut Command, summary: &str) -> Result<()> {
 
 fn service_command_args(cfg: &RuntimeConfig, mode: &str) -> Vec<String> {
     vec![
-        "--instance-dir".to_string(),
+        "--data-dir".to_string(),
         cfg.instance_dir.display().to_string(),
         mode.to_string(),
     ]
@@ -669,60 +418,6 @@ fn systemd_quote(raw: &str) -> String {
     }
     out.push('"');
     out
-}
-
-fn sanitize_identifier(input: &str) -> String {
-    let mut out = String::new();
-    let mut last_dash = false;
-    for mut ch in input.chars() {
-        ch.make_ascii_lowercase();
-        let allowed = ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-';
-        let mapped = if allowed { ch } else { '-' };
-        if mapped == '-' {
-            if out.is_empty() || last_dash {
-                continue;
-            }
-            out.push('-');
-            last_dash = true;
-        } else {
-            out.push(mapped);
-            last_dash = false;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
-}
-
-fn paths_equal(lhs: &Path, rhs: &Path) -> bool {
-    let lhs = fs::canonicalize(lhs).unwrap_or_else(|_| lhs.to_path_buf());
-    let rhs = fs::canonicalize(rhs).unwrap_or_else(|_| rhs.to_path_buf());
-    lhs == rhs
-}
-
-fn cksum_identifier(input: &str) -> String {
-    let mut command = Command::new("cksum");
-    command.stdin(Stdio::piped()).stdout(Stdio::piped());
-    if let Ok(mut child) = command.spawn() {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(input.as_bytes());
-        }
-        if let Ok(output) = child.wait_with_output()
-            && output.status.success()
-        {
-            let parsed = String::from_utf8_lossy(&output.stdout);
-            if let Some(value) = parsed.split_whitespace().next()
-                && !value.is_empty()
-            {
-                return value.to_string();
-            }
-        }
-    }
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    input.hash(&mut hasher);
-    hasher.finish().to_string()
 }
 
 #[cfg(test)]

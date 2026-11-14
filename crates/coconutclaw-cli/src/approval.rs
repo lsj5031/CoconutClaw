@@ -1,13 +1,11 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use reqwest::blocking::Client;
 use serde_json::{Value, json};
 
-use crate::delivery::{DeliveryTarget, TaskSource, cleanup_attachment_path, parse_delivery_target};
-use crate::scheduler::TaskRequest;
-use crate::session::{SessionKey, SessionPlatform};
-use crate::slack::send_slack_approval_request;
+use crate::delivery::{TaskSource, cleanup_attachment_path, parse_delivery_target};
+use crate::scheduler::{TaskMedia, TaskRequest};
+use crate::session::SessionKey;
 use crate::store::{CreateApprovalParams, Store};
 use crate::{InputType, QuotedMessage, TurnInput, iso_now};
 
@@ -32,13 +30,33 @@ pub(crate) fn cleanup_attachment_from_resume_payload(payload: &str) -> Result<()
 }
 
 pub(crate) fn build_resume_payload(request: &TaskRequest, input: &TurnInput) -> Result<String> {
+    let media = if input.attachment_path.is_none() {
+        request.media.as_ref().map(|media| match media {
+            TaskMedia::Telegram(crate::IncomingMedia::Photo { file_id }) => {
+                json!({"kind":"photo","file_id":file_id})
+            }
+            TaskMedia::Telegram(crate::IncomingMedia::Document { file_id, file_name }) => {
+                json!({"kind":"document","file_id":file_id,"file_name":file_name})
+            }
+            TaskMedia::Telegram(crate::IncomingMedia::Video { file_id }) => {
+                json!({"kind":"video","file_id":file_id})
+            }
+            TaskMedia::Telegram(crate::IncomingMedia::VideoNote { file_id }) => {
+                json!({"kind":"video_note","file_id":file_id})
+            }
+        })
+    } else {
+        None
+    };
     Ok(json!({
         "session_id": request.session.id(),
         "channel": input.channel.as_str(),
         "source": request.source.channel_name(),
         "input_type": input.input_type.as_str(),
         "user_text": input.user_text.as_str(),
-        "asr_text": input.asr_text.as_str(),
+        "delegated": request.delegated,
+        "media": media,
+        "update_id": request.update_id,
         "attachment_type": input.attachment_type.as_deref(),
         "attachment_path": input.attachment_path.as_ref().map(|path| path.display().to_string()),
         "attachment_owned": input.attachment_owned,
@@ -46,6 +64,7 @@ pub(crate) fn build_resume_payload(request: &TaskRequest, input: &TurnInput) -> 
         "dispatch": serde_json::from_str::<Value>(&crate::delivery::serialize_delivery_target(&request.delivery))
             .unwrap_or_else(|_| json!({"kind":"stdout"})),
         "source_user_id": request.source_user_id.as_deref(),
+        "progress_message_id": request.progress_message_id.as_deref(),
         "quoted": {
             "reply_from": request.quoted.reply_from.as_deref(),
             "reply_text": request.quoted.reply_text.as_deref(),
@@ -56,13 +75,21 @@ pub(crate) fn build_resume_payload(request: &TaskRequest, input: &TurnInput) -> 
 }
 
 pub(crate) fn request_from_resume_payload(payload: &str) -> Result<TaskRequest> {
+    request_from_payload(payload, true)
+}
+
+pub(crate) fn request_from_payload(payload: &str, approved: bool) -> Result<TaskRequest> {
     let value: Value = serde_json::from_str(payload).context("invalid approval resume payload")?;
     let session_id = value
         .get("session_id")
         .and_then(Value::as_str)
-        .unwrap_or("slack:unknown");
+        .ok_or_else(|| anyhow::anyhow!("missing approval session"))?;
+    if !session_id.starts_with("telegram:") && !session_id.starts_with("local:") {
+        anyhow::bail!("removed session transport preserved; see docs/migration-phase-0.md");
+    }
     let dispatch_raw = value.get("dispatch").map(Value::to_string);
-    let dispatch = parse_delivery_target(dispatch_raw.as_deref()).unwrap_or(DeliveryTarget::Stdout);
+    let dispatch = parse_delivery_target(dispatch_raw.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("unsupported approval delivery target; data preserved"))?;
 
     let session = SessionKey::from_id(session_id.to_string());
     let mut input = TurnInput {
@@ -71,7 +98,6 @@ pub(crate) fn request_from_resume_payload(payload: &str) -> Result<TaskRequest> 
             .and_then(Value::as_str)
             .unwrap_or("text")
         {
-            "voice" => InputType::Voice,
             "photo" => InputType::Photo,
             "video" => InputType::Video,
             "document" => InputType::Document,
@@ -82,11 +108,6 @@ pub(crate) fn request_from_resume_payload(payload: &str) -> Result<TaskRequest> 
             .get("user_text")
             .and_then(Value::as_str)
             .unwrap_or("(empty message)")
-            .to_string(),
-        asr_text: value
-            .get("asr_text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
             .to_string(),
         attachment_type: value
             .get("attachment_type")
@@ -107,42 +128,62 @@ pub(crate) fn request_from_resume_payload(payload: &str) -> Result<TaskRequest> 
         channel: value
             .get("channel")
             .and_then(Value::as_str)
-            .unwrap_or(match session.platform {
-                SessionPlatform::Telegram => "telegram",
-                SessionPlatform::Slack => "slack",
-                SessionPlatform::Scheduled => "scheduled",
-                SessionPlatform::Local => "local",
-            })
+            .unwrap_or("telegram")
             .to_string(),
     };
     let approval_note = "Administrator approval granted for the previous pending request. Continue the approved work without asking for approval again.";
-    input.supplemental_context = Some(match input.supplemental_context.take() {
-        Some(existing) if !existing.trim().is_empty() => format!("{existing}\n{approval_note}"),
-        _ => approval_note.to_string(),
-    });
+    if approved {
+        input.supplemental_context = Some(match input.supplemental_context.take() {
+            Some(existing) if !existing.trim().is_empty() => format!("{existing}\n{approval_note}"),
+            _ => approval_note.to_string(),
+        });
+    }
 
-    let source = match (&session.platform, &dispatch) {
-        (
-            SessionPlatform::Slack,
-            DeliveryTarget::Slack {
-                channel_id,
-                thread_ts,
-            },
-        ) => TaskSource::Slack {
-            channel_id: channel_id.clone(),
-            thread_ts: thread_ts.clone(),
-        },
-        (SessionPlatform::Telegram, _) => TaskSource::Telegram,
-        (SessionPlatform::Scheduled, _) => TaskSource::Scheduled,
-        _ => TaskSource::Local,
+    let source = if input.channel == "telegram" {
+        TaskSource::Telegram
+    } else if input.channel == "local" {
+        TaskSource::Local
+    } else {
+        anyhow::bail!("removed request channel preserved; see docs/migration-phase-0.md");
     };
-
+    let media = value
+        .get("media")
+        .filter(|v| !v.is_null())
+        .map(|media| -> Result<TaskMedia> {
+            let id = media
+                .get("file_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("missing persisted Telegram file ID"))?
+                .to_string();
+            let media = match media.get("kind").and_then(Value::as_str) {
+                Some("photo") => crate::IncomingMedia::Photo { file_id: id },
+                Some("document") => crate::IncomingMedia::Document {
+                    file_id: id,
+                    file_name: media
+                        .get("file_name")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                },
+                Some("video") => crate::IncomingMedia::Video { file_id: id },
+                Some("video_note") => crate::IncomingMedia::VideoNote { file_id: id },
+                _ => anyhow::bail!("unsupported persisted Telegram media; data preserved"),
+            };
+            Ok(TaskMedia::Telegram(media))
+        })
+        .transpose()?;
     Ok(TaskRequest {
         session,
         source,
         input,
-        update_id: None,
-        media: None,
+        update_id: if approved {
+            None
+        } else {
+            value
+                .get("update_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        },
+        media,
         quoted: QuotedMessage {
             reply_from: value
                 .get("quoted")
@@ -160,51 +201,42 @@ pub(crate) fn request_from_resume_payload(payload: &str) -> Result<TaskRequest> 
                 .and_then(Value::as_i64),
         },
         delivery: dispatch.clone(),
-        persisted_delivery_target: Some(dispatch),
         source_user_id: value
             .get("source_user_id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        progress_message_id: None,
-        scheduled_task_id: None,
+        progress_message_id: value
+            .get("progress_message_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        delegated: value
+            .get("delegated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create_slack_approval_request(
+pub(crate) fn create_approval_request(
     store: &Store,
-    client: &Client,
     request: &TaskRequest,
     input: &TurnInput,
     task_run_id: i64,
-    channel_id: &str,
-    thread_ts: Option<&str>,
     prompt: &str,
     timezone: &str,
-) -> Result<()> {
-    let resume_payload = build_resume_payload(request, input)?;
-    store.mark_task_run_awaiting_approval(task_run_id)?;
-    let approval_id = store.create_approval(CreateApprovalParams {
+) -> Result<i64> {
+    let payload = build_resume_payload(request, input)?;
+    let id = store.create_approval(CreateApprovalParams {
         task_run_id,
         session_id: request.session.id(),
         channel: request.source.channel_name().to_string(),
         source_user_id: request.source_user_id.clone(),
-        channel_id: Some(channel_id.to_string()),
-        thread_ts: thread_ts.map(ToOwned::to_owned),
+        channel_id: Some(request.delivery.display_id().to_string()),
+        thread_ts: None,
         prompt_text: prompt.to_string(),
         request_message_ts: None,
-        resume_payload,
+        resume_payload: payload,
         created_at: iso_now(timezone),
     })?;
-    let approval_message_ts =
-        match send_slack_approval_request(client, channel_id, thread_ts, approval_id, prompt) {
-            Ok(ts) => ts,
-            Err(err) => {
-                let now = iso_now(timezone);
-                let _ = store.resolve_approval(approval_id, "expired", &now, None);
-                return Err(err);
-            }
-        };
-    store.update_approval_request_message_ts(approval_id, &approval_message_ts)?;
-    Ok(())
+    store.mark_task_run_awaiting_approval(task_run_id)?;
+    Ok(id)
 }

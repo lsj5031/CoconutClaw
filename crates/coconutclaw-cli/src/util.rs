@@ -23,18 +23,6 @@ pub(crate) fn shorten_log_text(text: &str, max_chars: usize) -> String {
 }
 
 pub(crate) fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {
-    if let Some(file_id) = message
-        .get("voice")
-        .and_then(|node| node.get("file_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Some(IncomingMedia::Voice {
-            file_id: file_id.to_string(),
-        });
-    }
-
     if let Some(photo_array) = message.get("photo").and_then(Value::as_array) {
         for item in photo_array.iter().rev() {
             if let Some(file_id) = item
@@ -153,35 +141,6 @@ pub(crate) fn resolve_instance_path(instance_dir: &Path, raw: PathBuf) -> PathBu
     }
 }
 
-pub(crate) fn local_day(timezone: &str) -> String {
-    let now: DateTime<Utc> = Utc::now();
-    if let Ok(tz) = timezone.parse::<Tz>() {
-        return now.with_timezone(&tz).format("%Y-%m-%d").to_string();
-    }
-    now.format("%Y-%m-%d").to_string()
-}
-
-pub(crate) fn scheduled_task_slot_at(
-    now: chrono::DateTime<chrono::Utc>,
-    timezone: &str,
-) -> (String, String) {
-    if let Ok(tz) = timezone.parse::<Tz>() {
-        let local = now.with_timezone(&tz);
-        return (
-            local.format("%H:%M").to_string(),
-            local.format("%Y-%m-%d").to_string(),
-        );
-    }
-    (
-        now.format("%H:%M").to_string(),
-        now.format("%Y-%m-%d").to_string(),
-    )
-}
-
-pub(crate) fn scheduled_task_slot_now(timezone: &str) -> (String, String) {
-    scheduled_task_slot_at(chrono::Utc::now(), timezone)
-}
-
 pub(crate) fn iso_now(timezone: &str) -> String {
     let now: DateTime<Utc> = Utc::now();
     if let Ok(tz) = timezone.parse::<Tz>() {
@@ -201,10 +160,15 @@ pub(crate) fn command_exists(bin: &str) -> bool {
     crate::service::find_on_path(bin).is_some()
 }
 
-pub(crate) fn yes_no(value: bool) -> &'static str {
-    if value { "ok" } else { "missing" }
+pub(crate) fn value_to_string(value: &Value) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
-
-pub(crate) fn asr_feature_enabled(cfg: &RuntimeConfig) -> bool {
-    cfg.asr_cmd_template.is_some() || cfg.asr_url.is_some()
+pub(crate) fn extract_update_id_from_value(value: &Value) -> Option<String> {
+    value.get("update_id").map(value_to_string)
+}
+pub(crate) fn extract_update_id_from_json(raw: &str) -> Result<Option<String>> {
+    Ok(extract_update_id_from_value(&serde_json::from_str(raw)?))
 }

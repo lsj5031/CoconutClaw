@@ -1,36 +1,31 @@
-# AGENTS.md — CoconutClaw
+# CoconutClaw
 
-## What this is
-Rust-powered personal voice agent: Telegram ↔ ASR ↔ provider CLI ↔ TTS.
+Telegram polling ↔ Codex, with local history/memory and durable task results.
 
-Primary runtime is `coconutclaw` (`crates/coconutclaw-cli/src/main.rs`).
+- `crates/coconutclaw-cli` (package `coconutclaw`): runtime, Telegram, task lanes,
+  approvals, delivery outbox, recovery, SQLite.
+- `crates/coconutclaw-config`: single data-directory configuration.
+- `crates/coconutclaw-provider`: existing Codex exec integration, explicit
+  session resume, image input, progress, timeout and process-group cancellation.
+- `sql/schema.sql`: additive schema; preserve legacy tables and user records.
 
-## Validation
+Validate with `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, and
+`cargo test --workspace --all-targets --locked`.
+Do not run injected smoke commands with live Codex or Telegram credentials.
+The tests supply local mocks.
 
-- Rust tests: `cargo test`
-- One-shot smoke: `cargo run -p coconutclaw -- once --inject-text "hello"`
-- Bash helper lint: `shellcheck scripts/asr.sh scripts/tts.sh`
-
-## Architecture
-
-- `crates/coconutclaw-cli` — main runtime loop, Telegram I/O, context building, marker parsing, storage.
-- `crates/coconutclaw-config` — runtime config loading and instance layout.
-- `crates/coconutclaw-provider` — provider execution (`codex` / `pi` / `antigravity`) and progress extraction.
-- `sql/schema.sql` — SQLite schema (`kv`, `turns`, `tasks`).
-- Helper scripts kept by design:
-  - `scripts/asr.sh`
-  - `scripts/tts.sh`
-
-## Output contract
-
-Provider output markers:
+Supported plain-text marker prefixes:
 
 - `TELEGRAM_REPLY:`
-- `VOICE_REPLY:`
 - `SEND_PHOTO:`
 - `SEND_DOCUMENT:`
 - `SEND_VIDEO:`
 - `MEMORY_APPEND:`
 - `TASK_APPEND:`
+- `SEND_APPROVAL:`
+- `DELEGATE_TASK:`
 
-Marker lines must stay plain text and prefix format must remain unchanged.
+Do not restore voice, alternate providers/transports, named assistant management
+or general scheduling. Historical schema columns are compatibility data, not
+supported features. See `docs/migration-phase-0.md`.

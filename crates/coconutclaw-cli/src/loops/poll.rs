@@ -10,13 +10,11 @@ use std::thread;
 use std::time::Duration;
 
 use crate::scheduler::SessionScheduler;
-use crate::slack::SlackWebhookTurn;
 use crate::store::Store;
 use crate::telegram::{dispatch_telegram_output, fetch_poll_updates};
+use crate::util::extract_update_id_from_value;
 use crate::util::set_inflight_update;
-use crate::webhook::extract_update_id_from_value;
 
-use super::slack_socket::drain_slack_socket_turns;
 use super::webhook::process_webhook_line;
 
 pub(crate) fn run_poll_loop(
@@ -25,7 +23,6 @@ pub(crate) fn run_poll_loop(
     scheduler: &SessionScheduler,
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
-    mut slack_rx: Option<&mut tokio::sync::mpsc::UnboundedReceiver<SlackWebhookTurn>>,
 ) -> Result<()> {
     let mut offset = store
         .kv_get("last_update_id")?
@@ -37,25 +34,14 @@ pub(crate) fn run_poll_loop(
             Ok(updates) => updates,
             Err(err) => {
                 tracing::warn!("telegram polling failed: {err:#}");
-                thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
+                sleep_until_poll_or_shutdown(cfg.poll_interval_seconds, shutdown);
                 continue;
             }
         };
 
         if updates.is_empty() {
-            if let Some(ref mut rx) = slack_rx {
-                drain_slack_socket_turns(cfg, store, scheduler, rx);
-            }
-            // Run any due scheduled tasks before sleeping
-            if let Err(err) = crate::scheduling::run_due_scheduled_tasks(
-                cfg,
-                store,
-                scheduler,
-                Some(telegram_client),
-            ) {
-                tracing::warn!("scheduled task execution failed: {err:#}");
-            }
-            thread::sleep(Duration::from_secs(cfg.poll_interval_seconds.max(1)));
+            scheduler.retry_deliveries()?;
+            sleep_until_poll_or_shutdown(cfg.poll_interval_seconds, shutdown);
             continue;
         }
 
@@ -77,28 +63,23 @@ pub(crate) fn run_poll_loop(
                 }
             };
             // Set inflight checkpoint before processing for crash recovery
-            if let Err(err) = set_inflight_update(
+            set_inflight_update(
                 store,
                 update_id.map(|id| id.to_string()).as_deref().unwrap_or(""),
                 &line,
                 &cfg.timezone,
-            ) {
-                tracing::warn!("failed to set inflight checkpoint: {err:#}");
-            }
+            )?;
             let outcome = match process_webhook_line(cfg, store, scheduler, &line) {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     tracing::warn!(
-                        "failed to process polled update_id={} (dropping update): {err:#}",
+                        "failed to process polled update_id={} (preserved for retry): {err:#}",
                         update_id
                             .map(|id| id.to_string())
                             .unwrap_or_else(|| "unknown".to_string())
                     );
-                    if let Some(update_id) = update_id {
-                        offset = Some(update_id.saturating_add(1));
-                    }
-                    let _ = store.clear_inflight();
-                    continue;
+                    sleep_until_poll_or_shutdown(cfg.poll_interval_seconds, shutdown);
+                    break;
                 }
             };
 
@@ -129,19 +110,19 @@ pub(crate) fn run_poll_loop(
             }
         }
 
-        // Drain any pending Slack socket mode turns
-        if let Some(ref mut rx) = slack_rx {
-            drain_slack_socket_turns(cfg, store, scheduler, rx);
-        }
-
-        // Run any due scheduled tasks
-        if let Err(err) =
-            crate::scheduling::run_due_scheduled_tasks(cfg, store, scheduler, Some(telegram_client))
-        {
-            tracing::warn!("scheduled task execution failed: {err:#}");
-        }
+        scheduler.retry_deliveries()?;
     }
 
     tracing::info!("shutdown signal received, stopping poll loop");
     Ok(())
+}
+
+fn sleep_until_poll_or_shutdown(seconds: u64, shutdown: &AtomicBool) {
+    let until = std::time::Instant::now() + Duration::from_secs(seconds.max(1));
+    while !shutdown.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+        thread::sleep(
+            Duration::from_millis(25)
+                .min(until.saturating_duration_since(std::time::Instant::now())),
+        );
+    }
 }

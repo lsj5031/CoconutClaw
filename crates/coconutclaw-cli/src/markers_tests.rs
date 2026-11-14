@@ -1,31 +1,6 @@
 use super::*;
 
 #[test]
-fn reply_delta_is_filtered_from_render_output() {
-    // ReplyDelta is a transient internal effect for streaming;
-    // it should not appear in the wire-format marker output.
-    let effects = vec![
-        Effect::ReplyDelta("streaming chunk".to_string()),
-        Effect::MemoryAppend("remember this".to_string()),
-    ];
-    let rendered = render_output("final reply", "", &effects);
-    // The final reply appears, MemoryAppend appears, ReplyDelta does not.
-    assert!(rendered.contains("TELEGRAM_REPLY: final reply"));
-    assert!(rendered.contains("MEMORY_APPEND: remember this"));
-    assert!(!rendered.contains("REPLY_DELTA"));
-    assert!(!rendered.contains("streaming chunk"));
-}
-
-#[test]
-fn reply_delta_renders_in_effects_output() {
-    // When effects are rendered directly (for debugging/serialization),
-    // ReplyDelta should produce a REPLAY_DELTA marker.
-    let effects = vec![Effect::ReplyDelta("hello".to_string())];
-    let rendered = render_effects(&effects);
-    assert!(rendered.contains("REPLY_DELTA: hello"));
-}
-
-#[test]
 fn test_should_retry_provider_failure_plain_text() {
     assert!(should_retry_provider_failure("network failure"));
     assert!(should_retry_provider_failure("connection reset by peer"));

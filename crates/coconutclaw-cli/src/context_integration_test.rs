@@ -2,66 +2,7 @@ use super::*;
 use coconutclaw_config::RuntimeConfig;
 use std::fs;
 
-use crate::markers::Effect;
 use crate::store::Store;
-
-#[test]
-fn append_memory_and_tasks_stores_normalized_scheduled_time() {
-    let cfg = RuntimeConfig::test_config();
-    let mut store = Store::open(&cfg).expect("store");
-    let effects = vec![Effect::SchedulePrompt("9:00|Check backups".to_string())];
-
-    let outcome = append_memory_and_tasks(
-        &cfg,
-        &mut store,
-        "2026-04-20T08:00:00+0000",
-        Some(1),
-        &effects,
-        None,
-        None,
-    )
-    .expect("append schedule prompt");
-
-    let due = store
-        .get_due_scheduled_tasks("10:00", "2026-04-20")
-        .expect("get due scheduled tasks");
-    assert_eq!(due.len(), 1);
-    assert_eq!(due[0].schedule_time, "09:00");
-    assert_eq!(due[0].prompt, "Check backups");
-    assert_eq!(outcome.schedule_feedback.len(), 1);
-    assert!(outcome.schedule_feedback[0].contains("saved daily schedule at 09:00"));
-}
-
-#[test]
-fn append_memory_and_tasks_reports_duplicate_schedules() {
-    let cfg = RuntimeConfig::test_config();
-    let mut store = Store::open(&cfg).expect("store");
-    let effects = vec![Effect::SchedulePrompt("9:00|Check backups".to_string())];
-
-    append_memory_and_tasks(
-        &cfg,
-        &mut store,
-        "2026-04-20T08:00:00+0000",
-        Some(1),
-        &effects,
-        None,
-        None,
-    )
-    .expect("insert schedule");
-    let duplicate = append_memory_and_tasks(
-        &cfg,
-        &mut store,
-        "2026-04-20T08:01:00+0000",
-        Some(2),
-        &effects,
-        None,
-        None,
-    )
-    .expect("insert duplicate schedule");
-
-    assert_eq!(duplicate.schedule_feedback.len(), 1);
-    assert!(duplicate.schedule_feedback[0].contains("already active daily schedule"));
-}
 
 #[test]
 fn rewrite_managed_markdown_file_preserves_manual_content() {

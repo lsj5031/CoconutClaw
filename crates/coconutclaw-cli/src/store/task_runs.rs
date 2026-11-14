@@ -42,8 +42,8 @@ impl Store {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn update_task_run_progress(&self, id: i64, last_progress: &str) -> Result<()> {
+        let last_progress: String = last_progress.chars().take(512).collect();
         self.conn.execute(
             "UPDATE task_runs SET last_progress = ?2 WHERE id = ?1",
             params![id, last_progress],
@@ -250,59 +250,17 @@ impl Store {
         }))
     }
 
-    pub(crate) fn find_active_task_run_by_update_id(
-        &self,
-        update_id: &str,
-    ) -> Result<Option<TaskRun>> {
+    pub(crate) fn find_task_run_by_update_id(&self, update_id: &str) -> Result<Option<TaskRun>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
                     created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
                     last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
              WHERE update_id = ?1
-               AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
              ORDER BY id DESC
              LIMIT 1",
         )?;
         let mut rows = stmt.query(params![update_id])?;
-        let Some(row) = rows.next()? else {
-            return Ok(None);
-        };
-        Ok(Some(TaskRun {
-            id: row.get(0)?,
-            session_id: row.get(1)?,
-            channel: row.get(2)?,
-            source_chat_id: row.get(3)?,
-            source_user_id: row.get(4)?,
-            update_id: row.get(5)?,
-            prompt: row.get(6)?,
-            status: row.get(7)?,
-            created_at: row.get(8)?,
-            started_at: row.get(9)?,
-            finished_at: row.get(10)?,
-            cancel_requested_at: row.get(11)?,
-            progress_message_id: row.get(12)?,
-            last_progress: row.get(13)?,
-            error_summary: row.get(14)?,
-            result_summary: row.get(15)?,
-            scheduled_task_id: row.get(16)?,
-        }))
-    }
-
-    pub(crate) fn latest_task_run_for_scheduled_task(
-        &self,
-        scheduled_task_id: i64,
-    ) -> Result<Option<TaskRun>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
-                    created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
-                    last_progress, error_summary, result_summary, scheduled_task_id
-             FROM task_runs
-             WHERE scheduled_task_id = ?1
-             ORDER BY id DESC
-             LIMIT 1",
-        )?;
-        let mut rows = stmt.query(params![scheduled_task_id])?;
         let Some(row) = rows.next()? else {
             return Ok(None);
         };
@@ -332,15 +290,9 @@ impl Store {
             "UPDATE task_runs
              SET status = 'failed',
                  finished_at = COALESCE(finished_at, ?1),
-                 error_summary = COALESCE(error_summary, 'runtime restarted before task completion')
-             WHERE status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')",
-            params![ts],
-        )?;
-        self.conn.execute(
-            "UPDATE approvals
-             SET status = CASE WHEN status = 'pending' THEN 'expired' ELSE status END,
-                 resolved_at = CASE WHEN status = 'pending' THEN COALESCE(resolved_at, ?1) ELSE resolved_at END
-             WHERE status = 'pending'",
+                 error_summary = COALESCE(error_summary, 'runtime restarted; outcome unknown, do not automatically retry')
+             WHERE status IN ('running', 'cancel_requested')
+                OR (status='queued' AND NOT EXISTS(SELECT 1 FROM task_payloads p WHERE p.task_run_id=task_runs.id))",
             params![ts],
         )?;
         Ok(())

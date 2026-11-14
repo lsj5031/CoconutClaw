@@ -1,8 +1,5 @@
 use super::*;
-use crate::markers::parse_markers;
 use anyhow::Result;
-use rusqlite::params;
-use serde_json::json;
 
 impl Store {
     /// Run database migrations tracked by the `schema_version` key in `kv`.
@@ -177,7 +174,6 @@ impl Store {
         }
 
         if current < 8 {
-            self.deduplicate_task_run_update_ids()?;
             self.ensure_task_runs_update_id_unique_index()?;
             self.kv_set("schema_version", "8")?;
         }
@@ -201,63 +197,22 @@ impl Store {
         }
 
         if current < 10 {
-            self.backfill_legacy_scheduled_task_routing()?;
+            // Removed scheduling routing is deliberately not backfilled.
             self.kv_set("schema_version", "10")?;
         }
 
         Ok(())
     }
 
-    fn deduplicate_task_run_update_ids(&self) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        let mut duplicates = tx.prepare(
-            "SELECT update_id, MAX(id) AS keep_id
-             FROM task_runs
-             WHERE update_id IS NOT NULL
-             GROUP BY update_id
-             HAVING COUNT(*) > 1",
-        )?;
-        let duplicate_groups = duplicates
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(duplicates);
-
-        for (update_id, keep_id) in duplicate_groups {
-            let mut duplicate_rows = tx.prepare(
-                "SELECT id
-                 FROM task_runs
-                 WHERE update_id = ?1
-                   AND id != ?2",
-            )?;
-            let duplicate_ids = duplicate_rows
-                .query_map(params![update_id, keep_id], |row| row.get::<_, i64>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            drop(duplicate_rows);
-
-            for duplicate_id in duplicate_ids {
-                tx.execute(
-                    "UPDATE turns
-                     SET task_run_id = ?1
-                     WHERE task_run_id = ?2",
-                    params![keep_id, duplicate_id],
-                )?;
-                tx.execute(
-                    "UPDATE approvals
-                     SET task_run_id = ?1
-                     WHERE task_run_id = ?2",
-                    params![keep_id, duplicate_id],
-                )?;
-                tx.execute("DELETE FROM task_runs WHERE id = ?1", params![duplicate_id])?;
-            }
-        }
-
-        tx.commit()?;
-        Ok(())
-    }
-
     fn ensure_task_runs_update_id_unique_index(&self) -> Result<()> {
+        let duplicates: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM (SELECT update_id FROM task_runs WHERE update_id IS NOT NULL GROUP BY update_id HAVING COUNT(*)>1)",
+            [], |row| row.get(0))?;
+        if duplicates > 0 {
+            anyhow::bail!(
+                "legacy duplicate task update IDs preserved; back up the database and resolve duplicate identifiers manually before starting, see docs/migration-phase-0.md"
+            );
+        }
         self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_update_id_unique
              ON task_runs(update_id) WHERE update_id IS NOT NULL",
@@ -265,163 +220,4 @@ impl Store {
         )?;
         Ok(())
     }
-
-    fn backfill_legacy_scheduled_task_routing(&self) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        let mut tasks = tx.prepare(
-            "SELECT id, ts, prompt, schedule_time, recurring, origin_session, delivery_target
-             FROM scheduled_tasks
-             WHERE origin_session IS NULL
-                OR delivery_target IS NULL
-             ORDER BY id ASC",
-        )?;
-        let scheduled_tasks = tasks
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i32>(4)? != 0,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(tasks);
-
-        for (
-            scheduled_task_id,
-            ts,
-            prompt,
-            schedule_time,
-            recurring,
-            origin_session,
-            delivery_target,
-        ) in scheduled_tasks
-        {
-            let Some((matched_origin_session, matched_delivery_target)) =
-                find_origin_turn_routing_for_schedule(
-                    &tx,
-                    &ts,
-                    &prompt,
-                    &schedule_time,
-                    recurring,
-                )?
-            else {
-                continue;
-            };
-
-            tx.execute(
-                "UPDATE scheduled_tasks
-                 SET origin_session = COALESCE(origin_session, ?2),
-                     delivery_target = COALESCE(delivery_target, ?3)
-                 WHERE id = ?1",
-                params![
-                    scheduled_task_id,
-                    origin_session.or(Some(matched_origin_session)),
-                    delivery_target.or(Some(matched_delivery_target))
-                ],
-            )?;
-        }
-
-        tx.commit()?;
-        Ok(())
-    }
-}
-
-fn find_origin_turn_routing_for_schedule(
-    tx: &rusqlite::Transaction<'_>,
-    ts: &str,
-    prompt: &str,
-    schedule_time: &str,
-    recurring: bool,
-) -> Result<Option<(String, String)>> {
-    let mut turns = tx.prepare(
-        "SELECT chat_id, channel, provider_raw
-         FROM turns
-         WHERE ts = ?1
-           AND status NOT IN ('boundary', 'cancelled')
-         ORDER BY id DESC",
-    )?;
-    let rows = turns
-        .query_map(params![ts], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    for (chat_id, channel, provider_raw) in rows {
-        let markers = parse_markers(&provider_raw);
-        let matched = markers.schedule_prompt.iter().any(|line| {
-            parse_schedule_prompt_for_migration(line)
-                .map(|(line_recurring, line_time, line_prompt)| {
-                    line_recurring == recurring
-                        && line_time == schedule_time
-                        && line_prompt == prompt
-                })
-                .unwrap_or(false)
-        });
-        if !matched {
-            continue;
-        }
-
-        let delivery_target = match channel.as_str() {
-            "telegram" => {
-                let chat_id = chat_id
-                    .strip_prefix("telegram:")
-                    .unwrap_or(chat_id.as_str())
-                    .split_once('#')
-                    .map(|(root, _)| root)
-                    .unwrap_or_else(|| {
-                        chat_id
-                            .strip_prefix("telegram:")
-                            .unwrap_or(chat_id.as_str())
-                    });
-                json!({"kind": "telegram", "chat_id": chat_id}).to_string()
-            }
-            "slack" => {
-                let session = chat_id.strip_prefix("slack:").unwrap_or(chat_id.as_str());
-                let (channel_id, thread_ts) = session
-                    .split_once('#')
-                    .map(|(channel_id, thread_ts)| {
-                        (channel_id.to_string(), Some(thread_ts.to_string()))
-                    })
-                    .unwrap_or_else(|| (session.to_string(), None));
-                json!({"channel_id": channel_id, "kind": "slack", "thread_ts": thread_ts})
-                    .to_string()
-            }
-            "local" => json!({"kind": "stdout"}).to_string(),
-            _ => continue,
-        };
-
-        return Ok(Some((chat_id, delivery_target)));
-    }
-
-    Ok(None)
-}
-
-fn parse_schedule_prompt_for_migration(line: &str) -> Option<(bool, String, String)> {
-    let (recurring, rest) = if let Some(stripped) = line.strip_prefix("once ") {
-        (false, stripped.trim())
-    } else {
-        (true, line)
-    };
-
-    let (time, prompt) = rest.split_once('|')?;
-    let time = time.trim();
-    let prompt = prompt.trim();
-    let parts: Vec<&str> = time.split(':').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let h = parts[0].parse::<u8>().ok()?;
-    let m = parts[1].parse::<u8>().ok()?;
-    if h > 23 || m > 59 || prompt.is_empty() {
-        return None;
-    }
-    Some((recurring, format!("{:02}:{:02}", h, m), prompt.to_string()))
 }

@@ -1,8 +1,67 @@
 use super::*;
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 
 #[test]
-fn store_open_deduplicates_legacy_task_run_update_ids() {
+fn telegram_history_aliases_share_fresh_boundary_but_not_other_chats() {
+    let cfg = coconutclaw_config::RuntimeConfig::test_config();
+    let store = Store::open(&cfg).unwrap();
+    for (chat, text) in [
+        ("321", "legacy-raw"),
+        ("telegram:321", "canonical"),
+        ("322", "other-chat"),
+    ] {
+        store.conn.execute("INSERT INTO turns(ts,chat_id,input_type,user_text,provider_raw,telegram_reply,status,channel)
+            VALUES('2026-11-15T00:00:00+0000',?1,'text',?2,'','reply','ok','telegram')", params![chat,text]).unwrap();
+    }
+    let before = store
+        .recent_turns_snippet(8, "telegram:321", "telegram")
+        .unwrap()
+        .join("\n");
+    assert!(before.contains("legacy-raw") && before.contains("canonical"));
+    assert!(!before.contains("other-chat"));
+    store
+        .insert_boundary_turn(
+            "2026-11-15T00:01:00+0000",
+            "321",
+            Some("boundary"),
+            "telegram",
+        )
+        .unwrap();
+    assert!(
+        store
+            .recent_turns_snippet(8, "321", "telegram")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .recent_turns_snippet(8, "telegram:321", "telegram")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store.latest_boundary_id("321", "telegram").unwrap(),
+        store
+            .latest_boundary_id("telegram:321", "telegram")
+            .unwrap()
+    );
+    assert!(
+        store
+            .latest_boundary_unix("321", "telegram")
+            .unwrap()
+            .is_some()
+    );
+    assert!(store.recent_turns_snippet(8, "322", "telegram").unwrap()[0].contains("other-chat"));
+    store.conn.execute("INSERT INTO turns(ts,chat_id,input_type,user_text,provider_raw,status,channel) VALUES('now','321','text','new-alias-input','','ok','telegram')", []).unwrap();
+    assert!(
+        store
+            .recent_turns_snippet(8, "telegram:321", "telegram")
+            .unwrap()[0]
+            .contains("new-alias-input")
+    );
+}
+#[test]
+fn store_open_preserves_legacy_duplicates_and_relationships() {
     let cfg = coconutclaw_config::RuntimeConfig::test_config();
     let conn = Connection::open(&cfg.sqlite_db_path).expect("open legacy db");
     conn.execute_batch(
@@ -94,87 +153,32 @@ fn store_open_deduplicates_legacy_task_run_update_ids() {
     .expect("insert approval linked to duplicate");
     drop(conn);
 
-    let store = Store::open(&cfg).expect("open migrated store");
-    let duplicate_count: i64 = store
-        .conn
-        .query_row(
-            "SELECT COUNT(*) FROM task_runs WHERE update_id = 'dup-1'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count deduped rows");
-    assert_eq!(duplicate_count, 1);
-    let migrated_turn_task_run_id: i64 = store
-        .conn
-        .query_row("SELECT task_run_id FROM turns LIMIT 1", [], |row| {
-            row.get(0)
-        })
-        .expect("turn task_run_id");
-    assert_eq!(migrated_turn_task_run_id, keep_id);
-    let migrated_approval_task_run_id: i64 = store
-        .conn
-        .query_row("SELECT task_run_id FROM approvals LIMIT 1", [], |row| {
-            row.get(0)
-        })
-        .expect("approval task_run_id");
-    assert_eq!(migrated_approval_task_run_id, keep_id);
-    let has_unique_index: i64 = store
-        .conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master
-             WHERE type = 'index'
-               AND name = 'idx_task_runs_update_id_unique'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("check unique index");
-    assert_eq!(has_unique_index, 1);
+    let error = Store::open(&cfg)
+        .err()
+        .expect("duplicates require manual migration");
     assert!(
-        store
-            .conn
-            .execute(
-                "INSERT INTO task_runs(session_id, channel, source_chat_id, update_id, prompt, status, created_at)
-                 VALUES('telegram:321', 'telegram', '321', 'dup-1', 'third', 'queued', '2026-04-01T00:00:04+0000')",
+        error
+            .to_string()
+            .contains("duplicate task update IDs preserved")
+    );
+    let conn = Connection::open(&cfg.sqlite_db_path).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_runs WHERE update_id='dup-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
+    for table in ["turns", "approvals"] {
+        let id: i64 = conn
+            .query_row(
+                &format!("SELECT task_run_id FROM {table} LIMIT 1"),
                 [],
+                |r| r.get(0),
             )
-            .is_err()
-    );
-}
-
-#[test]
-fn migration_backfills_legacy_scheduled_task_routing_from_origin_turn() {
-    let cfg = coconutclaw_config::RuntimeConfig::test_config();
-    let store = Store::open(&cfg).expect("store");
-    store
-        .conn
-        .execute("UPDATE kv SET value = '9' WHERE key = 'schema_version'", [])
-        .expect("rewind schema version");
-    store
-        .conn
-        .execute(
-            "INSERT INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, task_run_id, side_effects_applied, channel)
-             VALUES('2026-04-02T09:00:00+0000', 'slack:C123#171.5', 'text', 'schedule it', '', 'TELEGRAM_REPLY: ok\nSCHEDULE_PROMPT: 09:30|Check backups\n', 'ok', '', 'ok', 'turn-2', 1, NULL, 1, 'slack')",
-            [],
-        )
-        .expect("insert origin turn");
-    store
-        .conn
-        .execute(
-            "INSERT INTO scheduled_tasks(ts, source, prompt, schedule_time, recurring, done, pending_output, delivery_state, origin_session, delivery_target)
-             VALUES('2026-04-02T09:00:00+0000', 'agent', 'Check backups', '09:30', 1, 0, NULL, NULL, NULL, NULL)",
-            [],
-        )
-        .expect("insert legacy scheduled task");
-    drop(store);
-
-    let reopened = Store::open(&cfg).expect("reopen migrated store");
-    let task = reopened
-        .get_scheduled_task(1)
-        .expect("load scheduled task")
-        .expect("scheduled task exists");
-    assert_eq!(task.origin_session.as_deref(), Some("slack:C123#171.5"));
-    assert_eq!(
-        task.delivery_target.as_deref(),
-        Some(r#"{"channel_id":"C123","kind":"slack","thread_ts":"171.5"}"#)
-    );
+            .unwrap();
+        assert_eq!(id, first_id);
+    }
+    assert!(keep_id > first_id);
 }

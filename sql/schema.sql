@@ -1,3 +1,11 @@
+-- Runtime request/result outbox. Legacy tables and columns remain untouched.
+CREATE TABLE IF NOT EXISTS task_payloads (
+    task_run_id INTEGER PRIMARY KEY REFERENCES task_runs(id),
+    request TEXT NOT NULL,
+    output TEXT,
+    delivery_state TEXT NOT NULL DEFAULT '[]',
+    delivered INTEGER NOT NULL DEFAULT 0
+);
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
 

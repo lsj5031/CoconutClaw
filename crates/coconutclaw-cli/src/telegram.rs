@@ -2,11 +2,10 @@
 //!
 //! Contains all functions that directly call the Telegram HTTP API:
 //! client construction, message send/edit, file upload/download,
-//! progress updates, markdown rendering, webhook registration, and rate-limit retry.
+//! progress updates, markdown rendering, and rate-limit retry.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -20,10 +19,10 @@ use reqwest::blocking::{Client, multipart};
 use serde_json::Value;
 
 use crate::markers::parse_markers;
-use crate::webhook::{value_to_string, webhook_public_endpoint};
-use crate::{command_exists, resolve_instance_path};
+use crate::resolve_instance_path;
+use crate::util::value_to_string;
 
-const TELEGRAM_TEXT_CHAR_LIMIT: usize = 4096;
+pub(crate) const TELEGRAM_TEXT_CHAR_LIMIT: usize = 4096;
 
 pub(crate) fn valid_telegram_token(cfg: &RuntimeConfig) -> Option<&str> {
     cfg.telegram_bot_token
@@ -84,11 +83,13 @@ pub(crate) fn telegram_download_file(
 ) -> Result<()> {
     let base = telegram_api_base(cfg)?;
     let file_base = telegram_file_base(cfg)?;
-    let response = client
-        .post(format!("{base}/getFile"))
-        .form(&[("file_id", file_id)])
-        .send()
-        .context("failed to call telegram getFile")?;
+    let response = telegram_request(client, cfg, "getFile", || {
+        Ok(client
+            .post(format!("{base}/getFile"))
+            .form(&[("file_id", file_id)])
+            .build()
+            .map_err(reqwest::Error::without_url)?)
+    })?;
     let value = parse_telegram_response(response, "getFile")?;
     let file_path = value
         .get("result")
@@ -103,16 +104,16 @@ pub(crate) fn telegram_download_file(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    let response = client
-        .get(format!("{file_base}/{file_path}"))
-        .send()
-        .context("failed to download telegram file")?;
-    if !response.status().is_success() {
-        bail!("telegram file download HTTP {}", response.status().as_u16());
+    let response = telegram_request(client, cfg, "file download", || {
+        Ok(client
+            .get(format!("{file_base}/{file_path}"))
+            .build()
+            .map_err(reqwest::Error::without_url)?)
+    })?;
+    if !response.0.is_success() {
+        bail!("telegram file download HTTP {}", response.0.as_u16());
     }
-    let bytes = response
-        .bytes()
-        .context("failed to read downloaded telegram file")?;
+    let bytes = response.1;
     fs::write(out_path, &bytes)
         .with_context(|| format!("failed to write {}", out_path.display()))?;
     Ok(())
@@ -144,11 +145,13 @@ pub(crate) fn fetch_updates(
         query.push(("offset", offset.to_string()));
     }
 
-    let response = client
-        .get(url)
-        .query(&query)
-        .send()
-        .context("failed to call telegram getUpdates")?;
+    let response = telegram_request(client, cfg, "getUpdates", || {
+        Ok(client
+            .get(&url)
+            .query(&query)
+            .build()
+            .map_err(reqwest::Error::without_url)?)
+    })?;
     let value = parse_telegram_response(response, "getUpdates")?;
     let updates = value
         .get("result")
@@ -163,42 +166,18 @@ pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Res
     let commands = serde_json::json!([
         {"command": "fresh", "description": "Start a fresh conversation"},
         {"command": "cancel", "description": "Cancel the current task"},
-        {"command": "schedules", "description": "List active scheduled tasks"},
+        {"command": "tasks", "description": "List active tasks"},
+        {"command": "approve", "description": "Approve a request by id"},
+        {"command": "reject", "description": "Reject a request by id"},
     ]);
     let params = vec![("commands".to_string(), commands.to_string())];
     telegram_post_form(
         client,
+        cfg,
         &format!("{base}/setMyCommands"),
         &params,
         "setMyCommands",
     )?;
-    Ok(())
-}
-
-pub(crate) fn register_telegram_webhook(client: &Client, cfg: &RuntimeConfig) -> Result<()> {
-    let webhook_url = webhook_public_endpoint(cfg)?;
-    let base = telegram_api_base(cfg)?;
-
-    let mut params: Vec<(String, String)> = vec![
-        ("url".to_string(), webhook_url),
-        (
-            "allowed_updates".to_string(),
-            r#"["message","callback_query"]"#.to_string(),
-        ),
-        ("drop_pending_updates".to_string(), "false".to_string()),
-    ];
-    if let Some(secret) = cfg.webhook_secret.as_deref().map(str::trim)
-        && !secret.is_empty()
-    {
-        params.push(("secret_token".to_string(), secret.to_string()));
-    }
-
-    let response = client
-        .post(format!("{base}/setWebhook"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram setWebhook")?;
-    parse_telegram_response(response, "setWebhook")?;
     Ok(())
 }
 
@@ -257,14 +236,6 @@ pub(crate) fn dispatch_telegram_output(
                             progress_message_id,
                         )?;
                     }
-                }
-            }
-            crate::markers::Effect::VoiceReply(voice_reply) if cfg.tts_cmd_template.is_some() => {
-                let voice_reply = voice_reply.trim();
-                if !voice_reply.is_empty()
-                    && let Err(err) = send_voice_reply(client, cfg, chat_id, voice_reply)
-                {
-                    tracing::warn!("failed to send voice reply: {err:#}");
                 }
             }
             crate::markers::Effect::SendPhoto(item) => {
@@ -329,11 +300,13 @@ pub(crate) fn send_progress_message(cfg: &RuntimeConfig, chat_id: &str) -> Resul
         ("text", "Thinking...".to_string()),
         ("reply_markup", reply_markup.to_string()),
     ];
-    let response = client
-        .post(format!("{base}/sendMessage"))
-        .form(&params)
-        .send()
-        .context("failed to send progress message")?;
+    let response = telegram_request(&client, cfg, "progress message", || {
+        Ok(client
+            .post(format!("{base}/sendMessage"))
+            .form(&params)
+            .build()
+            .map_err(reqwest::Error::without_url)?)
+    })?;
     let value = parse_telegram_response(response, "sendMessage")?;
     let message_id = value
         .get("result")
@@ -342,15 +315,6 @@ pub(crate) fn send_progress_message(cfg: &RuntimeConfig, chat_id: &str) -> Resul
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty());
     Ok(message_id)
-}
-
-pub(crate) fn send_placeholder_message(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id: &str,
-    text: &str,
-) -> Result<Option<String>> {
-    telegram_send_message(client, cfg, chat_id, text)
 }
 
 pub(crate) fn progress_reply_markup() -> &'static str {
@@ -376,12 +340,15 @@ pub(crate) fn progress_status_with_events(elapsed_secs: u64, statuses: &[String]
 }
 
 pub(crate) fn spawn_progress_updater(
-    cfg: RuntimeConfig,
+    mut cfg: RuntimeConfig,
     chat_id: String,
     message_id: String,
     progress_rx: mpsc::Receiver<String>,
     stop_flag: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
+    // Presentation must never hold provider completion/shutdown hostage.
+    cfg.telegram_api_timeout_secs = cfg.telegram_api_timeout_secs.min(1);
+    cfg.telegram_api_retry_attempts = 0;
     let interval_secs = cfg.progress_update_interval_secs.max(1);
     thread::spawn(move || {
         let client = match build_telegram_client(&cfg) {
@@ -398,6 +365,9 @@ pub(crate) fn spawn_progress_updater(
         let mut channel_closed = false;
 
         loop {
+            if stop_flag.load(Ordering::SeqCst) {
+                break;
+            }
             match progress_rx.recv_timeout(Duration::from_millis(400)) {
                 Ok(status) => {
                     let status = status.trim().to_string();
@@ -1023,13 +993,13 @@ pub(crate) fn telegram_edit_message_text(
     let params =
         telegram_text_form_params(cfg, chat_id, Some(message_id), text, Some(reply_markup));
     let url = format!("{base}/editMessageText");
-    match telegram_post_form(client, &url, &params, "editMessageText") {
+    match telegram_post_form(client, cfg, &url, &params, "editMessageText") {
         Ok(_) => Ok(()),
         Err(err) if telegram_error_is_not_modified(&err) => Ok(()),
         Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
             tracing::warn!("editMessageText markdown parse failed, retrying plain text: {err:#}");
             let retry = strip_parse_mode_param(&params);
-            telegram_post_form(client, &url, &retry, "editMessageText").map(|_| ())
+            telegram_post_form(client, cfg, &url, &retry, "editMessageText").map(|_| ())
         }
         Err(err) => Err(err),
     }
@@ -1046,11 +1016,13 @@ pub(crate) fn telegram_delete_message(
         ("chat_id", chat_id.to_string()),
         ("message_id", message_id.to_string()),
     ];
-    let response = client
-        .post(format!("{base}/deleteMessage"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram deleteMessage")?;
+    let response = telegram_request(client, cfg, "deleteMessage", || {
+        Ok(client
+            .post(format!("{base}/deleteMessage"))
+            .form(&params)
+            .build()
+            .map_err(reqwest::Error::without_url)?)
+    })?;
     parse_telegram_response(response, "deleteMessage")?;
     Ok(())
 }
@@ -1068,11 +1040,13 @@ pub(crate) fn telegram_remove_keyboard(
         ("message_id", message_id.to_string()),
         ("reply_markup", reply_markup.to_string()),
     ];
-    let response = client
-        .post(format!("{base}/editMessageReplyMarkup"))
-        .form(&params)
-        .send()
-        .context("failed to call telegram editMessageReplyMarkup")?;
+    let response = telegram_request(client, cfg, "editMessageReplyMarkup", || {
+        Ok(client
+            .post(format!("{base}/editMessageReplyMarkup"))
+            .form(&params)
+            .build()
+            .map_err(reqwest::Error::without_url)?)
+    })?;
     parse_telegram_response(response, "editMessageReplyMarkup")?;
     Ok(())
 }
@@ -1081,81 +1055,6 @@ fn telegram_error_is_not_modified(err: &anyhow::Error) -> bool {
     err.to_string()
         .to_ascii_lowercase()
         .contains("message is not modified")
-}
-
-pub(crate) fn send_voice_reply(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id: &str,
-    text: &str,
-) -> Result<()> {
-    let _span = tracing::info_span!("tts").entered();
-    let script = cfg.root_dir.join("scripts/tts.sh");
-    if !script.is_file() {
-        bail!("TTS script not found: {}", script.display());
-    }
-    if !command_exists("bash") {
-        bail!("bash not found; cannot run TTS script");
-    }
-
-    let output_voice = cfg.tmp_dir.join(format!(
-        "reply_{}.ogg",
-        chrono::Utc::now().timestamp_millis()
-    ));
-    if let Some(parent) = output_voice.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let mut cmd = Command::new("bash");
-    cmd.arg(script)
-        .arg(&output_voice)
-        .current_dir(&cfg.root_dir)
-        .env("INSTANCE_DIR", &cfg.instance_dir);
-    if let Some(value) = cfg.tts_cmd_template.as_deref() {
-        cmd.env("TTS_CMD_TEMPLATE", value);
-    }
-    if let Some(value) = cfg.voice_bitrate.as_deref() {
-        cmd.env("VOICE_BITRATE", value);
-    }
-    if let Some(value) = cfg.tts_max_chars.as_deref() {
-        cmd.env("TTS_MAX_CHARS", value);
-    }
-
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn TTS script")?;
-
-    // Write text to stdin in a separate thread to avoid deadlock
-    let text_owned = text.to_string();
-    let stdin_handle = child.stdin.take().map(|mut stdin| {
-        thread::spawn(move || {
-            use std::io::Write;
-            stdin.write_all(text_owned.as_bytes()).ok();
-        })
-    });
-
-    let output = child
-        .wait_with_output()
-        .context("failed to wait for TTS script")?;
-
-    // Ensure stdin writer thread has finished
-    if let Some(handle) = stdin_handle {
-        let _ = handle.join();
-    }
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let _ = fs::remove_file(&output_voice);
-        bail!("TTS script failed: {stderr}");
-    }
-
-    let result =
-        telegram_send_media_file(client, cfg, chat_id, "sendVoice", "voice", &output_voice);
-    let _ = fs::remove_file(&output_voice);
-    result
 }
 
 pub(crate) fn telegram_send_message(
@@ -1167,12 +1066,12 @@ pub(crate) fn telegram_send_message(
     let base = telegram_api_base(cfg)?;
     let params = telegram_text_form_params(cfg, chat_id, None, text, None);
     let url = format!("{base}/sendMessage");
-    let value = match telegram_post_form(client, &url, &params, "sendMessage") {
+    let value = match telegram_post_form(client, cfg, &url, &params, "sendMessage") {
         Ok(value) => value,
         Err(err) if should_retry_plain_text(cfg) && should_fallback_plain_for_error(&err) => {
             tracing::warn!("sendMessage markdown parse failed, retrying plain text: {err:#}");
             let retry = strip_parse_mode_param(&params);
-            telegram_post_form(client, &url, &retry, "sendMessage")?
+            telegram_post_form(client, cfg, &url, &retry, "sendMessage")?
         }
         Err(err) => return Err(err),
     };
@@ -1233,68 +1132,136 @@ pub(crate) fn should_fallback_plain_for_error(err: &anyhow::Error) -> bool {
 
 pub(crate) fn telegram_post_form(
     client: &Client,
+    cfg: &RuntimeConfig,
     url: &str,
     params: &[(String, String)],
     action: &str,
 ) -> Result<Value> {
-    const MAX_429_RETRY_ATTEMPTS: usize = 1;
-    const MAX_429_SLEEP_SECS: u64 = 60;
-    const TRANSIENT_RETRY_BASE_DELAY_MS: u64 = 500;
+    let response = telegram_request(client, cfg, action, || {
+        client
+            .post(url)
+            .form(params)
+            .build()
+            .map_err(|error| error.without_url().into())
+    })?;
+    parse_telegram_response(response, action)
+}
 
-    let mut attempts = 0usize;
-    loop {
-        let response = match client.post(url).form(params).send() {
-            Ok(resp) => resp,
-            Err(err) => {
-                // Network-level error (connection timeout, DNS failure, etc.)
-                if attempts < TRANSIENT_RETRY_BASE_DELAY_MS.count_ones() as usize {
-                    let delay_ms = TRANSIENT_RETRY_BASE_DELAY_MS * (1 << attempts);
-                    attempts += 1;
-                    tracing::warn!(
-                        "telegram {action} network error, retrying in {delay_ms}ms: {err:#}"
-                    );
-                    thread::sleep(Duration::from_millis(delay_ms));
-                    continue;
+fn telegram_request(
+    client: &Client,
+    cfg: &RuntimeConfig,
+    action: &str,
+    mut build: impl FnMut() -> Result<reqwest::blocking::Request>,
+) -> Result<(reqwest::StatusCode, Vec<u8>)> {
+    for retries in 0..=cfg.telegram_api_retry_attempts {
+        if runtime_stopping() {
+            bail!("runtime stopping; Telegram request interrupted");
+        }
+        let delay = match execute_request(client, build()?) {
+            Ok(response) => {
+                let status = response.0.as_u16();
+                if status != 429 && !(500..600).contains(&status) {
+                    return Ok(response);
                 }
-                bail!("telegram {action} network error after {attempts} retries: {err:#}");
+                let body = String::from_utf8_lossy(&response.1);
+                if retries == cfg.telegram_api_retry_attempts {
+                    bail!("telegram {action} HTTP {status}; retry budget exhausted");
+                }
+                if status == 429 {
+                    Duration::from_secs(
+                        telegram_retry_after_seconds(&body)
+                            .unwrap_or(1)
+                            .clamp(1, 60),
+                    )
+                } else {
+                    Duration::from_millis((500u64 << retries.min(3)).min(4000))
+                }
+            }
+            Err(error) => {
+                if retries == cfg.telegram_api_retry_attempts
+                    || error.downcast_ref::<reqwest::Error>().is_none()
+                {
+                    return Err(error).with_context(|| format!("telegram {action} request failed"));
+                }
+                Duration::from_millis((500u64 << retries.min(3)).min(4000))
             }
         };
-
-        let status = response.status().as_u16();
-
-        // Rate limiting - honor retry-after header
-        if status == 429 {
-            let body = response
-                .text()
-                .with_context(|| format!("failed to read telegram {action} response body"))?;
-            if attempts < MAX_429_RETRY_ATTEMPTS
-                && let Some(retry_after) = telegram_retry_after_seconds(&body)
-            {
-                let sleep_secs = retry_after.clamp(1, MAX_429_SLEEP_SECS);
-                attempts += 1;
-                tracing::warn!("telegram {action} rate limited, retrying in {sleep_secs}s");
-                thread::sleep(Duration::from_secs(sleep_secs));
-                continue;
+        tracing::warn!(
+            "telegram {action} retry {}/{}",
+            retries + 1,
+            cfg.telegram_api_retry_attempts
+        );
+        let until = Instant::now() + delay;
+        while Instant::now() < until {
+            if runtime_stopping() {
+                bail!("runtime stopping; Telegram backoff interrupted");
             }
-            bail!("telegram {action} HTTP 429: {body}");
+            thread::sleep(
+                Duration::from_millis(25).min(until.saturating_duration_since(Instant::now())),
+            );
         }
+    }
+    unreachable!("initial attempt is always included")
+}
 
-        // Server errors (5xx) - retry with exponential backoff
-        if (500..600).contains(&status) {
-            let body = response.text().unwrap_or_default();
-            if attempts < 3 {
-                let delay_ms = TRANSIENT_RETRY_BASE_DELAY_MS * (1 << attempts);
-                attempts += 1;
-                tracing::warn!(
-                    "telegram {action} server error HTTP {status}, retrying in {delay_ms}ms"
-                );
-                thread::sleep(Duration::from_millis(delay_ms));
-                continue;
+static RUNTIME_STOP: std::sync::Mutex<std::sync::Weak<AtomicBool>> =
+    std::sync::Mutex::new(std::sync::Weak::new());
+
+pub(crate) fn set_runtime_shutdown(flag: &Arc<AtomicBool>) {
+    *RUNTIME_STOP.lock().expect("runtime shutdown") = Arc::downgrade(flag);
+}
+
+fn runtime_stopping() -> bool {
+    RUNTIME_STOP
+        .lock()
+        .expect("runtime shutdown")
+        .upgrade()
+        .is_some_and(|flag| flag.load(Ordering::SeqCst))
+}
+
+fn execute_request(
+    client: &Client,
+    request: reqwest::blocking::Request,
+) -> Result<(reqwest::StatusCode, Vec<u8>)> {
+    let execute = |client: &Client, request| -> Result<_> {
+        let response = client
+            .execute(request)
+            .map_err(reqwest::Error::without_url)?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .map_err(reqwest::Error::without_url)?
+            .to_vec();
+        Ok((status, bytes))
+    };
+    if RUNTIME_STOP
+        .lock()
+        .expect("runtime shutdown")
+        .upgrade()
+        .is_none()
+    {
+        return execute(client, request);
+    }
+    // The interruptible worker owns only HTTP and read-only upload handles.
+    // SQLite/projection owners remain joined on shutdown, even if a peer stalls
+    // either headers or body. The foreground process owns the request lifetime.
+    let client = client.clone();
+    let (tx, rx) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        let _ = tx.send(execute(&client, request));
+    });
+    loop {
+        if runtime_stopping() {
+            bail!("runtime stopping; Telegram request interrupted");
+        }
+        match rx.recv_timeout(Duration::from_millis(25)) {
+            Ok(result) => {
+                let _ = worker.join();
+                return result;
             }
-            bail!("telegram {action} HTTP {status} after {attempts} retries: {body}");
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(_) => bail!("Telegram HTTP worker stopped unexpectedly"),
         }
-
-        return parse_telegram_response(response, action);
     }
 }
 
@@ -1327,28 +1294,28 @@ pub(crate) fn telegram_send_media_file(
     }
 
     let base = telegram_api_base(cfg)?;
-    let form = multipart::Form::new()
-        .text("chat_id", chat_id.to_string())
-        .file(field.to_string(), path)
-        .with_context(|| format!("failed to prepare multipart upload for {}", path.display()))?;
-
-    let response = client
-        .post(format!("{base}/{method}"))
-        .multipart(form)
-        .send()
-        .with_context(|| format!("failed to call telegram {method}"))?;
+    let response = telegram_request(client, cfg, method, || {
+        let form = multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .file(field.to_string(), path)
+            .context("failed to prepare multipart upload")?;
+        Ok(client
+            .post(format!("{base}/{method}"))
+            .multipart(form)
+            .build()
+            .map_err(reqwest::Error::without_url)?)
+    })?;
     parse_telegram_response(response, method)?;
     Ok(())
 }
 
 pub(crate) fn parse_telegram_response(
-    response: reqwest::blocking::Response,
+    response: (reqwest::StatusCode, Vec<u8>),
     action: &str,
 ) -> Result<Value> {
-    let status = response.status();
-    let body = response
-        .text()
-        .with_context(|| format!("failed to read telegram {action} response body"))?;
+    let (status, bytes) = response;
+    let body = String::from_utf8(bytes)
+        .with_context(|| format!("invalid UTF-8 in telegram {action} response"))?;
     if !status.is_success() {
         bail!("telegram {action} HTTP {}: {body}", status.as_u16());
     }

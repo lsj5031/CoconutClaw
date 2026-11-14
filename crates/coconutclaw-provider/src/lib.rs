@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use coconutclaw_config::{AgentProvider, RuntimeConfig};
+use coconutclaw_config::RuntimeConfig;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -26,6 +26,7 @@ pub struct ProviderOutput {
     pub raw_output: String,
     pub success: bool,
     pub exit_code: i32,
+    pub session_id: Option<String>,
 }
 
 /// Context passed to every provider when constructing a command and extracting
@@ -37,6 +38,7 @@ pub struct ProviderCtx<'a> {
     pub cancel_flag: Option<&'a Arc<AtomicBool>>,
     pub progress_tx: Option<&'a Sender<String>>,
     pub timeout_secs: Option<u64>,
+    pub session_id: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,20 +103,6 @@ struct CodexRunner {
     out_file: RefCell<Option<PathBuf>>,
 }
 
-struct PiRunner;
-
-struct ClaudeRunner;
-
-struct OpenCodeRunner;
-
-struct AntigravityRunner;
-
-struct FactoryRunner;
-
-// ---------------------------------------------------------------------------
-// Codex impl
-// ---------------------------------------------------------------------------
-
 impl ProviderRunner for CodexRunner {
     fn bin_name(&self) -> &str {
         "codex"
@@ -128,10 +116,13 @@ impl ProviderRunner for CodexRunner {
         *self.out_file.borrow_mut() = Some(out_file.clone());
 
         let mut cmd = new_provider_command(&ctx.config.codex.bin);
-        cmd.arg("exec")
-            .arg("--cd")
-            .arg(&ctx.config.instance_dir)
-            .arg("--skip-git-repo-check")
+        cmd.current_dir(&ctx.config.instance_dir).arg("exec");
+        if let Some(id) = ctx.session_id {
+            cmd.arg("resume").arg(id);
+        } else {
+            cmd.arg("--cd").arg(&ctx.config.instance_dir);
+        }
+        cmd.arg("--skip-git-repo-check")
             .arg("--output-last-message")
             .arg(&out_file);
 
@@ -141,8 +132,16 @@ impl ProviderRunner for CodexRunner {
         if include_dangerous {
             cmd.arg("--dangerously-bypass-approvals-and-sandbox");
         }
-        if ctx.progress_tx.is_some() {
-            cmd.arg("--json");
+        cmd.arg("--json");
+        if let Some(path) = ctx.attachment_path
+            && path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                matches!(
+                    e.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "webp" | "gif"
+                )
+            })
+        {
+            cmd.arg("--image").arg(path);
         }
         cmd.arg("-");
         Ok(cmd)
@@ -179,240 +178,6 @@ impl ProviderRunner for CodexRunner {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pi impl
-// ---------------------------------------------------------------------------
-
-impl ProviderRunner for PiRunner {
-    fn bin_name(&self) -> &str {
-        "pi"
-    }
-
-    fn build_cmd(&self, ctx: &ProviderCtx, _include_dangerous: bool) -> std::io::Result<Command> {
-        let pi_mode = if ctx.progress_tx.is_some() {
-            "json"
-        } else {
-            "text"
-        };
-
-        let mut cmd = new_provider_command(&ctx.config.pi.bin);
-        cmd.arg("-p").arg("--mode").arg(pi_mode);
-
-        if let Some(model) = &ctx.config.pi.model {
-            cmd.arg("--model").arg(model);
-        }
-        if let Some(effort) = &ctx.config.pi.reasoning_effort {
-            cmd.arg("--reasoning-effort").arg(effort);
-        }
-        if ctx.config.pi.no_extensions {
-            cmd.arg("--no-tools")
-                .arg("--no-extensions")
-                .arg("--no-skills");
-        }
-        if let Some(path) = ctx.attachment_path {
-            cmd.arg(format!("@{}", path.display()));
-        }
-        cmd.arg(ctx.context);
-        Ok(cmd)
-    }
-
-    fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {
-        Some(parse_pi_progress_line)
-    }
-
-    fn extract_final(&self, run_result: &RunResult, _ctx: &ProviderCtx) -> Option<String> {
-        extract_json_or_fallback(run_result, extract_pi_json_final, true)
-    }
-
-    fn prefer_stdout(&self) -> bool {
-        true
-    }
-
-    fn post_process(
-        &self,
-        output: ProviderOutput,
-        _run_result: &RunResult,
-        _ctx: &ProviderCtx,
-    ) -> ProviderOutput {
-        let success = output.success && !output.raw_output.starts_with("⚠️ Agent stopped:");
-        ProviderOutput { success, ..output }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Claude impl
-// ---------------------------------------------------------------------------
-
-impl ProviderRunner for ClaudeRunner {
-    fn bin_name(&self) -> &str {
-        "claude"
-    }
-
-    fn build_cmd(&self, ctx: &ProviderCtx, include_dangerous: bool) -> std::io::Result<Command> {
-        let mut cmd = new_provider_command(&ctx.config.claude.bin);
-        cmd.arg("-p");
-
-        if include_dangerous {
-            cmd.arg("--dangerously-skip-permissions");
-        }
-        if let Some(model) = &ctx.config.claude.model {
-            cmd.arg("--model").arg(model);
-        }
-
-        cmd.arg("--output-format")
-            .arg("stream-json")
-            .arg(ctx.context);
-        Ok(cmd)
-    }
-
-    fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {
-        Some(parse_claude_json_line)
-    }
-
-    fn extract_final(&self, run_result: &RunResult, _ctx: &ProviderCtx) -> Option<String> {
-        extract_json_or_fallback(run_result, extract_claude_json_final, false)
-    }
-
-    fn has_dangerous_flag(&self) -> bool {
-        true
-    }
-}
-
-// ---------------------------------------------------------------------------
-// OpenCode impl
-// ---------------------------------------------------------------------------
-
-impl ProviderRunner for OpenCodeRunner {
-    fn bin_name(&self) -> &str {
-        "opencode"
-    }
-
-    fn build_cmd(&self, ctx: &ProviderCtx, include_dangerous: bool) -> std::io::Result<Command> {
-        let yolo_mode = ctx
-            .config
-            .opencode
-            .skip_permissions
-            .unwrap_or_else(|| ctx.config.exec_policy.eq_ignore_ascii_case("yolo"));
-
-        let mut cmd = new_provider_command(&ctx.config.opencode.bin);
-        cmd.arg("run");
-
-        if let Some(model) = &ctx.config.opencode.model {
-            cmd.arg("--model").arg(model);
-        }
-        if let Some(effort) = &ctx.config.opencode.reasoning_effort {
-            cmd.arg("--variant").arg(effort);
-        }
-        if ctx.progress_tx.is_some() {
-            cmd.arg("--thinking");
-        }
-        if yolo_mode {
-            cmd.env("OPENCODE_PERMISSION", r#"{"*":"allow"}"#);
-        }
-        let opencode_db_path = ctx.config.instance_dir.join("opencode.db");
-        cmd.env("OPENCODE_DB", &opencode_db_path);
-        if include_dangerous {
-            cmd.arg("--dangerously-skip-permissions");
-        }
-        cmd.arg("--format").arg("json").arg(ctx.context);
-        Ok(cmd)
-    }
-
-    fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {
-        Some(parse_opencode_json_line)
-    }
-
-    fn extract_final(&self, run_result: &RunResult, _ctx: &ProviderCtx) -> Option<String> {
-        extract_json_or_fallback(run_result, extract_opencode_json_final, false)
-    }
-
-    fn has_dangerous_flag(&self) -> bool {
-        true
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Antigravity impl
-// ---------------------------------------------------------------------------
-
-impl ProviderRunner for AntigravityRunner {
-    fn bin_name(&self) -> &str {
-        "antigravity"
-    }
-
-    fn build_cmd(&self, ctx: &ProviderCtx, _include_dangerous: bool) -> std::io::Result<Command> {
-        let mut cmd = new_provider_command(&ctx.config.antigravity.bin);
-        cmd.arg("-p");
-
-        if ctx.config.exec_policy.eq_ignore_ascii_case("yolo") {
-            cmd.arg("--yolo");
-        }
-        if let Some(model) = &ctx.config.antigravity.model {
-            cmd.arg("--model").arg(model);
-        }
-        if ctx.progress_tx.is_some() {
-            cmd.arg("--output-format").arg("stream-json");
-        }
-        cmd.arg(ctx.context);
-        Ok(cmd)
-    }
-
-    fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {
-        Some(parse_antigravity_json_line)
-    }
-
-    fn extract_final(&self, run_result: &RunResult, _ctx: &ProviderCtx) -> Option<String> {
-        extract_json_or_fallback(run_result, extract_antigravity_json_final, true)
-    }
-
-    fn prefer_stdout(&self) -> bool {
-        true
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Factory impl
-// ---------------------------------------------------------------------------
-
-impl ProviderRunner for FactoryRunner {
-    fn bin_name(&self) -> &str {
-        "factory"
-    }
-
-    fn build_cmd(&self, ctx: &ProviderCtx, include_dangerous: bool) -> std::io::Result<Command> {
-        let mut cmd = new_provider_command(&ctx.config.factory.bin);
-        cmd.arg("exec");
-
-        if include_dangerous {
-            cmd.arg("--skip-permissions-unsafe");
-        }
-        if let Some(model) = &ctx.config.factory.model {
-            cmd.arg("--model").arg(model);
-        }
-
-        cmd.arg("--output-format")
-            .arg("stream-json")
-            .arg(ctx.context);
-        Ok(cmd)
-    }
-
-    fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {
-        Some(parse_factory_json_line)
-    }
-
-    fn extract_final(&self, run_result: &RunResult, _ctx: &ProviderCtx) -> Option<String> {
-        extract_json_or_fallback(run_result, extract_factory_json_final, false)
-    }
-
-    fn has_dangerous_flag(&self) -> bool {
-        true
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Public entry point — unchanged signature
-// ---------------------------------------------------------------------------
-
 pub fn run_provider(
     attachment_path: Option<&PathBuf>,
     config: &RuntimeConfig,
@@ -421,6 +186,35 @@ pub fn run_provider(
     progress_tx: Option<&Sender<String>>,
     timeout_secs: Option<u64>,
 ) -> Result<ProviderOutput> {
+    run_provider_session(
+        attachment_path,
+        config,
+        context,
+        cancel_flag,
+        progress_tx,
+        timeout_secs,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_provider_session(
+    attachment_path: Option<&PathBuf>,
+    config: &RuntimeConfig,
+    context: &str,
+    cancel_flag: Option<&Arc<AtomicBool>>,
+    progress_tx: Option<&Sender<String>>,
+    timeout_secs: Option<u64>,
+    session_id: Option<&str>,
+) -> Result<ProviderOutput> {
+    if cancel_flag.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        return Ok(ProviderOutput {
+            raw_output: "cancelled".into(),
+            success: false,
+            exit_code: 130,
+            session_id: None,
+        });
+    }
     let ctx = ProviderCtx {
         config,
         attachment_path,
@@ -428,21 +222,13 @@ pub fn run_provider(
         cancel_flag,
         progress_tx,
         timeout_secs,
+        session_id,
     };
 
-    match config.provider {
-        AgentProvider::Codex => {
-            let runner = CodexRunner {
-                out_file: RefCell::new(None),
-            };
-            run_provider_impl(&runner, &ctx)
-        }
-        AgentProvider::Pi => run_provider_impl(&PiRunner, &ctx),
-        AgentProvider::Claude => run_provider_impl(&ClaudeRunner, &ctx),
-        AgentProvider::OpenCode => run_provider_impl(&OpenCodeRunner, &ctx),
-        AgentProvider::Antigravity => run_provider_impl(&AntigravityRunner, &ctx),
-        AgentProvider::Factory => run_provider_impl(&FactoryRunner, &ctx),
-    }
+    let runner = CodexRunner {
+        out_file: RefCell::new(None),
+    };
+    run_provider_impl(&runner, &ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -468,7 +254,7 @@ fn run_provider_impl<P: ProviderRunner>(provider: &P, ctx: &ProviderCtx) -> Resu
             ctx.progress_tx,
             progress_parser,
             provider.bin_name(),
-            ctx.timeout_secs,
+            ctx.timeout_secs.or(Some(ctx.config.provider_timeout_secs)),
         )
     };
 
@@ -491,18 +277,31 @@ fn run_provider_impl<P: ProviderRunner>(provider: &P, ctx: &ProviderCtx) -> Resu
         run_result = run_once(false)?;
     }
 
-    let raw_output_override = if run_result.status.success() {
-        provider.extract_final(&run_result, ctx)
-    } else {
-        None
-    };
+    let raw_output_override =
+        if run_result.status.success() && !run_result.cancelled && !run_result.timed_out {
+            provider.extract_final(&run_result, ctx)
+        } else {
+            None
+        };
 
-    let output = finalize_output(
+    let mut output = finalize_output(
         &run_result,
         None,
         raw_output_override,
         provider.prefer_stdout(),
     );
+    if output.success {
+        output.session_id = run_result
+            .stdout_text
+            .lines()
+            .filter_map(|line| {
+                let event: Value = serde_json::from_str(line).ok()?;
+                (event.get("type")?.as_str()? == "thread.started")
+                    .then(|| event.get("thread_id")?.as_str().map(ToOwned::to_owned))
+                    .flatten()
+            })
+            .next();
+    }
 
     Ok(provider.post_process(output, &run_result, ctx))
 }
@@ -541,11 +340,26 @@ fn run_provider_process(
     let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to start {bin_name}"))?;
+    let _group = ActiveGroup::register(child.id());
+    let io_stop = Arc::new(AtomicBool::new(false));
     let stdin_handle = if let Some(text) = stdin_text {
         let mut stdin = child.stdin.take().context("failed to take stdin")?;
+        #[cfg(unix)]
+        set_nonblocking(&stdin)?;
         let text = text.to_string();
+        let stop = io_stop.clone();
         Some(thread::spawn(move || {
-            let _ = stdin.write_all(text.as_bytes());
+            let mut bytes = text.as_bytes();
+            while !bytes.is_empty() && !stop.load(Ordering::SeqCst) {
+                match stdin.write(bytes) {
+                    Ok(0) => break,
+                    Ok(n) => bytes = &bytes[n..],
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(_) => break,
+                }
+            }
         }))
     } else {
         None
@@ -559,9 +373,18 @@ fn run_provider_process(
         format!("failed waiting for {bin_name} command"),
         format!("failed waiting after {bin_name} kill"),
         timeout_secs,
+        stdin_handle.as_ref(),
+        io_stop.clone(),
     );
+    io_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = stdin_handle {
-        let _ = handle.join();
+        let until = Instant::now() + Duration::from_secs(1);
+        while !handle.is_finished() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if handle.is_finished() {
+            let _ = handle.join();
+        }
     }
     result
 }
@@ -605,31 +428,15 @@ fn finalize_output(
     let success = if let Some(s) = success_override {
         s
     } else {
-        !run_result.cancelled && run_result.status.success()
+        !run_result.cancelled && !run_result.timed_out && run_result.status.success()
     };
 
     ProviderOutput {
         raw_output,
         success,
         exit_code,
+        session_id: None,
     }
-}
-
-fn extract_json_or_fallback<F>(
-    run_result: &RunResult,
-    extractor: F,
-    prefer_stdout: bool,
-) -> Option<String>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    if run_result.cancelled || run_result.timed_out {
-        return None;
-    }
-    Some(
-        extractor(&run_result.stdout_text)
-            .unwrap_or_else(|| fallback_text(run_result, prefer_stdout)),
-    )
 }
 
 struct RunResult {
@@ -640,6 +447,7 @@ struct RunResult {
     timed_out: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_child_process(
     mut child: Child,
     cancel_flag: Option<&Arc<AtomicBool>>,
@@ -648,48 +456,33 @@ fn run_child_process(
     wait_error: String,
     kill_error: String,
     timeout_secs: Option<u64>,
+    stdin_handle: Option<&thread::JoinHandle<()>>,
+    io_stop: Arc<AtomicBool>,
 ) -> Result<RunResult> {
     let stdout = child.stdout.take().context("failed to take stdout")?;
     let stderr = child.stderr.take().context("failed to take stderr")?;
 
-    let stdout_handle = thread::spawn(move || {
-        let mut text = String::new();
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let line = line.unwrap_or_default();
-            if let Some(tx) = progress_tx.as_ref()
-                && let Some(parser) = progress_parser
-                && let Some(msg) = parser(&line)
-            {
-                let _ = tx.send(msg);
-            }
-            text.push_str(&line);
-            text.push('\n');
-        }
-        text
-    });
-
-    let stderr_handle = thread::spawn(move || {
-        let mut text = String::new();
-        let mut reader = BufReader::new(stderr);
-        let _ = reader.read_to_string(&mut text);
-        text
-    });
+    #[cfg(unix)]
+    {
+        set_nonblocking(&stdout)?;
+        set_nonblocking(&stderr)?;
+    }
+    let stdout_stop = io_stop.clone();
+    let stdout_handle =
+        thread::spawn(move || read_pipe(stdout, stdout_stop, progress_tx, progress_parser));
+    let stderr_stop = io_stop.clone();
+    let stderr_handle = thread::spawn(move || read_pipe(stderr, stderr_stop, None, None));
 
     let start = Instant::now();
     let mut cancelled = false;
     let mut timed_out = false;
 
     let status = loop {
-        if let Some(status) = child.try_wait().context(wait_error.clone())? {
-            break status;
-        }
-
         if let Some(flag) = cancel_flag
             && flag.load(Ordering::SeqCst)
         {
             cancelled = true;
-            break terminate_cancelled_child(&mut child, &wait_error, &kill_error)?;
+            break terminate_cancelled_child(&mut child, &wait_error, &kill_error, false)?;
         }
 
         if let Some(secs) = timeout_secs
@@ -697,14 +490,35 @@ fn run_child_process(
         {
             timed_out = true;
             tracing::warn!("provider process timed out after {secs}s");
-            break terminate_cancelled_child(&mut child, &wait_error, &kill_error)?;
+            break terminate_cancelled_child(&mut child, &wait_error, &kill_error, true)?;
         }
 
+        let leader_status = child.try_wait().context(wait_error.clone())?;
+        if let Some(status) = leader_status
+            && stdout_handle.is_finished()
+            && stderr_handle.is_finished()
+            && stdin_handle.is_none_or(thread::JoinHandle::is_finished)
+        {
+            break status;
+        }
         thread::sleep(Duration::from_millis(50));
     };
 
-    let stdout_text = stdout_handle.join().unwrap_or_default();
-    let stderr_text = stderr_handle.join().unwrap_or_default();
+    io_stop.store(true, Ordering::SeqCst);
+    let until = Instant::now() + Duration::from_secs(1);
+    while !(stdout_handle.is_finished() && stderr_handle.is_finished()) && Instant::now() < until {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let stdout_text = if stdout_handle.is_finished() {
+        stdout_handle.join().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let stderr_text = if stderr_handle.is_finished() {
+        stderr_handle.join().unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     Ok(RunResult {
         status,
@@ -716,12 +530,99 @@ fn run_child_process(
 }
 
 #[cfg(unix)]
+fn set_nonblocking(pipe: &impl std::os::fd::AsRawFd) -> Result<()> {
+    let fd = pipe.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to configure owned pipe");
+    }
+    Ok(())
+}
+
+fn read_pipe(
+    mut pipe: impl Read,
+    stop: Arc<AtomicBool>,
+    progress: Option<Sender<String>>,
+    parser: Option<fn(&str) -> Option<String>>,
+) -> String {
+    let mut bytes = Vec::new();
+    let mut line_start = 0;
+    let mut buffer = [0; 8192];
+    while !stop.load(Ordering::SeqCst) {
+        match pipe.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                bytes.extend_from_slice(&buffer[..n]);
+                if let (Some(tx), Some(parser)) = (&progress, parser) {
+                    while let Some(end) = bytes[line_start..].iter().position(|byte| *byte == b'\n')
+                    {
+                        let end = line_start + end;
+                        if let Some(message) =
+                            parser(&String::from_utf8_lossy(&bytes[line_start..end]))
+                        {
+                            let _ = tx.send(message);
+                        }
+                        line_start = end + 1;
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    if let (Some(tx), Some(parser)) = (progress, parser)
+        && line_start < bytes.len()
+        && let Some(message) = parser(&String::from_utf8_lossy(&bytes[line_start..]))
+    {
+        let _ = tx.send(message);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+// Only owned, still-invoked process groups are registered. Shutdown can kill
+// them even if a worker is waiting on a network presentation operation.
+static ACTIVE_GROUPS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+struct ActiveGroup(u32);
+impl ActiveGroup {
+    fn register(id: u32) -> Self {
+        ACTIVE_GROUPS.lock().expect("provider groups").push(id);
+        Self(id)
+    }
+}
+impl Drop for ActiveGroup {
+    fn drop(&mut self) {
+        ACTIVE_GROUPS
+            .lock()
+            .expect("provider groups")
+            .retain(|id| *id != self.0);
+    }
+}
+pub fn kill_active_process_groups() {
+    #[cfg(unix)]
+    for id in ACTIVE_GROUPS.lock().expect("provider groups").iter() {
+        unsafe {
+            libc::kill(-(*id as libc::pid_t), libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(unix)]
 fn terminate_cancelled_child(
     child: &mut Child,
     wait_error: &str,
     kill_error: &str,
+    force: bool,
 ) -> Result<ExitStatus> {
     let pgid = child.id() as libc::pid_t;
+    if force {
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+        return child.wait().context(kill_error.to_string());
+    }
     let ret = unsafe { libc::kill(-pgid, libc::SIGTERM) };
     if ret != 0 {
         tracing::debug!("kill(-{pgid}, SIGTERM) returned {ret}");
@@ -730,6 +631,10 @@ fn terminate_cancelled_child(
 
     loop {
         if let Some(status) = child.try_wait().context(wait_error.to_string())? {
+            // Descendants can outlive their group leader and keep our pipes open.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
             return Ok(status);
         }
         if Instant::now() >= deadline {
@@ -748,6 +653,7 @@ fn terminate_cancelled_child(
     child: &mut Child,
     wait_error: &str,
     _kill_error: &str,
+    _force: bool,
 ) -> Result<ExitStatus> {
     child.kill().context("failed to kill cancelled process")?;
     child.wait().context(wait_error.to_string())
@@ -842,866 +748,6 @@ fn shorten_status_text(text: &str, max_chars: usize) -> String {
     out.extend(text.chars().take(keep));
     out.push_str("...");
     out
-}
-
-/// Extract a short human-readable summary from tool args for progress display.
-fn tool_arg_summary(tool_name: &str, args: Option<&Value>) -> String {
-    const MAX_LEN: usize = 60;
-    let args = match args {
-        Some(v) => v,
-        None => return String::new(),
-    };
-
-    let tool_name = tool_name.trim().to_ascii_lowercase();
-    let candidate = if matches!(
-        tool_name.as_str(),
-        "bash" | "shell" | "execute" | "run_shell_command" | "run_command"
-    ) {
-        first_string_value(args, &["cmd", "command", "script"])
-    } else if matches!(
-        tool_name.as_str(),
-        "read"
-            | "read_file"
-            | "file_read"
-            | "open"
-            | "view"
-            | "edit_file"
-            | "write_file"
-            | "create_file"
-            | "replace"
-            | "patch"
-    ) {
-        first_string_value(args, &["path", "file", "file_path"])
-    } else if matches!(tool_name.as_str(), "glob" | "find") {
-        first_string_value(args, &["filePattern", "pattern", "glob"])
-    } else if matches!(tool_name.as_str(), "grep" | "search" | "search_files") {
-        first_string_value(args, &["pattern", "query"])
-    } else if matches!(tool_name.as_str(), "web_search" | "search_web") {
-        first_string_value(args, &["objective", "query", "prompt"])
-    } else if matches!(tool_name.as_str(), "read_web_page" | "fetch_url") {
-        first_string_value(args, &["url"])
-    } else {
-        first_string_value(
-            args,
-            &[
-                "path",
-                "file",
-                "file_path",
-                "cmd",
-                "command",
-                "query",
-                "pattern",
-                "url",
-                "directory_path",
-                "prompt",
-                "title",
-            ],
-        )
-    };
-
-    let text = match candidate {
-        Some(s) if !s.is_empty() => s,
-        _ => return String::new(),
-    };
-    truncate_status_detail(&text, MAX_LEN)
-}
-
-fn truncate_status_detail(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text.to_string();
-    }
-    if text.chars().take(max_chars + 1).count() <= max_chars {
-        return text.to_string();
-    }
-    let keep = max_chars.saturating_sub(1);
-    let mut out = String::with_capacity(keep + 3);
-    out.extend(text.chars().take(keep));
-    out.push('…');
-    out
-}
-
-fn first_string_value(node: &Value, keys: &[&str]) -> Option<String> {
-    for key in keys {
-        if let Some(value) = node.get(*key)
-            && let Some(text) = value_to_status_text(value)
-        {
-            return Some(text);
-        }
-    }
-    value_to_status_text(node)
-}
-
-fn value_to_status_text(value: &Value) -> Option<String> {
-    if let Some(text) = value.as_str() {
-        let text = text.trim();
-        if !text.is_empty() {
-            return Some(text.to_string());
-        }
-        return None;
-    }
-
-    if let Some(array) = value.as_array() {
-        let mut parts = Vec::new();
-        for item in array {
-            if let Some(text) = value_to_status_text(item) {
-                parts.push(text);
-            }
-        }
-        if !parts.is_empty() {
-            return Some(parts.join(", "));
-        }
-        return None;
-    }
-
-    if let Some(object) = value.as_object() {
-        for key in [
-            "path",
-            "file",
-            "file_path",
-            "cmd",
-            "command",
-            "query",
-            "pattern",
-            "url",
-            "directory_path",
-            "title",
-        ] {
-            if let Some(child) = object.get(key)
-                && let Some(text) = value_to_status_text(child)
-            {
-                return Some(text);
-            }
-        }
-        for child in object.values() {
-            if let Some(text) = value_to_status_text(child) {
-                return Some(text);
-            }
-        }
-    }
-
-    None
-}
-
-fn parse_pi_progress_line(line: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let typ = value.get("type")?.as_str()?;
-    if typ == "progress" {
-        return Some(value.get("content")?.as_str()?.to_string());
-    }
-    if typ == "tool_execution_start" {
-        let name = value
-            .get("toolName")
-            .and_then(|v| v.as_str())
-            .unwrap_or("tool");
-        let detail = tool_arg_summary(name, value.get("args"));
-        return if detail.is_empty() {
-            Some(format!("▶ {name}"))
-        } else {
-            Some(format!("▶ {name}: {detail}"))
-        };
-    }
-    if typ == "tool_execution_end" {
-        let name = value
-            .get("toolName")
-            .and_then(|v| v.as_str())
-            .unwrap_or("tool");
-        let err = value
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        return Some(format!("{} {name}", if err { "✗" } else { "✓" }));
-    }
-    if typ == "turn_start" {
-        let idx = value.get("turnIndex").and_then(|v| v.as_u64()).unwrap_or(0);
-        if idx > 0 {
-            return Some(format!("turn {}", idx + 1));
-        }
-        return Some("Processing...".to_string());
-    }
-    if typ == "message_update" {
-        let event = value.get("assistantMessageEvent")?;
-        let event_type = event.get("type")?.as_str()?;
-        match event_type {
-            "thinking_start" => return Some("Reasoning...".to_string()),
-            "toolcall_start" => return Some("Preparing tool call...".to_string()),
-            "toolcall_end" => {
-                let tc = event.get("toolCall")?;
-                let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
-                let args = tc.get("arguments").and_then(|v| v.as_str());
-                let parsed_args: Option<Value> = args.and_then(|a| serde_json::from_str(a).ok());
-                let detail = tool_arg_summary(name, parsed_args.as_ref());
-                return if detail.is_empty() {
-                    Some(format!("✓ {name}"))
-                } else {
-                    Some(format!("✓ {name}: {detail}"))
-                };
-            }
-            _ => {}
-        }
-    }
-    if typ == "auto_compaction_start" {
-        return Some("Compacting context...".to_string());
-    }
-    if typ == "auto_compaction_end" {
-        return Some("Context compacted".to_string());
-    }
-    if typ == "auto_retry_start" {
-        let attempt = value.get("attempt").and_then(|v| v.as_u64()).unwrap_or(1);
-        return Some(format!("Retrying (attempt {attempt})..."));
-    }
-    None
-}
-
-fn extract_pi_json_final(raw: &str) -> Option<String> {
-    let mut final_text = String::new();
-    for line in raw.lines().rev() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let typ = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-        if typ == "agent_end" {
-            if let Some(messages) = value.get("messages").and_then(|v| v.as_array()) {
-                for msg in messages.iter().rev() {
-                    if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
-                        continue;
-                    }
-                    let stop = msg.get("stopReason").and_then(|v| v.as_str());
-                    if matches!(stop, Some("toolUse") | Some("tool_use") | Some("error")) {
-                        continue;
-                    }
-                    if let Some(text) = join_content_text_blocks(msg) {
-                        return Some(text);
-                    }
-                }
-            }
-            if let Some(err) = value.get("error").and_then(|v| v.as_str())
-                && !err.trim().is_empty()
-            {
-                return Some(format!("⚠️ Agent stopped: {err}"));
-            }
-        }
-
-        if typ == "turn_end"
-            && let Some(msg) = value.get("message")
-            && !matches!(
-                msg.get("stopReason").and_then(|v| v.as_str()),
-                Some("toolUse") | Some("tool_use") | Some("error")
-            )
-            && let Some(text) = join_content_text_blocks(msg)
-        {
-            return Some(text);
-        }
-
-        if typ == "message_end"
-            && let Some(msg) = value.get("message")
-            && msg.get("role").and_then(|v| v.as_str()) == Some("assistant")
-            && !matches!(
-                msg.get("stopReason").and_then(|v| v.as_str()),
-                Some("toolUse") | Some("tool_use") | Some("error")
-            )
-            && let Some(text) = join_content_text_blocks(msg)
-        {
-            return Some(text);
-        }
-    }
-    for line in raw.lines() {
-        if let Ok(value) = serde_json::from_str::<Value>(line)
-            && value.get("type").and_then(|v| v.as_str()) == Some("text")
-            && let Some(c) = value.get("content").and_then(|v| v.as_str())
-        {
-            final_text.push_str(c);
-        }
-    }
-    if final_text.is_empty() {
-        None
-    } else {
-        Some(final_text)
-    }
-}
-
-fn join_content_text_blocks(msg: &Value) -> Option<String> {
-    let content = msg.get("content")?;
-    if let Some(text) = content.as_str() {
-        let text = text.trim();
-        if text.is_empty() {
-            return None;
-        }
-        return Some(text.to_string());
-    }
-    let array = content.as_array()?;
-    let mut chunks = Vec::new();
-    for block in array {
-        if block.get("type").and_then(|t| t.as_str()) == Some("text")
-            && let Some(text) = block.get("text").and_then(|t| t.as_str())
-        {
-            let text = text.trim();
-            if !text.is_empty() {
-                chunks.push(text.to_string());
-            }
-        }
-    }
-    if chunks.is_empty() {
-        None
-    } else {
-        Some(chunks.join("\n"))
-    }
-}
-
-fn parse_claude_json_line(line: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let event_type = value.get("type")?.as_str()?;
-
-    if event_type == "progress" {
-        return Some(value.get("content")?.as_str()?.to_string());
-    }
-
-    if event_type == "system" {
-        let subtype = value.get("subtype").and_then(Value::as_str).unwrap_or("");
-        if subtype == "init" {
-            return Some("Processing...".to_string());
-        }
-    }
-
-    if event_type == "assistant" {
-        let message = value.get("message")?;
-        let content = message.get("content").and_then(Value::as_array)?;
-        for block in content {
-            let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
-            if block_type == "tool_use" {
-                let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
-                let detail = tool_arg_summary(name, block.get("input"));
-                return if detail.is_empty() {
-                    Some(format!("▶ {name}"))
-                } else {
-                    Some(format!("▶ {name}: {detail}"))
-                };
-            }
-            if block_type == "thinking" {
-                return Some("Reasoning...".to_string());
-            }
-        }
-        if content
-            .iter()
-            .any(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-        {
-            return Some("Drafting response...".to_string());
-        }
-    }
-
-    if event_type == "user" {
-        let message = value.get("message")?;
-        let content = message.get("content").and_then(Value::as_array)?;
-        for block in content {
-            if block.get("type").and_then(Value::as_str) == Some("tool_result") {
-                let is_error = block
-                    .get("is_error")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                return Some(if is_error {
-                    "✗ tool completed".to_string()
-                } else {
-                    "✓ tool completed".to_string()
-                });
-            }
-        }
-    }
-
-    None
-}
-
-fn extract_claude_json_final(raw: &str) -> Option<String> {
-    let mut result_text: Option<String> = None;
-    let mut assistant_text: Option<String> = None;
-
-    for line in raw.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
-            continue;
-        };
-
-        if event_type == "result" {
-            if let Some(text) = value
-                .get("result")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-            {
-                result_text = Some(text.to_string());
-            }
-            continue;
-        }
-
-        if event_type == "assistant" {
-            if let Some(text) = extract_claude_assistant_text(&value) {
-                assistant_text = Some(text);
-            }
-            continue;
-        }
-    }
-
-    if let Some(text) = result_text {
-        return Some(text);
-    }
-    if let Some(text) = assistant_text {
-        return Some(text);
-    }
-    None
-}
-
-fn extract_claude_assistant_text(event: &Value) -> Option<String> {
-    let message = event.get("message")?;
-    if message.get("role").and_then(Value::as_str) != Some("assistant") {
-        return None;
-    }
-    let content = message.get("content").and_then(Value::as_array)?;
-    let mut text = String::new();
-    for block in content {
-        if block.get("type").and_then(Value::as_str) == Some("text")
-            && let Some(chunk) = block.get("text").and_then(Value::as_str)
-        {
-            text.push_str(chunk);
-        }
-    }
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text)
-    }
-}
-
-fn extract_factory_json_final(raw: &str) -> Option<String> {
-    let mut completion_text: Option<String> = None;
-    let mut assistant_text: Option<String> = None;
-
-    for line in raw.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
-            continue;
-        };
-
-        if event_type == "completion" {
-            if let Some(text) = value
-                .get("finalText")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-            {
-                completion_text = Some(trim_factory_final_text(text));
-            }
-            continue;
-        }
-
-        if event_type == "message" && value.get("role").and_then(Value::as_str) == Some("assistant")
-        {
-            if let Some(text) = value
-                .get("text")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-            {
-                assistant_text = Some(trim_factory_final_text(text));
-            }
-            continue;
-        }
-    }
-
-    completion_text.or(assistant_text)
-}
-
-fn trim_factory_final_text(text: &str) -> String {
-    let trimmed = text.trim();
-    let start = [
-        "TELEGRAM_REPLY:",
-        "VOICE_REPLY:",
-        "SEND_PHOTO:",
-        "SEND_DOCUMENT:",
-        "SEND_VIDEO:",
-        "MEMORY_APPEND:",
-        "TASK_APPEND:",
-    ]
-    .iter()
-    .filter_map(|prefix| trimmed.find(prefix))
-    .min();
-
-    match start {
-        Some(index) if index > 0 => trimmed[index..].trim().to_string(),
-        _ => trimmed.to_string(),
-    }
-}
-
-fn parse_factory_json_line(line: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let event_type = value.get("type")?.as_str()?;
-
-    if event_type == "system" {
-        let subtype = value.get("subtype").and_then(Value::as_str).unwrap_or("");
-        if subtype == "init" {
-            return Some("Processing...".to_string());
-        }
-    }
-
-    if event_type == "tool_call" {
-        let name = value
-            .get("toolName")
-            .and_then(Value::as_str)
-            .unwrap_or("tool");
-        let detail = tool_arg_summary(name, value.get("parameters"));
-        return if detail.is_empty() {
-            Some(format!("▶ {name}"))
-        } else {
-            Some(format!("▶ {name}: {detail}"))
-        };
-    }
-
-    if event_type == "tool_result" {
-        let name = value
-            .get("toolId")
-            .and_then(Value::as_str)
-            .unwrap_or("tool");
-        let is_error = value
-            .get("isError")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        return Some(format!("{} {name}", if is_error { "✗" } else { "✓" }));
-    }
-
-    if event_type == "message" && value.get("role").and_then(Value::as_str) == Some("assistant") {
-        return Some("Drafting response...".to_string());
-    }
-
-    None
-}
-
-fn parse_opencode_json_line(line: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let event_type = value.get("type")?.as_str()?;
-
-    if event_type == "progress" {
-        return Some(value.get("content")?.as_str()?.to_string());
-    }
-
-    if event_type == "step_start" {
-        return Some("Processing...".to_string());
-    }
-
-    if event_type == "text" {
-        let part = value.get("part")?;
-        let part_type = part.get("type").and_then(Value::as_str).unwrap_or("text");
-        if part_type == "text" {
-            return Some("Drafting response...".to_string());
-        }
-    }
-
-    if matches!(event_type, "reasoning" | "thinking") {
-        let part = value.get("part")?;
-        let part_type = part
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or(event_type);
-        if matches!(part_type, "reasoning" | "thinking") {
-            let text = part
-                .get("text")
-                .and_then(Value::as_str)
-                .map(|text| {
-                    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    let trimmed = collapsed.trim().trim_matches('*').trim_matches('`').trim();
-                    shorten_status_text(trimmed, 120)
-                })
-                .unwrap_or_default();
-            return if text.is_empty() {
-                Some("Reasoning...".to_string())
-            } else {
-                Some(format!("Reasoning: {text}"))
-            };
-        }
-    }
-
-    if event_type == "tool_use" {
-        let part = value.get("part")?;
-        let tool = part.get("tool").and_then(Value::as_str).unwrap_or("tool");
-        let state = part.get("state");
-        let status = state
-            .and_then(|s| s.get("status"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let is_started = matches!(status, "running" | "in_progress" | "started" | "pending");
-        let is_error = state
-            .and_then(|s| s.get("status"))
-            .and_then(Value::as_str)
-            .map(|status| matches!(status, "error" | "failed"))
-            .unwrap_or(false)
-            || state
-                .and_then(|s| s.get("metadata"))
-                .and_then(|m| m.get("exit"))
-                .and_then(Value::as_i64)
-                .map(|c| c != 0)
-                .unwrap_or(false);
-        let detail = state
-            .and_then(|s| s.get("title"))
-            .and_then(Value::as_str)
-            .map(|t| shorten_status_text(t, 60))
-            .filter(|t| !t.is_empty())
-            .or_else(|| {
-                state
-                    .and_then(|s| s.get("input"))
-                    .map(|input| tool_arg_summary(tool, Some(input)))
-                    .filter(|text| !text.is_empty())
-            })
-            .or_else(|| {
-                state
-                    .and_then(|s| s.get("error"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-                    .map(|text| shorten_status_text(text, 60))
-            })
-            .or_else(|| {
-                state
-                    .and_then(|s| s.get("output"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-                    .map(|text| shorten_status_text(text, 60))
-            })
-            .unwrap_or_default();
-        let marker = if is_started {
-            "▶"
-        } else if is_error {
-            "✗"
-        } else {
-            "✓"
-        };
-        return if detail.is_empty() {
-            Some(format!("{marker} {tool}"))
-        } else {
-            Some(format!("{marker} {tool}: {detail}"))
-        };
-    }
-
-    if event_type == "step_finish" {
-        let part = value.get("part")?;
-        let reason = part.get("reason").and_then(Value::as_str).unwrap_or("");
-        if matches!(reason, "tool_calls" | "tool-calls") {
-            return Some("Continuing...".to_string());
-        }
-    }
-
-    if event_type == "error" {
-        let msg = value
-            .get("error")
-            .and_then(|e| e.get("data"))
-            .and_then(|d| d.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or("error");
-        return Some(format!("⚠ {msg}"));
-    }
-
-    None
-}
-
-fn extract_opencode_json_final(raw: &str) -> Option<String> {
-    let mut final_text = String::new();
-    let mut marker_text: Option<String> = None;
-    for line in raw.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
-            continue;
-        };
-        if event_type == "text" {
-            let text = value
-                .get("part")
-                .and_then(|p| p.get("text"))
-                .and_then(Value::as_str)
-                .or_else(|| value.get("content").and_then(Value::as_str));
-
-            if let Some(text) = text {
-                if !final_text.is_empty() && !final_text.ends_with('\n') {
-                    final_text.push('\n');
-                }
-                final_text.push_str(text);
-            }
-        } else if matches!(event_type, "reasoning" | "thinking")
-            && let Some(text) = value
-                .get("part")
-                .and_then(|p| p.get("text"))
-                .and_then(Value::as_str)
-                .and_then(trim_to_first_marker)
-        {
-            marker_text = Some(text);
-        }
-    }
-    if final_text.is_empty() {
-        marker_text
-    } else if let Some(markers) = trim_to_first_marker(&final_text) {
-        Some(markers)
-    } else {
-        marker_text.or(Some(final_text))
-    }
-}
-
-fn trim_to_first_marker(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    let start = [
-        "TELEGRAM_REPLY:",
-        "VOICE_REPLY:",
-        "SEND_PHOTO:",
-        "SEND_DOCUMENT:",
-        "SEND_VIDEO:",
-        "MEMORY_APPEND:",
-        "TASK_APPEND:",
-        "SCHEDULE_PROMPT:",
-    ]
-    .iter()
-    .filter_map(|prefix| trimmed.find(prefix))
-    .min()?;
-
-    Some(trimmed[start..].trim().to_string())
-}
-
-fn parse_antigravity_json_line(line: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let event_type = value.get("type")?.as_str()?;
-
-    if event_type == "init" {
-        return Some("Processing...".to_string());
-    }
-
-    if event_type == "tool_use" {
-        let name = value.get("name").and_then(Value::as_str).unwrap_or("tool");
-        let detail = tool_arg_summary(name, value.get("input"));
-        return if detail.is_empty() {
-            Some(format!("▶ {name}"))
-        } else {
-            Some(format!("▶ {name}: {detail}"))
-        };
-    }
-
-    if event_type == "tool_result" {
-        let name = value
-            .get("name")
-            .or_else(|| value.get("tool"))
-            .or_else(|| value.get("tool_name"))
-            .and_then(Value::as_str)
-            .unwrap_or("tool");
-        let is_error = value
-            .get("is_error")
-            .or_else(|| value.get("isError"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let detail = value
-            .get("input")
-            .or_else(|| value.get("args"))
-            .map(|input| tool_arg_summary(name, Some(input)))
-            .filter(|text| !text.is_empty())
-            .or_else(|| {
-                value
-                    .get("output")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty())
-                    .map(|text| shorten_status_text(text, 60))
-            })
-            .unwrap_or_default();
-        let marker = if is_error { "✗" } else { "✓" };
-        return if detail.is_empty() {
-            Some(format!("{marker} {name}"))
-        } else {
-            Some(format!("{marker} {name}: {detail}"))
-        };
-    }
-
-    if event_type == "message" {
-        let role = value.get("role").and_then(Value::as_str).unwrap_or("");
-        if role == "assistant" {
-            return Some("Drafting response...".to_string());
-        }
-    }
-
-    if event_type == "error" {
-        let msg = value
-            .get("message")
-            .and_then(Value::as_str)
-            .or_else(|| value.get("error").and_then(Value::as_str))
-            .unwrap_or("error");
-        return Some(format!("⚠ {}", shorten_status_text(msg, 80)));
-    }
-
-    None
-}
-
-fn extract_antigravity_json_final(raw: &str) -> Option<String> {
-    let mut result_text: Option<String> = None;
-    let mut assistant_text = String::new();
-
-    for line in raw.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
-            continue;
-        };
-
-        if event_type == "result" {
-            if let Some(text) = value
-                .get("response")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-            {
-                result_text = Some(text.to_string());
-            }
-            continue;
-        }
-
-        if event_type == "message"
-            && let Some(role) = value.get("role").and_then(Value::as_str)
-            && role == "assistant"
-        {
-            let is_delta = value.get("delta").and_then(Value::as_bool).unwrap_or(false);
-
-            if let Some(content) = value.get("content") {
-                if let Some(text) = content.as_str() {
-                    if is_delta {
-                        assistant_text.push_str(text);
-                    } else {
-                        assistant_text = text.to_string();
-                    }
-                } else if let Some(arr) = content.as_array() {
-                    let mut chunks = Vec::new();
-                    for block in arr {
-                        if block.get("type").and_then(Value::as_str) == Some("text")
-                            && let Some(t) = block.get("text").and_then(Value::as_str)
-                        {
-                            chunks.push(t);
-                        }
-                    }
-                    let joined = chunks.join("");
-                    if is_delta {
-                        assistant_text.push_str(&joined);
-                    } else {
-                        assistant_text = joined;
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(text) = result_text {
-        return Some(text);
-    }
-    let trimmed = assistant_text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 fn parse_bin_with_env(raw: &str) -> (HashMap<String, String>, String, Vec<String>) {

@@ -9,20 +9,13 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Effect {
     TelegramReply(String),
-    VoiceReply(String),
     SendPhoto(String),
     SendDocument(String),
     SendVideo(String),
     SendApproval(String),
+    DelegateTask(String),
     MemoryAppend(String),
     TaskAppend(String),
-    SchedulePrompt(String),
-    /// Incremental text delta for streaming replies.
-    /// Paves the way for live token streaming to transports
-    /// once providers can emit structured token events.
-    /// Forward-looking: not yet wired to any provider's token stream.
-    #[allow(dead_code)]
-    ReplyDelta(String),
 }
 
 impl Effect {
@@ -31,15 +24,13 @@ impl Effect {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::TelegramReply(_) => "telegram_reply",
-            Self::VoiceReply(_) => "voice_reply",
             Self::SendPhoto(_) => "send_photo",
             Self::SendDocument(_) => "send_document",
             Self::SendVideo(_) => "send_video",
             Self::SendApproval(_) => "send_approval",
+            Self::DelegateTask(_) => "delegate_task",
             Self::MemoryAppend(_) => "memory_append",
             Self::TaskAppend(_) => "task_append",
-            Self::SchedulePrompt(_) => "schedule_prompt",
-            Self::ReplyDelta(_) => "reply_delta",
         }
     }
 
@@ -48,15 +39,13 @@ impl Effect {
     pub(crate) fn payload(&self) -> &str {
         match self {
             Self::TelegramReply(s)
-            | Self::VoiceReply(s)
             | Self::SendPhoto(s)
             | Self::SendDocument(s)
             | Self::SendVideo(s)
+            | Self::DelegateTask(s)
             | Self::SendApproval(s)
             | Self::MemoryAppend(s)
-            | Self::TaskAppend(s)
-            | Self::SchedulePrompt(s)
-            | Self::ReplyDelta(s) => s.as_str(),
+            | Self::TaskAppend(s) => s.as_str(),
         }
     }
 }
@@ -68,15 +57,13 @@ pub(crate) fn render_effects(effects: &[Effect]) -> String {
     for effect in effects {
         let marker = match effect {
             Effect::TelegramReply(_) => "TELEGRAM_REPLY: ",
-            Effect::VoiceReply(_) => "VOICE_REPLY: ",
             Effect::SendPhoto(_) => "SEND_PHOTO: ",
             Effect::SendDocument(_) => "SEND_DOCUMENT: ",
             Effect::SendVideo(_) => "SEND_VIDEO: ",
             Effect::SendApproval(_) => "SEND_APPROVAL: ",
+            Effect::DelegateTask(_) => "DELEGATE_TASK: ",
             Effect::MemoryAppend(_) => "MEMORY_APPEND: ",
             Effect::TaskAppend(_) => "TASK_APPEND: ",
-            Effect::SchedulePrompt(_) => "SCHEDULE_PROMPT: ",
-            Effect::ReplyDelta(_) => "REPLY_DELTA: ",
         };
         lines.push(format!("{marker}{}", effect.payload()));
     }
@@ -92,14 +79,13 @@ pub(crate) fn render_effects(effects: &[Effect]) -> String {
 #[derive(Debug, Default)]
 pub(crate) struct ParsedMarkers {
     pub(crate) telegram_reply: Option<String>,
-    pub(crate) voice_reply: Option<String>,
     pub(crate) send_photo: Vec<String>,
     pub(crate) send_document: Vec<String>,
     pub(crate) send_video: Vec<String>,
     pub(crate) send_approval: Vec<String>,
     pub(crate) memory_append: Vec<String>,
     pub(crate) task_append: Vec<String>,
-    pub(crate) schedule_prompt: Vec<String>,
+    pub(crate) delegate_task: Vec<String>,
 }
 
 impl ParsedMarkers {
@@ -117,9 +103,6 @@ impl ParsedMarkers {
         let mut effects = Vec::new();
         if let Some(ref text) = self.telegram_reply {
             effects.push(Effect::TelegramReply(text.clone()));
-        }
-        if let Some(ref text) = self.voice_reply {
-            effects.push(Effect::VoiceReply(text.clone()));
         }
         for path in &self.send_photo {
             effects.push(Effect::SendPhoto(path.clone()));
@@ -139,41 +122,29 @@ impl ParsedMarkers {
         for text in &self.task_append {
             effects.push(Effect::TaskAppend(text.clone()));
         }
-        for text in &self.schedule_prompt {
-            effects.push(Effect::SchedulePrompt(text.clone()));
+        for text in &self.delegate_task {
+            effects.push(Effect::DelegateTask(text.clone()));
         }
         effects
     }
 
     /// True when the markers include at least one output the transport layer
-    /// should act on (text, voice, or media).
+    /// should act on (text or media).
     #[allow(dead_code)]
     pub(crate) fn has_output(&self) -> bool {
         self.telegram_reply.is_some()
-            || self.voice_reply.is_some()
             || !self.send_photo.is_empty()
             || !self.send_document.is_empty()
             || !self.send_video.is_empty()
     }
 }
 
-/// Render a reply (with optional voice) and extra effects into the text-marker wire format.
-///
-/// The `reply` and `voice_reply` parameters provide the main text output.
-/// `effects` supplies media, approval, memory, task, and schedule markers.
-/// TelegramReply/VoiceReply effects in `effects` are intentionally ignored —
-/// the separate `reply`/`voice_reply` params take precedence.
-pub(crate) fn render_output(reply: &str, voice_reply: &str, effects: &[Effect]) -> String {
+/// Render the retained output effects.
+pub(crate) fn render_output(reply: &str, effects: &[Effect]) -> String {
     let mut all = Vec::with_capacity(effects.len() + 2);
     all.push(Effect::TelegramReply(reply.to_string()));
-    if !voice_reply.trim().is_empty() {
-        all.push(Effect::VoiceReply(voice_reply.to_string()));
-    }
     for e in effects {
-        if !matches!(
-            e,
-            Effect::TelegramReply(_) | Effect::VoiceReply(_) | Effect::ReplyDelta(_)
-        ) {
+        if !matches!(e, Effect::TelegramReply(_)) {
             all.push(e.clone());
         }
     }
@@ -182,13 +153,13 @@ pub(crate) fn render_output(reply: &str, voice_reply: &str, effects: &[Effect]) 
 
 pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
     let markers = parse_markers_line_anchored(payload);
-    if markers.telegram_reply.is_some() || markers.voice_reply.is_some() {
+    if markers.telegram_reply.is_some() {
         return markers;
     }
 
     if let Some(recovered_payload) = recover_embedded_marker_payload(payload) {
         let recovered = parse_markers_line_anchored(recovered_payload);
-        if recovered.telegram_reply.is_some() || recovered.voice_reply.is_some() {
+        if recovered.telegram_reply.is_some() {
             return recovered;
         }
     }
@@ -199,7 +170,6 @@ pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
 fn parse_markers_line_anchored(payload: &str) -> ParsedMarkers {
     let mut markers = ParsedMarkers::default();
     let mut telegram_blocks = Vec::new();
-    let mut voice_blocks = Vec::new();
 
     let mut current_marker: Option<&str> = None;
     let mut current_block = String::new();
@@ -212,7 +182,6 @@ fn parse_markers_line_anchored(payload: &str) -> ParsedMarkers {
             commit_block(
                 &mut markers,
                 &mut telegram_blocks,
-                &mut voice_blocks,
                 current_marker,
                 &current_block,
             );
@@ -234,7 +203,6 @@ fn parse_markers_line_anchored(payload: &str) -> ParsedMarkers {
     commit_block(
         &mut markers,
         &mut telegram_blocks,
-        &mut voice_blocks,
         current_marker,
         &current_block,
     );
@@ -242,9 +210,6 @@ fn parse_markers_line_anchored(payload: &str) -> ParsedMarkers {
     // Merge multi-block text fields
     if !telegram_blocks.is_empty() {
         markers.telegram_reply = Some(normalize_inline_escapes(&telegram_blocks.join("\n\n")));
-    }
-    if !voice_blocks.is_empty() {
-        markers.voice_reply = Some(normalize_inline_escapes(&voice_blocks.join("\n\n")));
     }
 
     markers
@@ -289,6 +254,7 @@ fn marker_prefixes() -> &'static [&'static str] {
         "SEND_DOCUMENT:",
         "SEND_VIDEO:",
         "SEND_APPROVAL:",
+        "DELEGATE_TASK:",
         "MEMORY_APPEND:",
         "TASK_APPEND:",
         "SCHEDULE_PROMPT:",
@@ -304,6 +270,7 @@ fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
         ("SEND_DOCUMENT", "SEND_DOCUMENT:"),
         ("SEND_VIDEO", "SEND_VIDEO:"),
         ("SEND_APPROVAL", "SEND_APPROVAL:"),
+        ("DELEGATE_TASK", "DELEGATE_TASK:"),
         ("MEMORY_APPEND", "MEMORY_APPEND:"),
         ("TASK_APPEND", "TASK_APPEND:"),
         ("SCHEDULE_PROMPT", "SCHEDULE_PROMPT:"),
@@ -320,7 +287,6 @@ fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
 fn commit_block(
     markers: &mut ParsedMarkers,
     telegram_blocks: &mut Vec<String>,
-    voice_blocks: &mut Vec<String>,
     marker: Option<&str>,
     block: &str,
 ) {
@@ -332,14 +298,15 @@ fn commit_block(
 
     match m {
         "TELEGRAM_REPLY" => telegram_blocks.push(content.to_string()),
-        "VOICE_REPLY" => voice_blocks.push(content.to_string()),
+        "VOICE_REPLY" => {}
         "SEND_PHOTO" => markers.send_photo.push(content.to_string()),
         "SEND_DOCUMENT" => markers.send_document.push(content.to_string()),
         "SEND_VIDEO" => markers.send_video.push(content.to_string()),
         "SEND_APPROVAL" => markers.send_approval.push(content.to_string()),
         "MEMORY_APPEND" => markers.memory_append.push(content.to_string()),
         "TASK_APPEND" => markers.task_append.push(content.to_string()),
-        "SCHEDULE_PROMPT" => markers.schedule_prompt.push(content.to_string()),
+        "SCHEDULE_PROMPT" => {}
+        "DELEGATE_TASK" => markers.delegate_task.push(content.to_string()),
         _ => {}
     }
 }
@@ -475,6 +442,12 @@ pub(crate) fn extract_assistant_text_from_json_stream(payload: &str) -> Option<S
         };
 
         let candidate = match event_type {
+            "item.completed" => value.get("item").and_then(|item| {
+                if item.get("type")?.as_str()? != "agent_message" {
+                    return None;
+                }
+                item.get("text")?.as_str().map(ToOwned::to_owned)
+            }),
             "message_end" => {
                 let role = value
                     .get("message")

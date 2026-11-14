@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help build dev release install uninstall start stop restart status logs logs-reflection lint test hooks
+.PHONY: help build dev release install uninstall start stop restart status logs lint test hooks
 
 help: ## Show this help
 	@grep -E '^[a-z][-a-z]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -19,13 +19,13 @@ install: ## Install background services (Linux: systemd user, macOS: launchd)
 uninstall: ## Remove background services
 	cargo run -p coconutclaw -- service uninstall
 
-start: ## Start runtime service + timers
+start: ## Start runtime service
 	cargo run -p coconutclaw -- service start
 
-stop: ## Stop runtime service + timers
+stop: ## Stop runtime service
 	cargo run -p coconutclaw -- service stop
 
-restart: ## Restart runtime service + timers
+restart: ## Restart runtime service
 	$(MAKE) --no-print-directory stop
 	sleep 1
 	$(MAKE) --no-print-directory start
@@ -36,15 +36,12 @@ status: ## Show runtime service status
 logs: ## Follow main agent logs (Linux systemd only)
 	journalctl --user -u coconutclaw.service -f
 
-logs-reflection: ## Follow nightly reflection logs (Linux systemd only)
-	journalctl --user -u coconutclaw-nightly-reflection.service -f
+lint: ## Rust formatting and lint
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets --locked -- -D warnings
 
-lint: ## Shellcheck maintained shell helpers
-	shellcheck scripts/asr.sh scripts/tts.sh
-
-test: ## Rust tests + one injected smoke run
-	cargo test
-	cargo run -q -p coconutclaw -- once --inject-text "ping"
+test: ## Rust tests with offline mocks, no live agent or messaging
+	cargo test --workspace --all-targets --locked
 
 hooks: ## Install git pre-commit hook
 	git config core.hooksPath .githooks

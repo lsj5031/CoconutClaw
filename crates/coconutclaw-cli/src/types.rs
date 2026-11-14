@@ -1,12 +1,10 @@
 use std::path::PathBuf;
 
 use crate::markers::Effect;
-use crate::slack::SlackWebhookTurn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputType {
     Text,
-    Voice,
     Photo,
     Video,
     Document,
@@ -17,7 +15,6 @@ impl InputType {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Text => "text",
-            Self::Voice => "voice",
             Self::Photo => "photo",
             Self::Video => "video",
             Self::Document => "document",
@@ -65,12 +62,11 @@ impl std::fmt::Display for TurnStatus {
 pub(crate) struct TurnInput {
     pub(crate) input_type: InputType,
     pub(crate) user_text: String,
-    pub(crate) asr_text: String,
     pub(crate) attachment_type: Option<String>,
     pub(crate) attachment_path: Option<PathBuf>,
     pub(crate) attachment_owned: bool,
     pub(crate) supplemental_context: Option<String>,
-    pub(crate) channel: String, // "telegram", "slack", "local"
+    pub(crate) channel: String, // "telegram" or "local"
 }
 
 #[derive(Debug, Clone)]
@@ -91,9 +87,6 @@ pub(crate) struct WebhookTurn {
 
 #[derive(Debug, Clone)]
 pub(crate) enum IncomingMedia {
-    Voice {
-        file_id: String,
-    },
     Photo {
         file_id: String,
     },
@@ -129,19 +122,13 @@ pub(crate) enum WebhookAction {
         update_id: Option<String>,
         chat_id: String,
     },
-    Schedules {
-        update_id: Option<String>,
-        chat_id: String,
-    },
     Turn(Box<WebhookTurn>),
-    SlackTurn(Box<SlackWebhookTurn>),
 }
 
 #[derive(Debug)]
 pub(crate) struct TurnResult {
     pub(crate) effects: Vec<Effect>,
     pub(crate) telegram_reply: String,
-    pub(crate) voice_reply: String,
     pub(crate) status: TurnStatus,
     #[allow(dead_code)]
     pub(crate) channel: String,
@@ -153,8 +140,6 @@ pub(crate) struct ProcessOutcome {
     pub(crate) should_ack: bool,
     pub(crate) update_id: Option<String>,
     pub(crate) chat_id: Option<String>,
-    pub(crate) output_channel: Option<String>,
-    pub(crate) output_thread_ts: Option<String>,
     pub(crate) output: Option<String>,
     pub(crate) cleanup_path: Option<PathBuf>,
     pub(crate) progress_message_id: Option<String>,

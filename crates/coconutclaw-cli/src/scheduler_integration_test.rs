@@ -11,19 +11,18 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use coconutclaw_config::{AgentProvider, RuntimeConfig};
+use coconutclaw_config::RuntimeConfig;
 use serde_json::json;
 
-use super::{
-    DeliveryTarget, ScheduledDeliveryResult, ScheduledTaskDispatch, SessionKey, SessionScheduler,
-    TaskRequest, TaskSource, dispatch_scheduled_task_output,
-};
+use super::{DeliveryTarget, SessionKey, SessionScheduler, TaskRequest, TaskSource};
 use crate::approval::{
     build_resume_payload, cleanup_attachment_from_resume_payload, request_from_resume_payload,
 };
 use crate::store::Store;
-use crate::telegram::build_telegram_client;
 use crate::{InputType, QuotedMessage, TurnInput};
+
+#[path = "phase0_tests.rs"]
+mod phase0;
 
 fn write_fake_provider_script(
     dir: &std::path::Path,
@@ -62,7 +61,6 @@ fn write_fake_provider_script(
 
 fn scheduler_test_config(provider_bin: String) -> RuntimeConfig {
     let mut cfg = RuntimeConfig::test_config();
-    cfg.provider = AgentProvider::Codex;
     cfg.codex.bin = provider_bin;
     cfg
 }
@@ -70,11 +68,6 @@ fn scheduler_test_config(provider_bin: String) -> RuntimeConfig {
 fn make_request(session: SessionKey, channel: &str, prompt: &str) -> TaskRequest {
     let source = match channel {
         "telegram" => TaskSource::Telegram,
-        "slack" => TaskSource::Slack {
-            channel_id: session.root_id.clone(),
-            thread_ts: session.thread_id.clone(),
-        },
-        "scheduled" => TaskSource::Scheduled,
         _ => TaskSource::Local,
     };
     TaskRequest {
@@ -83,7 +76,6 @@ fn make_request(session: SessionKey, channel: &str, prompt: &str) -> TaskRequest
         input: TurnInput {
             input_type: InputType::Text,
             user_text: prompt.to_string(),
-            asr_text: String::new(),
             attachment_type: None,
             attachment_path: None,
             attachment_owned: false,
@@ -98,10 +90,9 @@ fn make_request(session: SessionKey, channel: &str, prompt: &str) -> TaskRequest
             reply_ts: None,
         },
         delivery: DeliveryTarget::Stdout,
-        persisted_delivery_target: None,
         source_user_id: None,
         progress_message_id: None,
-        scheduled_task_id: None,
+        delegated: false,
     }
 }
 
@@ -143,6 +134,17 @@ struct FakeTelegramServer {
 
 impl FakeTelegramServer {
     fn start() -> Self {
+        Self::start_with_response(|_| {
+            (
+                200,
+                r#"{"ok":true,"result":{"message_id":123,"message_thread_id":0}}"#.into(),
+            )
+        })
+    }
+
+    fn start_with_response(
+        mut respond: impl FnMut(&str) -> (u16, String) + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake telegram server");
         listener
             .set_nonblocking(true)
@@ -158,8 +160,29 @@ impl FakeTelegramServer {
                     Ok((mut stream, _)) => {
                         let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
                         let mut buf = [0_u8; 8192];
-                        let read = stream.read(&mut buf).unwrap_or(0);
-                        let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                        let mut data = Vec::new();
+                        loop {
+                            let read = stream.read(&mut buf).unwrap_or(0);
+                            if read == 0 {
+                                break;
+                            }
+                            data.extend_from_slice(&buf[..read]);
+                            let request = String::from_utf8_lossy(&data);
+                            if let Some((header, body)) = request.split_once("\r\n\r\n") {
+                                let len = header
+                                    .lines()
+                                    .find_map(|line| {
+                                        line.to_ascii_lowercase()
+                                            .strip_prefix("content-length:")
+                                            .and_then(|s| s.trim().parse::<usize>().ok())
+                                    })
+                                    .unwrap_or(0);
+                                if body.len() >= len {
+                                    break;
+                                }
+                            }
+                        }
+                        let request = String::from_utf8_lossy(&data).to_string();
                         let path = request
                             .lines()
                             .next()
@@ -167,10 +190,9 @@ impl FakeTelegramServer {
                             .unwrap_or("/")
                             .to_string();
                         requests_clone.lock().expect("requests lock").push(path);
-                        let body =
-                            r#"{"ok":true,"result":{"message_id":123,"message_thread_id":0}}"#;
+                        let (status, body) = respond(&request);
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            "HTTP/1.1 {status} Mock\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             body.len(),
                             body
                         );
@@ -190,10 +212,6 @@ impl FakeTelegramServer {
             stop,
             handle: Some(handle),
         }
-    }
-
-    fn request_count(&self) -> usize {
-        self.requests.lock().expect("requests lock").len()
     }
 }
 
@@ -216,15 +234,15 @@ impl Drop for FakeTelegramServer {
 #[test]
 fn request_from_resume_payload_restores_owned_attachment() {
     let payload = r#"{
-        "session_id": "slack:C123#171.5",
-        "channel": "slack",
+        "session_id": "telegram:321",
+        "channel": "telegram",
         "input_type": "document",
         "user_text": "review this",
         "asr_text": "",
         "attachment_type": "application/pdf",
         "attachment_path": "/tmp/approval.pdf",
         "attachment_owned": true,
-        "dispatch": {"kind": "slack", "channel_id": "C123", "thread_ts": "171.5"},
+        "dispatch": {"kind": "telegram", "chat_id": "321"},
         "quoted": {}
     }"#;
 
@@ -244,20 +262,16 @@ fn request_from_resume_payload_restores_owned_attachment() {
 #[test]
 fn build_resume_payload_keeps_attachment_ownership() {
     let request = TaskRequest {
-        session: SessionKey::slack("C123", Some("171.5")),
-        source: TaskSource::Slack {
-            channel_id: "C123".to_string(),
-            thread_ts: Some("171.5".to_string()),
-        },
+        session: SessionKey::telegram("321"),
+        source: TaskSource::Telegram,
         input: TurnInput {
             input_type: InputType::Document,
             user_text: "ship it".to_string(),
-            asr_text: String::new(),
             attachment_type: Some("application/pdf".to_string()),
             attachment_path: Some(PathBuf::from("/tmp/input.pdf")),
             attachment_owned: true,
             supplemental_context: None,
-            channel: "slack".to_string(),
+            channel: "telegram".to_string(),
         },
         update_id: Some("evt-1".to_string()),
         media: None,
@@ -266,90 +280,17 @@ fn build_resume_payload_keeps_attachment_ownership() {
             reply_text: None,
             reply_ts: None,
         },
-        delivery: DeliveryTarget::Slack {
-            channel_id: "C123".to_string(),
-            thread_ts: Some("171.5".to_string()),
+        delivery: DeliveryTarget::Telegram {
+            chat_id: "321".into(),
         },
-        persisted_delivery_target: Some(DeliveryTarget::Slack {
-            channel_id: "C123".to_string(),
-            thread_ts: Some("171.5".to_string()),
-        }),
         source_user_id: Some("U123".to_string()),
         progress_message_id: None,
-        scheduled_task_id: None,
+        delegated: false,
     };
 
     let payload = build_resume_payload(&request, &request.input).expect("resume payload");
 
     assert!(payload.contains(r#""attachment_owned":true"#));
-}
-
-#[test]
-fn scheduled_stdout_task_completion_does_not_require_telegram_config() {
-    let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let provider_bin = write_fake_provider_script(
-        tmp_dir.path(),
-        "scheduled-stdout-provider",
-        r#"#!/bin/bash
-for ((i=1; i<=$#; i++)); do
-if [[ "${!i}" == "--output-last-message" ]]; then
-    j=$((i + 1))
-    OUT_FILE="${!j}"
-fi
-done
-printf 'TELEGRAM_REPLY: scheduled done\n' > "$OUT_FILE"
-"#,
-        r#"$outFile = ""
-for ($i = 0; $i -lt $args.Count; $i++) {
-if ($args[$i] -eq "--output-last-message") {
-    $outFile = $args[$i + 1]
-    $i++
-}
-}
-"TELEGRAM_REPLY: scheduled done" | Set-Content -Path $outFile
-"#,
-    );
-    let mut cfg = scheduler_test_config(provider_bin);
-    cfg.telegram_bot_token = None;
-    cfg.telegram_chat_id = None;
-    cfg.telegram_chat_ids.clear();
-
-    let store = Store::open(&cfg).expect("store");
-    store
-        .insert_scheduled_task(
-            "2026-04-23T20:00:00+1200",
-            "agent",
-            "scheduled without telegram",
-            "09:00",
-            false,
-        )
-        .expect("insert schedule");
-    let scheduled_task_id = store.list_active_scheduled_tasks().expect("list schedules")[0].id;
-
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let mut request = make_stdout_request(
-        SessionKey::scheduled(&format!("task-{scheduled_task_id}")),
-        "scheduled without telegram",
-    );
-    request.source = TaskSource::Scheduled;
-    request.scheduled_task_id = Some(scheduled_task_id);
-    request.persisted_delivery_target = Some(DeliveryTarget::Stdout);
-
-    let task_id = scheduler.enqueue(request).expect("enqueue scheduled task");
-    wait_for_terminal_tasks(&cfg, &[task_id]);
-
-    let store = Store::open(&cfg).expect("store reopen");
-    let task = store
-        .get_task_run(task_id)
-        .expect("get task")
-        .expect("task run");
-    assert_eq!(task.status, "completed");
-    assert!(
-        store
-            .list_active_scheduled_tasks()
-            .expect("list schedules")
-            .is_empty()
-    );
 }
 
 #[test]
@@ -679,86 +620,6 @@ New-Item -ItemType File -Path "{broken_marker}" -Force | Out-Null
             .contains_key(&session_id),
         "failed reopen should release the session lane"
     );
-}
-
-#[test]
-fn scheduled_delivery_state_skips_already_completed_replay_operations() {
-    let server = FakeTelegramServer::start();
-    let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let mut cfg = RuntimeConfig::test_config();
-    cfg.telegram_api_base = Some(server.base_url.clone());
-    cfg.slack_channel_id = None;
-
-    let photo = tmp_dir.path().join("photo.jpg");
-    let doc = tmp_dir.path().join("report.txt");
-    fs::write(&photo, "photo").expect("write photo");
-    fs::write(&doc, "report").expect("write doc");
-
-    let store = Store::open(&cfg).expect("store");
-    store
-        .insert_scheduled_task(
-            "2026-04-23T20:00:00+1200",
-            "agent",
-            "Check backups.",
-            "09:00",
-            true,
-        )
-        .expect("insert schedule");
-    let client = build_telegram_client(&cfg).expect("telegram client");
-    let output = format!(
-        "TELEGRAM_REPLY: Backup complete\nSEND_PHOTO: {}\nSEND_DOCUMENT: {}\n",
-        photo.display(),
-        doc.display()
-    );
-    let delivery_target = DeliveryTarget::Telegram {
-        chat_id: "321".to_string(),
-    };
-
-    assert_eq!(
-        dispatch_scheduled_task_output(
-            &store,
-            &cfg,
-            Some(&client),
-            ScheduledTaskDispatch {
-                scheduled_task_id: 1,
-                delivery_target: Some(&delivery_target),
-                output: &output,
-                progress_message_id: Some("42"),
-                delivery_state_raw: None,
-            },
-        )
-        .expect("first dispatch"),
-        ScheduledDeliveryResult::Delivered
-    );
-    let first_count = server.request_count();
-    assert_eq!(first_count, 3);
-
-    let delivery_state = store.list_active_scheduled_tasks().expect("list schedules")[0]
-        .delivery_state
-        .clone();
-    assert!(
-        delivery_state
-            .as_deref()
-            .is_some_and(|value| value.contains(r#""version":1"#)),
-        "expected versioned delivery state, got {delivery_state:?}"
-    );
-    assert_eq!(
-        dispatch_scheduled_task_output(
-            &store,
-            &cfg,
-            Some(&client),
-            ScheduledTaskDispatch {
-                scheduled_task_id: 1,
-                delivery_target: Some(&delivery_target),
-                output: &output,
-                progress_message_id: Some("42"),
-                delivery_state_raw: delivery_state.as_deref(),
-            },
-        )
-        .expect("second dispatch"),
-        ScheduledDeliveryResult::Delivered
-    );
-    assert_eq!(server.request_count(), first_count);
 }
 
 #[test]

@@ -1,66 +1,122 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use coconutclaw_config::RuntimeConfig;
+use coconutclaw_config::{RuntimeConfig, TelegramParseFallback, TelegramParseMode};
 use reqwest::blocking::Client;
 
-use crate::delivery::{
-    ScheduledDeliveryState, ScheduledTaskDispatch, persist_scheduled_delivery_state,
-};
+use crate::delivery::{DeliveryState, TaskDispatch, persist_delivery_state};
 use crate::markers::parse_markers;
 use crate::store::Store;
 use crate::telegram::{
-    dispatch_telegram_output, render_telegram_reply_text, send_markdown_reply_document,
-    send_or_edit_text, send_voice_reply, should_send_reply_as_document, telegram_delete_message,
+    TELEGRAM_TEXT_CHAR_LIMIT, render_telegram_reply_text, send_markdown_reply_document,
+    send_or_edit_text, should_send_reply_as_document, split_text_chunks, telegram_delete_message,
     telegram_remove_keyboard, telegram_send_media_file,
 };
 
-pub(crate) fn dispatch_output(
-    client: &Client,
-    cfg: &RuntimeConfig,
-    chat_id: Option<&str>,
-    output: &str,
-    progress_message_id: Option<&str>,
-) -> Result<()> {
-    dispatch_telegram_output(client, cfg, chat_id, output, progress_message_id)
+fn chunk_plan(cfg: &RuntimeConfig, reply: &str) -> serde_json::Value {
+    let rendered = render_telegram_reply_text(cfg, reply);
+    serde_json::json!({
+        "kind":"chunks",
+        "chunks":split_text_chunks(&rendered, TELEGRAM_TEXT_CHAR_LIMIT, cfg.telegram_parse_mode),
+        "parse_mode":cfg.telegram_parse_mode.as_api_value().unwrap_or("off"),
+        "fallback_plain":cfg.telegram_parse_fallback == TelegramParseFallback::Plain,
+    })
 }
 
-pub(crate) fn scheduled_delivery_has_expected_ops(
+#[allow(clippy::too_many_arguments)]
+fn deliver_text(
+    store: &Store,
     cfg: &RuntimeConfig,
-    output: &str,
-    progress_message_id: Option<&str>,
-) -> bool {
-    let effects = parse_markers(output).to_effects();
-    let mut has_text = false;
-    let mut has_voice = false;
-    let mut has_media = false;
-
-    for effect in &effects {
-        match effect {
-            crate::markers::Effect::TelegramReply(_) => has_text = true,
-            crate::markers::Effect::VoiceReply(v)
-                if cfg.tts_cmd_template.is_some() && !v.trim().is_empty() =>
-            {
-                has_voice = true;
-            }
-            crate::markers::Effect::SendPhoto(_)
-            | crate::markers::Effect::SendDocument(_)
-            | crate::markers::Effect::SendVideo(_) => has_media = true,
-            _ => {}
-        }
+    client: &Client,
+    request: TaskDispatch<'_>,
+    state: &mut DeliveryState,
+    chat_id: &str,
+    reply: &str,
+) -> Result<bool> {
+    if state.has_telegram_op("telegram:text") {
+        return Ok(true);
     }
-
-    has_text || progress_message_id.is_some() || has_voice || has_media
+    if state.text_plan.is_none() {
+        state.text_plan = Some(
+            if should_send_reply_as_document(&render_telegram_reply_text(cfg, reply)) {
+                serde_json::json!({"kind":"document","markdown":reply})
+            } else {
+                chunk_plan(cfg, reply)
+            },
+        );
+        persist_delivery_state(store, request.task_id, state)?;
+    }
+    let plan = state.text_plan.as_ref().expect("persisted text plan");
+    if plan["kind"] == "document" {
+        let markdown = plan["markdown"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid saved document plan"))?;
+        if send_markdown_reply_document(client, cfg, chat_id, markdown, request.progress_message_id)
+            .is_ok()
+        {
+            state.mark_telegram_op("telegram:text");
+            persist_delivery_state(store, request.task_id, state)?;
+            return Ok(true);
+        }
+        // This choice is durable before the first fallback chunk is sent.
+        state.text_plan = Some(chunk_plan(cfg, markdown));
+        persist_delivery_state(store, request.task_id, state)?;
+    }
+    let plan = state.text_plan.as_ref().expect("saved text plan");
+    let chunks = plan["chunks"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("invalid saved chunk plan"))?
+        .clone();
+    let mut send_cfg = cfg.clone();
+    send_cfg.telegram_parse_mode = match plan["parse_mode"].as_str() {
+        Some("off") => TelegramParseMode::Off,
+        Some("HTML") => TelegramParseMode::Html,
+        Some("MarkdownV2") => TelegramParseMode::MarkdownV2,
+        _ => anyhow::bail!("invalid saved parse-mode plan"),
+    };
+    send_cfg.telegram_parse_fallback = if plan["fallback_plain"] == true {
+        TelegramParseFallback::Plain
+    } else {
+        TelegramParseFallback::None
+    };
+    for (index, chunk) in chunks.iter().enumerate() {
+        let op = format!("telegram:text:chunk:{index}");
+        if state.has_telegram_op(&op) {
+            continue;
+        }
+        let chunk = chunk
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid saved text chunk"))?;
+        if let Err(error) = send_or_edit_text(
+            client,
+            &send_cfg,
+            chat_id,
+            chunk,
+            if index == 0 {
+                request.progress_message_id
+            } else {
+                None
+            },
+        ) {
+            tracing::warn!("task text chunk pending: {error:#}");
+            return Ok(false);
+        }
+        state.mark_telegram_op(op);
+        persist_delivery_state(store, request.task_id, state)?;
+    }
+    state.mark_telegram_op("telegram:text");
+    persist_delivery_state(store, request.task_id, state)?;
+    Ok(true)
 }
 
 /// Walk Telegram-bound effects and dispatch each op idempotently.
 /// Returns true if every attempted op succeeded; false if any retryable failure occurred.
-pub(crate) fn dispatch_scheduled_output(
+pub(crate) fn dispatch_task_output(
     store: &Store,
     cfg: &RuntimeConfig,
     client: &Client,
-    request: ScheduledTaskDispatch<'_>,
-    state: &mut ScheduledDeliveryState,
+    request: TaskDispatch<'_>,
+    state: &mut DeliveryState,
     chat_id: Option<&str>,
 ) -> Result<bool> {
     let chat_id = chat_id.map(str::trim).filter(|value| !value.is_empty());
@@ -79,64 +135,27 @@ pub(crate) fn dispatch_scheduled_output(
                 if !reply.is_empty() {
                     if !state.has_telegram_op("telegram:text") {
                         if let Some(chat_id) = chat_id {
-                            let rendered_reply = render_telegram_reply_text(cfg, reply);
-                            let send_result = if should_send_reply_as_document(&rendered_reply) {
-                                match send_markdown_reply_document(
-                                    client,
-                                    cfg,
-                                    chat_id,
-                                    reply,
-                                    request.progress_message_id,
-                                ) {
-                                    Ok(()) => Ok(()),
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            "failed to send long reply as markdown document, falling back to text: {err:#}"
-                                        );
-                                        send_or_edit_text(
-                                            client,
-                                            cfg,
-                                            chat_id,
-                                            &rendered_reply,
-                                            request.progress_message_id,
-                                        )
-                                    }
-                                }
-                            } else {
-                                send_or_edit_text(
-                                    client,
-                                    cfg,
-                                    chat_id,
-                                    &rendered_reply,
-                                    request.progress_message_id,
-                                )
-                            };
+                            let send_result =
+                                deliver_text(store, cfg, client, request, state, chat_id, reply);
                             match send_result {
-                                Ok(()) => {
+                                Ok(true) => {
                                     state.mark_telegram_op("telegram:text");
-                                    persist_scheduled_delivery_state(
-                                        store,
-                                        request.scheduled_task_id,
-                                        state,
-                                    )?;
+                                    persist_delivery_state(store, request.task_id, state)?;
                                 }
+                                Ok(false) => all_ok = false,
                                 Err(err) => {
                                     tracing::warn!(
-                                        "scheduled telegram text dispatch failed (will retry): {err:#}"
+                                        "task telegram text dispatch failed (will retry): {err:#}"
                                     );
                                     all_ok = false;
                                 }
                             }
                         } else {
                             tracing::warn!(
-                                "cannot dispatch scheduled telegram text output: no chat_id available"
+                                "cannot dispatch task telegram text output: no chat_id available"
                             );
                             state.mark_telegram_op("telegram:text");
-                            persist_scheduled_delivery_state(
-                                store,
-                                request.scheduled_task_id,
-                                state,
-                            )?;
+                            persist_delivery_state(store, request.task_id, state)?;
                         }
                     }
                 } else if request.progress_message_id.is_some()
@@ -150,36 +169,7 @@ pub(crate) fn dispatch_scheduled_output(
                         );
                     }
                     state.mark_telegram_op("telegram:text");
-                    persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
-                }
-            }
-            crate::markers::Effect::VoiceReply(voice_reply) if cfg.tts_cmd_template.is_some() => {
-                let voice_reply = voice_reply.trim();
-                if !voice_reply.is_empty() && !state.has_telegram_op("telegram:voice") {
-                    if let Some(chat_id) = chat_id {
-                        match send_voice_reply(client, cfg, chat_id, voice_reply) {
-                            Ok(()) => {
-                                state.mark_telegram_op("telegram:voice");
-                                persist_scheduled_delivery_state(
-                                    store,
-                                    request.scheduled_task_id,
-                                    state,
-                                )?;
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    "scheduled telegram voice dispatch failed (will retry): {err:#}"
-                                );
-                                all_ok = false;
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            "cannot dispatch scheduled telegram voice output: no chat_id available"
-                        );
-                        state.mark_telegram_op("telegram:voice");
-                        persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
-                    }
+                    persist_delivery_state(store, request.task_id, state)?;
                 }
             }
             crate::markers::Effect::SendPhoto(item) => {
@@ -200,26 +190,22 @@ pub(crate) fn dispatch_scheduled_output(
                     ) {
                         Ok(()) => {
                             state.mark_telegram_op(op_id);
-                            persist_scheduled_delivery_state(
-                                store,
-                                request.scheduled_task_id,
-                                state,
-                            )?;
+                            persist_delivery_state(store, request.task_id, state)?;
                         }
                         Err(err) => {
                             tracing::warn!(
-                                "scheduled telegram photo dispatch failed (will retry): {err:#}"
+                                "task telegram photo dispatch failed (will retry): {err:#}"
                             );
                             all_ok = false;
                         }
                     }
                 } else {
                     tracing::warn!(
-                        "cannot dispatch scheduled photo {}: no chat_id available",
+                        "cannot dispatch task photo {}: no chat_id available",
                         path.display()
                     );
                     state.mark_telegram_op(op_id);
-                    persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+                    persist_delivery_state(store, request.task_id, state)?;
                 }
             }
             crate::markers::Effect::SendDocument(item) => {
@@ -240,26 +226,22 @@ pub(crate) fn dispatch_scheduled_output(
                     ) {
                         Ok(()) => {
                             state.mark_telegram_op(op_id);
-                            persist_scheduled_delivery_state(
-                                store,
-                                request.scheduled_task_id,
-                                state,
-                            )?;
+                            persist_delivery_state(store, request.task_id, state)?;
                         }
                         Err(err) => {
                             tracing::warn!(
-                                "scheduled telegram document dispatch failed (will retry): {err:#}"
+                                "task telegram document dispatch failed (will retry): {err:#}"
                             );
                             all_ok = false;
                         }
                     }
                 } else {
                     tracing::warn!(
-                        "cannot dispatch scheduled document {}: no chat_id available",
+                        "cannot dispatch task document {}: no chat_id available",
                         path.display()
                     );
                     state.mark_telegram_op(op_id);
-                    persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+                    persist_delivery_state(store, request.task_id, state)?;
                 }
             }
             crate::markers::Effect::SendVideo(item) => {
@@ -280,26 +262,22 @@ pub(crate) fn dispatch_scheduled_output(
                     ) {
                         Ok(()) => {
                             state.mark_telegram_op(op_id);
-                            persist_scheduled_delivery_state(
-                                store,
-                                request.scheduled_task_id,
-                                state,
-                            )?;
+                            persist_delivery_state(store, request.task_id, state)?;
                         }
                         Err(err) => {
                             tracing::warn!(
-                                "scheduled telegram video dispatch failed (will retry): {err:#}"
+                                "task telegram video dispatch failed (will retry): {err:#}"
                             );
                             all_ok = false;
                         }
                     }
                 } else {
                     tracing::warn!(
-                        "cannot dispatch scheduled video {}: no chat_id available",
+                        "cannot dispatch task video {}: no chat_id available",
                         path.display()
                     );
                     state.mark_telegram_op(op_id);
-                    persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+                    persist_delivery_state(store, request.task_id, state)?;
                 }
             }
             _ => {}
@@ -319,7 +297,7 @@ pub(crate) fn dispatch_scheduled_output(
                 .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
         }
         state.mark_telegram_op("telegram:text");
-        persist_scheduled_delivery_state(store, request.scheduled_task_id, state)?;
+        persist_delivery_state(store, request.task_id, state)?;
     }
 
     Ok(all_ok)

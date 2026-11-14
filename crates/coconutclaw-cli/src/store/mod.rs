@@ -5,7 +5,6 @@ use std::fs;
 pub(crate) mod approvals;
 pub(crate) mod kv;
 pub(crate) mod migrations;
-pub(crate) mod scheduled_tasks;
 pub(crate) mod task_runs;
 pub(crate) mod turns;
 
@@ -17,10 +16,8 @@ pub(crate) struct TurnRecord {
     pub(crate) chat_id: String,
     pub(crate) input_type: String,
     pub(crate) user_text: String,
-    pub(crate) asr_text: String,
     pub(crate) provider_raw: String,
     pub(crate) telegram_reply: String,
-    pub(crate) voice_reply: String,
     pub(crate) status: String,
     pub(crate) update_id: Option<String>,
     pub(crate) duration_ms: Option<i64>,
@@ -29,38 +26,13 @@ pub(crate) struct TurnRecord {
     pub(crate) side_effects_applied: bool,
 }
 
-#[derive(Debug)]
-pub(crate) struct ScheduledTask {
-    pub(crate) id: i64,
-    pub(crate) ts: String,
-    pub(crate) source: String,
-    pub(crate) prompt: String,
-    pub(crate) schedule_time: String,
-    pub(crate) recurring: bool,
-    pub(crate) last_run_ts: Option<String>,
-    pub(crate) done: bool,
-    pub(crate) pending_output: Option<String>,
-    pub(crate) delivery_state: Option<String>,
-    pub(crate) origin_session: Option<String>,
-    pub(crate) delivery_target: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct StoredTurnOutput {
     pub(crate) id: i64,
     pub(crate) ts: String,
     pub(crate) provider_raw: String,
     pub(crate) telegram_reply: String,
-    pub(crate) voice_reply: String,
     pub(crate) status: String,
-    pub(crate) task_run_id: Option<i64>,
-    pub(crate) side_effects_applied: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScheduledTaskInsertResult {
-    Inserted,
-    Duplicate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

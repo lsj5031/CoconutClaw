@@ -5,22 +5,12 @@ fn text_input(channel: &str) -> TurnInput {
     TurnInput {
         input_type: InputType::Text,
         user_text: "hello".to_string(),
-        asr_text: String::new(),
         attachment_type: None,
         attachment_path: None,
         attachment_owned: false,
         supplemental_context: None,
         channel: channel.to_string(),
     }
-}
-
-#[test]
-fn scheduled_turn_uses_input_channel_for_context() {
-    let input = text_input("slack");
-    assert_eq!(
-        turn_context_channel(&TaskSource::Scheduled, &input),
-        "slack"
-    );
 }
 
 #[test]

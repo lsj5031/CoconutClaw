@@ -1,18 +1,13 @@
 use super::*;
 use crate::context::build_context;
-use crate::delivery::{DeliveryTarget, serialize_delivery_target};
 use crate::markers::{
     extract_error_summary, parse_markers, recover_unstructured_reply, should_retry_provider_failure,
 };
-use crate::recovery::pending::recover_scheduled_task_output_from_task_run;
 use crate::recovery::reconcile_pending_turn_side_effects;
 use crate::scheduler::SessionScheduler;
-use crate::scheduling::{run_due_scheduled_tasks, scheduled_task_context_channel};
 
 use crate::cancel::cancel_impl::cancel_signal_from_update;
-use crate::commands::nightly_reflection::nightly_reflection_marker;
 use crate::loops::webhook::{parse_webhook_action, process_webhook_line};
-use crate::store::ScheduledTaskInsertResult;
 use crate::store::TurnRecord;
 use crate::telegram::{
     build_telegram_client, dispatch_telegram_output, progress_status_text,
@@ -22,215 +17,14 @@ use crate::telegram::{
 };
 use crate::types::WebhookAction;
 use crate::types::{InputType, QuotedMessage, TurnInput};
-use crate::util::{scheduled_task_slot_at, scheduled_task_slot_now};
-use crate::webhook::webhook_public_endpoint;
 
-use chrono::{DateTime, Utc};
 use coconutclaw_config::{RuntimeConfig, TelegramParseMode};
 use serde_json::Value;
 
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::JoinHandle;
-use std::time::Duration;
 
 fn test_config() -> RuntimeConfig {
     RuntimeConfig::test_config()
-}
-
-static SLACK_API_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-fn slack_api_env_lock() -> &'static Mutex<()> {
-    SLACK_API_ENV_LOCK.get_or_init(|| Mutex::new(()))
-}
-
-fn read_http_request(stream: &mut std::net::TcpStream) -> String {
-    let mut data = Vec::new();
-    let mut buf = [0_u8; 8192];
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) => break,
-            Ok(read) => {
-                data.extend_from_slice(&buf[..read]);
-                if http_request_complete(&data) {
-                    break;
-                }
-            }
-            Err(err)
-                if err.kind() == std::io::ErrorKind::WouldBlock
-                    || err.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                break;
-            }
-            Err(_) => break,
-        }
-    }
-    String::from_utf8_lossy(&data).to_string()
-}
-
-fn http_request_complete(data: &[u8]) -> bool {
-    let Some(header_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return false;
-    };
-    let headers = String::from_utf8_lossy(&data[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
-    data.len() >= header_end + 4 + content_length
-}
-
-struct FakeTelegramServer {
-    base_url: String,
-    requests: Arc<Mutex<Vec<String>>>,
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl FakeTelegramServer {
-    fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake telegram server");
-        listener
-            .set_nonblocking(true)
-            .expect("set nonblocking listener");
-        let addr = listener.local_addr().expect("listener addr");
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let requests_clone = Arc::clone(&requests);
-        let stop_clone = Arc::clone(&stop);
-        let handle = std::thread::spawn(move || {
-            while !stop_clone.load(Ordering::SeqCst) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-                        requests_clone
-                            .lock()
-                            .expect("requests lock")
-                            .push(read_http_request(&mut stream));
-                        let body =
-                            r#"{"ok":true,"result":{"message_id":123,"message_thread_id":0}}"#;
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                        let _ = stream.flush();
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        Self {
-            base_url: format!("http://{addr}/bot123:token"),
-            requests,
-            stop,
-            handle: Some(handle),
-        }
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().expect("requests lock").clone()
-    }
-}
-
-impl Drop for FakeTelegramServer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        let _ = std::net::TcpStream::connect(
-            self.base_url
-                .trim_start_matches("http://")
-                .split('/')
-                .next()
-                .unwrap_or_default(),
-        );
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-struct FakeSlackServer {
-    base_url: String,
-    requests: Arc<Mutex<Vec<String>>>,
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl FakeSlackServer {
-    fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake slack server");
-        listener
-            .set_nonblocking(true)
-            .expect("set nonblocking listener");
-        let addr = listener.local_addr().expect("listener addr");
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let requests_clone = Arc::clone(&requests);
-        let stop_clone = Arc::clone(&stop);
-        let handle = std::thread::spawn(move || {
-            while !stop_clone.load(Ordering::SeqCst) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-                        requests_clone
-                            .lock()
-                            .expect("requests lock")
-                            .push(read_http_request(&mut stream));
-                        let body = r#"{"ok":true,"ts":"171.9","message":{"ts":"171.9"}}"#;
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                        let _ = stream.flush();
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        Self {
-            base_url: format!("http://{addr}"),
-            requests,
-            stop,
-            handle: Some(handle),
-        }
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().expect("requests lock").clone()
-    }
-}
-
-impl Drop for FakeSlackServer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        let _ = std::net::TcpStream::connect(
-            self.base_url
-                .trim_start_matches("http://")
-                .split('/')
-                .next()
-                .unwrap_or_default(),
-        );
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
 }
 
 #[test]
@@ -243,464 +37,8 @@ fn fresh_command_returns_confirmation_output() {
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
     let output = outcome.output.unwrap_or_default();
 
-    assert_eq!(outcome.output_channel.as_deref(), Some("telegram"));
     assert!(output.contains("TELEGRAM_REPLY:"));
     assert!(output.contains("Context cleared"));
-}
-
-#[test]
-fn slack_fresh_command_routes_output_to_slack_channel() {
-    let cfg = test_config();
-    let mut store = Store::open(&cfg).expect("store");
-    let payload = r#"{"type":"slash_commands","command":"/fresh","channel_id":"C123"}"#;
-
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let outcome = process_webhook_line(&cfg, &mut store, &scheduler, payload).expect("process");
-    let output = outcome.output.unwrap_or_default();
-
-    assert_eq!(outcome.chat_id.as_deref(), Some("C123"));
-    assert_eq!(outcome.output_channel.as_deref(), Some("slack"));
-    assert!(output.contains("TELEGRAM_REPLY:"));
-    assert!(output.contains("Context cleared"));
-}
-
-#[test]
-fn schedules_command_lists_active_tasks() {
-    let mut cfg = test_config();
-    cfg.timezone = "Pacific/Auckland".to_string();
-    let mut store = Store::open(&cfg).expect("store");
-    store
-        .insert_scheduled_task(
-            "2026-04-21T04:00:00+0000",
-            "agent",
-            "Check GitHub Trending and summarize the top 5 repos.",
-            "16:30",
-            true,
-        )
-        .expect("insert schedule");
-
-    let update = r#"{"update_id":101,"message":{"chat":{"id":"321"},"text":"/schedules"}}"#;
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
-    let output = outcome.output.unwrap_or_default();
-
-    assert_eq!(outcome.output_channel.as_deref(), Some("telegram"));
-    assert!(output.contains("TELEGRAM_REPLY: Active scheduled tasks (Pacific/Auckland)"));
-    assert!(output.contains("1. Daily at 16:30"));
-    assert!(output.contains("Check GitHub Trending"));
-}
-
-#[test]
-fn due_scheduled_task_with_active_run_is_not_enqueued_twice() {
-    let cfg = test_config();
-    let store = Store::open(&cfg).expect("store");
-    store
-        .insert_scheduled_task(
-            "2026-04-23T20:00:00+1200",
-            "agent",
-            "Check interest.co.nz and summarize the top article.",
-            "09:00",
-            true,
-        )
-        .expect("insert schedule");
-    store
-        .insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: "scheduled:task-1".to_string(),
-            channel: "scheduled".to_string(),
-            source_chat_id: Some("321".to_string()),
-            source_user_id: None,
-            update_id: None,
-            prompt: "Check interest.co.nz and summarize the top article.".to_string(),
-            created_at: "2026-04-24T09:00:01+1200".to_string(),
-            progress_message_id: None,
-            scheduled_task_id: Some(1),
-        })
-        .expect("insert active scheduled task run");
-
-    let mut store = Store::open(&cfg).expect("store reopen");
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let client = build_telegram_client(&cfg).expect("telegram client");
-
-    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
-        .expect("run due scheduled tasks");
-
-    assert_eq!(
-        store
-            .list_active_task_runs_for_session("scheduled:task-1")
-            .expect("list active task runs")
-            .len(),
-        1
-    );
-}
-
-#[test]
-fn due_scheduled_task_retry_with_active_run_is_not_dispatched_twice() {
-    let cfg = test_config();
-    let store = Store::open(&cfg).expect("store");
-    store
-        .insert_scheduled_task(
-            "2026-04-23T20:00:00+1200",
-            "agent",
-            "Check backups.",
-            "09:00",
-            true,
-        )
-        .expect("insert schedule");
-    store
-        .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
-        .expect("set pending output");
-    store
-        .insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: "scheduled:task-1".to_string(),
-            channel: "scheduled".to_string(),
-            source_chat_id: Some("321".to_string()),
-            source_user_id: None,
-            update_id: None,
-            prompt: "Check backups.".to_string(),
-            created_at: "2026-04-24T09:00:01+1200".to_string(),
-            progress_message_id: None,
-            scheduled_task_id: Some(1),
-        })
-        .expect("insert active scheduled task run");
-
-    let mut store = Store::open(&cfg).expect("store reopen");
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let client = build_telegram_client(&cfg).expect("telegram client");
-
-    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
-        .expect("run due scheduled tasks");
-
-    let schedules = store
-        .list_active_scheduled_tasks()
-        .expect("list active schedules");
-    assert_eq!(schedules.len(), 1);
-    assert_eq!(
-        schedules[0].pending_output.as_deref(),
-        Some("TELEGRAM_REPLY: Backup complete")
-    );
-}
-
-#[test]
-fn scheduled_task_retry_uses_persisted_telegram_target() {
-    let server = FakeTelegramServer::start();
-    let mut cfg = test_config();
-    cfg.scheduled_tasks_enabled = true;
-    cfg.telegram_api_base = Some(server.base_url.clone());
-    cfg.telegram_chat_id = Some("321".to_string());
-    let (current_hhmm, _) = scheduled_task_slot_now(&cfg.timezone);
-
-    let store = Store::open(&cfg).expect("store");
-    let delivery_target = DeliveryTarget::Telegram {
-        chat_id: "999".to_string(),
-    };
-    store
-        .insert_scheduled_task_with_target(
-            "2026-04-23T20:00:00+1200",
-            "agent",
-            "Check backups.",
-            &current_hhmm,
-            true,
-            Some("telegram:999"),
-            Some(&serialize_delivery_target(&delivery_target)),
-        )
-        .expect("insert schedule");
-    store
-        .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
-        .expect("set pending output");
-
-    let mut store = Store::open(&cfg).expect("store reopen");
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let client = build_telegram_client(&cfg).expect("telegram client");
-
-    run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
-        .expect("run due scheduled tasks");
-
-    let requests = server.requests();
-    assert!(
-        requests.iter().any(|request| {
-            request.contains("chat_id=999")
-                && !request.contains("chat_id=321")
-                && (request.contains("Backup+complete") || request.contains("Backup complete"))
-        }),
-        "expected scheduled retry to use persisted telegram chat, got {requests:?}"
-    );
-    let schedules = store
-        .list_active_scheduled_tasks()
-        .expect("list active schedules");
-    assert_eq!(schedules.len(), 1);
-    assert!(schedules[0].last_run_ts.is_some());
-    assert!(schedules[0].pending_output.is_none());
-}
-
-#[test]
-fn scheduled_task_retry_uses_persisted_slack_target() {
-    let _guard = slack_api_env_lock().lock().expect("slack env lock");
-    let server = FakeSlackServer::start();
-    unsafe {
-        std::env::set_var("COCONUTCLAW_SLACK_API_BASE", &server.base_url);
-    }
-
-    let mut cfg = test_config();
-    cfg.scheduled_tasks_enabled = true;
-    cfg.slack_bot_token = Some("xoxb-test".to_string());
-    cfg.slack_channel_id = Some("CFALLBACK".to_string());
-    let (current_hhmm, _) = scheduled_task_slot_now(&cfg.timezone);
-
-    let outcome: Result<()> = {
-        let store = Store::open(&cfg).expect("store");
-        let delivery_target = DeliveryTarget::Slack {
-            channel_id: "C123".to_string(),
-            thread_ts: Some("171.5".to_string()),
-        };
-        store
-            .insert_scheduled_task_with_target(
-                "2026-04-23T20:00:00+1200",
-                "agent",
-                "Check backups.",
-                &current_hhmm,
-                true,
-                Some("slack:C123#171.5"),
-                Some(&serialize_delivery_target(&delivery_target)),
-            )
-            .expect("insert schedule");
-        store
-            .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
-            .expect("set pending output");
-
-        let mut store = Store::open(&cfg).expect("store reopen");
-        let scheduler = SessionScheduler::new(cfg.clone(), None);
-        let client = build_telegram_client(&cfg).expect("telegram client");
-
-        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
-            .expect("run due scheduled tasks");
-
-        let requests = server.requests();
-        assert!(
-            requests.iter().any(|request| {
-                request.contains("POST /chat.postMessage")
-                    && request.contains("channel=C123")
-                    && request.contains("thread_ts=171.5")
-                    && !request.contains("channel=CFALLBACK")
-            }),
-            "expected scheduled retry to use persisted slack thread, got {requests:?}"
-        );
-        let schedules = store
-            .list_active_scheduled_tasks()
-            .expect("list active schedules");
-        assert_eq!(schedules.len(), 1);
-        assert!(schedules[0].last_run_ts.is_some());
-        assert!(schedules[0].pending_output.is_none());
-        Ok(())
-    };
-
-    unsafe {
-        std::env::remove_var("COCONUTCLAW_SLACK_API_BASE");
-    }
-    outcome.expect("slack retry assertions");
-}
-
-#[test]
-fn scheduled_task_context_channel_prefers_resolved_delivery_target() {
-    let task = crate::store::ScheduledTask {
-        id: 1,
-        ts: "2026-04-23T20:00:00+1200".to_string(),
-        source: "agent".to_string(),
-        prompt: "Check backups.".to_string(),
-        schedule_time: "09:00".to_string(),
-        recurring: true,
-        last_run_ts: None,
-        done: false,
-        pending_output: None,
-        delivery_state: None,
-        origin_session: Some("telegram:321".to_string()),
-        delivery_target: None,
-    };
-    let resolved_target = DeliveryTarget::Slack {
-        channel_id: "C123".to_string(),
-        thread_ts: Some("171.5".to_string()),
-    };
-
-    assert_eq!(
-        scheduled_task_context_channel(&task, Some(&resolved_target), None),
-        "slack"
-    );
-}
-
-#[test]
-fn pending_turn_side_effect_recovery_preserves_slack_schedule_routing() {
-    let cfg = test_config();
-    let mut store = Store::open(&cfg).expect("store");
-    let task_run_id = store
-        .insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: "slack:C123#171.5".to_string(),
-            channel: "slack".to_string(),
-            source_chat_id: Some("C123".to_string()),
-            source_user_id: Some("U123".to_string()),
-            update_id: Some("evt-1".to_string()),
-            prompt: "schedule it".to_string(),
-            created_at: "2026-04-24T09:00:01+1200".to_string(),
-            progress_message_id: None,
-            scheduled_task_id: None,
-        })
-        .expect("insert task run");
-    store
-        .insert_turn(&TurnRecord {
-            ts: "2026-04-24T09:00:03+1200".to_string(),
-            chat_id: "slack:C123#171.5".to_string(),
-            input_type: "text".to_string(),
-            user_text: "schedule it".to_string(),
-            asr_text: String::new(),
-            provider_raw: "TELEGRAM_REPLY: ok\nSCHEDULE_PROMPT: 09:30|Check backups\n".to_string(),
-            telegram_reply: "ok".to_string(),
-            voice_reply: String::new(),
-            status: "ok".to_string(),
-            update_id: Some("evt-1".to_string()),
-            duration_ms: Some(42),
-            channel: "slack".to_string(),
-            task_run_id: Some(task_run_id),
-            side_effects_applied: false,
-        })
-        .expect("insert pending turn");
-
-    assert_eq!(
-        reconcile_pending_turn_side_effects(&cfg, &mut store).expect("reconcile turns"),
-        1
-    );
-
-    let schedules = store
-        .list_active_scheduled_tasks()
-        .expect("list active schedules");
-    assert_eq!(schedules.len(), 1);
-    assert_eq!(
-        schedules[0].origin_session.as_deref(),
-        Some("slack:C123#171.5")
-    );
-    assert_eq!(
-        schedules[0].delivery_target.as_deref(),
-        Some(r#"{"channel_id":"C123","kind":"slack","thread_ts":"171.5"}"#)
-    );
-}
-
-#[test]
-fn scheduled_task_duplicates_are_scoped_by_origin_and_target() {
-    let cfg = test_config();
-    let store = Store::open(&cfg).expect("store");
-    let telegram_999 = serialize_delivery_target(&DeliveryTarget::Telegram {
-        chat_id: "999".to_string(),
-    });
-    let telegram_321 = serialize_delivery_target(&DeliveryTarget::Telegram {
-        chat_id: "321".to_string(),
-    });
-
-    assert_eq!(
-        store
-            .insert_scheduled_task_with_target(
-                "2026-04-23T20:00:00+1200",
-                "agent",
-                "Check backups.",
-                "09:00",
-                true,
-                Some("telegram:999"),
-                Some(&telegram_999),
-            )
-            .expect("insert first"),
-        ScheduledTaskInsertResult::Inserted
-    );
-    assert_eq!(
-        store
-            .insert_scheduled_task_with_target(
-                "2026-04-23T20:00:01+1200",
-                "agent",
-                "Check backups.",
-                "09:00",
-                true,
-                Some("telegram:321"),
-                Some(&telegram_999),
-            )
-            .expect("insert second session"),
-        ScheduledTaskInsertResult::Inserted
-    );
-    assert_eq!(
-        store
-            .insert_scheduled_task_with_target(
-                "2026-04-23T20:00:02+1200",
-                "agent",
-                "Check backups.",
-                "09:00",
-                true,
-                Some("telegram:999"),
-                Some(&telegram_321),
-            )
-            .expect("insert second target"),
-        ScheduledTaskInsertResult::Inserted
-    );
-    assert_eq!(
-        store
-            .insert_scheduled_task_with_target(
-                "2026-04-23T20:00:03+1200",
-                "agent",
-                "Check backups.",
-                "09:00",
-                true,
-                Some("telegram:999"),
-                Some(&telegram_999),
-            )
-            .expect("insert duplicate"),
-        ScheduledTaskInsertResult::Duplicate
-    );
-}
-
-#[test]
-fn completed_scheduled_task_run_is_reconciled_without_redelivery() {
-    let cfg = test_config();
-    let store = Store::open(&cfg).expect("store");
-    store
-        .insert_scheduled_task(
-            "2026-04-23T20:00:00+1200",
-            "agent",
-            "Check backups.",
-            "09:00",
-            false,
-        )
-        .expect("insert schedule");
-    store
-        .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
-        .expect("set pending output");
-    let task_run_id = store
-        .insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: "scheduled:task-1".to_string(),
-            channel: "scheduled".to_string(),
-            source_chat_id: Some("321".to_string()),
-            source_user_id: None,
-            update_id: None,
-            prompt: "Check backups.".to_string(),
-            created_at: "2026-04-24T09:00:01+1200".to_string(),
-            progress_message_id: None,
-            scheduled_task_id: Some(1),
-        })
-        .expect("insert scheduled task run");
-    store
-        .finish_task_run(
-            task_run_id,
-            crate::store::TaskRunStatus::Completed,
-            "2026-04-24T09:00:05+1200",
-            None,
-            Some("task completed"),
-        )
-        .expect("finish task run");
-
-    assert_eq!(
-        store
-            .reconcile_scheduled_tasks_from_completed_runs("2026-04-24T09:00:06+1200")
-            .expect("reconcile scheduled tasks"),
-        1
-    );
-    assert!(
-        store
-            .list_active_scheduled_tasks()
-            .expect("list active scheduled tasks")
-            .is_empty()
-    );
 }
 
 #[test]
@@ -724,12 +62,10 @@ fn pending_turn_side_effects_are_reconciled_into_managed_files() {
             chat_id: "321".to_string(),
             input_type: "text".to_string(),
             user_text: "remember and track this".to_string(),
-            asr_text: String::new(),
             provider_raw:
                 "TELEGRAM_REPLY: ok\nMEMORY_APPEND: remembered fact\nTASK_APPEND: follow up later\n"
                     .to_string(),
             telegram_reply: "ok".to_string(),
-            voice_reply: String::new(),
             status: "ok".to_string(),
             update_id: Some("900".to_string()),
             duration_ms: Some(42),
@@ -770,334 +106,6 @@ fn pending_turn_side_effects_are_reconciled_into_managed_files() {
 }
 
 #[test]
-fn scheduled_task_output_is_recovered_from_persisted_turn_without_provider_rerun() {
-    let cfg = test_config();
-    let mut store = Store::open(&cfg).expect("store");
-    store
-        .insert_scheduled_task(
-            "2026-04-23T20:00:00+1200",
-            "agent",
-            "Check backups.",
-            "09:00",
-            true,
-        )
-        .expect("insert schedule");
-    let task_run_id = store
-        .insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: "scheduled:task-1".to_string(),
-            channel: "scheduled".to_string(),
-            source_chat_id: Some("321".to_string()),
-            source_user_id: None,
-            update_id: None,
-            prompt: "Check backups.".to_string(),
-            created_at: "2026-04-24T09:00:01+1200".to_string(),
-            progress_message_id: Some("77".to_string()),
-            scheduled_task_id: Some(1),
-        })
-        .expect("insert task run");
-    store
-        .insert_turn(&TurnRecord {
-            ts: "2026-04-24T09:00:03+1200".to_string(),
-            chat_id: "scheduled:task-1".to_string(),
-            input_type: "text".to_string(),
-            user_text: "Check backups.".to_string(),
-            asr_text: String::new(),
-            provider_raw: "TELEGRAM_REPLY: Backup complete\nSEND_DOCUMENT: /tmp/report.txt\n"
-                .to_string(),
-            telegram_reply: "Backup complete".to_string(),
-            voice_reply: String::new(),
-            status: "ok".to_string(),
-            update_id: None,
-            duration_ms: Some(42),
-            channel: "scheduled".to_string(),
-            task_run_id: Some(task_run_id),
-            side_effects_applied: true,
-        })
-        .expect("insert turn");
-
-    let recovered = recover_scheduled_task_output_from_task_run(&cfg, &mut store, 1, task_run_id)
-        .expect("recover")
-        .expect("output recovered");
-
-    assert!(recovered.contains("TELEGRAM_REPLY: Backup complete"));
-    assert!(recovered.contains("SEND_DOCUMENT: /tmp/report.txt"));
-    let schedules = store
-        .list_active_scheduled_tasks()
-        .expect("list active schedules");
-    assert_eq!(
-        schedules[0].pending_output.as_deref(),
-        Some(recovered.as_str())
-    );
-    assert_eq!(schedules[0].delivery_state, None);
-}
-
-#[test]
-fn scheduled_task_recovery_replays_nested_schedules_with_original_routing() {
-    let cfg = test_config();
-    let mut store = Store::open(&cfg).expect("store");
-    let parent_target = serialize_delivery_target(&DeliveryTarget::Slack {
-        channel_id: "C123".to_string(),
-        thread_ts: Some("171.5".to_string()),
-    });
-    store
-        .insert_scheduled_task_with_target(
-            "2026-04-23T20:00:00+1200",
-            "agent",
-            "Check backups.",
-            "09:00",
-            true,
-            Some("slack:C123#171.5"),
-            Some(&parent_target),
-        )
-        .expect("insert parent schedule");
-    let task_run_id = store
-        .insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: "scheduled:task-1".to_string(),
-            channel: "scheduled".to_string(),
-            source_chat_id: Some("C123".to_string()),
-            source_user_id: None,
-            update_id: None,
-            prompt: "Check backups.".to_string(),
-            created_at: "2026-04-24T09:00:01+1200".to_string(),
-            progress_message_id: Some("77".to_string()),
-            scheduled_task_id: Some(1),
-        })
-        .expect("insert task run");
-    store
-        .insert_turn(&TurnRecord {
-            ts: "2026-04-24T09:00:03+1200".to_string(),
-            chat_id: "scheduled:task-1".to_string(),
-            input_type: "text".to_string(),
-            user_text: "Check backups.".to_string(),
-            asr_text: String::new(),
-            provider_raw:
-                "TELEGRAM_REPLY: Backup complete\nSCHEDULE_PROMPT: 10:30|Follow up tomorrow\n"
-                    .to_string(),
-            telegram_reply: "Backup complete".to_string(),
-            voice_reply: String::new(),
-            status: "ok".to_string(),
-            update_id: None,
-            duration_ms: Some(42),
-            channel: "scheduled".to_string(),
-            task_run_id: Some(task_run_id),
-            side_effects_applied: false,
-        })
-        .expect("insert turn");
-
-    recover_scheduled_task_output_from_task_run(&cfg, &mut store, 1, task_run_id)
-        .expect("recover")
-        .expect("output recovered");
-
-    let schedules = store
-        .list_active_scheduled_tasks()
-        .expect("list active schedules");
-    assert_eq!(schedules.len(), 2);
-    let nested = schedules
-        .iter()
-        .find(|task| task.id != 1)
-        .expect("nested schedule");
-    assert_eq!(nested.origin_session.as_deref(), Some("slack:C123#171.5"));
-    assert_eq!(
-        nested.delivery_target.as_deref(),
-        Some(parent_target.as_str())
-    );
-}
-
-#[test]
-fn legacy_scheduled_task_retry_uses_inferred_slack_target_from_last_run() {
-    let _guard = slack_api_env_lock().lock().expect("slack env lock");
-    let server = FakeSlackServer::start();
-    unsafe {
-        std::env::set_var("COCONUTCLAW_SLACK_API_BASE", &server.base_url);
-    }
-
-    let mut cfg = test_config();
-    cfg.scheduled_tasks_enabled = true;
-    cfg.slack_bot_token = Some("xoxb-test".to_string());
-    cfg.slack_channel_id = Some("CFALLBACK".to_string());
-    let (current_hhmm, _) = scheduled_task_slot_now(&cfg.timezone);
-
-    let outcome: Result<()> = {
-        let store = Store::open(&cfg).expect("store");
-        store
-            .insert_scheduled_task(
-                "2026-04-23T20:00:00+1200",
-                "agent",
-                "Check backups.",
-                &current_hhmm,
-                true,
-            )
-            .expect("insert legacy schedule");
-        store
-            .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
-            .expect("set pending output");
-        store
-            .insert_task_run(crate::store::InsertTaskRunParams {
-                session_id: "slack:C123#171.5".to_string(),
-                channel: "scheduled".to_string(),
-                source_chat_id: Some("C123".to_string()),
-                source_user_id: None,
-                update_id: None,
-                prompt: "Check backups.".to_string(),
-                created_at: "2026-04-24T09:00:01+1200".to_string(),
-                progress_message_id: None,
-                scheduled_task_id: Some(1),
-            })
-            .expect("insert legacy task run");
-
-        let mut store = Store::open(&cfg).expect("store reopen");
-        let scheduler = SessionScheduler::new(cfg.clone(), None);
-        let client = build_telegram_client(&cfg).expect("telegram client");
-
-        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
-            .expect("run due scheduled tasks");
-
-        let requests = server.requests();
-        assert!(
-            requests.iter().any(|request| {
-                request.contains("POST /chat.postMessage")
-                    && request.contains("channel=C123")
-                    && request.contains("thread_ts=171.5")
-            }),
-            "expected inferred slack retry target, got {requests:?}"
-        );
-        Ok(())
-    };
-
-    unsafe {
-        std::env::remove_var("COCONUTCLAW_SLACK_API_BASE");
-    }
-    outcome.expect("legacy slack fallback assertions");
-}
-
-#[test]
-fn legacy_scheduled_task_uses_unique_configured_slack_target_when_no_metadata_remains() {
-    let _guard = slack_api_env_lock().lock().expect("slack env lock");
-    let server = FakeSlackServer::start();
-    unsafe {
-        std::env::set_var("COCONUTCLAW_SLACK_API_BASE", &server.base_url);
-    }
-
-    let mut cfg = test_config();
-    cfg.scheduled_tasks_enabled = true;
-    cfg.telegram_chat_id = None;
-    cfg.telegram_chat_ids.clear();
-    cfg.slack_bot_token = Some("xoxb-test".to_string());
-    cfg.slack_channel_id = Some("C123".to_string());
-    let (current_hhmm, _) = scheduled_task_slot_now(&cfg.timezone);
-
-    let outcome: Result<()> = {
-        let store = Store::open(&cfg).expect("store");
-        store
-            .insert_scheduled_task(
-                "2026-04-23T20:00:00+1200",
-                "agent",
-                "Check backups.",
-                &current_hhmm,
-                true,
-            )
-            .expect("insert legacy schedule");
-        store
-            .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
-            .expect("set pending output");
-
-        let mut store = Store::open(&cfg).expect("store reopen");
-        let scheduler = SessionScheduler::new(cfg.clone(), None);
-        let client = build_telegram_client(&cfg).expect("telegram client");
-
-        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
-            .expect("run due scheduled tasks");
-
-        let requests = server.requests();
-        assert!(
-            requests.iter().any(|request| {
-                request.contains("POST /chat.postMessage") && request.contains("channel=C123")
-            }),
-            "expected unique slack config fallback, got {requests:?}"
-        );
-        let task = store
-            .get_scheduled_task(1)
-            .expect("load task")
-            .expect("task exists");
-        assert_eq!(
-            task.delivery_target.as_deref(),
-            Some(r#"{"channel_id":"C123","kind":"slack","thread_ts":null}"#)
-        );
-        Ok(())
-    };
-
-    unsafe {
-        std::env::remove_var("COCONUTCLAW_SLACK_API_BASE");
-    }
-    outcome.expect("unique slack config fallback assertions");
-}
-
-#[test]
-fn legacy_scheduled_task_with_ambiguous_config_is_left_pending() {
-    let _guard = slack_api_env_lock().lock().expect("slack env lock");
-    let slack_server = FakeSlackServer::start();
-    let telegram_server = FakeTelegramServer::start();
-    unsafe {
-        std::env::set_var("COCONUTCLAW_SLACK_API_BASE", &slack_server.base_url);
-    }
-
-    let mut cfg = test_config();
-    cfg.scheduled_tasks_enabled = true;
-    cfg.telegram_api_base = Some(telegram_server.base_url.clone());
-    cfg.telegram_chat_id = Some("321".to_string());
-    cfg.slack_bot_token = Some("xoxb-test".to_string());
-    cfg.slack_channel_id = Some("C123".to_string());
-    let (current_hhmm, _) = scheduled_task_slot_now(&cfg.timezone);
-
-    let outcome: Result<()> = {
-        let store = Store::open(&cfg).expect("store");
-        store
-            .insert_scheduled_task(
-                "2026-04-23T20:00:00+1200",
-                "agent",
-                "Check backups.",
-                &current_hhmm,
-                true,
-            )
-            .expect("insert ambiguous legacy schedule");
-        store
-            .set_scheduled_task_pending_output(1, "TELEGRAM_REPLY: Backup complete")
-            .expect("set pending output");
-
-        let mut store = Store::open(&cfg).expect("store reopen");
-        let scheduler = SessionScheduler::new(cfg.clone(), None);
-        let client = build_telegram_client(&cfg).expect("telegram client");
-
-        run_due_scheduled_tasks(&cfg, &mut store, &scheduler, Some(&client))
-            .expect("run due scheduled tasks");
-
-        assert!(
-            slack_server.requests().is_empty(),
-            "ambiguous legacy task should not be delivered to slack"
-        );
-        assert!(
-            telegram_server.requests().is_empty(),
-            "ambiguous legacy task should not be delivered to telegram"
-        );
-        let task = store
-            .get_scheduled_task(1)
-            .expect("load task")
-            .expect("task exists");
-        assert_eq!(
-            task.pending_output.as_deref(),
-            Some("TELEGRAM_REPLY: Backup complete")
-        );
-        assert!(task.delivery_target.is_none());
-        Ok(())
-    };
-
-    unsafe {
-        std::env::remove_var("COCONUTCLAW_SLACK_API_BASE");
-    }
-    outcome.expect("ambiguous legacy routing assertions");
-}
-
-#[test]
 fn dedup_replays_previous_output_from_store() {
     let cfg = test_config();
     let mut store = Store::open(&cfg).expect("store");
@@ -1108,10 +116,8 @@ fn dedup_replays_previous_output_from_store() {
             chat_id: "321".to_string(),
             input_type: "text".to_string(),
             user_text: "hello".to_string(),
-            asr_text: String::new(),
             provider_raw: "TELEGRAM_REPLY: Old reply\nSEND_DOCUMENT: /tmp/file.txt\n".to_string(),
             telegram_reply: "Old reply".to_string(),
-            voice_reply: String::new(),
             status: "ok".to_string(),
             update_id: Some("42".to_string()),
             duration_ms: None,
@@ -1175,19 +181,6 @@ fn missing_media_marker_path_does_not_fail_dispatch() {
 
     let dispatch = dispatch_telegram_output(&client, &cfg, Some("321"), output, None);
     assert!(dispatch.is_ok());
-}
-
-#[test]
-fn voice_update_parses_as_voice_input_type() {
-    let cfg = test_config();
-    let update =
-        r#"{"update_id":200,"message":{"chat":{"id":"321"},"voice":{"file_id":"abc123"}}}"#;
-
-    let action = parse_webhook_action(&cfg, update).expect("parse");
-    let WebhookAction::Turn(turn) = action else {
-        panic!("expected turn action");
-    };
-    assert_eq!(turn.input.input_type, InputType::Voice);
 }
 
 #[test]
@@ -1288,21 +281,6 @@ fn tasks_command_hides_other_sessions() {
 }
 
 #[test]
-fn slack_targeted_cancel_requires_admin_role() {
-    let mut cfg = test_config();
-    cfg.slack_admin_user_ids = vec!["UADMIN".to_string()];
-    let mut store = Store::open(&cfg).expect("store");
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let payload = r#"{"type":"slash_commands","command":"/cancel","text":"99","channel_id":"C123","user_id":"UNAUTHORIZED"}"#;
-
-    let outcome = process_webhook_line(&cfg, &mut store, &scheduler, payload).expect("process");
-    let output = outcome.output.unwrap_or_default();
-
-    assert_eq!(outcome.output_channel.as_deref(), Some("slack"));
-    assert!(output.contains("Admin role required"));
-}
-
-#[test]
 fn telegram_update_from_unconfigured_chat_is_ignored() {
     let cfg = test_config();
     let mut store = Store::open(&cfg).expect("store");
@@ -1313,7 +291,6 @@ fn telegram_update_from_unconfigured_chat_is_ignored() {
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
 
     assert!(outcome.output.is_none());
-    assert!(outcome.output_channel.is_none());
     assert_eq!(
         store.kv_get("last_ignored_reason").expect("ignored reason"),
         Some("chat_id_mismatch actual=999 configured=321".to_string())
@@ -1384,87 +361,6 @@ fn telegram_targeted_cancel_cannot_cross_sessions() {
 
     assert!(output.contains("not active for this chat"));
     assert_eq!(task.status, "queued");
-}
-
-#[test]
-fn slack_approval_action_denies_non_admin_actor() {
-    let mut cfg = test_config();
-    cfg.slack_admin_user_ids = vec!["UADMIN".to_string()];
-    let store = Store::open(&cfg).expect("store");
-    let task_id = store
-        .insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: "slack:C123#171.5".to_string(),
-            channel: "slack".to_string(),
-            source_chat_id: Some("C123".to_string()),
-            source_user_id: Some("UREQUESTER".to_string()),
-            update_id: Some("evt-1".to_string()),
-            prompt: "deploy".to_string(),
-            created_at: "2026-04-22T10:00:00+0000".to_string(),
-            progress_message_id: None,
-            scheduled_task_id: None,
-        })
-        .expect("insert task run");
-    let approval_id = store
-        .create_approval(crate::store::CreateApprovalParams {
-            task_run_id: task_id,
-            session_id: "slack:C123#171.5".to_string(),
-            channel: "slack".to_string(),
-            source_user_id: Some("UREQUESTER".to_string()),
-            channel_id: Some("C123".to_string()),
-            thread_ts: Some("171.5".to_string()),
-            prompt_text: "deploy production".to_string(),
-            request_message_ts: Some("171.6".to_string()),
-            resume_payload: "{}".to_string(),
-            created_at: "2026-04-22T10:00:01+0000".to_string(),
-        })
-        .expect("create approval");
-    let mut store = Store::open(&cfg).expect("store reopen");
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let payload = format!(
-        r#"{{"type":"block_actions","user":{{"id":"UNAUTHORIZED"}},"channel":{{"id":"C123"}},"message":{{"thread_ts":"171.5"}},"actions":[{{"action_id":"approval_approve","value":"approval:{approval_id}:approve"}}]}}"#
-    );
-
-    let outcome = process_webhook_line(&cfg, &mut store, &scheduler, &payload).expect("process");
-    let output = outcome.output.unwrap_or_default();
-
-    assert!(output.contains("not authorized"));
-}
-
-#[test]
-fn slack_duplicate_inflight_event_is_not_enqueued_twice() {
-    let cfg = test_config();
-    let store = Store::open(&cfg).expect("store");
-    store
-        .insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: "slack:C123#171.5".to_string(),
-            channel: "slack".to_string(),
-            source_chat_id: Some("C123".to_string()),
-            source_user_id: Some("U123".to_string()),
-            update_id: Some("evt-42".to_string()),
-            prompt: "deploy".to_string(),
-            created_at: "2026-04-22T10:00:00+0000".to_string(),
-            progress_message_id: Some("171.6".to_string()),
-            scheduled_task_id: None,
-        })
-        .expect("insert active task");
-    let mut store = Store::open(&cfg).expect("store reopen");
-    let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let payload = r#"{"type":"event_callback","event_id":"evt-42","event":{"type":"message","channel":"C123","thread_ts":"171.5","user":"U123","text":"deploy"}} "#;
-
-    let outcome =
-        process_webhook_line(&cfg, &mut store, &scheduler, payload.trim()).expect("process");
-
-    assert!(outcome.output.is_none());
-    assert!(outcome.progress_message_id.is_none());
-    assert_eq!(
-        store
-            .list_active_task_runs()
-            .expect("list active tasks")
-            .iter()
-            .filter(|task| task.update_id.as_deref() == Some("evt-42"))
-            .count(),
-        1
-    );
 }
 
 #[test]
@@ -1539,7 +435,7 @@ fn store_task_and_approval_records_round_trip() {
 }
 
 #[test]
-fn stale_task_recovery_marks_runs_failed_and_approvals_expired() {
+fn stale_task_recovery_preserves_pending_approval() {
     let cfg = test_config();
     let store = Store::open(&cfg).expect("store");
     let task_id = store
@@ -1586,12 +482,9 @@ fn stale_task_recovery_marks_runs_failed_and_approvals_expired() {
         .expect("get approval")
         .expect("approval");
 
-    assert_eq!(task.status, "failed");
-    assert_eq!(
-        task.error_summary.as_deref(),
-        Some("runtime restarted before task completion")
-    );
-    assert_eq!(approval.status, "expired");
+    assert_eq!(task.status, "awaiting_approval");
+    assert_eq!(task.error_summary, None);
+    assert_eq!(approval.status, "pending");
 }
 
 #[test]
@@ -1611,22 +504,6 @@ fn cancel_signal_detects_message_and_callback_query() {
     assert_eq!(
         callback_signal.and_then(|signal| signal.callback_query_id),
         Some("cb1".to_string())
-    );
-}
-
-#[test]
-fn scheduled_task_slot_uses_configured_timezone() {
-    let now = DateTime::parse_from_rfc3339("2026-04-20T00:30:00Z")
-        .expect("timestamp")
-        .with_timezone(&Utc);
-
-    assert_eq!(
-        scheduled_task_slot_at(now, "Pacific/Auckland"),
-        ("12:30".to_string(), "2026-04-20".to_string())
-    );
-    assert_eq!(
-        scheduled_task_slot_at(now, "America/Los_Angeles"),
-        ("17:30".to_string(), "2026-04-19".to_string())
     );
 }
 
@@ -1665,7 +542,12 @@ fn parse_markers_stops_multiline_reply_at_next_marker() {
         "noise\nTELEGRAM_REPLY: first\nsecond\nVOICE_REPLY: spoken\nTASK_APPEND: todo item";
     let markers = parse_markers(payload);
     assert_eq!(markers.telegram_reply.as_deref(), Some("first\nsecond"));
-    assert_eq!(markers.voice_reply.as_deref(), Some("spoken"));
+    assert!(
+        markers
+            .to_effects()
+            .iter()
+            .all(|e| !e.payload().contains("spoken"))
+    );
     assert_eq!(markers.task_append, vec!["todo item".to_string()]);
 }
 
@@ -1854,7 +736,6 @@ fn context_requires_plain_text_when_parse_mode_off() {
     let input = TurnInput {
         input_type: InputType::Text,
         user_text: "hello".to_string(),
-        asr_text: String::new(),
         attachment_type: None,
         attachment_path: None,
         attachment_owned: false,
@@ -1886,7 +767,6 @@ fn context_allows_markdown_v2_when_parse_mode_enabled() {
     let input = TurnInput {
         input_type: InputType::Text,
         user_text: "hello".to_string(),
-        asr_text: String::new(),
         attachment_type: None,
         attachment_path: None,
         attachment_owned: false,
@@ -1920,10 +800,8 @@ fn context_recent_turns_are_scoped_to_chat_and_channel() {
             chat_id: "321".to_string(),
             input_type: "text".to_string(),
             user_text: "telegram hello".to_string(),
-            asr_text: String::new(),
             provider_raw: "TELEGRAM_REPLY: telegram reply\n".to_string(),
             telegram_reply: "telegram reply".to_string(),
-            voice_reply: String::new(),
             status: "ok".to_string(),
             update_id: Some("500".to_string()),
             duration_ms: None,
@@ -1938,10 +816,8 @@ fn context_recent_turns_are_scoped_to_chat_and_channel() {
             chat_id: "C123".to_string(),
             input_type: "text".to_string(),
             user_text: "slack hello".to_string(),
-            asr_text: String::new(),
             provider_raw: "TELEGRAM_REPLY: slack reply\n".to_string(),
             telegram_reply: "slack reply".to_string(),
-            voice_reply: String::new(),
             status: "ok".to_string(),
             update_id: Some("501".to_string()),
             duration_ms: None,
@@ -1954,7 +830,6 @@ fn context_recent_turns_are_scoped_to_chat_and_channel() {
     let input = TurnInput {
         input_type: InputType::Text,
         user_text: "next telegram message".to_string(),
-        asr_text: String::new(),
         attachment_type: None,
         attachment_path: None,
         attachment_owned: false,
@@ -1987,7 +862,6 @@ fn context_includes_supplemental_conversation_context() {
     let input = TurnInput {
         input_type: InputType::Text,
         user_text: "follow-up".to_string(),
-        asr_text: String::new(),
         attachment_type: None,
         attachment_path: None,
         attachment_owned: false,
@@ -2025,7 +899,6 @@ fn context_omits_quoted_reply_from_before_boundary() {
     let input = TurnInput {
         input_type: InputType::Text,
         user_text: "fresh question".to_string(),
-        asr_text: String::new(),
         attachment_type: None,
         attachment_path: None,
         attachment_owned: false,
@@ -2052,40 +925,9 @@ fn context_omits_quoted_reply_from_before_boundary() {
 }
 
 #[test]
-fn heartbeat_subcommand_is_recognized() {
-    let parsed = Cli::try_parse_from(["coconutclaw", "heartbeat"]);
-    assert!(parsed.is_ok());
-}
-
-#[test]
-fn nightly_reflection_subcommand_is_recognized() {
-    let parsed = Cli::try_parse_from(["coconutclaw", "nightly-reflection"]);
-    assert!(parsed.is_ok());
-}
-
-#[test]
 fn service_subcommand_is_recognized() {
     let parsed = Cli::try_parse_from(["coconutclaw", "service", "status"]);
     assert!(parsed.is_ok());
-}
-
-#[test]
-fn nightly_reflection_marker_format_is_stable() {
-    assert_eq!(
-        nightly_reflection_marker("2026-02-25"),
-        "<!-- nightly-reflection:2026-02-25 -->"
-    );
-}
-
-#[test]
-fn webhook_public_endpoint_joins_base_and_path() {
-    let cfg = RuntimeConfig::test_builder()
-        .webhook_public_url(Some("https://claw.example".to_string()))
-        .webhook_path("/telegram/webhook".to_string())
-        .build();
-
-    let endpoint = webhook_public_endpoint(&cfg).expect("endpoint");
-    assert_eq!(endpoint, "https://claw.example/telegram/webhook");
 }
 
 // ── format-aware split_text_chunks tests ──────────────────────────

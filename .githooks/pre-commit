@@ -10,11 +10,4 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 echo "pre-commit: cargo test"
 cargo test --workspace --all-targets --locked
 
-if command -v shellcheck &>/dev/null; then
-    echo "pre-commit: shellcheck"
-    shellcheck scripts/asr.sh scripts/tts.sh
-else
-    echo "pre-commit: shellcheck not found, skipping"
-fi
-
 echo "pre-commit: all checks passed"

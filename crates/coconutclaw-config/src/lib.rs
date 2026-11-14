@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, anyhow, bail};
-use dotenvy::from_path_iter;
 use fs2::FileExt;
 use std::collections::HashMap;
 use std::env;
@@ -9,48 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEST_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentProvider {
-    Codex,
-    Pi,
-    Claude,
-    OpenCode,
-    Antigravity,
-    Factory,
-}
-
-impl AgentProvider {
-    fn parse(raw: &str) -> Result<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "codex" => Ok(Self::Codex),
-            "pi" => Ok(Self::Pi),
-            "claude" => Ok(Self::Claude),
-            "opencode" => Ok(Self::OpenCode),
-            "antigravity" => Ok(Self::Antigravity),
-            "factory" => Ok(Self::Factory),
-            other => bail!(
-                "invalid AGENT_PROVIDER: {other} (expected codex, pi, claude, opencode, antigravity, or factory)"
-            ),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Pi => "pi",
-            Self::Claude => "claude",
-            Self::OpenCode => "opencode",
-            Self::Antigravity => "antigravity",
-            Self::Factory => "factory",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct CliOverrides {
-    pub instance: Option<String>,
     pub data_dir: Option<PathBuf>,
-    pub instance_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,100 +29,9 @@ impl Default for CodexConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct ClaudeConfig {
-    pub bin: String,
-    pub model: Option<String>,
-    pub reasoning_effort: Option<String>,
-}
-
-impl Default for ClaudeConfig {
-    fn default() -> Self {
-        Self {
-            bin: "claude".to_string(),
-            model: None,
-            reasoning_effort: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct OpenCodeConfig {
-    pub bin: String,
-    pub model: Option<String>,
-    pub reasoning_effort: Option<String>,
-    /// When `Some(true)`, pass `--dangerously-skip-permissions` to opencode.
-    /// When `None`, falls back to the global `exec_policy == "yolo"` check.
-    pub skip_permissions: Option<bool>,
-}
-
-impl Default for OpenCodeConfig {
-    fn default() -> Self {
-        Self {
-            bin: "opencode".to_string(),
-            model: None,
-            reasoning_effort: None,
-            skip_permissions: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AntigravityConfig {
-    pub bin: String,
-    pub model: Option<String>,
-    pub reasoning_effort: Option<String>,
-}
-
-impl Default for AntigravityConfig {
-    fn default() -> Self {
-        Self {
-            bin: "antigravity".to_string(),
-            model: None,
-            reasoning_effort: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FactoryConfig {
-    pub bin: String,
-    pub model: Option<String>,
-    pub reasoning_effort: Option<String>,
-}
-
-impl Default for FactoryConfig {
-    fn default() -> Self {
-        Self {
-            bin: "droid".to_string(),
-            model: None,
-            reasoning_effort: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PiConfig {
-    pub bin: String,
-    pub model: Option<String>,
-    pub reasoning_effort: Option<String>,
-    pub no_extensions: bool,
-}
-
-impl Default for PiConfig {
-    fn default() -> Self {
-        Self {
-            bin: "pi".to_string(),
-            model: None,
-            reasoning_effort: None,
-            no_extensions: false,
-        }
-    }
-}
-#[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub root_dir: PathBuf,
     pub data_dir: PathBuf,
-    pub instance_name: String,
     pub instance_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub tmp_dir: PathBuf,
@@ -178,48 +47,15 @@ pub struct RuntimeConfig {
     pub telegram_file_base: Option<String>,
     pub telegram_parse_mode: TelegramParseMode,
     pub telegram_parse_fallback: TelegramParseFallback,
-    pub slack_bot_token: Option<String>,
-    pub slack_user_token: Option<String>,
-    pub slack_app_token: Option<String>,
-    pub slack_channel_id: Option<String>,
-    pub slack_api_timeout_secs: u64,
-    pub slack_signing_secret: Option<String>,
-    pub slack_admin_user_ids: Vec<String>,
-    pub slack_format_mode: SlackFormatMode,
-    pub slack_format_fallback: SlackFormatFallback,
-    pub webhook_mode: bool,
-    pub webhook_bind: String,
-    pub webhook_public_url: Option<String>,
-    pub webhook_secret: Option<String>,
-    pub webhook_path: String,
     pub poll_interval_seconds: u64,
-    pub provider: AgentProvider,
     pub exec_policy: String,
-    pub asr_url: Option<String>,
-    pub asr_cmd_template: Option<String>,
-    pub asr_file_field: Option<String>,
-    pub asr_text_jq: Option<String>,
-    pub asr_preprocess: Option<String>,
-    pub asr_sample_rate: Option<String>,
-    pub tts_cmd_template: Option<String>,
-    pub voice_bitrate: Option<String>,
-    pub tts_max_chars: Option<String>,
-    pub nightly_reflection_file: PathBuf,
-    pub nightly_reflection_skip_agent: bool,
-    pub nightly_reflection_prompt: Option<String>,
     pub context_turns: u32,
     pub provider_max_retries: u32,
     pub progress_update_interval_secs: u64,
     pub telegram_api_timeout_secs: u64,
     pub telegram_api_retry_attempts: u32,
     pub provider_timeout_secs: u64,
-    pub scheduled_tasks_enabled: bool,
     pub codex: CodexConfig,
-    pub pi: PiConfig,
-    pub claude: ClaudeConfig,
-    pub opencode: OpenCodeConfig,
-    pub antigravity: AntigravityConfig,
-    pub factory: FactoryConfig,
     pub config_file_path: PathBuf,
 }
 
@@ -228,138 +64,11 @@ pub struct InstanceLock {
     pub path: PathBuf,
 }
 
-const DEFAULT_CONFIG_TOML: &str = r#"# CoconutClaw runtime config
-TELEGRAM_BOT_TOKEN = "replace_me"
-TELEGRAM_CHAT_ID = "replace_me"
-# TELEGRAM_CHAT_IDS = "123456789,987654321"
-TELEGRAM_PARSE_MODE = "off"
-TELEGRAM_PARSE_FALLBACK = "plain"
-
-TIMEZONE = "UTC"
-SQLITE_DB_PATH = "./state.db"
-LOG_DIR = "./LOGS"
-ALLOWLIST_PATH = "./config/allowlist.txt"
-POLL_INTERVAL_SECONDS = 2
-WEBHOOK_MODE = "off"
-WEBHOOK_BIND = "127.0.0.1:8787"
-WEBHOOK_PUBLIC_URL = ""
-WEBHOOK_SECRET = ""
-WEBHOOK_PATH = "/webhook"
-
-# Slack configuration (optional - uncomment to enable)
-# SLACK_BOT_TOKEN=
-# SLACK_USER_TOKEN=
-# SLACK_APP_TOKEN=
-# SLACK_CHANNEL_ID=
-# SLACK_SIGNING_SECRET=
-# SLACK_ADMIN_USER_IDS="U123,U456"
-# SLACK_API_TIMEOUT_SECS=30
-# SLACK_FORMAT_MODE=mrkdwn
-# SLACK_FORMAT_FALLBACK=plain
-
-AGENT_PROVIDER = "codex"
-EXEC_POLICY = "yolo"
-CODEX_BIN = "codex"
-PI_BIN = "pi"
-
-ASR_URL = ""
-ASR_CMD_TEMPLATE = ""
-TTS_CMD_TEMPLATE = ""
-VOICE_BITRATE = "32k"
-TTS_MAX_CHARS = 260
-
-NIGHTLY_REFLECTION_FILE = "./LOGS/nightly_reflection.md"
-NIGHTLY_REFLECTION_SKIP_AGENT = "off"
-NIGHTLY_REFLECTION_PROMPT = ""
-CONTEXT_TURNS = 8
-PROVIDER_MAX_RETRIES = 1
-PROGRESS_UPDATE_INTERVAL = 3
-TELEGRAM_API_TIMEOUT_SECS = 30
-TELEGRAM_API_RETRY_ATTEMPTS = 3
-PROVIDER_TIMEOUT_SECS = 300
-SCHEDULED_TASKS_ENABLED = true
-
-CLAUDE_BIN = "claude"
-OPENCODE_BIN = "opencode"
-OPENCODE_SKIP_PERMISSIONS = ""
-ANTIGRAVITY_BIN = "antigravity"
-FACTORY_BIN = "droid"
-"#;
-
-const MIGRATABLE_ENV_KEYS: &[&str] = &[
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
-    "TELEGRAM_CHAT_IDS",
-    "TELEGRAM_API_BASE",
-    "TELEGRAM_FILE_BASE",
-    "TELEGRAM_PARSE_MODE",
-    "TELEGRAM_PARSE_FALLBACK",
-    "TIMEZONE",
-    "SQLITE_DB_PATH",
-    "LOG_DIR",
-    "ALLOWLIST_PATH",
-    "POLL_INTERVAL_SECONDS",
-    "WEBHOOK_MODE",
-    "WEBHOOK_BIND",
-    "WEBHOOK_PUBLIC_URL",
-    "WEBHOOK_SECRET",
-    "WEBHOOK_PATH",
-    "AGENT_PROVIDER",
-    "EXEC_POLICY",
-    "CODEX_BIN",
-    "CODEX_MODEL",
-    "PI_BIN",
-    "PI_PROVIDER",
-    "PI_MODEL",
-    "PI_EXTRA_ARGS",
-    "CLAUDE_BIN",
-    "CLAUDE_MODEL",
-    "CLAUDE_REASONING_EFFORT",
-    "OPENCODE_BIN",
-    "OPENCODE_MODEL",
-    "OPENCODE_REASONING_EFFORT",
-    "OPENCODE_SKIP_PERMISSIONS",
-    "ANTIGRAVITY_BIN",
-    "ANTIGRAVITY_MODEL",
-    "ANTIGRAVITY_REASONING_EFFORT",
-    "FACTORY_BIN",
-    "FACTORY_MODEL",
-    "FACTORY_REASONING_EFFORT",
-    "ASR_URL",
-    "ASR_CMD_TEMPLATE",
-    "ASR_FILE_FIELD",
-    "ASR_TEXT_JQ",
-    "ASR_PREPROCESS",
-    "ASR_SAMPLE_RATE",
-    "TTS_CMD_TEMPLATE",
-    "VOICE_BITRATE",
-    "TTS_MAX_CHARS",
-    "NIGHTLY_REFLECTION_FILE",
-    "NIGHTLY_REFLECTION_SKIP_AGENT",
-    "NIGHTLY_REFLECTION_PROMPT",
-    "CONTEXT_TURNS",
-    "PROVIDER_MAX_RETRIES",
-    "PROGRESS_UPDATE_INTERVAL",
-    "TELEGRAM_API_TIMEOUT_SECS",
-    "TELEGRAM_API_RETRY_ATTEMPTS",
-    "PROVIDER_TIMEOUT_SECS",
-    "SCHEDULED_TASKS_ENABLED",
-    "SLACK_BOT_TOKEN",
-    "SLACK_USER_TOKEN",
-    "SLACK_APP_TOKEN",
-    "SLACK_CHANNEL_ID",
-    "SLACK_SIGNING_SECRET",
-    "SLACK_ADMIN_USER_IDS",
-];
+const DEFAULT_CONFIG_TOML: &str = include_str!("../../../config.toml.example");
 
 pub struct RuntimeConfigBuilder(RuntimeConfig);
 
 impl RuntimeConfigBuilder {
-    pub fn provider(mut self, provider: AgentProvider) -> Self {
-        self.0.provider = provider;
-        self
-    }
-
     pub fn telegram_bot_token(mut self, token: impl Into<Option<String>>) -> Self {
         self.0.telegram_bot_token = token.into();
         self
@@ -382,21 +91,6 @@ impl RuntimeConfigBuilder {
 
     pub fn telegram_parse_fallback(mut self, fallback: TelegramParseFallback) -> Self {
         self.0.telegram_parse_fallback = fallback;
-        self
-    }
-
-    pub fn webhook_mode(mut self, mode: bool) -> Self {
-        self.0.webhook_mode = mode;
-        self
-    }
-
-    pub fn webhook_public_url(mut self, url: impl Into<Option<String>>) -> Self {
-        self.0.webhook_public_url = url.into();
-        self
-    }
-
-    pub fn webhook_path(mut self, path: String) -> Self {
-        self.0.webhook_path = path;
         self
     }
 
@@ -429,7 +123,6 @@ impl RuntimeConfig {
         let cfg = Self {
             root_dir: root.clone(),
             data_dir: root.clone(),
-            instance_name: "default".to_string(),
             instance_dir: root.clone(),
             runtime_dir: root.join("runtime"),
             tmp_dir: root.join("tmp"),
@@ -445,48 +138,15 @@ impl RuntimeConfig {
             telegram_file_base: None,
             telegram_parse_mode: TelegramParseMode::Off,
             telegram_parse_fallback: TelegramParseFallback::Plain,
-            slack_bot_token: None,
-            slack_user_token: None,
-            slack_app_token: None,
-            slack_channel_id: None,
-            slack_api_timeout_secs: 30,
-            slack_signing_secret: None,
-            slack_admin_user_ids: Vec::new(),
-            slack_format_mode: SlackFormatMode::Mrkdwn,
-            slack_format_fallback: SlackFormatFallback::Plain,
-            webhook_mode: false,
-            webhook_bind: "127.0.0.1:8787".to_string(),
-            webhook_public_url: None,
-            webhook_secret: None,
-            webhook_path: "/webhook".to_string(),
             poll_interval_seconds: 1,
-            provider: AgentProvider::Codex,
-            exec_policy: "yolo".to_string(),
-            asr_url: None,
-            asr_cmd_template: None,
-            asr_file_field: None,
-            asr_text_jq: None,
-            asr_preprocess: None,
-            asr_sample_rate: None,
-            tts_cmd_template: None,
-            voice_bitrate: None,
-            tts_max_chars: None,
-            nightly_reflection_file: root.join("LOGS/nightly_reflection.md"),
-            nightly_reflection_skip_agent: false,
-            nightly_reflection_prompt: None,
+            exec_policy: "safe".to_string(),
             context_turns: 8,
-            provider_max_retries: 1,
+            provider_max_retries: 0,
             progress_update_interval_secs: 3,
             telegram_api_timeout_secs: 30,
             telegram_api_retry_attempts: 3,
             provider_timeout_secs: 300,
-            scheduled_tasks_enabled: true,
             codex: CodexConfig::default(),
-            pi: PiConfig::default(),
-            claude: ClaudeConfig::default(),
-            opencode: OpenCodeConfig::default(),
-            antigravity: AntigravityConfig::default(),
-            factory: FactoryConfig::default(),
             config_file_path: root.join("config.toml"),
         };
         ensure_instance_layout(&cfg).expect("layout");
@@ -520,46 +180,52 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
     let cwd = env::current_dir().context("failed to read current directory")?;
     let root_dir = find_project_root(&cwd);
 
-    let explicit_instance_dir = overrides
-        .instance_dir
+    if env::var_os("COCONUTCLAW_INSTANCE").is_some() || env::var_os("INSTANCE_DIR").is_some() {
+        bail!(
+            "named instances and INSTANCE_DIR were removed; use --data-dir <existing directory>, see docs/migration-phase-0.md"
+        );
+    }
+    let selected_dir = overrides
+        .data_dir
         .clone()
-        .or_else(|| env::var("INSTANCE_DIR").ok().map(PathBuf::from));
-
-    let (data_dir, instance_name, instance_dir) = if let Some(path) = explicit_instance_dir {
-        let dir = absolutize(path, &cwd);
-        let derived_name = dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(ToOwned::to_owned)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "default".to_string());
-        let parent = dir
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| dir.clone());
-        (parent, derived_name, dir)
-    } else {
-        let instance_name = overrides
-            .instance
-            .clone()
-            .or_else(|| env::var("COCONUTCLAW_INSTANCE").ok())
-            .unwrap_or_else(|| "default".to_string());
-        validate_instance_name(&instance_name)?;
-
-        let data_root = overrides
-            .data_dir
-            .clone()
-            .or_else(|| env::var("COCONUTCLAW_DATA_DIR").ok().map(PathBuf::from))
-            .map(|value| absolutize(value, &cwd))
-            .unwrap_or_else(default_data_dir);
-        let instance_dir = data_root.join(&instance_name);
-        (data_root, instance_name, instance_dir)
-    };
+        .or_else(|| env::var_os("COCONUTCLAW_DATA_DIR").map(PathBuf::from));
+    if let Some(path) = &selected_dir {
+        validate_path("COCONUTCLAW_DATA_DIR", path, true)?;
+    }
+    let instance_dir = selected_dir
+        .map(|p| absolutize(p, &cwd))
+        .unwrap_or_else(|| default_data_dir().join("default"));
+    validate_path("COCONUTCLAW_DATA_DIR", &instance_dir, true)?;
+    let data_dir = instance_dir.clone();
 
     let config_file_path = instance_dir.join("config.toml");
     let legacy_env_file_path = instance_dir.join(".env");
-    migrate_legacy_env_if_needed(&config_file_path, &legacy_env_file_path)?;
+    if !config_file_path.exists() && legacy_env_file_path.exists() {
+        bail!(
+            "legacy .env is preserved in the selected data directory; convert it to config.toml using docs/migration-phase-0.md"
+        );
+    }
     let config_file = load_config_file(&config_file_path)?;
+    validate_config_keys(&config_file)?;
+    for key in DEFAULT_CONFIG_TOML
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(key, _)| key.trim()))
+    {
+        if env::var_os(key).is_some() && env::var(key).is_err() {
+            bail!("invalid {key}: expected UTF-8 text");
+        }
+    }
+    let mut obsolete = env::vars_os()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .filter(|k| obsolete_env_key(k))
+        .collect::<Vec<_>>();
+    obsolete.sort();
+    if !obsolete.is_empty() {
+        bail!(
+            "removed environment settings: {}; unset them, see docs/migration-phase-0.md",
+            obsolete.join(", ")
+        );
+    }
 
     let sqlite_db_path = resolve_path(
         &instance_dir,
@@ -575,24 +241,14 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
             .unwrap_or_else(|| "./config/allowlist.txt".to_string()),
     );
 
-    let provider = AgentProvider::parse(
-        &pick_value("AGENT_PROVIDER", &config_file).unwrap_or_else(|| "codex".to_string()),
-    )?;
     let exec_policy = pick_value("EXEC_POLICY", &config_file)
-        .unwrap_or_else(|| "yolo".to_string())
+        .unwrap_or_else(|| "safe".to_string())
         .to_ascii_lowercase();
-    let webhook_mode = parse_on_off(pick_value("WEBHOOK_MODE", &config_file).as_deref(), false);
-    let webhook_bind = pick_value("WEBHOOK_BIND", &config_file)
-        .unwrap_or_else(|| "127.0.0.1:8787".to_string())
-        .trim()
-        .to_string();
-    let webhook_public_url = normalize_optional(pick_value("WEBHOOK_PUBLIC_URL", &config_file));
-    let webhook_secret = normalize_optional(pick_value("WEBHOOK_SECRET", &config_file));
-    let webhook_path = normalize_webhook_path(pick_value("WEBHOOK_PATH", &config_file).as_deref());
-    let poll_interval_seconds = pick_value("POLL_INTERVAL_SECONDS", &config_file)
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(2);
+    if !matches!(exec_policy.as_str(), "safe" | "yolo") {
+        bail!("invalid EXEC_POLICY (expected safe or yolo)");
+    }
+    let number = |key, default, min, max| numeric_setting(&config_file, key, default, min, max);
+    let poll_interval_seconds = number("POLL_INTERVAL_SECONDS", 2, 1, 3600)?;
     let telegram_parse_mode = TelegramParseMode::parse(
         &pick_value("TELEGRAM_PARSE_MODE", &config_file).unwrap_or_else(|| "off".to_string()),
     )?;
@@ -600,68 +256,15 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         &pick_value("TELEGRAM_PARSE_FALLBACK", &config_file).unwrap_or_else(|| "plain".to_string()),
     )?;
 
-    let slack_format_mode = SlackFormatMode::from_config(
-        &pick_value("SLACK_FORMAT_MODE", &config_file).unwrap_or_else(|| "mrkdwn".to_string()),
-    );
-    let slack_format_fallback = SlackFormatFallback::from_config(
-        &pick_value("SLACK_FORMAT_FALLBACK", &config_file).unwrap_or_else(|| "plain".to_string()),
-    );
-    let slack_api_timeout_secs = pick_value("SLACK_API_TIMEOUT_SECS", &config_file)
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(30);
-
-    let asr_url = normalize_optional(pick_value("ASR_URL", &config_file));
-    let asr_cmd_template = normalize_optional(pick_value("ASR_CMD_TEMPLATE", &config_file));
-    let asr_file_field = normalize_optional(pick_value("ASR_FILE_FIELD", &config_file));
-    let asr_text_jq = normalize_optional(pick_value("ASR_TEXT_JQ", &config_file));
-    let asr_preprocess = normalize_optional(pick_value("ASR_PREPROCESS", &config_file));
-    let asr_sample_rate = normalize_optional(pick_value("ASR_SAMPLE_RATE", &config_file));
-    let tts_cmd_template = normalize_optional(pick_value("TTS_CMD_TEMPLATE", &config_file));
-    let voice_bitrate = normalize_optional(pick_value("VOICE_BITRATE", &config_file));
-    let tts_max_chars = normalize_optional(pick_value("TTS_MAX_CHARS", &config_file));
-    let nightly_reflection_file = resolve_path(
-        &instance_dir,
-        pick_value("NIGHTLY_REFLECTION_FILE", &config_file)
-            .unwrap_or_else(|| "./LOGS/nightly_reflection.md".to_string()),
-    );
-    let nightly_reflection_skip_agent = parse_on_off(
-        pick_value("NIGHTLY_REFLECTION_SKIP_AGENT", &config_file).as_deref(),
-        false,
-    );
-    let nightly_reflection_prompt =
-        normalize_optional(pick_value("NIGHTLY_REFLECTION_PROMPT", &config_file));
-    let context_turns = pick_value("CONTEXT_TURNS", &config_file)
-        .and_then(|value| value.parse::<u32>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(8);
-    let provider_max_retries = pick_value("PROVIDER_MAX_RETRIES", &config_file)
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(1);
-    let progress_update_interval_secs = pick_value("PROGRESS_UPDATE_INTERVAL", &config_file)
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(3);
-    let telegram_api_timeout_secs = pick_value("TELEGRAM_API_TIMEOUT_SECS", &config_file)
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(30);
-    let telegram_api_retry_attempts = pick_value("TELEGRAM_API_RETRY_ATTEMPTS", &config_file)
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(3);
-    let provider_timeout_secs = pick_value("PROVIDER_TIMEOUT_SECS", &config_file)
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(300);
-    let scheduled_tasks_enabled = parse_on_off(
-        pick_value("SCHEDULED_TASKS_ENABLED", &config_file).as_deref(),
-        true,
-    );
-
+    let context_turns = number("CONTEXT_TURNS", 8, 1, 10000)? as u32;
+    let provider_max_retries = number("PROVIDER_MAX_RETRIES", 0, 0, 10)? as u32;
+    let progress_update_interval_secs = number("PROGRESS_UPDATE_INTERVAL", 3, 1, 3600)?;
+    let telegram_api_timeout_secs = number("TELEGRAM_API_TIMEOUT_SECS", 30, 1, 300)?;
+    let telegram_api_retry_attempts = number("TELEGRAM_API_RETRY_ATTEMPTS", 3, 0, 10)? as u32;
+    let provider_timeout_secs = number("PROVIDER_TIMEOUT_SECS", 300, 1, 86400)?;
     let cfg = RuntimeConfig {
         root_dir,
         data_dir,
-        instance_name,
         instance_dir: instance_dir.clone(),
         runtime_dir: instance_dir.join("runtime"),
         tmp_dir: instance_dir.join("tmp"),
@@ -677,42 +280,14 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         telegram_file_base: normalize_optional(pick_value("TELEGRAM_FILE_BASE", &config_file)),
         telegram_parse_mode,
         telegram_parse_fallback,
-        slack_bot_token: pick_value("SLACK_BOT_TOKEN", &config_file),
-        slack_user_token: pick_value("SLACK_USER_TOKEN", &config_file),
-        slack_app_token: pick_value("SLACK_APP_TOKEN", &config_file),
-        slack_channel_id: pick_value("SLACK_CHANNEL_ID", &config_file),
-        slack_api_timeout_secs,
-        slack_signing_secret: normalize_optional(pick_value("SLACK_SIGNING_SECRET", &config_file)),
-        slack_admin_user_ids: parse_csv_list(pick_value("SLACK_ADMIN_USER_IDS", &config_file)),
-        slack_format_mode,
-        slack_format_fallback,
-        webhook_mode,
-        webhook_bind,
-        webhook_public_url,
-        webhook_secret,
-        webhook_path,
         poll_interval_seconds,
-        provider,
         exec_policy,
-        asr_url,
-        asr_cmd_template,
-        asr_file_field,
-        asr_text_jq,
-        asr_preprocess,
-        asr_sample_rate,
-        tts_cmd_template,
-        voice_bitrate,
-        tts_max_chars,
-        nightly_reflection_file,
-        nightly_reflection_skip_agent,
-        nightly_reflection_prompt,
         context_turns,
         provider_max_retries,
         progress_update_interval_secs,
         telegram_api_timeout_secs,
         telegram_api_retry_attempts,
         provider_timeout_secs,
-        scheduled_tasks_enabled,
         codex: CodexConfig {
             bin: pick_value("CODEX_BIN", &config_file).unwrap_or_else(|| "codex".to_string()),
             model: pick_value("CODEX_MODEL", &config_file)
@@ -721,87 +296,11 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned),
         },
-        pi: PiConfig {
-            bin: pick_value("PI_BIN", &config_file).unwrap_or_else(|| "pi".to_string()),
-            model: pick_value("PI_MODEL", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            reasoning_effort: pick_value("PI_REASONING_EFFORT", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            no_extensions: parse_on_off(
-                pick_value("PI_NO_EXTENSIONS", &config_file).as_deref(),
-                false,
-            ),
-        },
-        claude: ClaudeConfig {
-            bin: pick_value("CLAUDE_BIN", &config_file).unwrap_or_else(|| "claude".to_string()),
-            model: pick_value("CLAUDE_MODEL", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            reasoning_effort: pick_value("CLAUDE_REASONING_EFFORT", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-        },
-        opencode: OpenCodeConfig {
-            bin: pick_value("OPENCODE_BIN", &config_file).unwrap_or_else(|| "opencode".to_string()),
-            model: pick_value("OPENCODE_MODEL", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            reasoning_effort: pick_value("OPENCODE_REASONING_EFFORT", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            skip_permissions: {
-                let raw = pick_value("OPENCODE_SKIP_PERMISSIONS", &config_file);
-                match raw.as_deref().map(str::trim) {
-                    Some(v) if !v.is_empty() => Some(parse_on_off(Some(v), false)),
-                    _ => None,
-                }
-            },
-        },
-        antigravity: AntigravityConfig {
-            bin: pick_value("ANTIGRAVITY_BIN", &config_file)
-                .unwrap_or_else(|| "antigravity".to_string()),
-            model: pick_value("ANTIGRAVITY_MODEL", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            reasoning_effort: pick_value("ANTIGRAVITY_REASONING_EFFORT", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-        },
-        factory: FactoryConfig {
-            bin: pick_value("FACTORY_BIN", &config_file).unwrap_or_else(|| "droid".to_string()),
-            model: pick_value("FACTORY_MODEL", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            reasoning_effort: pick_value("FACTORY_REASONING_EFFORT", &config_file)
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-        },
         config_file_path,
     };
 
-    ensure_instance_layout(&cfg)?;
+    validate_effective_config(&cfg)?;
+    ensure_instance_layout(&cfg).map_err(|_| anyhow!("failed to initialize configured directories/files; check path permissions (values redacted)"))?;
     Ok(cfg)
 }
 
@@ -896,37 +395,102 @@ fn ensure_file(
     Ok(())
 }
 
-fn migrate_legacy_env_if_needed(
-    config_file_path: &Path,
-    legacy_env_file_path: &Path,
-) -> Result<()> {
-    if config_file_path.exists() || !legacy_env_file_path.exists() {
-        return Ok(());
-    }
+fn obsolete_key(key: &str) -> bool {
+    [
+        "SLACK_",
+        "WEBHOOK_",
+        "PI_",
+        "CLAUDE_",
+        "OPENCODE_",
+        "ANTIGRAVITY_",
+        "FACTORY_",
+        "ASR_",
+        "TTS_",
+        "VOICE_",
+        "NIGHTLY_",
+        "HEARTBEAT_",
+        "VISION_",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
+        || matches!(
+            key,
+            "AGENT_PROVIDER" | "SCHEDULED_TASKS_ENABLED" | "COCONUTCLAW_INSTANCE" | "INSTANCE_DIR"
+        )
+}
 
-    let legacy_env = load_env_file(legacy_env_file_path)?;
-    let mut output = String::from("# Migrated from legacy .env by CoconutClaw.\n");
-    for key in MIGRATABLE_ENV_KEYS {
-        if let Some(value) = legacy_env.get(*key) {
-            output.push_str(&format!("{key} = {}\n", toml::Value::String(value.clone())));
+fn obsolete_env_key(key: &str) -> bool {
+    // Do not mistake host tooling's FACTORY_SESSION_ID, etc. for app settings.
+    matches!(
+        key,
+        "AGENT_PROVIDER"
+            | "SCHEDULED_TASKS_ENABLED"
+            | "COCONUTCLAW_INSTANCE"
+            | "INSTANCE_DIR"
+            | "SLACK_BOT_TOKEN"
+            | "SLACK_USER_TOKEN"
+            | "SLACK_APP_TOKEN"
+            | "SLACK_CHANNEL_ID"
+            | "SLACK_API_TIMEOUT_SECS"
+            | "SLACK_SIGNING_SECRET"
+            | "SLACK_ADMIN_USER_IDS"
+            | "SLACK_FORMAT_MODE"
+            | "SLACK_FORMAT_FALLBACK"
+            | "SLACK_API_BASE"
+            | "WEBHOOK_MODE"
+            | "WEBHOOK_BIND"
+            | "WEBHOOK_PUBLIC_URL"
+            | "WEBHOOK_SECRET"
+            | "WEBHOOK_PATH"
+            | "PI_BIN"
+            | "PI_MODEL"
+            | "PI_REASONING_EFFORT"
+            | "PI_NO_EXTENSIONS"
+            | "PI_PROVIDER"
+            | "PI_EXTRA_ARGS"
+            | "CLAUDE_BIN"
+            | "CLAUDE_MODEL"
+            | "CLAUDE_REASONING_EFFORT"
+            | "OPENCODE_BIN"
+            | "OPENCODE_MODEL"
+            | "OPENCODE_REASONING_EFFORT"
+            | "OPENCODE_SKIP_PERMISSIONS"
+            | "ANTIGRAVITY_BIN"
+            | "ANTIGRAVITY_MODEL"
+            | "ANTIGRAVITY_REASONING_EFFORT"
+            | "FACTORY_BIN"
+            | "FACTORY_MODEL"
+            | "FACTORY_REASONING_EFFORT"
+            | "ASR_URL"
+            | "ASR_CMD_TEMPLATE"
+            | "ASR_FILE_FIELD"
+            | "ASR_TEXT_JQ"
+            | "ASR_PREPROCESS"
+            | "ASR_SAMPLE_RATE"
+            | "TTS_CMD_TEMPLATE"
+            | "TTS_MAX_CHARS"
+            | "VOICE_BITRATE"
+            | "NIGHTLY_REFLECTION_FILE"
+            | "NIGHTLY_REFLECTION_SKIP_AGENT"
+            | "NIGHTLY_REFLECTION_PROMPT"
+    )
+}
+
+fn validate_config_keys(config: &HashMap<String, String>) -> Result<()> {
+    for key in config.keys() {
+        if obsolete_key(key) {
+            bail!(
+                "removed setting {key}; remove it from config.toml (data is unchanged), see docs/migration-phase-0.md"
+            );
+        }
+        if !DEFAULT_CONFIG_TOML.lines().any(|line| {
+            line.trim_start()
+                .strip_prefix(key.as_str())
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        }) {
+            bail!("unknown setting {key}; see config.toml.example and docs/migration-phase-0.md");
         }
     }
-
-    if let Some(parent) = config_file_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    fs::write(config_file_path, output)
-        .with_context(|| format!("failed to write {}", config_file_path.display()))?;
-
-    if let Err(err) = fs::remove_file(legacy_env_file_path) {
-        tracing::warn!(
-            "migrated legacy .env but failed to delete {}: {err}",
-            legacy_env_file_path.display()
-        );
-    }
-
-    tracing::info!("migrated legacy .env to {}", config_file_path.display());
     Ok(())
 }
 
@@ -958,101 +522,186 @@ fn parse_csv_list(value: Option<String>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn normalize_webhook_path(raw: Option<&str>) -> String {
-    let trimmed = raw.map(str::trim).unwrap_or_default();
-    if trimmed.is_empty() || trimmed == "/" {
-        return "/webhook".to_string();
-    }
-    if trimmed.starts_with('/') {
-        return trimmed.to_string();
-    }
-    format!("/{trimmed}")
-}
-
-pub fn parse_on_off(value: Option<&str>, default: bool) -> bool {
-    let Some(value) = value else {
-        return default;
-    };
-    match value.trim().to_ascii_lowercase().as_str() {
-        "on" | "true" | "1" | "yes" => true,
-        "off" | "false" | "0" | "no" => false,
-        _ => default,
-    }
-}
-
 fn load_config_file(path: &Path) -> Result<HashMap<String, String>> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
 
-    let body =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let value: toml::Value =
-        toml::from_str(&body).with_context(|| format!("failed to parse {}", path.display()))?;
+    let body = fs::read_to_string(path)
+        .map_err(|_| anyhow!("failed to read config.toml; expected a readable UTF-8 file"))?;
+    // TOML's error carries the source line, including credentials. Never attach
+    // it as an anyhow source, even behind an otherwise sanitized outer message.
+    let value: toml::Value = toml::from_str(&body).map_err(|error: toml::de::Error| {
+        let line = error.span().map(|span| body.as_bytes()[..span.start.min(body.len())].iter().filter(|b| **b == b'\n').count() + 1);
+        anyhow!("invalid config.toml syntax at line {}; check TOML quoting and assignments (values redacted)", line.unwrap_or(1))
+    })?;
     let table = value
         .as_table()
-        .ok_or_else(|| anyhow!("{} must contain a top-level TOML table", path.display()))?;
+        .ok_or_else(|| anyhow!("config.toml must contain a top-level TOML table"))?;
 
+    let defaults: toml::Table = toml::from_str(DEFAULT_CONFIG_TOML).expect("typed config template");
     let mut output = HashMap::new();
     for (key, node) in table {
-        if let Some(value) = toml_scalar_to_string(node) {
-            output.insert(key.to_string(), value);
+        validate_config_keys(&HashMap::from([(key.clone(), String::new())]))?;
+        let expected = &defaults[key];
+        let text = match (expected, node) {
+            (toml::Value::String(_), toml::Value::String(text)) => text.clone(),
+            (toml::Value::Integer(_), toml::Value::Integer(number)) => number.to_string(),
+            (toml::Value::Integer(_), _) => bail!("invalid {key}: expected a TOML integer"),
+            _ => bail!("invalid {key}: expected a TOML string"),
+        };
+        output.insert(key.clone(), text);
+    }
+    Ok(output)
+}
+
+fn numeric_setting(
+    config: &HashMap<String, String>,
+    key: &str,
+    default: u64,
+    min: u64,
+    max: u64,
+) -> Result<u64> {
+    match pick_value(key, config) {
+        None => Ok(default),
+        Some(value) => match value.parse::<u64>() {
+            Ok(n) if (min..=max).contains(&n) => Ok(n),
+            _ => bail!("invalid {key}: expected an integer in {min}..={max} (value redacted)"),
+        },
+    }
+}
+
+fn validate_path(key: &str, path: &Path, directory: bool) -> Result<()> {
+    if path.as_os_str().is_empty()
+        || path.as_os_str().to_string_lossy().trim().is_empty()
+        || path
+            .as_os_str()
+            .to_string_lossy()
+            .chars()
+            .any(char::is_control)
+    {
+        bail!("invalid {key}: expected a nonempty path without control characters");
+    }
+    if path.exists()
+        && (if directory {
+            !path.is_dir()
         } else {
-            bail!(
-                "unsupported value for key {} in {} (only string/int/float/bool are supported)",
-                key,
-                path.display()
-            );
+            !path.is_file()
+        })
+    {
+        bail!(
+            "invalid {key}: expected a {} path",
+            if directory { "directory" } else { "file" }
+        );
+    }
+    for parent in path.ancestors().skip(1) {
+        if parent.exists() && !parent.is_dir() {
+            bail!("invalid {key}: a parent is not a directory");
         }
-    }
-    Ok(output)
-}
-
-fn toml_scalar_to_string(value: &toml::Value) -> Option<String> {
-    match value {
-        toml::Value::String(v) => Some(v.clone()),
-        toml::Value::Integer(v) => Some(v.to_string()),
-        toml::Value::Float(v) => Some(v.to_string()),
-        toml::Value::Boolean(v) => Some(v.to_string()),
-        _ => None,
-    }
-}
-
-fn load_env_file(path: &Path) -> Result<HashMap<String, String>> {
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-
-    let mut output = HashMap::new();
-    for entry in
-        from_path_iter(path).with_context(|| format!("failed to parse {}", path.display()))?
-    {
-        let (key, value) = entry.with_context(|| format!("invalid entry in {}", path.display()))?;
-        output.insert(key, value);
-    }
-    Ok(output)
-}
-
-fn validate_instance_name(value: &str) -> Result<()> {
-    if value.trim().is_empty() {
-        bail!("instance name cannot be empty");
-    }
-    if value
-        .chars()
-        .any(|ch| !matches!(ch, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.'))
-    {
-        bail!("instance name can only contain [a-zA-Z0-9_.-]");
     }
     Ok(())
 }
 
+fn validate_effective_config(cfg: &RuntimeConfig) -> Result<()> {
+    validate_path("SQLITE_DB_PATH", &cfg.sqlite_db_path, false)?;
+    validate_path("LOG_DIR", &cfg.log_dir, true)?;
+    validate_path("ALLOWLIST_PATH", &cfg.allowlist_path, false)?;
+    for dir in [&cfg.runtime_dir, &cfg.tmp_dir, &cfg.tasks_dir] {
+        validate_path("COCONUTCLAW_DATA_DIR", dir, true)?;
+    }
+    let db = path_identity(&cfg.sqlite_db_path);
+    let allowlist = path_identity(&cfg.allowlist_path);
+    let reserved = [
+        "config.toml",
+        "SOUL.md",
+        "USER.md",
+        "MEMORY.md",
+        "TASKS/pending.md",
+    ]
+    .map(|name| path_identity(&cfg.instance_dir.join(name)));
+    if reserved
+        .iter()
+        .any(|file| db.starts_with(file) || file.starts_with(&db))
+        || db.starts_with(&allowlist)
+        || allowlist.starts_with(&db)
+    {
+        bail!("invalid SQLITE_DB_PATH / ALLOWLIST_PATH: state files must be distinct");
+    }
+    for (key, file) in [("SQLITE_DB_PATH", db), ("ALLOWLIST_PATH", allowlist)] {
+        if [
+            &cfg.instance_dir,
+            &cfg.runtime_dir,
+            &cfg.tmp_dir,
+            &cfg.tasks_dir,
+            &cfg.log_dir,
+        ]
+        .iter()
+        .any(|dir| path_identity(dir).starts_with(&file))
+        {
+            bail!("invalid {key}: file path conflicts with a configured directory");
+        }
+    }
+    if cfg.codex.bin.trim().is_empty() || cfg.codex.bin.chars().any(char::is_control) {
+        bail!("invalid CODEX_BIN: expected a nonempty command without control characters");
+    }
+    if cfg.timezone.parse::<chrono_tz::Tz>().is_err() {
+        bail!("invalid TIMEZONE: expected an IANA timezone name");
+    }
+    for (key, value) in [
+        ("TELEGRAM_API_BASE", &cfg.telegram_api_base),
+        ("TELEGRAM_FILE_BASE", &cfg.telegram_file_base),
+    ] {
+        if let Some(value) = value {
+            let url = url::Url::parse(value)
+                .map_err(|_| anyhow!("invalid {key}: expected an absolute HTTP(S) URL"))?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+                || url.query().is_some()
+            {
+                bail!(
+                    "invalid {key}: expected an HTTP(S) URL without credentials, query or fragment"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn path_identity(path: &Path) -> PathBuf {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return canonical;
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        return path_identity(parent).join(name);
+    }
+    path.to_path_buf()
+}
+
 fn resolve_path(base: &Path, raw: String) -> PathBuf {
+    if raw.trim().is_empty() || raw.chars().any(char::is_control) {
+        // Leave an invalid sentinel for key-specific pre-layout validation.
+        return PathBuf::new();
+    }
     let candidate = PathBuf::from(raw);
-    if candidate.is_absolute() {
+    let path = if candidate.is_absolute() {
         candidate
     } else {
         base.join(candidate)
+    };
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other),
+        }
     }
+    normalized
 }
 
 fn default_data_dir() -> PathBuf {
@@ -1114,8 +763,10 @@ impl TelegramParseMode {
             "off" => Ok(Self::Off),
             "markdownv2" => Ok(Self::MarkdownV2),
             "html" => Ok(Self::Html),
-            other => {
-                bail!("invalid TELEGRAM_PARSE_MODE: {other} (expected off, MarkdownV2, or Html)")
+            _ => {
+                bail!(
+                    "invalid TELEGRAM_PARSE_MODE (expected off, MarkdownV2, or Html; value redacted)"
+                )
             }
         }
     }
@@ -1140,47 +791,7 @@ impl TelegramParseFallback {
         match raw.trim().to_ascii_lowercase().as_str() {
             "plain" => Ok(Self::Plain),
             "none" => Ok(Self::None),
-            other => bail!("invalid TELEGRAM_PARSE_FALLBACK: {other} (expected plain or none)"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SlackFormatMode {
-    Plain,
-    Mrkdwn,
-    Blocks,
-}
-
-impl SlackFormatMode {
-    pub fn from_config(val: &str) -> Self {
-        match val.to_lowercase().as_str() {
-            "blocks" => Self::Blocks,
-            "mrkdwn" => Self::Mrkdwn,
-            "plain" => Self::Plain,
-            other => {
-                tracing::warn!("unknown SLACK_FORMAT_MODE '{other}', defaulting to mrkdwn");
-                Self::Mrkdwn
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SlackFormatFallback {
-    Plain,
-    None,
-}
-
-impl SlackFormatFallback {
-    pub fn from_config(val: &str) -> Self {
-        match val.to_lowercase().as_str() {
-            "plain" => Self::Plain,
-            "none" => Self::None,
-            other => {
-                tracing::warn!("unknown SLACK_FORMAT_FALLBACK '{other}', defaulting to plain");
-                Self::Plain
-            }
+            _ => bail!("invalid TELEGRAM_PARSE_FALLBACK (expected plain or none; value redacted)"),
         }
     }
 }

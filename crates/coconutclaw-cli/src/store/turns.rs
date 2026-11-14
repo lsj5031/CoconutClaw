@@ -11,18 +11,19 @@ impl Store {
         chat_id: &str,
         channel: &str,
     ) -> Result<Vec<String>> {
+        let (canonical, alias) = crate::session::history_ids(chat_id, channel);
         let mut stmt = self.conn.prepare(
             "SELECT ts || ' | in=' || COALESCE(REPLACE(user_text, char(10), ' '), '') || ' | out=' || COALESCE(REPLACE(COALESCE(telegram_reply, voice_reply), char(10), ' '), '')
              FROM turns
              WHERE status != 'boundary'
-               AND chat_id = ?1
+               AND chat_id IN (?1, ?4)
                AND channel = ?2
-               AND id > COALESCE((SELECT MAX(id) FROM turns WHERE user_text = '---CONTEXT_BOUNDARY---' AND chat_id = ?1 AND channel = ?2), 0)
+               AND id > COALESCE((SELECT MAX(id) FROM turns WHERE status = 'boundary' AND chat_id IN (?1, ?4) AND channel = ?2), 0)
              ORDER BY id DESC
              LIMIT ?3",
         )?;
 
-        let mut rows = stmt.query(params![chat_id, channel, limit])?;
+        let mut rows = stmt.query(params![canonical, channel, limit, alias])?;
         let mut lines = Vec::new();
         while let Some(row) = rows.next()? {
             lines.push(row.get::<_, String>(0)?);
@@ -31,17 +32,18 @@ impl Store {
     }
 
     pub(crate) fn latest_boundary_unix(&self, chat_id: &str, channel: &str) -> Result<Option<i64>> {
+        let (canonical, alias) = crate::session::history_ids(chat_id, channel);
         let mut stmt = self.conn.prepare(
             "SELECT ts
              FROM turns
              WHERE status = 'boundary'
-               AND chat_id = ?1
+               AND chat_id IN (?1, ?3)
                AND channel = ?2
              ORDER BY id DESC
              LIMIT 1",
         )?;
 
-        let mut rows = stmt.query(params![chat_id, channel])?;
+        let mut rows = stmt.query(params![canonical, channel, alias])?;
         let Some(row) = rows.next()? else {
             return Ok(None);
         };
@@ -53,18 +55,19 @@ impl Store {
     }
 
     pub(crate) fn insert_turn(&self, turn: &TurnRecord) -> Result<Option<i64>> {
+        let (chat_id, _) = crate::session::history_ids(&turn.chat_id, &turn.channel);
         self.conn.execute(
             "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, channel, task_run_id, side_effects_applied)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 turn.ts,
-                turn.chat_id,
+                chat_id,
                 turn.input_type,
                 turn.user_text,
-                turn.asr_text,
+                "",
                 turn.provider_raw,
                 turn.telegram_reply,
-                turn.voice_reply,
+                "",
                 turn.status,
                 turn.update_id,
                 turn.duration_ms,
@@ -131,12 +134,20 @@ impl Store {
         update_id: Option<&str>,
         channel: &str,
     ) -> Result<bool> {
+        let (chat_id, _) = crate::session::history_ids(chat_id, channel);
         self.conn.execute(
             "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, channel)
              VALUES(?1, ?2, 'system', '---CONTEXT_BOUNDARY---', '', '', '', '', 'boundary', ?3, ?4)",
             params![ts, chat_id, update_id, channel],
         )?;
         Ok(self.conn.changes() > 0)
+    }
+
+    pub(crate) fn latest_boundary_id(&self, chat_id: &str, channel: &str) -> Result<i64> {
+        let (canonical, alias) = crate::session::history_ids(chat_id, channel);
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(id),0) FROM turns WHERE chat_id IN (?1,?2) AND channel=?3 AND status='boundary'",
+            params![canonical, alias, channel], |r| r.get(0))?)
     }
 
     pub(crate) fn turn_exists_for_update_id(&self, update_id: &str) -> Result<bool> {
@@ -149,7 +160,7 @@ impl Store {
 
     pub(crate) fn rendered_output_for_update_id(&self, update_id: &str) -> Result<Option<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT provider_raw, telegram_reply, voice_reply
+            "SELECT provider_raw, COALESCE(telegram_reply, ''), status
              FROM turns
              WHERE update_id = ?1
              ORDER BY id DESC
@@ -162,7 +173,10 @@ impl Store {
 
         let provider_raw: String = row.get(0)?;
         let telegram_reply: String = row.get(1)?;
-        let voice_reply: String = row.get(2)?;
+        let status: String = row.get(2)?;
+        if status == "cancelled" {
+            return Ok(Some(crate::markers::render_output("❌ Cancelled.", &[])));
+        }
         let markers = parse_markers(&provider_raw);
         let mut effects = markers.to_effects();
         if !telegram_reply.trim().is_empty() {
@@ -170,10 +184,6 @@ impl Store {
             effects.push(crate::markers::Effect::TelegramReply(
                 telegram_reply.clone(),
             ));
-        }
-        if !voice_reply.trim().is_empty() {
-            effects.retain(|e| !matches!(e, crate::markers::Effect::VoiceReply(_)));
-            effects.push(crate::markers::Effect::VoiceReply(voice_reply.clone()));
         }
 
         let rendered = render_effects(&effects);
@@ -185,7 +195,7 @@ impl Store {
         task_run_id: i64,
     ) -> Result<Option<StoredTurnOutput>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, provider_raw, telegram_reply, voice_reply, status, task_run_id, side_effects_applied
+            "SELECT id, ts, provider_raw, COALESCE(telegram_reply, ''), status
              FROM turns
              WHERE task_run_id = ?1
              ORDER BY id DESC
@@ -200,10 +210,7 @@ impl Store {
             ts: row.get(1)?,
             provider_raw: row.get(2)?,
             telegram_reply: row.get(3)?,
-            voice_reply: row.get(4)?,
-            status: row.get(5)?,
-            task_run_id: row.get(6)?,
-            side_effects_applied: row.get::<_, i32>(7)? != 0,
+            status: row.get(4)?,
         }))
     }
 
@@ -243,22 +250,20 @@ impl Store {
         &self,
         turn_id: i64,
         telegram_reply: &str,
-        voice_reply: &str,
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE turns
              SET telegram_reply = ?2,
-                 voice_reply = ?3,
                  side_effects_applied = 1
              WHERE id = ?1",
-            params![turn_id, telegram_reply, voice_reply],
+            params![turn_id, telegram_reply],
         )?;
         Ok(())
     }
 
     pub(crate) fn pending_turn_side_effects(&self) -> Result<Vec<StoredTurnOutput>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, ts, provider_raw, telegram_reply, voice_reply, status, task_run_id, side_effects_applied
+            "SELECT id, ts, provider_raw, COALESCE(telegram_reply, ''), status
              FROM turns
              WHERE side_effects_applied = 0
                AND status NOT IN ('cancelled', 'boundary')
@@ -272,41 +277,9 @@ impl Store {
                 ts: row.get(1)?,
                 provider_raw: row.get(2)?,
                 telegram_reply: row.get(3)?,
-                voice_reply: row.get(4)?,
-                status: row.get(5)?,
-                task_run_id: row.get(6)?,
-                side_effects_applied: row.get::<_, i32>(7)? != 0,
+                status: row.get(4)?,
             });
         }
         Ok(turns)
-    }
-
-    pub(crate) fn max_turn_id(&self) -> Result<i64> {
-        let id: i64 = self
-            .conn
-            .query_row("SELECT COALESCE(MAX(id), 0) FROM turns", [], |row| {
-                row.get(0)
-            })?;
-        Ok(id)
-    }
-
-    pub(crate) fn latest_turn_for_prompt_after_id(
-        &self,
-        after_id: i64,
-        prompt: &str,
-    ) -> Result<Option<(String, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT ts, COALESCE(NULLIF(telegram_reply, ''), NULLIF(voice_reply, ''), ''), status
-             FROM turns
-             WHERE id > ?1
-               AND user_text = ?2
-             ORDER BY id DESC
-             LIMIT 1",
-        )?;
-        let mut rows = stmt.query(params![after_id, prompt])?;
-        let Some(row) = rows.next()? else {
-            return Ok(None);
-        };
-        Ok(Some((row.get(0)?, row.get(1)?, row.get(2)?)))
     }
 }

@@ -15,16 +15,6 @@ pub(crate) fn cancel_marker_path(cfg: &RuntimeConfig) -> PathBuf {
     cfg.runtime_dir.join("cancel")
 }
 
-pub(crate) fn signal_cancel_marker(cfg: &RuntimeConfig) -> Result<()> {
-    let path = cancel_marker_path(cfg);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    fs::write(&path, "").with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
-}
-
 pub(crate) fn clear_cancel_marker(cfg: &RuntimeConfig) {
     let path = cancel_marker_path(cfg);
     let _ = fs::remove_file(path);
@@ -151,7 +141,7 @@ pub(crate) fn cancel_signal_from_update(
     value: &serde_json::Value,
     expected_chat_id: &str,
 ) -> Option<CancelSignal> {
-    use crate::webhook::value_to_string;
+    use crate::util::value_to_string;
 
     if let Some(callback_query) = value.get("callback_query") {
         let data = callback_query

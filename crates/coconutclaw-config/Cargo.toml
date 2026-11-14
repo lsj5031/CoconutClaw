@@ -8,7 +8,8 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 dirs.workspace = true
-dotenvy.workspace = true
 fs2.workspace = true
 toml.workspace = true
 tracing.workspace = true
+chrono-tz.workspace = true
+url = "2"

@@ -44,22 +44,6 @@ impl Store {
         Ok(Some(row.get(0)?))
     }
 
-    pub(crate) fn approval_resume_payloads_by_status(&self, status: &str) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT resume_payload
-             FROM approvals
-             WHERE status = ?1
-               AND resume_payload != ''
-             ORDER BY id ASC",
-        )?;
-        let mut rows = stmt.query(params![status])?;
-        let mut payloads = Vec::new();
-        while let Some(row) = rows.next()? {
-            payloads.push(row.get(0)?);
-        }
-        Ok(payloads)
-    }
-
     pub(crate) fn get_pending_approval(&self, approval_id: i64) -> Result<Option<ApprovalRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, task_run_id, session_id, channel, source_user_id, channel_id, thread_ts,
@@ -105,20 +89,6 @@ impl Store {
                  resolved_by_user_id = ?4
              WHERE id = ?1",
             params![approval_id, status, resolved_at, resolved_by_user_id],
-        )?;
-        Ok(())
-    }
-
-    pub(crate) fn update_approval_request_message_ts(
-        &self,
-        approval_id: i64,
-        request_message_ts: &str,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE approvals
-             SET request_message_ts = ?2
-             WHERE id = ?1",
-            params![approval_id, request_message_ts],
         )?;
         Ok(())
     }
