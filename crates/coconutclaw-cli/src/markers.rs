@@ -151,7 +151,28 @@ pub(crate) fn render_output(reply: &str, effects: &[Effect]) -> String {
     render_effects(&all)
 }
 
+/// Compatibility envelope: closed leading reasoning blocks followed immediately
+/// by an explicit final-reply marker. Never scan inside marker values or decoded
+/// assistant text, and never truncate an unclosed block.
+pub(crate) fn final_marker_payload(raw_output: &str) -> &str {
+    let mut remaining = raw_output.trim_start();
+    while let Some(thought) = remaining.strip_prefix("<think>") {
+        let Some((_, rest)) = thought.split_once("</think>") else {
+            return raw_output;
+        };
+        remaining = rest.trim_start();
+    }
+    if remaining.starts_with("TELEGRAM_REPLY:") || remaining.starts_with("REPLY:") {
+        remaining
+    } else {
+        raw_output
+    }
+}
+
 pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
+    // Every effect compiler, including raw-turn recovery and legacy replay,
+    // must exclude the same envelope as initial resolution.
+    let payload = final_marker_payload(payload);
     let markers = parse_markers_line_anchored(payload);
     if markers.telegram_reply.is_some() {
         return markers;
@@ -209,7 +230,9 @@ fn parse_markers_line_anchored(payload: &str) -> ParsedMarkers {
 
     // Merge multi-block text fields
     if !telegram_blocks.is_empty() {
-        markers.telegram_reply = Some(normalize_inline_escapes(&telegram_blocks.join("\n\n")));
+        // Marker values are native text. Backslashes belong to Markdown/code,
+        // not an encoded envelope; JSON escapes are decoded at JSON extraction.
+        markers.telegram_reply = Some(telegram_blocks.join("\n\n"));
     }
 
     markers
@@ -539,51 +562,6 @@ fn join_text_blocks(node: &Value) -> Option<String> {
     } else {
         Some(chunks.join("\n"))
     }
-}
-
-fn normalize_inline_escapes(input: &str) -> String {
-    if input.contains('\n')
-        || (!input.contains("\\n") && !input.contains("\\r") && !input.contains("\\t"))
-    {
-        return input.to_string();
-    }
-
-    // Scan for escape sequences. If any exist, we need to process them.
-    // Use character iteration to preserve UTF-8 multi-byte characters.
-    let chars: Vec<char> = input.chars().collect();
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0usize;
-
-    while i < chars.len() {
-        if chars[i] == '\\' && i + 1 < chars.len() {
-            let prev_is_backslash = i > 0 && chars[i - 1] == '\\';
-            if !prev_is_backslash {
-                match chars[i + 1] {
-                    'n' => {
-                        out.push('\n');
-                        i += 2;
-                        continue;
-                    }
-                    'r' => {
-                        out.push('\r');
-                        i += 2;
-                        continue;
-                    }
-                    't' => {
-                        out.push('\t');
-                        i += 2;
-                        continue;
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        out.push(chars[i]);
-        i += 1;
-    }
-
-    out
 }
 
 #[cfg(test)]

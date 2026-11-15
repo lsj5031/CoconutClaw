@@ -131,8 +131,10 @@ fn concurrent_task_projections_and_scoped_memory_stay_separate() {
         },
     )
     .unwrap();
+    let projection = fs::read_to_string(cfg.tasks_dir.join("pending.md")).unwrap();
     for expected in ["keep that", "task-0", "task-1"] {
-        assert!(context.contains(expected), "{expected}");
+        assert!(projection.contains(expected), "{expected}");
+        assert!(!context.contains(expected), "{expected}");
     }
     for excluded in ["keep this", "memory-0", "memory-1"] {
         assert!(!context.contains(excluded), "{excluded}");
@@ -140,5 +142,79 @@ fn concurrent_task_projections_and_scoped_memory_stay_separate() {
     assert_eq!(
         fs::read_to_string(cfg.instance_dir.join("MEMORY.md")).unwrap(),
         "# Manual\nkeep this\n"
+    );
+}
+
+#[test]
+fn session_task_context_uses_source_turn_session_and_channel_not_shared_projection() {
+    let cfg = RuntimeConfig::test_config();
+    let store = Store::open(&cfg).unwrap();
+    for (id, session, channel) in [
+        (1, "telegram:321#7", "telegram"),
+        (2, "telegram:321#8", "telegram"),
+        (3, "telegram:321", "telegram"),
+        (4, "321", "telegram"),
+        (5, "telegram:321#7", "local"),
+        (6, "telegram:999#7", "telegram"),
+    ] {
+        store.conn.execute("INSERT INTO turns(id,ts,chat_id,input_type,provider_raw,status,channel) VALUES(?1,'now',?2,'text','','ok',?3)",
+            rusqlite::params![id,session,channel]).unwrap();
+        store.conn.execute("INSERT INTO tasks(ts,source,content,turn_id,managed_file) VALUES('now','codex',?1,?2,1)",
+            rusqlite::params![format!("task-source-{id}-sentinel"),id]).unwrap();
+    }
+    store.conn.execute("INSERT INTO tasks(ts,source,content,managed_file) VALUES('now','manual','unscoped-task-sentinel',1)", []).unwrap();
+    store.conn.execute("INSERT INTO tasks(ts,source,content,turn_id,managed_file,done) VALUES('now','codex','done-task-sentinel',1,1,1)", []).unwrap();
+    store.conn.execute("INSERT INTO tasks(ts,source,content,turn_id,managed_file) VALUES('now','manual','unmanaged-task-sentinel',1,0)", []).unwrap();
+    fs::write(cfg.tasks_dir.join("pending.md"), "manual-file-sentinel\n").unwrap();
+    sync_managed_context_files(&cfg, &store).unwrap();
+    for (session, channel, expected) in [
+        ("telegram:321#7", "telegram", vec![1]),
+        ("telegram:321#8", "telegram", vec![2]),
+        ("telegram:321", "telegram", vec![3, 4]),
+        ("telegram:321#7", "local", vec![5]),
+    ] {
+        let input =
+            crate::turn::resolve_turn_input(&cfg, &store, None, Some("next".into()), None, channel)
+                .unwrap();
+        let context = build_context(
+            &cfg,
+            &store,
+            &input,
+            "now",
+            session,
+            &QuotedMessage {
+                reply_from: None,
+                reply_text: None,
+                reply_ts: None,
+            },
+        )
+        .unwrap();
+        for id in 1..=6 {
+            assert_eq!(
+                context.contains(&format!("task-source-{id}-sentinel")),
+                expected.contains(&id),
+                "{session} {channel} source {id}"
+            );
+        }
+        for excluded in [
+            "unscoped-task-sentinel",
+            "done-task-sentinel",
+            "unmanaged-task-sentinel",
+            "manual-file-sentinel",
+        ] {
+            assert!(!context.contains(excluded), "{excluded}");
+        }
+    }
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        9
+    );
+    assert!(
+        fs::read_to_string(cfg.tasks_dir.join("pending.md"))
+            .unwrap()
+            .contains("manual-file-sentinel")
     );
 }

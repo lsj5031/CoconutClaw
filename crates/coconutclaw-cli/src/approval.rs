@@ -50,6 +50,11 @@ pub(crate) fn build_resume_payload(request: &TaskRequest, input: &TurnInput) -> 
     };
     Ok(json!({
         "session_id": request.session.id(),
+        "session": {
+            "platform": request.session.platform.as_str(),
+            "root_id": request.session.root_id,
+            "message_thread_id": request.session.thread_id,
+        },
         "channel": input.channel.as_str(),
         "source": request.source.channel_name(),
         "input_type": input.input_type.as_str(),
@@ -92,6 +97,14 @@ pub(crate) fn request_from_payload(payload: &str, approved: bool) -> Result<Task
         .ok_or_else(|| anyhow::anyhow!("unsupported approval delivery target; data preserved"))?;
 
     let session = SessionKey::from_id(session_id.to_string());
+    if session.platform == crate::session::SessionPlatform::Telegram {
+        crate::telegram::telegram_route_params(&session.id())?;
+        if let crate::delivery::DeliveryTarget::Telegram { chat_id, thread_id } = &dispatch
+            && (&session.root_id != chat_id || &session.thread_id != thread_id)
+        {
+            anyhow::bail!("persisted Telegram session and delivery topic disagree; data preserved");
+        }
+    }
     let mut input = TurnInput {
         input_type: match value
             .get("input_type")
@@ -231,7 +244,7 @@ pub(crate) fn create_approval_request(
         channel: request.source.channel_name().to_string(),
         source_user_id: request.source_user_id.clone(),
         channel_id: Some(request.delivery.display_id().to_string()),
-        thread_ts: None,
+        thread_ts: request.session.thread_id.clone(),
         prompt_text: prompt.to_string(),
         request_message_ts: None,
         resume_payload: payload,

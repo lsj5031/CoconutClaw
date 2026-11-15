@@ -133,24 +133,7 @@ impl SessionScheduler {
             ],
         )?;
         tx.commit()?;
-        let session_id = request.session.id();
-        let mut should_spawn = false;
-        {
-            let mut lanes = self.inner.lanes.lock().expect("lanes");
-            let lane = lanes.entry(session_id.clone()).or_default();
-            if lane.active.is_none() {
-                lane.active = Some(task_id);
-                should_spawn = true;
-            } else {
-                lane.queue.push_back(QueuedTask {
-                    id: task_id,
-                    request: request.clone(),
-                });
-            }
-        }
-        if should_spawn {
-            self.spawn_task(task_id, request);
-        }
+        self.queue_existing(task_id, request);
         Ok(task_id)
     }
 
@@ -595,7 +578,6 @@ impl SessionScheduler {
             task_state.remove(&task_id);
         }
 
-        let mut next: Option<QueuedTask> = None;
         {
             let mut lanes = self.inner.lanes.lock().expect("lanes");
             if let Some(lane) = lanes.get_mut(session_id) {
@@ -603,23 +585,12 @@ impl SessionScheduler {
                     return Ok(());
                 }
                 lane.active = None;
-                if !self
-                    .inner
-                    .stopping
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    && let Some(queued) = lane.queue.pop_front()
-                {
-                    lane.active = Some(queued.id);
-                    next = Some(queued);
-                } else if lane.active.is_none() {
+                if lane.queue.is_empty() {
                     lanes.remove(session_id);
                 }
             }
         }
-
-        if let Some(queued) = next {
-            self.spawn_task(queued.id, queued.request);
-        }
+        self.dispatch_ready();
         Ok(())
     }
 
@@ -757,31 +728,75 @@ impl SessionScheduler {
     }
 
     fn queue_existing(&self, id: i64, request: TaskRequest) {
-        let spawn = {
+        {
             let mut lanes = self.inner.lanes.lock().expect("lanes");
             let lane = lanes.entry(request.session.id()).or_default();
-            if lane.active.is_none()
-                && !self
+            lane.queue.push_back(QueuedTask { id, request });
+        }
+        self.dispatch_ready();
+    }
+
+    /// Reserve bounded execution slots before creating threads. Queued work has
+    /// no worker. The oldest eligible lane wins, including after recovery;
+    /// delegation and approval resumes use this same admission path.
+    fn dispatch_ready(&self) {
+        let ready = {
+            let mut lanes = self.inner.lanes.lock().expect("lanes");
+            if self
+                .inner
+                .recovering
+                .load(std::sync::atomic::Ordering::SeqCst)
+                || self
                     .inner
-                    .recovering
+                    .stopping
                     .load(std::sync::atomic::Ordering::SeqCst)
             {
-                lane.active = Some(id);
-                true
-            } else {
-                lane.queue.push_back(QueuedTask {
-                    id,
-                    request: request.clone(),
-                });
-                false
+                return;
             }
+            let available =
+                5usize.saturating_sub(lanes.values().filter(|lane| lane.active.is_some()).count());
+            let mut ready = Vec::new();
+            for _ in 0..available {
+                let Some(key) = lanes
+                    .iter()
+                    .filter(|(_, lane)| lane.active.is_none())
+                    .filter(|(_, lane)| {
+                        !lane.queue.front().is_some_and(|q| {
+                            q.request.session.thread_id.is_some()
+                                && self.inner.cfg.telegram_topics_enabled == Some(false)
+                        })
+                    })
+                    .filter_map(|(key, lane)| lane.queue.front().map(|q| (key.clone(), q.id)))
+                    .min_by_key(|(_, id)| *id)
+                    .map(|(key, _)| key)
+                else {
+                    break;
+                };
+                let lane = lanes.get_mut(&key).expect("eligible lane");
+                let next = lane.queue.pop_front().expect("eligible task");
+                lane.active = Some(next.id);
+                ready.push(next);
+            }
+            ready
         };
-        if spawn {
-            self.spawn_task(id, request);
+        for next in ready {
+            self.spawn_task(next.id, next.request);
         }
     }
 
     fn deliver(&self, store: &Store, id: i64, request: &TaskRequest, output: &str) -> Result<()> {
+        if matches!(
+            &request.delivery,
+            DeliveryTarget::Telegram {
+                thread_id: Some(_),
+                ..
+            }
+        ) && self.inner.cfg.telegram_topics_enabled == Some(false)
+        {
+            anyhow::bail!(
+                "topic delivery paused while BotFather topic mode is OFF; data preserved"
+            );
+        }
         let _delivery_lock = self.inner.delivery_lock.lock().expect("delivery lock");
         let client = if matches!(request.delivery, DeliveryTarget::Telegram { .. }) {
             Some(build_telegram_client(&self.inner.cfg)?)
@@ -937,23 +952,10 @@ impl SessionScheduler {
         }
         // Materialization and lane reconstruction finish before any execution.
         // New child IDs sort behind all previously accepted work.
-        let ready = {
-            let mut lanes = self.inner.lanes.lock().expect("lanes");
-            lanes
-                .values_mut()
-                .filter_map(|lane| {
-                    let next = lane.queue.pop_front()?;
-                    lane.active = Some(next.id);
-                    Some(next)
-                })
-                .collect::<Vec<_>>()
-        };
         self.inner
             .recovering
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        for next in ready {
-            self.spawn_task(next.id, next.request);
-        }
+        self.dispatch_ready();
         self.retry_deliveries()
     }
 

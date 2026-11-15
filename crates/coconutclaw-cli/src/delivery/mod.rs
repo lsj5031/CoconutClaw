@@ -16,14 +16,31 @@ pub(crate) fn cleanup_attachment_path(path: &std::path::Path) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeliveryTarget {
-    Telegram { chat_id: String },
+    Telegram {
+        chat_id: String,
+        thread_id: Option<String>,
+    },
     Stdout,
 }
 impl DeliveryTarget {
     pub(crate) fn display_id(&self) -> &str {
         match self {
-            Self::Telegram { chat_id } => chat_id,
+            Self::Telegram { chat_id, .. } => chat_id,
             Self::Stdout => "local",
+        }
+    }
+
+    pub(crate) fn telegram_route(&self) -> Option<String> {
+        match self {
+            Self::Telegram { chat_id, thread_id } => Some(
+                crate::session::SessionKey {
+                    platform: crate::session::SessionPlatform::Telegram,
+                    root_id: chat_id.clone(),
+                    thread_id: thread_id.clone(),
+                }
+                .id(),
+            ),
+            Self::Stdout => None,
         }
     }
 }
@@ -45,17 +62,32 @@ impl TaskSource {
 pub(crate) fn parse_delivery_target(raw: Option<&str>) -> Option<DeliveryTarget> {
     let value: Value = serde_json::from_str(raw?).ok()?;
     match value.get("kind")?.as_str()? {
-        "telegram" => Some(DeliveryTarget::Telegram {
-            chat_id: value.get("chat_id")?.as_str()?.to_string(),
-        }),
+        "telegram" => {
+            let chat_id = value.get("chat_id")?.as_str()?;
+            if chat_id.is_empty() || !chat_id.bytes().all(|ch| ch.is_ascii_digit()) {
+                return None;
+            }
+            let thread_id = match value.get("message_thread_id") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(raw)) => Some(raw.clone()),
+                Some(Value::Number(number)) => Some(number.as_i64()?.to_string()),
+                _ => return None,
+            };
+            let target = DeliveryTarget::Telegram {
+                chat_id: chat_id.to_string(),
+                thread_id,
+            };
+            crate::telegram::telegram_route_params(&target.telegram_route()?).ok()?;
+            Some(target)
+        }
         "stdout" => Some(DeliveryTarget::Stdout),
         _ => None,
     }
 }
 pub(crate) fn serialize_delivery_target(target: &DeliveryTarget) -> String {
     match target {
-        DeliveryTarget::Telegram { chat_id } => {
-            json!({"kind":"telegram","chat_id":chat_id}).to_string()
+        DeliveryTarget::Telegram { chat_id, thread_id } => {
+            json!({"kind":"telegram","chat_id":chat_id,"message_thread_id":thread_id}).to_string()
         }
         DeliveryTarget::Stdout => json!({"kind":"stdout"}).to_string(),
     }
@@ -65,6 +97,7 @@ pub(crate) fn serialize_delivery_target(target: &DeliveryTarget) -> String {
 pub(crate) struct DeliveryState {
     completed_ops: Vec<String>,
     pub(crate) text_plan: Option<Value>,
+    pub(crate) operations: serde_json::Map<String, Value>,
 }
 impl DeliveryState {
     pub(crate) fn has_telegram_op(&self, op: &str) -> bool {
@@ -92,7 +125,7 @@ pub(crate) fn persist_delivery_state(
         "UPDATE task_payloads SET delivery_state=?2 WHERE task_run_id=?1",
         rusqlite::params![
             task_id,
-            json!({"completed_ops":state.completed_ops,"text_plan":state.text_plan}).to_string()
+            json!({"completed_ops":state.completed_ops,"text_plan":state.text_plan,"operations":state.operations}).to_string()
         ],
     )?;
     Ok(())
@@ -110,7 +143,7 @@ pub(crate) fn dispatch_task_output(
             println!("{}", request.output);
             Ok(true)
         }
-        DeliveryTarget::Telegram { chat_id } => {
+        DeliveryTarget::Telegram { .. } => {
             let client = client.ok_or_else(|| anyhow::anyhow!("Telegram client missing"))?;
             let value: Value = serde_json::from_str(raw_state)?;
             let (completed_ops, text_plan) = if value.is_array() {
@@ -126,10 +159,27 @@ pub(crate) fn dispatch_task_output(
             let mut state = DeliveryState {
                 completed_ops,
                 text_plan,
+                operations: value_operations(raw_state)?,
             };
-            telegram::dispatch_task_output(store, cfg, client, request, &mut state, Some(chat_id))
+            telegram::dispatch_task_output(
+                store,
+                cfg,
+                client,
+                request,
+                &mut state,
+                target.telegram_route().as_deref(),
+            )
         }
     }
+}
+
+fn value_operations(raw: &str) -> Result<serde_json::Map<String, Value>> {
+    let value: Value = serde_json::from_str(raw)?;
+    Ok(value
+        .get("operations")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default())
 }
 
 #[cfg(test)]

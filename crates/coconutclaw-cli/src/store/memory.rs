@@ -294,10 +294,11 @@ impl Store {
                 (Some(id), None, None)
             }
         };
+        let session = crate::session::SessionKey::telegram(scope);
         self.conn.execute(
-            "INSERT INTO turns(ts,chat_id,input_type,user_text,provider_raw,telegram_reply,status,channel,side_effects_applied)
-             VALUES(?1,?2,'system',?3,'','','memory_command','telegram',1)",
-            params![ts,scope,text],
+            "INSERT INTO turns(ts,chat_id,input_type,user_text,provider_raw,telegram_reply,status,channel,side_effects_applied,telegram_chat_id,telegram_message_thread_id)
+             VALUES(?1,?2,'system',?3,'','','memory_command','telegram',1,?4,?5)",
+            params![ts,scope,text,session.root_id,session.thread_id],
         )?;
         let source_turn = self.conn.last_insert_rowid();
         let new = if matches!(action, "correct" | "remember") {

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn parse_delivery_target_telegram() {
     let target = parse_delivery_target(Some(r#"{"kind":"telegram","chat_id":"12345"}"#));
-    assert!(matches!(target, Some(DeliveryTarget::Telegram { chat_id }) if chat_id == "12345"));
+    assert!(matches!(target, Some(DeliveryTarget::Telegram { chat_id, .. }) if chat_id == "12345"));
 }
 
 #[test]
@@ -28,6 +28,7 @@ fn serialize_roundtrip() {
     for target in [
         DeliveryTarget::Telegram {
             chat_id: "12345".into(),
+            thread_id: None,
         },
         DeliveryTarget::Stdout,
     ] {

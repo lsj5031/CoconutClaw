@@ -477,7 +477,7 @@ fn actual_once_large_corpus_has_fixed_memory_budget_and_scoped_bounded_fetch() {
         .split("## Curated memory data")
         .nth(1)
         .unwrap()
-        .split("## TASKS/pending.md")
+        .split("## Session pending tasks")
         .next()
         .unwrap();
     assert!(

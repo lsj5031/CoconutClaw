@@ -195,6 +195,118 @@ fn incoming_memory_commands_are_authorized_scoped_and_replay_safe() {
 }
 
 #[test]
+fn raw_reconstruction_matches_initial_final_content_and_effects() {
+    let reply = "Literal code:\n```xml\n<think>keep this code</think>\n```";
+    let envelope = format!(
+        "<think>\nSEND_APPROVAL: reasoning-only approval\nDELEGATE_TASK: reasoning-only delegation\nMEMORY_APPEND: reasoning-only memory\nTASK_APPEND: reasoning-only task\n</think>\nTELEGRAM_REPLY: {reply}\nSEND_DOCUMENT: final-file.pdf\nMEMORY_APPEND: final memory\nTASK_APPEND: final task"
+    );
+    let event =
+        serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":reply}})
+            .to_string();
+    for (raw, has_final_effects) in [
+        (envelope.as_str(), true),
+        (event.as_str(), false),
+        (reply, false),
+    ] {
+        let cfg = test_config();
+        let mut store = Store::open(&cfg).unwrap();
+        let resolved = crate::turn::resolve_turn_result(raw, "telegram", true, false);
+        assert_eq!(resolved.telegram_reply, reply);
+        let mut expected = vec![crate::markers::Effect::TelegramReply(reply.into())];
+        if has_final_effects {
+            expected.extend([
+                crate::markers::Effect::SendDocument("final-file.pdf".into()),
+                crate::markers::Effect::MemoryAppend("final memory".into()),
+                crate::markers::Effect::TaskAppend("final task".into()),
+            ]);
+            assert_eq!(resolved.effects, expected);
+        } else {
+            assert!(resolved.effects.is_empty());
+        }
+        store
+            .insert_turn(&TurnRecord {
+                ts: "2026-11-15T00:00:00+0000".into(),
+                chat_id: "321".into(),
+                input_type: "text".into(),
+                user_text: "synthetic reconstruction".into(),
+                provider_raw: raw.into(),
+                telegram_reply: reply.into(),
+                status: resolved.status.to_string(),
+                update_id: Some("9300".into()),
+                duration_ms: None,
+                channel: "telegram".into(),
+                task_run_id: None,
+                side_effects_applied: false,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reconcile_pending_turn_side_effects(&cfg, &mut store).unwrap(),
+            1
+        );
+        assert_eq!(
+            reconcile_pending_turn_side_effects(&cfg, &mut store).unwrap(),
+            0
+        );
+        let replay = store
+            .rendered_output_for_update_id("9300")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parse_markers(&replay).to_effects(), expected);
+        let scheduler = SessionScheduler::new(cfg.clone(), None);
+        let replayed = process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            r#"{"update_id":9300,"message":{"chat":{"id":"321"},"text":"synthetic duplicate"}}"#,
+        )
+        .unwrap();
+        assert_eq!(replayed.output.as_deref(), Some(replay.as_str()));
+        let tasks = store.managed_pending_task_entries_from_db().unwrap();
+        assert_eq!(
+            tasks,
+            if has_final_effects {
+                vec!["final task"]
+            } else {
+                vec![]
+            }
+        );
+        let memory: Vec<String> = store
+            .conn
+            .prepare("SELECT content FROM memory_records ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            memory,
+            if has_final_effects {
+                vec!["final memory"]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM approvals", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM task_runs", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
 fn pending_turn_side_effects_reconcile_candidates_and_tasks() {
     let cfg = test_config();
     fs::write(
@@ -480,7 +592,7 @@ fn telegram_update_from_secondary_configured_chat_is_accepted() {
     let WebhookAction::Turn(turn) = action else {
         panic!("expected turn action");
     };
-    assert_eq!(turn.chat_id, "999");
+    assert_eq!(turn.session.root_id, "999");
     assert_eq!(turn.input.user_text, "hello from another chat");
 }
 
@@ -723,13 +835,10 @@ fn parse_markers_stops_multiline_reply_at_next_marker() {
 }
 
 #[test]
-fn parse_markers_unescapes_inline_newlines() {
-    let payload = "TELEGRAM_REPLY: line one\\n\\nline two\\nline three";
-    let markers = parse_markers(payload);
-    assert_eq!(
-        markers.telegram_reply.as_deref(),
-        Some("line one\n\nline two\nline three")
-    );
+fn recover_unstructured_reply_unescapes_json_envelope_newlines() {
+    let payload = r#"{"type":"item.completed","item":{"type":"agent_message","text":"line one\n\nline two\nline three"}}"#;
+    let reply = recover_unstructured_reply(payload);
+    assert_eq!(reply.as_deref(), Some("line one\n\nline two\nline three"));
 }
 
 #[test]
@@ -901,7 +1010,7 @@ fn render_markdown_v2_escapes_backticks() {
 }
 
 #[test]
-fn context_requires_plain_text_when_parse_mode_off() {
+fn context_requests_native_rich_markdown_when_regular_parse_mode_is_off() {
     let cfg = test_config();
     let store = Store::open(&cfg).expect("store");
     let input = TurnInput {
@@ -926,11 +1035,12 @@ fn context_requires_plain_text_when_parse_mode_off() {
         },
     )
     .expect("context");
-    assert!(text.contains("Do not use markdown"));
+    assert!(text.contains("Use native Rich Markdown inside TELEGRAM_REPLY"));
+    assert!(!text.contains("Do not use markdown"));
 }
 
 #[test]
-fn context_allows_markdown_v2_when_parse_mode_enabled() {
+fn context_requests_native_rich_markdown_when_regular_parse_mode_is_markdown_v2() {
     let cfg = RuntimeConfig::test_builder()
         .telegram_parse_mode(TelegramParseMode::MarkdownV2)
         .build();
@@ -957,7 +1067,9 @@ fn context_allows_markdown_v2_when_parse_mode_enabled() {
         },
     )
     .expect("context");
-    assert!(text.contains("MarkdownV2"));
+    assert!(text.contains("Use native Rich Markdown inside TELEGRAM_REPLY"));
+    assert!(!text.contains("MarkdownV2 is enabled"));
+    assert!(!text.contains("Do not use CommonMark syntax"));
     assert!(!text.contains("Do not use markdown"));
 }
 

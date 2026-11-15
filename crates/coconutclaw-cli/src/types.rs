@@ -79,7 +79,7 @@ pub(crate) struct QuotedMessage {
 #[derive(Debug, Clone)]
 pub(crate) struct WebhookTurn {
     pub(crate) update_id: Option<String>,
-    pub(crate) chat_id: String,
+    pub(crate) session: crate::session::SessionKey,
     pub(crate) input: TurnInput,
     pub(crate) media: Option<IncomingMedia>,
     pub(crate) quoted: QuotedMessage,
@@ -116,11 +116,11 @@ pub(crate) enum WebhookAction {
     },
     Fresh {
         update_id: Option<String>,
-        chat_id: String,
+        session: crate::session::SessionKey,
     },
     Cancel {
         update_id: Option<String>,
-        chat_id: String,
+        session: crate::session::SessionKey,
     },
     Turn(Box<WebhookTurn>),
 }

@@ -32,21 +32,27 @@ not authentication or connectivity.
 ## Behavior
 
 - Telegram polling only, restricted to configured chat IDs.
-- One ordered conversation lane and explicit Codex session per chat.
+- One ordered conversation lane and explicit Codex session per private topic,
+  with a separate root session. Five task workers globally, with durable queues.
+- Native Rich Markdown final replies, including tables, headings and math.
+  See [topics, rich output and delivery safety](docs/topics-rich.md) for mode
+  transitions, supported markup, API limits and mock acceptance evidence.
 - `/fresh` starts a new context/session without deleting history.
 - Images are attached through Codex's image input; documents and videos are
   available as local file paths. No local vision engine or audio transcription.
-- `SOUL.md`, `TASKS/pending.md` and SQLite history provide local context.
-  Chat-scoped SQLite memory has compact curated context and bounded FTS5
+- `SOUL.md`, session-scoped SQLite pending tasks and history provide context.
+  `TASKS/pending.md` is an operator-only aggregate: neither its manual bytes nor
+  its mixed-session managed block is injected into provider prompts.
+  Session-scoped SQLite memory has compact curated context and bounded FTS5
   search/source reads. `MEMORY_APPEND` proposes a candidate, not authority.
   Use `/memory remember <text>`, `list [before-id]`, `search <text>`, `get <id>`,
   `promote <id>`, `correct <active-id> <text>` or `undo`.
   See [local memory](docs/memory.md) for budgets, scope and limitations.
 - A `DELEGATE_TASK` request creates a durable task ID with a separate Codex
   session and no parent conversation history. Its labeled result is delivered
-  to, and retained in the history of, the originating chat.
+  to, and retained in the history of, the originating topic/root session.
 - `/tasks`, `/cancel [task-id]`, `/approve <approval-id>` and
-  `/reject <approval-id>` are scoped to the originating chat.
+  `/reject <approval-id>` are scoped to the originating topic/root session.
 - `SEND_APPROVAL` pauses the request until an explicit approval. Approval is
   advisory model coordination, not a sandbox or substitute for Codex's own
   execution policy. The default `EXEC_POLICY = "safe"` does not bypass Codex
@@ -61,8 +67,9 @@ Provider progress is persisted as a coalesced, bounded latest status even when
 the Telegram placeholder fails. Managed Markdown projections use a single writer,
 synced staging files and atomic replacement, preserving surrounding manual bytes.
 
-Telegram has no transactional send API. A crash after a successful send but
-before its local acknowledgment can duplicate a message or attachment.
+Telegram has no transactional send API. Durable task sends with ambiguous
+outcomes, including a crash before acknowledgment, are held for inspection
+rather than automatically resent or switched to another representation.
 Cancellation stops the local process group; it cannot undo actions already
 performed. Codex subprocess reconciliation across a host crash is not claimed.
 Handled SIGINT/SIGTERM stops intake and queue advancement, cancels active groups,

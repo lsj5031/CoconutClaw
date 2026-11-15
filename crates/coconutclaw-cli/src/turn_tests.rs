@@ -92,19 +92,103 @@ fn resolve_turn_result_think_tag_strip_after() {
 }
 
 #[test]
-fn resolve_turn_result_think_tag_multiple() {
-    let raw_output = "<think> thought 1 </think> TELEGRAM_REPLY: some text \n<think> thought 2 </think> TELEGRAM_REPLY: Hello";
-    let result = resolve_turn_result(raw_output, "telegram", true, false);
-    assert_eq!(result.status, TurnStatus::Ok);
-    assert_eq!(result.telegram_reply, "some text\n\nHello");
+fn resolve_turn_result_preserves_thinking_tags_in_native_marker_values() {
+    for reply in [
+        "Show this XML literally:\n\n```xml\n<think>keep this exact code</think>\n```",
+        "Show this XML literally:\n\n```xml\n<think>keep this unclosed code\n```\nKeep the tail.",
+        "Show this XML literally:\n\n```xml\n</think>\n```\nKeep the tail.",
+        "Inline code: `<think>literal</think>` and `<think>`.",
+    ] {
+        for success in [true, false] {
+            let result = resolve_turn_result(
+                &format!("TELEGRAM_REPLY: {reply}"),
+                "telegram",
+                success,
+                false,
+            );
+            assert_eq!(result.telegram_reply, reply);
+            assert_eq!(
+                result.effects,
+                vec![crate::markers::Effect::TelegramReply(reply.to_string())]
+            );
+            assert_eq!(
+                result.status,
+                if success {
+                    TurnStatus::Ok
+                } else {
+                    TurnStatus::AgentError
+                }
+            );
+        }
+    }
 }
 
 #[test]
-fn resolve_turn_result_think_tag_unclosed() {
+fn resolve_turn_result_preserves_thinking_tags_in_recovered_assistant_text() {
+    for reply in [
+        "Show this XML literally:\n\n```xml\n<think>keep this exact code</think>\n```",
+        "Show this XML literally:\n\n```xml\n<think>keep the unclosed code\n```",
+        "<think>literal recovered text</think>",
+        "<think>unclosed literal recovered text",
+    ] {
+        let event = serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":reply}}).to_string();
+        for raw in [reply, &event] {
+            for success in [true, false] {
+                let result = resolve_turn_result(raw, "telegram", success, false);
+                assert_eq!(result.telegram_reply, reply);
+                assert_eq!(
+                    result.status,
+                    if success {
+                        TurnStatus::ParseRecovered
+                    } else {
+                        TurnStatus::AgentErrorRecovered
+                    }
+                );
+                assert!(result.effects.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn resolve_turn_result_reasoning_envelope_controls() {
+    for prefix in [
+        "<think>synthetic private reasoning</think>",
+        "<think>first</think>\n<think>second</think>",
+        "<think>\nTELEGRAM_REPLY: not the final\nSEND_APPROVAL: not an effect\n</think>",
+    ] {
+        for marker in ["TELEGRAM_REPLY", "REPLY"] {
+            let raw = format!("{prefix} {marker}: Final answer.");
+            let result = resolve_turn_result(&raw, "telegram", true, false);
+            assert_eq!(result.telegram_reply, "Final answer.");
+            assert_eq!(result.status, TurnStatus::Ok);
+            assert_eq!(
+                result.effects,
+                vec![crate::markers::Effect::TelegramReply(
+                    "Final answer.".into()
+                )]
+            );
+        }
+    }
+}
+
+#[test]
+fn resolve_turn_result_does_not_strip_thinking_tags_after_reply_marker() {
+    let raw_output = "<think> thought 1 </think> TELEGRAM_REPLY: some text \n<think> thought 2 </think> TELEGRAM_REPLY: Hello";
+    let result = resolve_turn_result(raw_output, "telegram", true, false);
+    assert_eq!(result.status, TurnStatus::Ok);
+    assert_eq!(
+        result.telegram_reply,
+        "some text \n<think> thought 2 </think> TELEGRAM_REPLY: Hello"
+    );
+}
+
+#[test]
+fn resolve_turn_result_unclosed_recovered_text_is_literal() {
     let raw_output = "<think> thought 1 </think> some text <think> thought 2 TELEGRAM_REPLY: Hello";
     let result = resolve_turn_result(raw_output, "telegram", true, false);
     assert_eq!(result.status, TurnStatus::ParseRecovered);
-    assert_eq!(result.telegram_reply, "some text");
+    assert_eq!(result.telegram_reply, raw_output);
 }
 
 #[test]

@@ -17,8 +17,8 @@ use crate::cancel::CancelRouter;
 use crate::context::{append_memory_and_tasks, build_context};
 use crate::delivery::{DeliveryTarget, TaskSource};
 use crate::markers::{
-    extract_assistant_text_from_json_stream, extract_error_summary, parse_markers,
-    recover_unstructured_reply, render_output, should_retry_provider_failure,
+    extract_assistant_text_from_json_stream, extract_error_summary, final_marker_payload,
+    parse_markers, recover_unstructured_reply, render_output, should_retry_provider_failure,
 };
 use crate::store::{Store, TurnRecord};
 use crate::telegram::{
@@ -100,9 +100,9 @@ pub(crate) fn process_turn_with_status(
             TaskSource::Local => Some("local".to_string()),
         })
         .unwrap_or_else(|| "local".to_string());
-    let (chat_id, history_alias) = crate::session::history_ids(&chat_id, &context_channel);
+    let (chat_id, _) = crate::session::history_ids(&chat_id, &context_channel);
     let progress_chat_id = progress_target
-        .map(|target| target.display_id().to_owned())
+        .and_then(|target| target.telegram_route())
         .or_else(|| match source {
             TaskSource::Telegram => Some(chat_id.clone()),
             TaskSource::Local => None,
@@ -197,16 +197,16 @@ pub(crate) fn process_turn_with_status(
     });
 
     let boundary_id = store.latest_boundary_id(&chat_id, &context_channel)?;
-    let session_key = if revision == 0 {
+    let base_session_key = if revision == 0 {
         format!("codex_session:{chat_id}:{boundary_id}")
     } else {
         format!("codex_session:{chat_id}:{boundary_id}:memory:{revision}")
     };
-    let native_session = store.kv_get(&session_key)?.or(if revision == 0 {
-        store.kv_get(&format!("codex_session:{history_alias}:{boundary_id}"))?
-    } else {
-        None
-    });
+    // Pre-isolation native transcripts may contain the old shared task file.
+    // Start an explicitly new context generation; retain every old ID/history
+    // row, but never fall back to resuming those unscoped transcripts.
+    let session_key = format!("{base_session_key}:context:scoped-tasks-v1");
+    let native_session = store.kv_get(&session_key)?;
     let mut provider_result = run_provider_session(
         input.attachment_path.as_ref(),
         cfg,
@@ -343,9 +343,6 @@ fn telegram_progress_chat_id(chat_id: &str) -> String {
     chat_id
         .strip_prefix("telegram:")
         .unwrap_or(chat_id)
-        .split_once('#')
-        .map(|(root, _)| root)
-        .unwrap_or_else(|| chat_id.strip_prefix("telegram:").unwrap_or(chat_id))
         .to_string()
 }
 
@@ -366,28 +363,8 @@ pub(crate) fn resolve_turn_result(
         };
     }
 
-    // Strip<think>...</think> blocks emitted by reasoning models (e.g. Qwen3.5).
-    let mut cleaned = String::new();
-    let mut current = raw_output;
-    while let Some(start) = current.find("<think>") {
-        cleaned.push_str(&current[..start]);
-        if let Some(end) = current[start + "<think>".len()..].find("</think>") {
-            let skip_index = start + "<think>".len() + end + "</think>".len();
-            current = &current[skip_index..];
-        } else {
-            // Unclosed think tag: assume the rest of the output is thought process.
-            current = "";
-            break;
-        }
-    }
-    cleaned.push_str(current);
-    let cleaned = cleaned.trim().to_string();
-    let raw_output = if cleaned.is_empty() && !raw_output.trim().is_empty() {
-        // If the entire output was inside <think>, fallback to original text.
-        raw_output
-    } else {
-        &cleaned
-    };
+    let cleaned = final_marker_payload(raw_output).trim().to_string();
+    let raw_output = &cleaned;
     let markers = parse_markers(raw_output);
     let telegram_reply = markers.reply().cloned().unwrap_or_default();
     let effects = markers.to_effects();

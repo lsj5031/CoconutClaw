@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn native_markdown_backslashes_survive_marker_round_trips() {
+    for reply in [
+        r"$\theta + \nu$",
+        r"line one\n\nline two\nline three",
+        r"Escapes: `\t`, `\n`, `\r`, `\\n`, and `C:\temp\notes`.",
+        concat!(r"$\theta + \nu + \rho$", "\n\n", r"Code: `\t \n \r`"),
+    ] {
+        for prefix in ["TELEGRAM_REPLY", "REPLY"] {
+            let parsed = parse_markers(&format!("{prefix}: {reply}"));
+            assert_eq!(parsed.reply().map(String::as_str), Some(reply));
+            let saved = render_effects(&parsed.to_effects());
+            let replayed = parse_markers(&saved);
+            assert_eq!(replayed.reply().map(String::as_str), Some(reply));
+            assert_eq!(render_effects(&replayed.to_effects()), saved);
+        }
+    }
+}
+
+#[test]
+fn json_assistant_envelope_decodes_transport_escapes_only_once() {
+    let reply = concat!(r"$\theta + \nu$", "\n\n", r"Code: `\t \n \r` 🥥");
+    let envelope = serde_json::json!({
+        "type":"item.completed","item":{"type":"agent_message","text":reply}
+    });
+    let decoded = recover_unstructured_reply(&envelope.to_string()).unwrap();
+    assert_eq!(decoded, reply);
+    assert_eq!(
+        parse_markers(&format!("TELEGRAM_REPLY: {decoded}")).reply(),
+        Some(&decoded)
+    );
+}
+
+#[test]
 fn test_should_retry_provider_failure_plain_text() {
     assert!(should_retry_provider_failure("network failure"));
     assert!(should_retry_provider_failure("connection reset by peer"));

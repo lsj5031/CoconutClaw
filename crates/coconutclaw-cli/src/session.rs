@@ -22,13 +22,59 @@ pub(crate) struct SessionKey {
 
 impl SessionKey {
     pub(crate) fn telegram(chat_id: &str) -> Self {
+        let raw = chat_id.strip_prefix("telegram:").unwrap_or(chat_id);
+        let (root, thread) = raw.split_once('#').map_or((raw, None), |(root, thread)| {
+            (root, Some(thread.to_string()))
+        });
         Self {
             platform: SessionPlatform::Telegram,
-            root_id: chat_id
-                .strip_prefix("telegram:")
-                .unwrap_or(chat_id)
-                .to_string(),
-            thread_id: None,
+            root_id: root.to_string(),
+            thread_id: thread,
+        }
+    }
+
+    /// Only transport metadata may choose a topic, never model text or a
+    /// channel's direct-messages topic. Called after the chat allowlist guard.
+    pub(crate) fn from_telegram_message(message: &serde_json::Value) -> anyhow::Result<Self> {
+        let chat = &message["chat"];
+        let id = chat["id"]
+            .as_i64()
+            .or_else(|| {
+                chat["id"]
+                    .as_str()
+                    .filter(|raw| !raw.is_empty() && raw.bytes().all(|ch| ch.is_ascii_digit()))
+                    .and_then(|raw| raw.parse().ok())
+            })
+            .filter(|id| *id > 0 && *id < (1i64 << 52))
+            .ok_or_else(|| anyhow::anyhow!("invalid private chat id"))?;
+        if chat.get("type").is_some_and(|kind| kind != "private")
+            || message.get("direct_messages_topic_id").is_some()
+            || message.get("direct_messages_topic").is_some()
+        {
+            anyhow::bail!("only private bot chats are supported");
+        }
+        let thread_id = message
+            .get("message_thread_id")
+            .map(|value| {
+                value
+                    .as_i64()
+                    .filter(|id| *id > 0 && *id <= i32::MAX as i64)
+                    .map(|id| id.to_string())
+                    .ok_or_else(|| anyhow::anyhow!("invalid message_thread_id"))
+            })
+            .transpose()?;
+        Ok(Self {
+            platform: SessionPlatform::Telegram,
+            root_id: id.to_string(),
+            thread_id,
+        })
+    }
+
+    pub(crate) fn telegram_route_id(&self) -> String {
+        if self.thread_id.is_none() {
+            self.root_id.clone()
+        } else {
+            self.id()
         }
     }
 

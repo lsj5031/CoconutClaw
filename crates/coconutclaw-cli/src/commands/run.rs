@@ -35,7 +35,10 @@ pub(crate) fn run_run(
     }
     let client = crate::telegram::build_telegram_client(cfg)?;
     let mut runtime_cfg = cfg.clone();
-    runtime_cfg.telegram_bot_username = Some(crate::telegram::discover_bot_username(&client, cfg)?);
+    runtime_cfg.telegram_bot_username = Some(crate::telegram::discover_bot_username(
+        &client,
+        &mut runtime_cfg,
+    )?);
     let cfg = &runtime_cfg;
     let cancel_router = Some(crate::cancel::CancelRouter::start(cfg)?);
     let scheduler = crate::scheduler::SessionScheduler::new(cfg.clone(), cancel_router);

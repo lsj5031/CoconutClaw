@@ -56,9 +56,11 @@ impl Store {
 
     pub(crate) fn insert_turn(&self, turn: &TurnRecord) -> Result<Option<i64>> {
         let (chat_id, _) = crate::session::history_ids(&turn.chat_id, &turn.channel);
+        let session = (turn.channel == "telegram" && !chat_id.starts_with("local:"))
+            .then(|| crate::session::SessionKey::telegram(&chat_id));
         self.conn.execute(
-            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, channel, task_run_id, side_effects_applied)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, duration_ms, channel, task_run_id, side_effects_applied, telegram_chat_id, telegram_message_thread_id)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 turn.ts,
                 chat_id,
@@ -74,6 +76,8 @@ impl Store {
                 turn.channel,
                 turn.task_run_id,
                 turn.side_effects_applied as i32,
+                session.as_ref().map(|session| &session.root_id),
+                session.as_ref().and_then(|session| session.thread_id.as_deref()),
             ],
         )?;
         if self.conn.changes() > 0 {
@@ -138,10 +142,14 @@ impl Store {
         channel: &str,
     ) -> Result<bool> {
         let (chat_id, _) = crate::session::history_ids(chat_id, channel);
+        let session = (channel == "telegram" && !chat_id.starts_with("local:"))
+            .then(|| crate::session::SessionKey::telegram(&chat_id));
         self.conn.execute(
-            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, channel)
-             VALUES(?1, ?2, 'system', '---CONTEXT_BOUNDARY---', '', '', '', '', 'boundary', ?3, ?4)",
-            params![ts, chat_id, update_id, channel],
+            "INSERT OR IGNORE INTO turns(ts, chat_id, input_type, user_text, asr_text, provider_raw, telegram_reply, voice_reply, status, update_id, channel, telegram_chat_id, telegram_message_thread_id)
+             VALUES(?1, ?2, 'system', '---CONTEXT_BOUNDARY---', '', '', '', '', 'boundary', ?3, ?4, ?5, ?6)",
+            params![ts, chat_id, update_id, channel,
+                session.as_ref().map(|session| &session.root_id),
+                session.as_ref().and_then(|session| session.thread_id.as_deref())],
         )?;
         Ok(self.conn.changes() > 0)
     }
@@ -217,7 +225,26 @@ impl Store {
         }))
     }
 
-    /// Read managed pending task entries from SQLite (used by sync to bridge write gap).
+    /// Authoritative model context: ownership comes only from the persisted
+    /// source turn, never a model-supplied scope or an unscoped manual file.
+    pub(crate) fn managed_pending_task_entries_for_session(
+        &self,
+        session_id: &str,
+        channel: &str,
+    ) -> Result<Vec<String>> {
+        let (canonical, alias) = crate::session::history_ids(session_id, channel);
+        let mut stmt = self.conn.prepare(
+            "SELECT task.content FROM tasks task JOIN turns source ON source.id=task.turn_id
+             WHERE task.managed_file=1 AND task.done=0
+               AND source.chat_id IN (?1,?2) AND source.channel=?3
+             ORDER BY task.id ASC",
+        )?;
+        Ok(stmt
+            .query_map(params![canonical, alias, channel], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Operator-only aggregate projection (used by sync to bridge write gap).
     pub(crate) fn managed_pending_task_entries_from_db(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT content

@@ -24,6 +24,93 @@ use crate::util::value_to_string;
 
 pub(crate) const TELEGRAM_TEXT_CHAR_LIMIT: usize = 4096;
 
+pub(crate) enum RichSendOutcome {
+    Sent,
+    Rejected,
+    RateLimited(u64),
+    Unknown,
+}
+
+#[derive(Debug)]
+pub(crate) struct TelegramApiFailure {
+    pub(crate) code: u64,
+    pub(crate) retry_after: Option<u64>,
+    description: String,
+}
+impl std::fmt::Display for TelegramApiFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "telegram HTTP {}: {}", self.code, self.description)
+    }
+}
+impl std::error::Error for TelegramApiFailure {}
+
+/// A single attempt: transport errors and 5xx are not evidence of non-delivery.
+/// No request-level retry may run underneath the durable rich operation.
+pub(crate) fn telegram_send_rich(
+    client: &Client,
+    cfg: &RuntimeConfig,
+    route: &str,
+    markdown: &str,
+) -> Result<RichSendOutcome> {
+    let base = telegram_api_base(cfg)?;
+    let mut params = telegram_route_params(route)?;
+    params.push((
+        "rich_message".into(),
+        serde_json::json!({"markdown":markdown}).to_string(),
+    ));
+    let request = client
+        .post(format!("{base}/sendRichMessage"))
+        .form(&params)
+        .build()
+        .map_err(reqwest::Error::without_url)?;
+    let response = match execute_request(client, request) {
+        Ok(response) => response,
+        Err(_) => return Ok(RichSendOutcome::Unknown),
+    };
+    let status = response.0.as_u16();
+    if response.0.is_server_error() {
+        return Ok(RichSendOutcome::Unknown);
+    }
+    let value: Value = serde_json::from_slice(&response.1).unwrap_or(Value::Null);
+    let code = value["error_code"].as_u64().unwrap_or(status as u64);
+    if code == 429 {
+        return Ok(RichSendOutcome::RateLimited(
+            value["parameters"]["retry_after"]
+                .as_u64()
+                .unwrap_or(1)
+                .max(1),
+        ));
+    }
+    if response.0.is_success()
+        && value["ok"] == true
+        && value["result"]["message_id"].as_i64().is_some()
+    {
+        return Ok(RichSendOutcome::Sent);
+    }
+    let description = value["description"]
+        .as_str()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Only explicit API-level format/unsupported rejection permits a different
+    // representation. Authentication, routing and unknown errors are not format errors.
+    if value["ok"] == false
+        && matches!(code, 400 | 404)
+        && [
+            "parse",
+            "format",
+            "rich",
+            "too long",
+            "too many",
+            "method not found",
+        ]
+        .iter()
+        .any(|needle| description.contains(needle))
+    {
+        return Ok(RichSendOutcome::Rejected);
+    }
+    Ok(RichSendOutcome::Unknown)
+}
+
 /// Only a verified runtime identity can authorize an addressed command.
 pub(crate) fn command_token<'a>(token: &'a str, username: Option<&str>) -> Option<&'a str> {
     match token.split_once('@') {
@@ -34,7 +121,7 @@ pub(crate) fn command_token<'a>(token: &'a str, username: Option<&str>) -> Optio
     }
 }
 
-pub(crate) fn discover_bot_username(client: &Client, cfg: &RuntimeConfig) -> Result<String> {
+pub(crate) fn discover_bot_username(client: &Client, cfg: &mut RuntimeConfig) -> Result<String> {
     let base = telegram_api_base(cfg)?;
     let response = telegram_request(client, cfg, "getMe", || {
         Ok(client
@@ -43,6 +130,15 @@ pub(crate) fn discover_bot_username(client: &Client, cfg: &RuntimeConfig) -> Res
             .map_err(reqwest::Error::without_url)?)
     })?;
     let value = parse_telegram_response(response, "getMe")?;
+    let bot = &value["result"];
+    cfg.telegram_topics_enabled = Some(bot["has_topics_enabled"].as_bool().unwrap_or(false));
+    tracing::info!(
+        has_topics_enabled = bot["has_topics_enabled"].as_bool().unwrap_or(false),
+        allows_users_to_create_topics = bot["allows_users_to_create_topics"]
+            .as_bool()
+            .unwrap_or(false),
+        "private chat topic capabilities; enable/disable topic mode manually in BotFather; root and topic sessions always remain separate"
+    );
     value
         .get("result")
         .filter(|bot| bot.get("is_bot").and_then(Value::as_bool) == Some(true))
@@ -330,11 +426,9 @@ pub(crate) fn send_progress_message(cfg: &RuntimeConfig, chat_id: &str) -> Resul
     let client = build_telegram_client(cfg)?;
     let base = telegram_api_base(cfg)?;
     let reply_markup = progress_reply_markup();
-    let params = [
-        ("chat_id", chat_id.to_string()),
-        ("text", "Thinking...".to_string()),
-        ("reply_markup", reply_markup.to_string()),
-    ];
+    let mut params = telegram_route_params(chat_id)?;
+    params.push(("text".into(), "Thinking...".into()));
+    params.push(("reply_markup".into(), reply_markup.into()));
     let response = telegram_request(&client, cfg, "progress message", || {
         Ok(client
             .post(format!("{base}/sendMessage"))
@@ -529,6 +623,16 @@ pub(crate) fn send_or_edit_text(
         if let Err(err) =
             telegram_edit_message_text(client, cfg, chat_id, message_id, &first_chunk, false)
         {
+            if !err
+                .downcast_ref::<TelegramApiFailure>()
+                .is_some_and(|error| {
+                    error.code == 400
+                        && (error.description.contains("message to edit not found")
+                            || error.description.contains("message can't be edited"))
+                })
+            {
+                return Err(err);
+            }
             tracing::warn!("failed to edit progress message with reply, sending new: {err:#}");
             let _ = telegram_remove_keyboard(client, cfg, chat_id, message_id);
             if let Err(err) = telegram_send_message(client, cfg, chat_id, &first_chunk) {
@@ -1047,8 +1151,9 @@ pub(crate) fn telegram_delete_message(
     message_id: &str,
 ) -> Result<()> {
     let base = telegram_api_base(cfg)?;
+    let session = crate::session::SessionKey::telegram(chat_id);
     let params = [
-        ("chat_id", chat_id.to_string()),
+        ("chat_id", session.root_id),
         ("message_id", message_id.to_string()),
     ];
     let response = telegram_request(client, cfg, "deleteMessage", || {
@@ -1070,8 +1175,9 @@ pub(crate) fn telegram_remove_keyboard(
 ) -> Result<()> {
     let base = telegram_api_base(cfg)?;
     let reply_markup = r#"{"inline_keyboard":[]}"#;
+    let session = crate::session::SessionKey::telegram(chat_id);
     let params = [
-        ("chat_id", chat_id.to_string()),
+        ("chat_id", session.root_id),
         ("message_id", message_id.to_string()),
         ("reply_markup", reply_markup.to_string()),
     ];
@@ -1127,7 +1233,9 @@ pub(crate) fn telegram_text_form_params(
     reply_markup: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut params = Vec::new();
-    params.push(("chat_id".to_string(), chat_id.to_string()));
+    // Routing identifiers are validated at ingress; keep the historical helper
+    // signature for regular formatting callers.
+    params.extend(telegram_route_params(chat_id).expect("validated Telegram route"));
     if let Some(message_id) = message_id {
         params.push(("message_id".to_string(), message_id.to_string()));
     }
@@ -1172,10 +1280,21 @@ pub(crate) fn telegram_post_form(
     params: &[(String, String)],
     action: &str,
 ) -> Result<Value> {
+    let mut params = params.to_vec();
+    if let Some(index) = params.iter().position(|(key, _)| key == "chat_id") {
+        let route = params.remove(index).1;
+        // Text helpers may already have expanded the topic.
+        let has_thread = params.iter().any(|(key, _)| key == "message_thread_id");
+        for (key, value) in telegram_route_params(&route)? {
+            if key != "message_thread_id" || !has_thread {
+                params.push((key, value));
+            }
+        }
+    }
     let response = telegram_request(client, cfg, action, || {
         client
             .post(url)
-            .form(params)
+            .form(&params)
             .build()
             .map_err(|error| error.without_url().into())
     })?;
@@ -1200,7 +1319,7 @@ fn telegram_request(
                 }
                 let body = String::from_utf8_lossy(&response.1);
                 if retries == cfg.telegram_api_retry_attempts {
-                    bail!("telegram {action} HTTP {status}; retry budget exhausted");
+                    return Ok(response);
                 }
                 if status == 429 {
                     Duration::from_secs(
@@ -1330,8 +1449,11 @@ pub(crate) fn telegram_send_media_file(
 
     let base = telegram_api_base(cfg)?;
     let response = telegram_request(client, cfg, method, || {
-        let form = multipart::Form::new()
-            .text("chat_id", chat_id.to_string())
+        let mut form = multipart::Form::new();
+        for (key, value) in telegram_route_params(chat_id)? {
+            form = form.text(key, value);
+        }
+        let form = form
             .file(field.to_string(), path)
             .context("failed to prepare multipart upload")?;
         Ok(client
@@ -1344,6 +1466,28 @@ pub(crate) fn telegram_send_media_file(
     Ok(())
 }
 
+/// Internal session IDs never cross the Telegram boundary as chat_id.
+/// All send paths, including multipart documents, expand the same route.
+pub(crate) fn telegram_route_params(route: &str) -> Result<Vec<(String, String)>> {
+    let session = crate::session::SessionKey::telegram(route);
+    let chat_id = session
+        .root_id
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0 && *id < (1i64 << 52))
+        .ok_or_else(|| anyhow::anyhow!("invalid Telegram private chat route"))?;
+    let mut params = vec![("chat_id".into(), chat_id.to_string())];
+    if let Some(thread) = session.thread_id {
+        let id = thread
+            .parse::<i64>()
+            .ok()
+            .filter(|id| *id > 0 && *id <= i32::MAX as i64)
+            .ok_or_else(|| anyhow::anyhow!("invalid Telegram topic route"))?;
+        params.push(("message_thread_id".into(), id.to_string()));
+    }
+    Ok(params)
+}
+
 pub(crate) fn parse_telegram_response(
     response: (reqwest::StatusCode, Vec<u8>),
     action: &str,
@@ -1351,10 +1495,24 @@ pub(crate) fn parse_telegram_response(
     let (status, bytes) = response;
     let body = String::from_utf8(bytes)
         .with_context(|| format!("invalid UTF-8 in telegram {action} response"))?;
-    if !status.is_success() {
-        bail!("telegram {action} HTTP {}: {body}", status.as_u16());
+    let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    if !status.is_success() || value["ok"] == false {
+        return Err(TelegramApiFailure {
+            code: if status.is_server_error() {
+                status.as_u16() as u64
+            } else {
+                value["error_code"]
+                    .as_u64()
+                    .unwrap_or(status.as_u16() as u64)
+            },
+            retry_after: value["parameters"]["retry_after"].as_u64(),
+            description: value["description"]
+                .as_str()
+                .unwrap_or("unknown Telegram error")
+                .to_string(),
+        }
+        .into());
     }
-
     let value: Value = serde_json::from_str(&body)
         .with_context(|| format!("telegram {action} returned invalid JSON: {body}"))?;
     let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);

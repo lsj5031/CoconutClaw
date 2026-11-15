@@ -24,6 +24,9 @@ use crate::{InputType, QuotedMessage, TurnInput};
 #[path = "phase0_tests.rs"]
 mod phase0;
 
+#[path = "topics_rich_tests.rs"]
+mod topics_rich;
+
 fn write_fake_provider_script(
     dir: &std::path::Path,
     stem: &str,
@@ -128,6 +131,7 @@ fn wait_for_terminal_tasks(cfg: &RuntimeConfig, task_ids: &[i64]) {
 struct FakeTelegramServer {
     base_url: String,
     requests: Arc<Mutex<Vec<String>>>,
+    full_requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -153,6 +157,8 @@ impl FakeTelegramServer {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let requests_clone = Arc::clone(&requests);
+        let full_requests = Arc::new(Mutex::new(Vec::new()));
+        let full_requests_clone = full_requests.clone();
         let stop_clone = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
             while !stop_clone.load(Ordering::SeqCst) {
@@ -183,6 +189,7 @@ impl FakeTelegramServer {
                             }
                         }
                         let request = String::from_utf8_lossy(&data).to_string();
+                        full_requests_clone.lock().unwrap().push(request.clone());
                         let path = request
                             .lines()
                             .next()
@@ -209,6 +216,7 @@ impl FakeTelegramServer {
         Self {
             base_url: format!("http://{addr}/bot123:token"),
             requests,
+            full_requests,
             stop,
             handle: Some(handle),
         }
@@ -282,6 +290,7 @@ fn build_resume_payload_keeps_attachment_ownership() {
         },
         delivery: DeliveryTarget::Telegram {
             chat_id: "321".into(),
+            thread_id: None,
         },
         source_user_id: Some("U123".to_string()),
         progress_message_id: None,

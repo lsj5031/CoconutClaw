@@ -109,10 +109,19 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
                 .and_then(|node| node.get("id"))
                 .map(value_to_string);
             if is_allowed_chat(cfg, chat_id.as_deref()) {
-                return Ok(WebhookAction::Cancel {
-                    update_id,
-                    chat_id: chat_id.unwrap_or_default(),
-                });
+                let session = match SessionKey::from_telegram_message(&callback_query["message"]) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        return Ok(WebhookAction::Ignore {
+                            update_id,
+                            reason: error.to_string(),
+                        });
+                    }
+                };
+                if session.thread_id.is_some() && cfg.telegram_topics_enabled == Some(false) {
+                    return Ok(WebhookAction::Ignore { update_id, reason: "topic route received with topic mode OFF; enable in BotFather, history preserved".into() });
+                }
+                return Ok(WebhookAction::Cancel { update_id, session });
             }
             let actual_chat = chat_id.unwrap_or_else(|| "<missing>".to_string());
             return Ok(WebhookAction::Ignore {
@@ -155,6 +164,23 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
             reason: format!("chat_id_mismatch actual={chat_id} configured={configured_chat}"),
         });
     }
+    let session = match SessionKey::from_telegram_message(message) {
+        Ok(session) => session,
+        Err(error) => {
+            return Ok(WebhookAction::Ignore {
+                update_id,
+                reason: error.to_string(),
+            });
+        }
+    };
+    if session.thread_id.is_some() && cfg.telegram_topics_enabled == Some(false) {
+        return Ok(WebhookAction::Ignore {
+            update_id,
+            reason:
+                "topic route received with topic mode OFF; enable in BotFather, history preserved"
+                    .into(),
+        });
+    }
 
     let message_text = message
         .get("text")
@@ -180,10 +206,10 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
     }
 
     if message_text.trim().eq_ignore_ascii_case("/fresh") {
-        return Ok(WebhookAction::Fresh { update_id, chat_id });
+        return Ok(WebhookAction::Fresh { update_id, session });
     }
     if message_text.trim().eq_ignore_ascii_case("/cancel") {
-        return Ok(WebhookAction::Cancel { update_id, chat_id });
+        return Ok(WebhookAction::Cancel { update_id, session });
     }
 
     let reply_from = message
@@ -237,7 +263,7 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
 
     Ok(WebhookAction::Turn(Box::new(WebhookTurn {
         update_id,
-        chat_id,
+        session,
         input,
         media,
         quoted: QuotedMessage {
@@ -283,8 +309,9 @@ pub(crate) fn process_webhook_line(
                 progress_message_id: None,
             })
         }
-        WebhookAction::Cancel { update_id, chat_id } => {
-            let session_id = SessionKey::telegram(&chat_id).id();
+        WebhookAction::Cancel { update_id, session } => {
+            let chat_id = session.telegram_route_id();
+            let session_id = session.id();
             let reply = if let Some(task_id) = scheduler.cancel_active_for_session(&session_id)? {
                 format!("Cancel requested for task #{task_id}.")
             } else {
@@ -302,9 +329,9 @@ pub(crate) fn process_webhook_line(
                 progress_message_id: None,
             })
         }
-        WebhookAction::Fresh { update_id, chat_id } => {
+        WebhookAction::Fresh { update_id, session } => {
+            let chat_id = session.telegram_route_id();
             let ts = iso_now(&cfg.timezone);
-            let session = SessionKey::telegram(&chat_id);
             match store.insert_boundary_turn(&ts, &session.id(), update_id.as_deref(), "telegram") {
                 Ok(true) => {
                     tracing::info!("inserted context boundary for session={}", session.id())
@@ -329,7 +356,7 @@ pub(crate) fn process_webhook_line(
             })
         }
         WebhookAction::Turn(turn) => {
-            let chat_id = turn.chat_id.clone();
+            let chat_id = turn.session.telegram_route_id();
             if let Some(outcome) = maybe_handle_telegram_command(
                 cfg,
                 store,

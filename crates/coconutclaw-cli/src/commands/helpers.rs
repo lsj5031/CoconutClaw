@@ -39,8 +39,9 @@ fn enqueue_telegram_turn(
     turn: WebhookTurn,
     progress_message_id: Option<String>,
 ) -> Result<i64> {
-    let session = SessionKey::telegram(&turn.chat_id);
-    let chat_id = turn.chat_id.clone();
+    let session = turn.session;
+    let chat_id = session.root_id.clone();
+    let thread_id = session.thread_id.clone();
     scheduler.enqueue(crate::scheduler::TaskRequest {
         session,
         source: TaskSource::Telegram,
@@ -49,7 +50,7 @@ fn enqueue_telegram_turn(
         update_id: turn.update_id,
         media: turn.media.map(crate::scheduler::TaskMedia::Telegram),
         quoted: turn.quoted,
-        delivery: DeliveryTarget::Telegram { chat_id },
+        delivery: DeliveryTarget::Telegram { chat_id, thread_id },
         source_user_id: None,
         progress_message_id,
     })

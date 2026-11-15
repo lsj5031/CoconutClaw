@@ -4,11 +4,12 @@ use rusqlite::params;
 
 impl Store {
     pub(crate) fn insert_task_run(&self, params: InsertTaskRunParams) -> Result<i64> {
+        let session = crate::session::SessionKey::from_id(params.session_id.clone());
         self.conn.execute(
             "INSERT OR IGNORE INTO task_runs(
                 session_id, channel, source_chat_id, source_user_id, update_id, prompt, status,
-                created_at, progress_message_id, scheduled_task_id
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                created_at, progress_message_id, scheduled_task_id, source_thread_id
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 params.session_id,
                 params.channel,
@@ -19,7 +20,8 @@ impl Store {
                 TaskRunStatus::Queued.as_str(),
                 params.created_at,
                 params.progress_message_id,
-                params.scheduled_task_id
+                params.scheduled_task_id,
+                session.thread_id,
             ],
         )?;
         if self.conn.changes() == 0 {

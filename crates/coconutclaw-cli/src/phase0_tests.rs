@@ -16,7 +16,7 @@ fn telegram_command_identity_comes_from_get_me() {
         let mut cfg = RuntimeConfig::test_config();
         cfg.telegram_api_base = Some(server.base_url.trim_end_matches("/bot123:token").into());
         let client = crate::telegram::build_telegram_client(&cfg).unwrap();
-        let discovered = crate::telegram::discover_bot_username(&client, &cfg);
+        let discovered = crate::telegram::discover_bot_username(&client, &mut cfg);
         assert_eq!(discovered.ok().as_deref(), expected);
         let requests = server.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
@@ -54,7 +54,7 @@ printf '%s\n' '{{"type":"thread.started","thread_id":"canonical-native"}}'
         .kv_set("codex_session:321:0", "legacy-native")
         .unwrap();
     store.conn.execute("INSERT INTO turns(ts,chat_id,input_type,user_text,provider_raw,status,channel) VALUES('now','321','text','legacy-private-history','','ok','telegram')",[]).unwrap();
-    for fresh in [false, true] {
+    for (attempt, fresh) in [false, false, true].into_iter().enumerate() {
         if fresh {
             let scheduler = SessionScheduler::new(cfg.clone(), None);
             crate::loops::webhook::process_webhook_line(
@@ -96,7 +96,11 @@ printf '%s\n' '{{"type":"thread.started","thread_id":"canonical-native"}}'
             assert!(!recorded_args.lines().any(|line| line == "resume"));
             assert!(!context.contains("legacy-private-history"));
         } else {
-            assert!(recorded_args.contains("resume\nlegacy-native\n"));
+            if attempt == 0 {
+                assert!(!recorded_args.lines().any(|line| line == "resume"));
+            } else {
+                assert!(recorded_args.contains("resume\ncanonical-native\n"));
+            }
             assert!(context.contains("legacy-private-history"));
         }
     }
@@ -174,14 +178,17 @@ fn partial_text_chunks_and_document_fallback_survive_restart_without_resending_s
     let mut request = make_request(SessionKey::telegram("321"), "telegram", "saved reply");
     request.delivery = DeliveryTarget::Telegram {
         chat_id: "321".into(),
+        thread_id: None,
     };
     let id = save_request(&store, &request, None);
     let output = format!("TELEGRAM_REPLY: {}{}", "A".repeat(4096), "Z".repeat(100));
     store
         .conn
         .execute(
-            "UPDATE task_payloads SET output=?2 WHERE task_run_id=?1",
-            rusqlite::params![id, output],
+            // Existing persisted document plans must survive the new default
+            // representation, including partial fallback acknowledgments.
+            "UPDATE task_payloads SET output=?2,delivery_state=?3 WHERE task_run_id=?1",
+            rusqlite::params![id, output, json!({"completed_ops":[],"text_plan":{"kind":"document","markdown":format!("{}{}", "A".repeat(4096), "Z".repeat(100))}}).to_string()],
         )
         .unwrap();
     SessionScheduler::new(cfg.clone(), None)
@@ -365,6 +372,7 @@ fn cancelled_saved_turn_suppresses_media_in_recovery_and_legacy_replay() {
     let mut request = make_request(SessionKey::telegram("321"), "telegram", "cancel");
     request.delivery = DeliveryTarget::Telegram {
         chat_id: "321".into(),
+        thread_id: None,
     };
     let id = save_request(&store, &request, Some("cancel-replay".into()));
     store.update_task_run_started(id, "now").unwrap();
@@ -767,6 +775,7 @@ fn owned_input_attachment_is_kept_until_delivery_is_acknowledged() {
     let mut request = make_request(SessionKey::telegram("321"), "telegram", "return attachment");
     request.delivery = DeliveryTarget::Telegram {
         chat_id: "321".into(),
+        thread_id: None,
     };
     request.input.attachment_owned = true;
     request.input.attachment_path = Some(path.clone());
@@ -1019,7 +1028,9 @@ printf '%s\n' '{{"type":"thread.started","thread_id":"child-thread"}}'
     assert!(!context.contains("parent-private"));
     assert_eq!(
         store
-            .kv_get(&format!("codex_session:local:task-{child}:0"))
+            .kv_get(&format!(
+                "codex_session:local:task-{child}:0:context:scoped-tasks-v1"
+            ))
             .unwrap()
             .as_deref(),
         Some("child-thread")
@@ -1113,6 +1124,7 @@ fn delivery_retry_skips_acknowledged_operations_after_restart() {
     let mut request = make_request(SessionKey::telegram("321"), "telegram", "saved");
     request.delivery = DeliveryTarget::Telegram {
         chat_id: "321".into(),
+        thread_id: None,
     };
     let file = cfg.tmp_dir.join("result.txt");
     fs::write(&file, "artifact").unwrap();

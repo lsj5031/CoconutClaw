@@ -189,6 +189,23 @@ impl Store {
             self.kv_set("schema_version", "10")?;
         }
 
+        if current < 11 {
+            // Add transport metadata without rewriting historical session IDs
+            // or projecting root history into topics.
+            for sql in [
+                "ALTER TABLE turns ADD COLUMN telegram_chat_id TEXT",
+                "ALTER TABLE turns ADD COLUMN telegram_message_thread_id TEXT",
+                "ALTER TABLE task_runs ADD COLUMN source_thread_id TEXT",
+            ] {
+                match self.conn.execute(sql, []) {
+                    Ok(_) => {}
+                    Err(error) if error.to_string().contains("duplicate column") => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            self.kv_set("schema_version", "11")?;
+        }
+
         Ok(())
     }
 

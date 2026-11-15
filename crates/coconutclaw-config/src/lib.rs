@@ -43,6 +43,8 @@ pub struct RuntimeConfig {
     pub telegram_bot_token: Option<String>,
     /// Runtime identity from Telegram getMe, never configuration or message text.
     pub telegram_bot_username: Option<String>,
+    /// Verified getMe capability for this process. None before discovery.
+    pub telegram_topics_enabled: Option<bool>,
     pub telegram_chat_id: Option<String>,
     pub telegram_chat_ids: Vec<String>,
     pub telegram_api_base: Option<String>,
@@ -135,6 +137,7 @@ impl RuntimeConfig {
             timezone: "UTC".to_string(),
             telegram_bot_token: Some("123:token".to_string()),
             telegram_bot_username: None,
+            telegram_topics_enabled: None,
             telegram_chat_id: Some("321".to_string()),
             telegram_chat_ids: Vec::new(),
             telegram_api_base: None,
@@ -278,6 +281,7 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         timezone: pick_value("TIMEZONE", &config_file).unwrap_or_else(|| "UTC".to_string()),
         telegram_bot_token: pick_value("TELEGRAM_BOT_TOKEN", &config_file),
         telegram_bot_username: None,
+        telegram_topics_enabled: None,
         telegram_chat_id: pick_value("TELEGRAM_CHAT_ID", &config_file),
         telegram_chat_ids: parse_csv_list(pick_value("TELEGRAM_CHAT_IDS", &config_file)),
         telegram_api_base: normalize_optional(pick_value("TELEGRAM_API_BASE", &config_file)),
