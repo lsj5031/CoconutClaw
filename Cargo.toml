@@ -3,6 +3,7 @@ members = [
   "crates/coconutclaw-config",
   "crates/coconutclaw-provider",
   "crates/coconutclaw-cli",
+  "crates/coconutclaw-sync",
 ]
 resolver = "2"
 

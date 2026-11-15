@@ -122,7 +122,7 @@ recovery checks** (Phase 2), execute one remote Codex task (Phase 3), and finish
 packaging (Phase 4). No Slack, Discord or legacy runtime backend is added.
 Importer development remains uncommitted and undeployed until independent review.
 
-This revision changes the implementation order and scope. Phase 0 trim and real Telegram/Codex acceptance have passed; the baseline is closed in a separate main-branch commit (see Git history and docs/validation-phase-0.md). No networking has been implemented. Repository changes must use the standing monitored Droid authoring workflow unless the user explicitly changes that workflow; Codex-only here describes the product's runtime/delegation backends.
+This revision changes the implementation order and scope. Phase 0 trim and real Telegram/Codex acceptance have passed; the baseline is closed in a separate main-branch commit (see Git history and docs/validation-phase-0.md). Only the isolated synthetic [Phase 2 increment](iroh-phase2.md) has networking; runtime networking and the replicated-state/access/recovery completion gates remain open. Repository changes must use the standing monitored Droid authoring workflow unless the user explicitly changes that workflow; Codex-only here describes the product's runtime/delegation backends.
 
 ## Sources
 
