@@ -1,9 +1,112 @@
-# iroh Phase 2, increment 1
+# iroh Phase 2, synthetic increments
 
 15 November 2026. **Partial, synthetic-only, not deployed. Replicated application
 state is not complete.** No remote execution, CLI configuration or runtime
 adapters are enabled. `coconutclaw-sync` is a separate workspace library, not a
 dependency of the Telegram/Codex executable.
+
+## Increment 2: owner policy and scoped record boundary
+
+`synthetic::membership::ScopedPeer` is a separate, opt-in synthetic boundary.
+The original `Peer` below remains the static-pair transport fixture, **not**
+an alternative membership API. Do not open a scoped store through that fixture.
+No application configuration or deployed executable uses either API.
+
+### Why native shared capabilities are not the boundary
+
+Inspection of the exact cached pins established:
+
+- `iroh-docs::net::handle_connection` has a namespace acceptance callback, but
+  namespaces/read capabilities do not express endpoint-bound record scope.
+- `BlobsProtocol` forwards the whole store to the standard provider. A known
+  hash is sufficient to request its content; there is no record-policy callback.
+- Gossip can originate background connections, so wrapping only incoming
+  protocol handlers or public `connect` calls would be insufficient.
+- iroh 1.4.1 publicly exports `EndpointHooks`. `before_connect` intercepts
+  internal outgoing connections, and `after_handshake` intercepts both
+  directions before returning a connection to the application. Weak connection
+  handles support closing established connections without keeping them alive.
+
+The concrete resolution is a dedicated `/coconutclaw/synthetic-record/1` ALPN.
+**Native docs, gossip and blob protocols are not registered** on a scoped peer;
+the endpoint hooks additionally deny those ALPNs in both directions. Retained
+namespace capabilities or known hashes cannot bypass the record boundary.
+Docs and blobs remain local durable publication stores, using the reviewed R1/R2
+handoff and tombstone protections unchanged. There is no new crypto primitive,
+dependency, automatic metadata reconciliation or shared-document wire access.
+
+Each scoped store binds one owner public key, one namespace and the existing
+`synthetic/chat-a` scope. It cannot serve arbitrary scopes, namespaces, blob
+hashes or filesystem paths. A request names one immutable author/key. The server
+reads only that namespace, validates the record and independently hashes its
+bounded body/artifact before responding. The client validates both before one
+FULL-synchronous SQLite projection transaction. Transport authenticates the
+serving endpoint; the owner policy binds its permitted docs authors. This wire
+format does not forward or independently verify a docs entry signature.
+No store, raw endpoint, Doc or capability is returned by the scoped wrapper.
+
+### Authority, freshness and revocation
+
+An offline owner signs a complete snapshot using the pinned iroh key library's
+Ed25519 signing and strict signature verification. Domain-separated signed bytes
+bind namespace, exact scope, positive generation, expiration, member endpoints
+and each endpoint's unique permitted authors. Membership is never inferred
+from a QUIC handshake. Synthetic limits are 32 members, four authors per member
+and a lease no longer than one day.
+
+Snapshots are provisioned explicitly through a trusted **local** API on each
+peer, not accepted from arbitrary remote peers. SQLite durably pins owner and
+namespace, highest generation, exact policy bytes and observed wall time before
+activation. Lower generations and different equal-generation snapshots fail,
+including after restart. A failed policy transaction cannot activate access.
+Unknown, invalid, wrong-owner, expired and wrong-scope snapshots fail closed.
+An absent member/author is revoked. Reinstalling a lease cannot extend its
+active monotonic deadline. A trustworthy local wall clock is required across
+process restarts; observed clock rollback rejects installation.
+
+Every policy installation closes all tracked connections before returning,
+including connections to members retained in the new generation. Requests and
+responses must use the current exact generation. Expiration closes established
+connections on a monotonic timer. Authorization is checked again before sending
+and before projection. Closing a connection fences subsequent traffic; bytes
+already disclosed or handed to the transport before revocation are not erased.
+Projection remains inert, never jobs, memory promotion, prompts or sends.
+
+**Freshness limit:** a signature proves authority, not that no newer policy
+exists elsewhere. There is no remote latest-policy oracle. Every reopen starts
+quarantined, even with a saved valid policy, until the trusted local caller
+installs independently established current policy. With an intact high-water
+mark, stale policy replay is rejected. A wholly rolled-back backup also rolls
+back its high-water mark: automatically establishing the latest policy and
+preventing an operator from explicitly installing a still-valid stale snapshot
+from that backup are **not implemented**. Do not use this API for backup
+recovery. Full backup quarantine/latest-policy recovery remains a required gate,
+not a property established by ordinary reopen tests.
+
+The sole enabled wire operation returns a bounded JSON bundle (65536 bytes
+maximum; original 8192-byte body and 4096-byte artifact limits unchanged).
+It handles one request per connection with a ten-second deadline. Wire format,
+policy limits and lease duration are synthetic choices, not runtime adapters,
+quotas, a general policy framework or a production protocol commitment.
+
+### Behavioral checks
+
+Six new tests exercise actual loopback connections: valid record/artifact
+exchange and duplicate inert projection; wrong owner and tampering; unknown
+policy with a raw client; rollback and equal-generation forks after reopen;
+quarantined reopen; stale author replay at the server even when the caller
+bypasses its local predicate; active partial-request revocation and reconnect;
+lease expiry; forbidden scope/namespace/stale generation; raw-client native
+docs/gossip/blob negotiation rejection despite retained identifiers; and
+injected SQLite policy commit failure. Rejected record requests are checked for
+**zero response chunks**, not merely failure to project. Positive exchange
+after rejected requests ensures that refusal is not an inert implementation.
+Scoped `flush` additionally repairs a pending publication after reopen with
+the original write capability and current policy, while refusing repair during
+quarantine and over a persisted covering deletion.
+The existing crash, acknowledged repair and covering-prefix deletion tests
+remain required and unchanged. These are same-host synthetic checks, not
+multi-host membership, owner backup restore or full replicated-state completion.
 
 ## Selected components and evidence
 
@@ -166,7 +269,7 @@ that rotation requirement.
 
 | Domain / immutable event key | Scope / authorized writer | Authoritative state / receipt |
 | --- | --- | --- |
-| `membership/<owner>/<generation>` | Owner-signed policy, authorized recipients only | Core SQLite policy high-water mark; docs distributes signed snapshots |
+| `membership/<owner>/<generation>` | Owner-signed policy, authorized recipients only | Core SQLite policy high-water mark; future scoped snapshot distribution |
 | `jobs/<store-id>/<job>/<attempt>/<event>` | Origin chat and assigned runner; core assigns, exact attempt reports | Core SQL assignment/delivery; runner SQL attempt/result; inert remote projection |
 | `messages/<store-id>/<turn>` | Explicit origin chat grant; core writes | Core SQL turns; redacted opt-in records, no polling cursors |
 | `memory/<store-id>/<event>` | Origin chat; core alone promotes/corrects/undoes | Core SQL immutable history/effective state; FTS derived; runner proposals stay untrusted |
@@ -199,9 +302,11 @@ protocol boundaries, retention/GC pins and storage/metadata quotas; a trusted
 but faulty peer can otherwise exhaust disk with metadata or many bounded blobs.
 No automatic blob GC is enabled in this increment.
 
-## Membership, recovery and core transfer, required next
+## Recovery and core transfer, required next
 
-Design direction, **not implemented or tested as owner authority here**:
+The scoped increment above tests owner-signed snapshots and live revocation,
+not application membership roles, recovery or core transfer. Remaining design
+direction, **not implemented recovery authority**:
 
 - Separate offline owner signing authority from device endpoint/docs keys.
   Back up owner secret offline plus a signed recovery manifest containing stable
@@ -230,7 +335,8 @@ Design direction, **not implemented or tested as owner authority here**:
   blobs missing, SQLite behind/ahead and stale membership. Require exact SQL
   replay consistency and no resurrection of undone/promoted memory or execution.
 
-These drills, runtime scope adapters, live connection revocation, stable
+The scoped increment above implements bounded live connection revocation;
+the static-pair fixture does not. These drills, runtime scope adapters, stable
 owner-bound origins, broader process-kill/power-loss tests and retention limits remain open. No
 replicated-state completion or owner-recovery claim follows from fixture keys.
 

@@ -124,6 +124,13 @@ Importer development remains uncommitted and undeployed until independent review
 
 This revision changes the implementation order and scope. Phase 0 trim and real Telegram/Codex acceptance have passed; the baseline is closed in a separate main-branch commit (see Git history and docs/validation-phase-0.md). Only the isolated synthetic [Phase 2 increment](iroh-phase2.md) has networking; runtime networking and the replicated-state/access/recovery completion gates remain open. Repository changes must use the standing monitored Droid authoring workflow unless the user explicitly changes that workflow; Codex-only here describes the product's runtime/delegation backends.
 
+The next synthetic increment adds locally provisioned owner-signed, leased
+membership with persisted policy high-water marks and live connection fencing.
+Its scoped record ALPN deliberately replaces native shared-document/gossip/blob
+wire access. Latest-policy backup recovery, manual core transfer/runner fencing,
+runtime adapters, quotas and multi-host gates remain open; see its exact
+[boundary and freshness limits](iroh-phase2.md#increment-2-owner-policy-and-scoped-record-boundary).
+
 ## Sources
 
 - [iroh 1.0 retrospective](https://iroh.computer/blog/the-road-to-iroh-1-0)

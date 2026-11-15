@@ -176,6 +176,16 @@ impl Peer {
         peers: BTreeSet<EndpointId>,
         builder: iroh::endpoint::Builder,
     ) -> Result<Self> {
+        Self::reopen_with_boundary(root, key, peers, builder, None).await
+    }
+
+    async fn reopen_with_boundary(
+        root: &Path,
+        key: SecretKey,
+        peers: BTreeSet<EndpointId>,
+        builder: iroh::endpoint::Builder,
+        boundary: Option<membership::Boundary>,
+    ) -> Result<Self> {
         ensure!(
             fs::read_to_string(root.join("SYNTHETIC"))? == MARKER,
             "not a synthetic store"
@@ -241,29 +251,37 @@ impl Peer {
         let docs_sync = engine.sync.clone();
         let docs = Docs::new(engine);
         let peers = Arc::new(peers);
-        let router = Router::builder(endpoint.clone())
-            .accept(
-                iroh_docs::ALPN,
-                PinnedProtocol {
-                    inner: docs.clone(),
-                    peers: peers.clone(),
-                },
+        let router = Router::builder(endpoint.clone());
+        let router = if let Some(boundary) = boundary {
+            router.accept(
+                membership::ALPN,
+                membership::Protocol::new(boundary, docs.clone(), (*blobs).clone()),
             )
-            .accept(
-                iroh_blobs::ALPN,
-                PinnedProtocol {
-                    inner: BlobsProtocol::new(&blobs, None),
-                    peers: peers.clone(),
-                },
-            )
-            .accept(
-                iroh_gossip::ALPN,
-                PinnedProtocol {
-                    inner: gossip,
-                    peers: peers.clone(),
-                },
-            )
-            .spawn();
+        } else {
+            router
+                .accept(
+                    iroh_docs::ALPN,
+                    PinnedProtocol {
+                        inner: docs.clone(),
+                        peers: peers.clone(),
+                    },
+                )
+                .accept(
+                    iroh_blobs::ALPN,
+                    PinnedProtocol {
+                        inner: BlobsProtocol::new(&blobs, None),
+                        peers: peers.clone(),
+                    },
+                )
+                .accept(
+                    iroh_gossip::ALPN,
+                    PinnedProtocol {
+                        inner: gossip,
+                        peers: peers.clone(),
+                    },
+                )
+        };
+        let router = router.spawn();
         Ok(Self {
             endpoint,
             router,
@@ -555,3 +573,5 @@ impl Peer {
 
 #[cfg(test)]
 mod tests;
+
+pub mod membership;
