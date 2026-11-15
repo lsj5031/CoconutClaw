@@ -18,6 +18,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod activity;
+#[cfg(test)]
+mod activity_tests;
+use activity::{Activity, TimeoutPolicy};
+use std::sync::Mutex;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -37,6 +43,8 @@ pub struct ProviderCtx<'a> {
     pub context: &'a str,
     pub cancel_flag: Option<&'a Arc<AtomicBool>>,
     pub progress_tx: Option<&'a Sender<String>>,
+    /// None inherits the configured total deadline; Some(0) disables it.
+    /// Activity-based idle limits apply independently.
     pub timeout_secs: Option<u64>,
     pub session_id: Option<&'a str>,
 }
@@ -254,7 +262,11 @@ fn run_provider_impl<P: ProviderRunner>(provider: &P, ctx: &ProviderCtx) -> Resu
             ctx.progress_tx,
             progress_parser,
             provider.bin_name(),
-            ctx.timeout_secs.or(Some(ctx.config.provider_timeout_secs)),
+            TimeoutPolicy::new(
+                ctx.timeout_secs.or(Some(ctx.config.provider_timeout_secs)),
+                ctx.config.provider_idle_timeout_secs,
+                ctx.config.provider_tool_idle_timeout_secs,
+            ),
         )
     };
 
@@ -327,7 +339,7 @@ fn run_provider_process(
     progress_tx: Option<&Sender<String>>,
     progress_parser: Option<fn(&str) -> Option<String>>,
     bin_name: &str,
-    timeout_secs: Option<u64>,
+    timeout: TimeoutPolicy,
 ) -> Result<RunResult> {
     if stdin_text.is_some() {
         cmd.stdin(Stdio::piped());
@@ -372,7 +384,7 @@ fn run_provider_process(
         progress_parser,
         format!("failed waiting for {bin_name} command"),
         format!("failed waiting after {bin_name} kill"),
-        timeout_secs,
+        timeout,
         stdin_handle.as_ref(),
         io_stop.clone(),
     );
@@ -418,7 +430,10 @@ fn finalize_output(
     let raw_output = if let Some(raw) = raw_output_override {
         raw
     } else if run_result.timed_out {
-        "provider execution timed out".to_string()
+        run_result
+            .timeout_reason
+            .clone()
+            .unwrap_or_else(|| "provider execution timed out".into())
     } else if run_result.cancelled {
         "cancelled".to_string()
     } else {
@@ -445,6 +460,7 @@ struct RunResult {
     stderr_text: String,
     cancelled: bool,
     timed_out: bool,
+    timeout_reason: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -455,7 +471,7 @@ fn run_child_process(
     progress_parser: Option<fn(&str) -> Option<String>>,
     wait_error: String,
     kill_error: String,
-    timeout_secs: Option<u64>,
+    timeout: TimeoutPolicy,
     stdin_handle: Option<&thread::JoinHandle<()>>,
     io_stop: Arc<AtomicBool>,
 ) -> Result<RunResult> {
@@ -467,15 +483,25 @@ fn run_child_process(
         set_nonblocking(&stdout)?;
         set_nonblocking(&stderr)?;
     }
-    let stdout_stop = io_stop.clone();
-    let stdout_handle =
-        thread::spawn(move || read_pipe(stdout, stdout_stop, progress_tx, progress_parser));
-    let stderr_stop = io_stop.clone();
-    let stderr_handle = thread::spawn(move || read_pipe(stderr, stderr_stop, None, None));
-
     let start = Instant::now();
+    let activity = Arc::new(Mutex::new(Activity::new(start)));
+    let stdout_activity = activity.clone();
+    let stdout_stop = io_stop.clone();
+    let stdout_handle = thread::spawn(move || {
+        read_pipe(
+            stdout,
+            stdout_stop,
+            progress_tx,
+            progress_parser,
+            Some(stdout_activity),
+        )
+    });
+    let stderr_stop = io_stop.clone();
+    let stderr_handle = thread::spawn(move || read_pipe(stderr, stderr_stop, None, None, None));
+
     let mut cancelled = false;
     let mut timed_out = false;
+    let mut timeout_reason = None;
 
     let status = loop {
         if let Some(flag) = cancel_flag
@@ -485,11 +511,15 @@ fn run_child_process(
             break terminate_cancelled_child(&mut child, &wait_error, &kill_error, false)?;
         }
 
-        if let Some(secs) = timeout_secs
-            && start.elapsed() >= Duration::from_secs(secs)
-        {
+        let reason =
+            activity
+                .lock()
+                .expect("provider activity")
+                .timeout(timeout, start, Instant::now());
+        if let Some(reason) = reason {
             timed_out = true;
-            tracing::warn!("provider process timed out after {secs}s");
+            tracing::warn!("{reason}");
+            timeout_reason = Some(reason);
             break terminate_cancelled_child(&mut child, &wait_error, &kill_error, true)?;
         }
 
@@ -526,6 +556,7 @@ fn run_child_process(
         stderr_text,
         cancelled,
         timed_out,
+        timeout_reason,
     })
 }
 
@@ -544,6 +575,7 @@ fn read_pipe(
     stop: Arc<AtomicBool>,
     progress: Option<Sender<String>>,
     parser: Option<fn(&str) -> Option<String>>,
+    activity: Option<Arc<Mutex<Activity>>>,
 ) -> String {
     let mut bytes = Vec::new();
     let mut line_start = 0;
@@ -553,12 +585,19 @@ fn read_pipe(
             Ok(0) => break,
             Ok(n) => {
                 bytes.extend_from_slice(&buffer[..n]);
-                if let (Some(tx), Some(parser)) = (&progress, parser) {
+                if activity.is_some() || (progress.is_some() && parser.is_some()) {
                     while let Some(end) = bytes[line_start..].iter().position(|byte| *byte == b'\n')
                     {
                         let end = line_start + end;
-                        if let Some(message) =
-                            parser(&String::from_utf8_lossy(&bytes[line_start..end]))
+                        let line = String::from_utf8_lossy(&bytes[line_start..end]);
+                        if let Some(activity) = &activity {
+                            activity
+                                .lock()
+                                .expect("provider activity")
+                                .observe(&line, Instant::now());
+                        }
+                        if let (Some(tx), Some(parser)) = (&progress, parser)
+                            && let Some(message) = parser(&line)
                         {
                             let _ = tx.send(message);
                         }
@@ -573,11 +612,19 @@ fn read_pipe(
             Err(_) => break,
         }
     }
-    if let (Some(tx), Some(parser)) = (progress, parser)
-        && line_start < bytes.len()
-        && let Some(message) = parser(&String::from_utf8_lossy(&bytes[line_start..]))
-    {
-        let _ = tx.send(message);
+    if line_start < bytes.len() {
+        let line = String::from_utf8_lossy(&bytes[line_start..]);
+        if let Some(activity) = activity {
+            activity
+                .lock()
+                .expect("provider activity")
+                .observe(&line, Instant::now());
+        }
+        if let (Some(tx), Some(parser)) = (progress, parser)
+            && let Some(message) = parser(&line)
+        {
+            let _ = tx.send(message);
+        }
     }
     String::from_utf8_lossy(&bytes).into_owned()
 }

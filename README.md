@@ -48,6 +48,9 @@ not authentication or connectivity.
   Use `/memory remember <text>`, `list [before-id]`, `search <text>`, `get <id>`,
   `promote <id>`, `correct <active-id> <text>` or `undo`.
   See [local memory](docs/memory.md) for budgets, scope and limitations.
+  Explicit local `import-openclaw` previews selected Markdown files by default;
+  `--apply` imports scoped candidates, never a live OpenClaw backend. See the
+  [import contract](docs/openclaw-import.md) before selecting personal data.
 - A `DELEGATE_TASK` request creates a durable task ID with a separate Codex
   session and no parent conversation history. Its labeled result is delivered
   to, and retained in the history of, the originating topic/root session.
@@ -106,6 +109,8 @@ cargo test --workspace --all-targets --locked
 
 Tests use local fake Telegram endpoints and fake Codex executables. No live
 messaging or agent calls are required. See [architecture](docs/architecture.md).
+Provider executions have no default total deadline; see
+[activity-aware timeouts](docs/provider-timeouts.md) for idle limits and explicit caps.
 The [Phase 0 validation record](docs/validation-phase-0.md) lists checks and limitations.
 Historical release notes and `docs/superpowers/` describe earlier versions,
 not the supported runtime.

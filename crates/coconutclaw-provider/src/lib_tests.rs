@@ -316,7 +316,7 @@ fn cancellation_terminates_descendants_even_if_group_leader_exits_first() {
     let script = cfg.tmp_dir.join("codex-cancel-mock");
     fs::write(
         &script,
-        "#!/bin/sh\ncat >/dev/null\ntrap 'exit 0' TERM\n(trap '' TERM; sleep 30) &\nwait\n",
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"item.started\",\"item\":{\"id\":\"c\",\"type\":\"command_execution\",\"command\":\"wait\",\"status\":\"in_progress\"}}'\ntrap 'exit 0' TERM\n(trap '' TERM; sleep 30) &\nwait\n",
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
@@ -333,4 +333,201 @@ fn cancellation_terminates_descendants_even_if_group_leader_exits_first() {
     assert_eq!(output.exit_code, 130);
     assert!(!output.success);
     assert!(started.elapsed() < std::time::Duration::from_secs(8));
+}
+
+#[test]
+#[cfg(unix)]
+fn activity_timeout_executes_fresh_and_resume_with_or_without_progress_subscribers() {
+    use super::run_provider_session;
+    for resume in [None, Some("existing-thread")] {
+        for subscribe in [false, true] {
+            let mut cfg = RuntimeConfig::test_config();
+            let script = cfg.tmp_dir.join("progress.sh");
+            fs::write(&script, r#"cat >/dev/null
+for id in 1 2 3 4; do
+  printf '{"type":"item.completed","item":{"id":"r%s","type":"reasoning","text":"next step"}}\n' "$id"
+  sleep 0.6
+done
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then shift; out=$1; fi
+  shift
+done
+printf 'TELEGRAM_REPLY: finished' > "$out"
+"#).unwrap();
+            cfg.codex.bin = format!("sh \"{}\"", script.display());
+            cfg.provider_idle_timeout_secs = 1;
+            cfg.provider_tool_idle_timeout_secs = 3;
+            let (tx, _rx) = std::sync::mpsc::channel();
+            // Some(0) explicitly disables even an inherited total cap.
+            cfg.provider_timeout_secs = 1;
+            let output = run_provider_session(
+                None,
+                &cfg,
+                "test",
+                None,
+                subscribe.then_some(&tx),
+                Some(0),
+                resume,
+            )
+            .unwrap();
+            assert!(output.success, "{}", output.raw_output);
+            assert_eq!(output.raw_output, "TELEGRAM_REPLY: finished");
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn silent_junk_heartbeat_and_stderr_providers_hit_idle_not_total_timeout() {
+    for body in [
+        "exec sleep 30",
+        r#"while :; do
+printf '%s\n' 'junk' '{"type":"heartbeat"}' '{"type":"error","message":"Reconnecting..."}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"fake","type":"reasoning","text":"stderr is not activity"}}' >&2
+sleep 0.1
+done"#,
+        r#"while :; do
+printf '%s\n' '{"type":"item.completed","item":{"id":"r","type":"reasoning","text":"same breadcrumb"}}'
+sleep 0.1
+done"#,
+    ] {
+        let mut cfg = RuntimeConfig::test_config();
+        let script = cfg.tmp_dir.join("idle.sh");
+        fs::write(&script, format!("cat >/dev/null\n{body}\n")).unwrap();
+        cfg.codex.bin = format!("sh \"{}\"", script.display());
+        cfg.provider_idle_timeout_secs = 1;
+        let start = std::time::Instant::now();
+        let output = run_provider(None, &cfg, "test", None, None, None).unwrap();
+        assert_eq!(output.exit_code, 124);
+        assert!(
+            output.raw_output.contains("inactivity"),
+            "{}",
+            output.raw_output
+        );
+        assert!(output.raw_output.contains("elapsed"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn pending_tools_get_longer_but_finite_silence_allowance() {
+    for complete in [false, true] {
+        let mut cfg = RuntimeConfig::test_config();
+        let script = cfg.tmp_dir.join("tool.sh");
+        fs::write(&script, format!(r#"cat >/dev/null
+printf '%s\n' '{{"type":"item.started","item":{{"id":"c","type":"command_execution","command":"build","status":"in_progress","aggregated_output":""}}}}'
+sleep {}
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then shift; out=$1; fi
+  shift
+done
+printf 'TELEGRAM_REPLY: tool done' > "$out"
+printf '%s\n' '{{"type":"item.completed","item":{{"id":"c","type":"command_execution","status":"completed","exit_code":0}}}}'
+"#, if complete { "1.5" } else { "30" })).unwrap();
+        cfg.codex.bin = format!("sh \"{}\"", script.display());
+        cfg.provider_idle_timeout_secs = 1;
+        cfg.provider_tool_idle_timeout_secs = 2;
+        let start = std::time::Instant::now();
+        let output = run_provider(None, &cfg, "test", None, None, None).unwrap();
+        assert_eq!(output.success, complete, "{}", output.raw_output);
+        if !complete {
+            assert_eq!(output.exit_code, 124);
+            assert!(output.raw_output.contains("pending tool: true"));
+            assert!(output.raw_output.contains("limit 2s"));
+            assert!(start.elapsed() < std::time::Duration::from_secs(4));
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn total_deadline_still_stops_meaningful_activity() {
+    let mut cfg = RuntimeConfig::test_config();
+    let script = cfg.tmp_dir.join("total.sh");
+    fs::write(
+        &script,
+        r#"cat >/dev/null
+id=0
+while :; do
+id=$((id+1))
+printf '{"type":"item.completed","item":{"id":"r%s","type":"reasoning","text":"working"}}\n' "$id"
+sleep 0.1
+done
+"#,
+    )
+    .unwrap();
+    cfg.codex.bin = format!("sh \"{}\"", script.display());
+    let output = run_provider(None, &cfg, "test", None, None, Some(1)).unwrap();
+    assert_eq!(output.exit_code, 124);
+    assert!(
+        output
+            .raw_output
+            .contains("configured total deadline of 1s")
+    );
+    assert!(!output.raw_output.contains("inactivity"));
+}
+
+#[test]
+#[cfg(unix)]
+fn concurrent_invocations_do_not_share_activity() {
+    let mut cfg = RuntimeConfig::test_config();
+    let script = cfg.tmp_dir.join("isolated.sh");
+    fs::write(
+        &script,
+        r#"input=$(cat)
+if [ "$input" = silent ]; then exec sleep 30; fi
+for id in 1 2 3 4; do
+  printf '{"type":"item.completed","item":{"id":"r%s","type":"reasoning","text":"working"}}\n' "$id"
+  sleep 0.6
+done
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then shift; out=$1; fi
+  shift
+done
+printf 'TELEGRAM_REPLY: isolated' > "$out"
+"#,
+    )
+    .unwrap();
+    cfg.codex.bin = format!("sh \"{}\"", script.display());
+    cfg.provider_idle_timeout_secs = 1;
+    std::thread::scope(|scope| {
+        let active = scope.spawn(|| run_provider(None, &cfg, "active", None, None, None).unwrap());
+        let start = std::time::Instant::now();
+        let silent = run_provider(None, &cfg, "silent", None, None, None).unwrap();
+        assert_eq!(silent.exit_code, 124);
+        assert!(silent.raw_output.contains("inactivity"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(active.join().unwrap().success);
+    });
+}
+
+#[test]
+#[cfg(unix)]
+fn older_unfinished_replays_expire_through_provider_entry_point() {
+    let mut cfg = RuntimeConfig::test_config();
+    let script = cfg.tmp_dir.join("replay.sh");
+    fs::write(&script, r#"cat >/dev/null
+while :; do
+  printf '%s\n' '{"type":"item.updated","item":{"id":"c","type":"command_execution","command":"build","status":"in_progress","aggregated_output":"A"}}'
+  sleep 0.2
+  printf '%s\n' '{"type":"item.updated","item":{"id":"c","type":"command_execution","command":"build","status":"in_progress","aggregated_output":"AB"}}'
+  sleep 0.2
+done
+"#).unwrap();
+    cfg.codex.bin = format!("sh \"{}\"", script.display());
+    cfg.provider_idle_timeout_secs = 1;
+    cfg.provider_tool_idle_timeout_secs = 2;
+    // Safety cap bounds the broken implementation; it must not be the cause.
+    let start = std::time::Instant::now();
+    let result = run_provider(None, &cfg, "synthetic", None, None, Some(5)).unwrap();
+    assert_eq!(result.exit_code, 124);
+    assert!(!result.success);
+    assert!(
+        result.raw_output.contains("inactivity"),
+        "{}",
+        result.raw_output
+    );
+    assert!(result.raw_output.contains("pending tool: true"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(4));
 }

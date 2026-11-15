@@ -1,6 +1,8 @@
-# CoconutClaw revival plan — revision 4
+# CoconutClaw revival plan — revision 5
 
-15 November 2026 · Supersedes revision 3. Owner reordered memory/state ahead of networking and remote execution.
+15 November 2026 · Supersedes revision 4. Owner added explicit Markdown import
+after completed bounded memory and Telegram topics/parallelism/native rich delivery,
+before networking and remote execution.
 
 ## Direction
 
@@ -112,7 +114,13 @@ Complete Telegram setup, pairing, service lifecycle, backup and diagnostics. Mea
 
 ## Immediate priority
 
-Close the verified Phase 0 baseline with evidence and a reviewed commit. Then implement local memory/state foundations (Phase 1), wire and verify iroh plus deferred synchronization/access/recovery checks (Phase 2), execute one remote Codex task (Phase 3), and finish packaging (Phase 4).
+The Phase 0 baseline, built-in bounded memory, and Telegram topics on/off,
+five-worker admission and native rich delivery are complete. Next complete and
+independently review the explicit one-time [OpenClaw Markdown importer](openclaw-import.md).
+Only then wire and verify iroh **plus replicated-state synchronization/access/
+recovery checks** (Phase 2), execute one remote Codex task (Phase 3), and finish
+packaging (Phase 4). No Slack, Discord or legacy runtime backend is added.
+Importer development remains uncommitted and undeployed until independent review.
 
 This revision changes the implementation order and scope. Phase 0 trim and real Telegram/Codex acceptance have passed; the baseline is closed in a separate main-branch commit (see Git history and docs/validation-phase-0.md). No networking has been implemented. Repository changes must use the standing monitored Droid authoring workflow unless the user explicitly changes that workflow; Codex-only here describes the product's runtime/delegation backends.
 

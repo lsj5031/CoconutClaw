@@ -25,3 +25,4 @@ coconutclaw-config = { path = "../coconutclaw-config" }
 coconutclaw-provider = { path = "../coconutclaw-provider" }
 notify = "8.2.0"
 tempfile = "3.27.0"
+libc.workspace = true

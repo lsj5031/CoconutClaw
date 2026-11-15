@@ -588,6 +588,76 @@ impl Drop for ScratchProviderGroup {
 }
 
 #[test]
+#[ignore = "real wall-clock regression takes over five minutes; run explicitly for timeout acceptance"]
+fn activity_progress_survives_former_five_minute_deadline() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let provider = dir.join("progress.sh");
+    fs::write(
+        &provider,
+        r#"/bin/cat >/dev/null
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then shift; out=$1; fi
+  shift
+done
+for id in 1 2 3 4 5 6; do
+  printf '{"type":"item.completed","item":{"id":"r%s","type":"reasoning","text":"working"}}\n' "$id"
+  /bin/sleep 51
+done
+printf 'TELEGRAM_REPLY: survived former five-minute cutoff\n' > "$out"
+"#,
+    )
+    .unwrap();
+    let stdout = fs::File::create(dir.join("stdout")).unwrap();
+    let start = Instant::now();
+    let mut process = Process(
+        command(dir)
+            .env("CODEX_BIN", format!("/bin/sh \"{}\"", provider.display()))
+            // No timeout overrides: exercise generated defaults through real CLI.
+            .args([
+                "once",
+                "--chat-id",
+                "321",
+                "--inject-text",
+                "synthetic timeout acceptance",
+            ])
+            .stdout(stdout)
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    loop {
+        if let Some(status) = process.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(330));
+        thread::sleep(Duration::from_millis(100));
+    }
+    let elapsed = start.elapsed();
+    assert!(elapsed >= Duration::from_secs(306));
+    assert!(
+        fs::read_to_string(dir.join("stdout"))
+            .unwrap()
+            .contains("survived former five-minute cutoff")
+    );
+    let db = rusqlite::Connection::open(dir.join("state.db")).unwrap();
+    let (status, duration): (String, i64) = db
+        .query_row(
+            "SELECT status, duration_ms FROM turns ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "ok");
+    assert!(duration > 300_000);
+    eprintln!(
+        "actual CLI progress acceptance: {} ms; persisted turn duration: {duration} ms",
+        elapsed.as_millis()
+    );
+}
+
+#[test]
 fn once_timeout_bounds_early_leader_exit_and_descendant_output_drain() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
@@ -647,6 +717,68 @@ exit 0
     if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
         assert_eq!(stat.split(") ").nth(1).unwrap().chars().next(), Some('Z'));
     }
+}
+
+#[test]
+fn once_older_unfinished_replays_persist_inactivity_not_success() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let provider = dir.join("replay.sh");
+    fs::write(&provider, r#"/bin/cat >/dev/null
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output-last-message" ]; then shift; out=$1; fi
+  shift
+done
+for iteration in 1 2 3 4 5 6 7 8; do
+  printf '%s\n' '{"type":"item.updated","item":{"id":"c","type":"command_execution","command":"build","status":"in_progress","aggregated_output":"A"}}'
+  /bin/sleep 0.2
+  printf '%s\n' '{"type":"item.updated","item":{"id":"c","type":"command_execution","command":"build","status":"in_progress","aggregated_output":"AB"}}'
+  /bin/sleep 0.2
+done
+printf 'TELEGRAM_REPLY: replay-only success\n' > "$out"
+"#).unwrap();
+    let stdout = fs::File::create(dir.join("stdout")).unwrap();
+    let start = Instant::now();
+    let mut process = Process(
+        command(dir)
+            .env("CODEX_BIN", format!("/bin/sh \"{}\"", provider.display()))
+            .env("PROVIDER_TIMEOUT_SECS", "0")
+            .env("PROVIDER_IDLE_TIMEOUT_SECS", "1")
+            .env("PROVIDER_TOOL_IDLE_TIMEOUT_SECS", "2")
+            .args([
+                "once",
+                "--chat-id",
+                "321",
+                "--inject-text",
+                "synthetic replay",
+            ])
+            .stdout(stdout)
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    loop {
+        if let Some(status) = process.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(6));
+        thread::sleep(Duration::from_millis(20));
+    }
+    let output = fs::read_to_string(dir.join("stdout")).unwrap();
+    assert!(output.contains("inactivity"), "{output}");
+    assert!(!output.contains("replay-only success"));
+    let db = rusqlite::Connection::open(dir.join("state.db")).unwrap();
+    let (status, duration): (String, i64) = db
+        .query_row(
+            "SELECT status, duration_ms FROM turns ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_ne!(status, "ok");
+    assert!((2000..4000).contains(&duration), "{duration}");
+    eprintln!("CLI replay: status={status}, persisted duration={duration}ms");
 }
 
 #[test]

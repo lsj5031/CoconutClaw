@@ -59,6 +59,8 @@ pub struct RuntimeConfig {
     pub telegram_api_timeout_secs: u64,
     pub telegram_api_retry_attempts: u32,
     pub provider_timeout_secs: u64,
+    pub provider_idle_timeout_secs: u64,
+    pub provider_tool_idle_timeout_secs: u64,
     pub codex: CodexConfig,
     pub config_file_path: PathBuf,
 }
@@ -151,7 +153,9 @@ impl RuntimeConfig {
             progress_update_interval_secs: 3,
             telegram_api_timeout_secs: 30,
             telegram_api_retry_attempts: 3,
-            provider_timeout_secs: 300,
+            provider_timeout_secs: 0,
+            provider_idle_timeout_secs: 1800,
+            provider_tool_idle_timeout_secs: 7200,
             codex: CodexConfig::default(),
             config_file_path: root.join("config.toml"),
         };
@@ -183,6 +187,15 @@ impl RuntimeConfig {
 }
 
 pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
+    load_config(overrides, true)
+}
+
+/// Validate configuration without creating layout, templates, locks or databases.
+pub fn preview_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
+    load_config(overrides, false)
+}
+
+fn load_config(overrides: &CliOverrides, initialize: bool) -> Result<RuntimeConfig> {
     let cwd = env::current_dir().context("failed to read current directory")?;
     let root_dir = find_project_root(&cwd);
 
@@ -267,7 +280,15 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
     let progress_update_interval_secs = number("PROGRESS_UPDATE_INTERVAL", 3, 1, 3600)?;
     let telegram_api_timeout_secs = number("TELEGRAM_API_TIMEOUT_SECS", 30, 1, 300)?;
     let telegram_api_retry_attempts = number("TELEGRAM_API_RETRY_ATTEMPTS", 3, 0, 10)? as u32;
-    let provider_timeout_secs = number("PROVIDER_TIMEOUT_SECS", 300, 1, 86400)?;
+    let provider_timeout_secs = number("PROVIDER_TIMEOUT_SECS", 0, 0, 86400)?;
+    let provider_idle_timeout_secs = number("PROVIDER_IDLE_TIMEOUT_SECS", 1800, 1, 86400)?;
+    let provider_tool_idle_timeout_secs =
+        number("PROVIDER_TOOL_IDLE_TIMEOUT_SECS", 7200, 1, 86400)?;
+    if provider_tool_idle_timeout_secs < provider_idle_timeout_secs {
+        bail!(
+            "invalid PROVIDER_TOOL_IDLE_TIMEOUT_SECS: must be at least PROVIDER_IDLE_TIMEOUT_SECS"
+        );
+    }
     let cfg = RuntimeConfig {
         root_dir,
         data_dir,
@@ -296,6 +317,8 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
         telegram_api_timeout_secs,
         telegram_api_retry_attempts,
         provider_timeout_secs,
+        provider_idle_timeout_secs,
+        provider_tool_idle_timeout_secs,
         codex: CodexConfig {
             bin: pick_value("CODEX_BIN", &config_file).unwrap_or_else(|| "codex".to_string()),
             model: pick_value("CODEX_MODEL", &config_file)
@@ -308,7 +331,9 @@ pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
     };
 
     validate_effective_config(&cfg)?;
-    ensure_instance_layout(&cfg).map_err(|_| anyhow!("failed to initialize configured directories/files; check path permissions (values redacted)"))?;
+    if initialize {
+        ensure_instance_layout(&cfg).map_err(|_| anyhow!("failed to initialize configured directories/files; check path permissions (values redacted)"))?;
+    }
     Ok(cfg)
 }
 

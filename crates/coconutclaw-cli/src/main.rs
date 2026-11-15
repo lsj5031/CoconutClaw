@@ -10,6 +10,7 @@ mod context;
 mod delivery;
 mod loops;
 mod markers;
+mod memory_import;
 mod recovery;
 mod scheduler;
 mod service;
@@ -44,6 +45,7 @@ enum Commands {
     Run(TurnArgs),
     Doctor(DoctorArgs),
     Service(ServiceArgs),
+    ImportOpenclaw(memory_import::ImportArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -91,6 +93,10 @@ fn main() -> Result<()> {
         data_dir: cli.data_dir.clone(),
     };
 
+    if let Commands::ImportOpenclaw(args) = &cli.command {
+        let cfg = coconutclaw_config::preview_runtime_config(&overrides)?;
+        return memory_import::run(&cfg, args);
+    }
     let cfg = load_runtime_config(&overrides)?;
     let command = cli.command;
 
@@ -106,6 +112,7 @@ fn main() -> Result<()> {
         Commands::Run(args) => commands::run_run(&cfg, &mut store, &args),
         Commands::Doctor(args) => commands::run_doctor(&cfg, &args),
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
+        Commands::ImportOpenclaw(_) => unreachable!("import handled before store setup"),
     }
 }
 #[cfg(test)]

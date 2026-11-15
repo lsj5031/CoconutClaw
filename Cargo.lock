@@ -215,6 +215,7 @@ dependencies = [
  "coconutclaw-config",
  "coconutclaw-provider",
  "ctrlc",
+ "libc",
  "notify",
  "pulldown-cmark",
  "reqwest",

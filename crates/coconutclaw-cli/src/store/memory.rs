@@ -19,14 +19,15 @@ impl Store {
 
     pub(crate) fn curated_memory(&self, scope: &str) -> Result<String> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.id,r.source_turn,r.content FROM memory_records r
+            "SELECT r.id,COALESCE('turn '||r.source_turn,
+               (SELECT 'import '||path||':'||first_line||'-'||last_line FROM memory_import_origins WHERE id=r.import_origin)),r.content FROM memory_records r
              JOIN memory_active a ON a.record_id=r.id
              WHERE r.scope=?1 AND r.curated=1 ORDER BY r.id DESC LIMIT 4",
         )?;
         let rows = stmt.query_map([scope], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
+                r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
             ))
         })?;
@@ -34,7 +35,7 @@ impl Store {
         for row in rows {
             let (id, source, content) = row?;
             let line = format!(
-                "#{id} [source turn {source}] {}\n",
+                "#{id} [source {source}] {}\n",
                 serde_json::to_string(&content)?
             );
             if output.len() + line.len() <= 2048 {
@@ -48,16 +49,20 @@ impl Store {
         let record = self
             .conn
             .query_row(
-                "SELECT r.source_turn,r.content,
+                "SELECT COALESCE('turn '||r.source_turn,
+                    (SELECT 'import '||path||':'||first_line||'-'||last_line FROM memory_import_origins WHERE id=r.import_origin)),r.content,
                     CASE WHEN a.record_id IS NULL THEN 'candidate' ELSE 'active' END
              FROM memory_records r LEFT JOIN memory_active a ON a.record_id=r.id
              WHERE r.scope=?1 AND r.id=?2
                AND (a.record_id IS NOT NULL OR NOT EXISTS(
-                   SELECT 1 FROM memory_history h WHERE h.old_record=r.id OR h.new_record=r.id))",
+                   SELECT 1 FROM memory_history h WHERE h.old_record=r.id OR h.new_record=r.id))
+               AND (a.record_id IS NOT NULL OR r.import_origin IS NULL OR NOT EXISTS(
+                   SELECT 1 FROM memory_import_origins n JOIN memory_import_origins o ON o.id=r.import_origin
+                   WHERE n.scope=o.scope AND n.root=o.root AND n.path=o.path AND n.chunk=o.chunk AND n.id>o.id))",
                 params![scope, id],
                 |r| {
                     Ok((
-                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
                     ))
@@ -66,7 +71,7 @@ impl Store {
             .optional()?;
         Ok(match record {
             Some((source, content, state)) => format!(
-                "#{id} [{state}, source turn {source}] {}\n",
+                "#{id} [{state}, source {source}] {}\n",
                 serde_json::to_string(&content)?
             ),
             None => "Current memory ID not found in this chat.".into(),
@@ -74,10 +79,28 @@ impl Store {
     }
 
     pub(crate) fn initialize_memory(&self) -> Result<()> {
-        // No legacy imports or Markdown projection. FTS5 comes from the
-        // existing bundled SQLite; absence fails startup explicitly.
         let tx = self.conn.unchecked_transaction()?;
+        let migrate = tx
+            .prepare("PRAGMA table_info(memory_records)")?
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, bool>(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|(name, not_null)| name == "source_turn" && *not_null);
+        if migrate {
+            tx.execute_batch(include_str!("../../../../sql/memory-import-migration.sql"))?;
+        }
         tx.execute_batch(include_str!("../../../../sql/memory.sql"))?;
+        if migrate {
+            tx.execute_batch(
+                "INSERT INTO memory_records(id,scope,source_turn,proposal_index,curated,content)
+                   SELECT id,scope,source_turn,proposal_index,curated,content FROM saved_records;
+                 INSERT INTO memory_active SELECT * FROM saved_active;
+                 INSERT INTO memory_history SELECT * FROM saved_history;
+                 INSERT INTO memory_command_receipts SELECT * FROM saved_receipts;
+                 DROP TABLE saved_records; DROP TABLE saved_active;
+                 DROP TABLE saved_history; DROP TABLE saved_receipts;",
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -98,7 +121,8 @@ impl Store {
             return Ok("No matching promoted memories.".into());
         }
         let mut stmt = self.conn.prepare(
-            "SELECT r.id,r.source_turn,substr(r.content,1,128) FROM memory_search
+            "SELECT r.id,COALESCE('turn '||r.source_turn,
+               (SELECT 'import '||path||':'||first_line||'-'||last_line FROM memory_import_origins WHERE id=r.import_origin)),substr(r.content,1,128) FROM memory_search
              JOIN memory_records r ON r.id=memory_search.rowid
              JOIN memory_active a ON a.record_id=r.id
              WHERE memory_search MATCH ?1 AND r.scope=?2
@@ -107,7 +131,7 @@ impl Store {
         let rows = stmt.query_map(params![terms.join(" OR "), scope], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
+                r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
             ))
         })?;
@@ -116,7 +140,8 @@ impl Store {
 
     fn list_memory(&self, scope: &str, before: i64) -> Result<String> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.id,r.source_turn,substr(r.content,1,128),
+            "SELECT r.id,COALESCE('turn '||r.source_turn,
+               (SELECT 'import '||path||':'||first_line||'-'||last_line FROM memory_import_origins WHERE id=r.import_origin)),substr(r.content,1,128),
                     CASE WHEN a.record_id IS NULL THEN 'candidate/inactive' ELSE 'active' END
              FROM memory_records r LEFT JOIN memory_active a ON a.record_id=r.id
              WHERE r.scope=?1 AND r.id<?2 ORDER BY r.id DESC LIMIT 8",
@@ -124,7 +149,7 @@ impl Store {
         let rows = stmt.query_map(params![scope, before], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
+                r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
             ))
@@ -133,7 +158,7 @@ impl Store {
         for row in rows {
             let (id, source, content, state) = row?;
             let line = format!(
-                "#{id} [{state}, source turn {source}] {}\n",
+                "#{id} [{state}, source {source}] {}\n",
                 serde_json::to_string(&content)?
             );
             if output.len() + line.len() > MAX_OUTPUT {
@@ -303,8 +328,9 @@ impl Store {
         let source_turn = self.conn.last_insert_rowid();
         let new = if matches!(action, "correct" | "remember") {
             self.conn.execute(
-                "INSERT INTO memory_records(scope,source_turn,content,curated) VALUES(?1,?2,?3,?4)",
-                params![scope, source_turn, content, curated],
+                "INSERT INTO memory_records(scope,source_turn,content,curated,import_origin)
+                 VALUES(?1,?2,?3,?4,(SELECT import_origin FROM memory_records WHERE id=?5))",
+                params![scope, source_turn, content, curated, old],
             )?;
             Some(self.conn.last_insert_rowid())
         } else {
@@ -344,14 +370,14 @@ pub(crate) fn valid_content(content: &str) -> bool {
 }
 
 fn bounded_rows(
-    rows: impl Iterator<Item = rusqlite::Result<(i64, i64, String)>>,
+    rows: impl Iterator<Item = rusqlite::Result<(i64, String, String)>>,
     state: &str,
 ) -> Result<String> {
     let mut output = String::new();
     for row in rows.take(MAX_RESULTS) {
         let (id, source, content) = row?;
         let line = format!(
-            "#{id} [{state}, source turn {source}] {}\n",
+            "#{id} [{state}, source {source}] {}\n",
             serde_json::to_string(&content)?
         );
         if output.len() + line.len() > MAX_OUTPUT {

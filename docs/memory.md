@@ -106,13 +106,19 @@ propagate for retry rather than reporting success.
 ## No legacy memory layer
 
 Owner steering on 15 November supersedes Phase 0's compatibility requirements.
-There is no memory_entries import, managed MEMORY.md projection, full MEMORY.md
+There is no legacy memory_entries import, managed MEMORY.md projection, full MEMORY.md
 or USER.md prompt injection, or automatic creation of those files. Existing
 external files/tables are **not deleted or edited**. They are not supported
-memory inputs. Fresh data directories are the supported starting point.
+automatic memory inputs. The explicit local [OpenClaw Markdown import](openclaw-import.md)
+is a separate opt-in operation with selected files, destination scope, preview
+and transactional apply. It does not enable any legacy runtime layer.
+Fresh data directories are the supported starting point.
 If adopting an old installation, stop it, retain its backup, start with a new
 data directory and explicitly re-enter desired scoped facts. There is no
-automated destructive reset or production migration. Existing task projection
+automated destructive reset. Existing bounded-memory tables are upgraded
+transactionally to support separate import provenance, preserving record/history
+IDs and effective search state; legacy external tables are not imported.
+Existing task projection
 and durable turn/result recovery are separate and remain in place.
 
 ## OpenClaw reference, deliberately smaller

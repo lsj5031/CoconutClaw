@@ -4,20 +4,38 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn provider_defaults_have_no_total_deadline_and_conservative_idle_allowances() {
+    let dir = unique_dir();
+    write_config(&dir, "");
+    let cfg = load_runtime_config_isolated(dir.clone()).unwrap();
+    assert_eq!(cfg.provider_timeout_secs, 0);
+    assert_eq!(cfg.provider_idle_timeout_secs, 1800);
+    assert_eq!(cfg.provider_tool_idle_timeout_secs, 7200);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn all_numeric_domains_accept_endpoints_and_reject_outside_effective_values() {
-    let fields: [(&str, u64, u64); 7] = [
+    let fields: [(&str, u64, u64); 9] = [
         ("POLL_INTERVAL_SECONDS", 1, 3600),
         ("CONTEXT_TURNS", 1, 10000),
         ("PROVIDER_MAX_RETRIES", 0, 10),
         ("PROGRESS_UPDATE_INTERVAL", 1, 3600),
         ("TELEGRAM_API_TIMEOUT_SECS", 1, 300),
         ("TELEGRAM_API_RETRY_ATTEMPTS", 0, 10),
-        ("PROVIDER_TIMEOUT_SECS", 1, 86400),
+        ("PROVIDER_TIMEOUT_SECS", 0, 86400),
+        ("PROVIDER_IDLE_TIMEOUT_SECS", 1, 86400),
+        ("PROVIDER_TOOL_IDLE_TIMEOUT_SECS", 1, 86400),
     ];
     for (key, min, max) in fields {
         for n in [min, max] {
             let dir = unique_dir();
-            write_config(&dir, &format!("{key} = {n}"));
+            let coupled = match key {
+                "PROVIDER_IDLE_TIMEOUT_SECS" => "\nPROVIDER_TOOL_IDLE_TIMEOUT_SECS = 86400",
+                "PROVIDER_TOOL_IDLE_TIMEOUT_SECS" => "\nPROVIDER_IDLE_TIMEOUT_SECS = 1",
+                _ => "",
+            };
+            write_config(&dir, &format!("{key} = {n}{coupled}"));
             let cfg = load_runtime_config_isolated(dir.clone()).unwrap();
             let effective = match key {
                 "POLL_INTERVAL_SECONDS" => cfg.poll_interval_seconds,
@@ -27,6 +45,8 @@ fn all_numeric_domains_accept_endpoints_and_reject_outside_effective_values() {
                 "TELEGRAM_API_TIMEOUT_SECS" => cfg.telegram_api_timeout_secs,
                 "TELEGRAM_API_RETRY_ATTEMPTS" => cfg.telegram_api_retry_attempts.into(),
                 "PROVIDER_TIMEOUT_SECS" => cfg.provider_timeout_secs,
+                "PROVIDER_IDLE_TIMEOUT_SECS" => cfg.provider_idle_timeout_secs,
+                "PROVIDER_TOOL_IDLE_TIMEOUT_SECS" => cfg.provider_tool_idle_timeout_secs,
                 _ => unreachable!(),
             };
             assert_eq!(effective, n);
@@ -46,7 +66,11 @@ fn effective_invalid_values_fail_before_layout_creation() {
     for assignment in [
         "PROVIDER_TIMEOUT_SECS = false",
         "PROVIDER_TIMEOUT_SECS = -1",
-        "PROVIDER_TIMEOUT_SECS = 0",
+        "PROVIDER_IDLE_TIMEOUT_SECS = 0",
+        "PROVIDER_TOOL_IDLE_TIMEOUT_SECS = 0",
+        "PROVIDER_TOOL_IDLE_TIMEOUT_SECS = 1799",
+        "PROVIDER_IDLE_TIMEOUT_SECS = false",
+        "PROVIDER_TOOL_IDLE_TIMEOUT_SECS = \"typo\"",
         "PROVIDER_TIMEOUT_SECS = \"typo\"",
         "PROVIDER_TIMEOUT_SECS = 86401",
         "CONTEXT_TURNS = 0",
@@ -121,7 +145,16 @@ fn actual_loader_environment_precedence_and_numeric_domains() {
     assert_eq!(cfg.provider_timeout_secs, 23);
     assert_eq!(cfg.sqlite_db_path, dir.join("env.db"));
     assert!(!ignored.exists());
-    for value in ["typo", "18446744073709551616", "0", "-1", ""] {
+    unsafe {
+        env::set_var("PROVIDER_TIMEOUT_SECS", "0");
+    }
+    assert_eq!(
+        load_runtime_config(&overrides)
+            .unwrap()
+            .provider_timeout_secs,
+        0
+    );
+    for value in ["typo", "18446744073709551616", "-1", ""] {
         unsafe {
             env::set_var("PROVIDER_TIMEOUT_SECS", value);
         }

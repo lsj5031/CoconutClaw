@@ -23,10 +23,17 @@ PROVIDER_MAX_RETRIES = 0
 PROGRESS_UPDATE_INTERVAL = 3
 TELEGRAM_API_TIMEOUT_SECS = 30
 TELEGRAM_API_RETRY_ATTEMPTS = 3
-PROVIDER_TIMEOUT_SECS = 300
+# Optional total deadline, including stdin/output drain. 0 disables it.
+PROVIDER_TIMEOUT_SECS = 0
+# Silence allowances, not proof of a stall. Pending command/MCP/web tool items
+# get a longer allowance; reasoning may be silent until completion.
+PROVIDER_IDLE_TIMEOUT_SECS = 1800
+PROVIDER_TOOL_IDLE_TIMEOUT_SECS = 7200
 # Numeric domains (inclusive):
 # POLL_INTERVAL_SECONDS / PROGRESS_UPDATE_INTERVAL: 1..3600 seconds
 # CONTEXT_TURNS: 1..10000; PROVIDER_MAX_RETRIES: 0..10
 # TELEGRAM_API_TIMEOUT_SECS: 1..300; TELEGRAM_API_RETRY_ATTEMPTS: 0..10
-# PROVIDER_TIMEOUT_SECS: 1..86400 seconds, including stdin/output drain
+# PROVIDER_TIMEOUT_SECS: 0..86400 seconds (0 = disabled)
+# PROVIDER_IDLE_TIMEOUT_SECS / PROVIDER_TOOL_IDLE_TIMEOUT_SECS: 1..86400 seconds
+# Tool idle allowance must be >= ordinary idle allowance. See docs/provider-timeouts.md.
 # Telegram retries exclude the initial attempt: zero means one HTTP attempt.
