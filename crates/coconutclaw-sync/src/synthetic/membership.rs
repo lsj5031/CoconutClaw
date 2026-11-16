@@ -1,6 +1,8 @@
 //! Owner-authorized, one-scope synthetic record transfer.
 //! Native namespace capabilities and hash-only blob serving are never exposed.
 
+pub mod domain;
+
 use super::*;
 use std::{
     sync::Mutex,
@@ -74,6 +76,15 @@ struct State {
     connections: Vec<WeakConnectionHandle>,
 }
 
+/// Explicit disposable acceptance networking. Ordinary scoped peers remain
+/// loopback-only. No discovery, native docs/blob protocol or default relay.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptanceNetwork {
+    pub bind: std::net::SocketAddr,
+    pub relay: Option<iroh::RelayUrl>,
+}
+
 /// No Endpoint is retained here. Hooks track weak connection handles, including
 /// internal outgoing connections, not just connections made by public methods.
 #[derive(Debug, Clone)]
@@ -82,6 +93,7 @@ pub(super) struct Boundary {
     local: EndpointId,
     namespace: NamespaceId,
     state: Arc<Mutex<State>>,
+    acceptance: Option<AcceptanceNetwork>,
 }
 
 impl Boundary {
@@ -167,10 +179,16 @@ impl EndpointHooks for Boundary {
         // retained namespace capabilities from bypassing the record boundary.
         if alpn == ALPN
             && !remote.addrs.is_empty()
-            && remote
-                .addrs
-                .iter()
-                .all(|a| matches!(a, iroh::TransportAddr::Ip(ip) if ip.ip().is_loopback()))
+            && remote.addrs.iter().all(|a| match (a, &self.acceptance) {
+                (iroh::TransportAddr::Ip(ip), None) => ip.ip().is_loopback(),
+                (iroh::TransportAddr::Ip(ip), Some(_)) => {
+                    !ip.ip().is_unspecified() && !ip.ip().is_multicast() && ip.port() > 0
+                }
+                (iroh::TransportAddr::Relay(url), Some(network)) => {
+                    network.relay.as_ref() == Some(url)
+                }
+                _ => false,
+            })
             && self
                 .lock()
                 .and_then(|s| self.allowed(&s, remote.id))
@@ -342,9 +360,42 @@ pub struct ScopedPeer {
     peer: Peer,
     doc: Doc,
     boundary: Boundary,
+    recovery: recovery::RecoveryState,
+    journal: Sqlite,
 }
 
+mod projection;
+pub mod recovery;
+
 impl ScopedPeer {
+    /// The caller must supply independently pinned fixture membership, just as
+    /// for ordinary peers. This constructor grants no execution authority.
+    pub async fn acceptance(
+        root: &Path,
+        key: SecretKey,
+        owner: EndpointId,
+        capability: Capability,
+        network: AcceptanceNetwork,
+    ) -> Result<Self> {
+        let lock = if root.exists() {
+            let lock = recovery::lock(root)?;
+            projection::require_stores(root)?;
+            projection::require_authority(root, key.public(), owner, capability.id())?;
+            lock
+        } else {
+            fs::create_dir(root)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+            }
+            fs::write(root.join("SYNTHETIC"), MARKER)?;
+            projection::create(root, key.public(), owner, capability.id())?;
+            recovery::lock(root)?
+        };
+        Self::open_networked(root, key, owner, capability, lock, Some(network)).await
+    }
+
     pub async fn create(
         root: &Path,
         key: SecretKey,
@@ -358,34 +409,78 @@ impl ScopedPeer {
             fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
         }
         fs::write(root.join("SYNTHETIC"), MARKER)?;
-        Self::reopen(root, key, owner, capability).await
+        projection::create(root, key.public(), owner, capability.id())?;
+        let lock = recovery::lock(root)?;
+        Self::open_locked(root, key, owner, capability, lock).await
     }
 
-    /// Reopen quarantined. Persisted high-water marks are not a freshness oracle:
-    /// the caller must supply independently trusted current owner policy through
-    /// install_policy before any exchange. Backup recovery is not implemented.
+    /// Ordinary restart of known-intact stores, NOT backup adoption. A caller
+    /// unable to establish intact continuity must use `restore` instead.
+    /// Always quarantined; restored stores additionally require an independently
+    /// anchored policy through `install_recovery_policy` on every restart.
     pub async fn reopen(
         root: &Path,
         key: SecretKey,
         owner: EndpointId,
         capability: Capability,
     ) -> Result<Self> {
+        let lock = recovery::lock(root)?;
+        projection::require_stores(root)?;
+        projection::require_authority(root, key.public(), owner, capability.id())?;
+        Self::open_locked(root, key, owner, capability, lock).await
+    }
+
+    async fn open_locked(
+        root: &Path,
+        key: SecretKey,
+        owner: EndpointId,
+        capability: Capability,
+        lock: File,
+    ) -> Result<Self> {
+        Self::open_networked(root, key, owner, capability, lock, None).await
+    }
+
+    async fn open_networked(
+        root: &Path,
+        key: SecretKey,
+        owner: EndpointId,
+        capability: Capability,
+        lock: File,
+        acceptance: Option<AcceptanceNetwork>,
+    ) -> Result<Self> {
+        let recovery = recovery::read_receipt(root)?;
         let namespace = capability.id();
+        let journal = projection::open(root, key.public(), owner, namespace)?;
         let boundary = Boundary {
             owner,
             local: key.public(),
             namespace,
             state: Arc::new(Mutex::new(State::default())),
+            acceptance: acceptance.clone(),
         };
+        let bind = acceptance
+            .as_ref()
+            .map(|n| n.bind)
+            .unwrap_or_else(|| SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into());
+        let relay = acceptance
+            .and_then(|n| n.relay)
+            .map(|url| iroh::RelayMode::Custom(iroh::RelayMap::from_iter([url])))
+            .unwrap_or(iroh::RelayMode::Disabled);
         let builder = Endpoint::builder(presets::Minimal)
             .clear_ip_transports()
-            .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?
+            .bind_addr(bind)?
             .clear_address_lookup()
-            .relay_mode(iroh::RelayMode::Disabled)
+            .relay_mode(relay)
             .hooks(boundary.clone());
-        let peer =
-            Peer::reopen_with_boundary(root, key, BTreeSet::new(), builder, Some(boundary.clone()))
-                .await?;
+        let peer = Peer::reopen_locked(
+            root,
+            key,
+            BTreeSet::new(),
+            builder,
+            Some(boundary.clone()),
+            lock,
+        )
+        .await?;
         peer.sql.execute_batch(
             "CREATE TABLE IF NOT EXISTS membership(
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -416,6 +511,8 @@ impl ScopedPeer {
             peer,
             doc,
             boundary,
+            recovery,
+            journal,
         })
     }
 
@@ -430,6 +527,15 @@ impl ScopedPeer {
     /// Persist before activating. All connections close on every new snapshot,
     /// even when a peer remains a member, fencing old generation requests.
     pub fn install_policy(&mut self, signed: &SignedPolicy) -> Result<()> {
+        ensure!(
+            matches!(self.recovery, recovery::RecoveryState::Ordinary)
+                || self.boundary.lock()?.active.is_some(),
+            "restored store requires independently anchored recovery activation"
+        );
+        self.persist_policy(signed)
+    }
+
+    fn persist_policy(&mut self, signed: &SignedPolicy) -> Result<()> {
         self.boundary.verify(signed)?;
         let body = policy_bytes(&signed.policy)?;
         let remaining = Duration::from_secs(signed.policy.expires_at)
@@ -538,41 +644,54 @@ impl ScopedPeer {
             self.boundary.policy(&state)?.generation == request.generation,
             "stale response"
         );
-        let tx = self.peer.sql.transaction()?;
-        let body_hash = Hash::new(&bundle.body).to_string();
-        let old: Option<String> = tx
-            .query_row(
-                "SELECT hash FROM received WHERE namespace=?1 AND author=?2 AND key=?3",
-                params![
-                    request.namespace.to_string(),
-                    author.to_string(),
-                    key.as_bytes()
-                ],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(old) = old {
-            ensure!(old == body_hash, "immutable projection conflict");
-            return Ok(false);
-        }
-        tx.execute(
-            "INSERT INTO received VALUES (?1,?2,?3,?4,?5,?6)",
-            params![
-                request.namespace.to_string(),
-                author.to_string(),
-                key.as_bytes(),
-                body_hash,
-                bundle.body,
-                bundle.artifact
-            ],
-        )?;
-        tx.commit()?;
-        Ok(true)
+        projection::commit(
+            &mut self.journal,
+            &mut self.peer.sql,
+            remote.id,
+            &request,
+            &bundle,
+            || {
+                self.boundary.author(&state, remote.id, author)?;
+                ensure!(
+                    self.boundary.policy(&state)?.generation == request.generation,
+                    "stale response"
+                );
+                Ok(())
+            },
+        )
     }
 
     /// Inspection of an already disclosed inert projection is not erasure.
     pub fn received(&self) -> Result<Vec<Record>> {
         self.peer.received()
+    }
+
+    /// Bounded bytes of an exact, already verified receipt. This is inspection,
+    /// not native hash-only blob serving or permission to execute its contents.
+    pub fn received_artifact(&mut self, record: &Record) -> Result<Vec<u8>> {
+        self.repair_projection()?;
+        let state = self.boundary.lock()?;
+        self.boundary.policy(&state)?;
+        let (body, artifact): (Vec<u8>, Vec<u8>) = self.peer.sql.query_row(
+            "SELECT body,artifact FROM received WHERE namespace=?1 AND author=?2 AND key=?3",
+            params![
+                self.boundary.namespace.to_string(),
+                record.origin,
+                record.key().as_bytes()
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        ensure!(
+            serde_json::from_slice::<Record>(&body)? == *record,
+            "receipt metadata mismatch"
+        );
+        ensure!(
+            artifact.len() as u64 == record.artifact.size
+                && artifact.len() <= MAX_ARTIFACT
+                && Hash::new(&artifact).to_string() == record.artifact.hash,
+            "receipt artifact mismatch"
+        );
+        Ok(artifact)
     }
 
     pub async fn shutdown(self) -> Result<()> {

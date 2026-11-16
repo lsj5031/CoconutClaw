@@ -198,6 +198,17 @@ impl Peer {
             .open(root.join("writer.lock"))?;
         lock.try_lock_exclusive()
             .context("synthetic store already in use")?;
+        Self::reopen_locked(root, key, peers, builder, boundary, lock).await
+    }
+
+    async fn reopen_locked(
+        root: &Path,
+        key: SecretKey,
+        peers: BTreeSet<EndpointId>,
+        builder: iroh::endpoint::Builder,
+        boundary: Option<membership::Boundary>,
+        lock: File,
+    ) -> Result<Self> {
         let sql = Sqlite::open(root.join("projection.sqlite"))?;
         sql.execute_batch(
             "PRAGMA journal_mode=WAL;

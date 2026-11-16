@@ -532,19 +532,25 @@ name = "coconutclaw"
 version = "0.3.1"
 dependencies = [
  "anyhow",
+ "blake3",
  "chrono",
  "chrono-tz",
  "clap",
  "coconutclaw-config",
  "coconutclaw-provider",
+ "coconutclaw-sync",
  "ctrlc",
+ "iroh",
+ "iroh-docs",
  "libc",
  "notify",
  "pulldown-cmark",
  "reqwest 0.12.28",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -579,6 +585,7 @@ name = "coconutclaw-sync"
 version = "0.3.1"
 dependencies = [
  "anyhow",
+ "blake3",
  "fs2",
  "iroh",
  "iroh-blobs",

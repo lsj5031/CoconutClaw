@@ -2,6 +2,9 @@ use super::*;
 use iroh_docs::NamespaceSecret;
 use tokio::time::timeout;
 
+mod projection_tests;
+mod recovery_tests;
+
 struct Fixture {
     _root: tempfile::TempDir,
     owner: SecretKey,
