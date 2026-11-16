@@ -1,0 +1,355 @@
+{
+  "basis": "all additions relative to pinned171-path repository baseline; modified existing docs remain in baseline inventory and final source manifest",
+  "hash_binding": "final source manifest and each official check input manifest, not recursive self hashes",
+  "new_paths": [
+    {
+      "path": "docs/formal-verification.md",
+      "classification": "verification documentation",
+      "owner_and_scope": "Assumptions/bounds/coverage/commands",
+      "state_coverage_and_gap": "No application transition; final source manifest binds exact text"
+    },
+    {
+      "path": "formal/Calendar-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Calendar-live-blocked-fetch.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Calendar-negative-liveness.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Calendar-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Calendar-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Calendar.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/Context-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Context-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Context-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Context.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/Effects-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Effects-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Effects-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Effects.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/History-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/History-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/History-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/History.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/Ingress-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Ingress-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Ingress-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Ingress.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/Process-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Process-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Process-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Process.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/README.md",
+      "classification": "verification documentation",
+      "owner_and_scope": "Assumptions/bounds/coverage/commands",
+      "state_coverage_and_gap": "No application transition; final source manifest binds exact text"
+    },
+    {
+      "path": "formal/RemoteComposition-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RemoteComposition-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RemoteComposition-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RemoteComposition.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/Replication-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Replication-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Replication-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Replication.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/RuntimeComposition-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RuntimeComposition-live-1.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RuntimeComposition-live-2.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RuntimeComposition-negative-liveness.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RuntimeComposition-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RuntimeComposition-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/RuntimeComposition.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/Tasks-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Tasks-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Tasks-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/Tasks.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/WaitNoticeComposition-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/WaitNoticeComposition-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/WaitNoticeComposition-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC configuration",
+      "state_coverage_and_gap": "Spec/constants/invariants/property; negative modes are intentional mutants, not application changes"
+    },
+    {
+      "path": "formal/WaitNoticeComposition.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Official SANY and TLC; bounded source-linked abstraction, not runtime",
+      "state_coverage_and_gap": "Independent model variables, named actions/invariants/conditional temporal properties; cases.json selects finite bounds"
+    },
+    {
+      "path": "formal/cases.json",
+      "classification": "verification mapping/registry",
+      "owner_and_scope": "Exact source/case/inventory data, bound by final source and input manifests",
+      "state_coverage_and_gap": "Immutable check input during runs; mapping drift fails runner; these declarations are not independent implementation correctness evidence"
+    },
+    {
+      "path": "formal/implementation-hashes.json",
+      "classification": "verification mapping/registry",
+      "owner_and_scope": "Exact source/case/inventory data, bound by final source and input manifests",
+      "state_coverage_and_gap": "Immutable check input during runs; mapping drift fails runner; these declarations are not independent implementation correctness evidence"
+    },
+    {
+      "path": "formal/inventory.json",
+      "classification": "verification mapping/registry",
+      "owner_and_scope": "Exact source/case/inventory data, bound by final source and input manifests",
+      "state_coverage_and_gap": "Immutable check input during runs; mapping drift fails runner; these declarations are not independent implementation correctness evidence"
+    },
+    {
+      "path": "formal/source-map.json",
+      "classification": "verification mapping/registry",
+      "owner_and_scope": "Exact source/case/inventory data, bound by final source and input manifests",
+      "state_coverage_and_gap": "Immutable check input during runs; mapping drift fails runner; these declarations are not independent implementation correctness evidence"
+    },
+    {
+      "path": "formal/test_runner.py",
+      "classification": "verification unit tests",
+      "owner_and_scope": "Supplementary checker evidence",
+      "state_coverage_and_gap": "Pure classification tests of proof exhaustion, intended failures, liveness traces and resource-error precedence; actual JVM mutants remain required"
+    },
+    {
+      "path": "formal/verification-inventory.json",
+      "classification": "verification mapping/registry",
+      "owner_and_scope": "Exact source/case/inventory data, bound by final source and input manifests",
+      "state_coverage_and_gap": "Immutable check input during runs; mapping drift fails runner; these declarations are not independent implementation correctness evidence"
+    },
+    {
+      "path": "scripts/check-formal.py",
+      "classification": "stateful verification runner",
+      "owner_and_scope": "Implementation-owned tooling, not deployed application",
+      "state_coverage_and_gap": "parse -> pin/anchor validate -> new artifact/input snapshot -> each SANY -> each TLC -> classify/capture -> complete; failures stop nonzero; timeout kills/waits only owned JVM group; covered by four unit cases and real fail-closed gate controls, not a self-hosting formal proof"
+    }
+  ],
+  "complete_path_inventory_not_complete_implicit_machine_proof": true
+}

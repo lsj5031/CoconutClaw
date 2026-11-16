@@ -1,0 +1,955 @@
+[
+  {
+    "id": "Ingress-small",
+    "module": "Ingress",
+    "config": "Ingress-small.cfg",
+    "constants": {
+      "N": 2,
+      "Sessions": 1,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "FrozenIdentity",
+      "CustodyCursor",
+      "AtomicControl",
+      "NoAmbiguousRetry"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Admit",
+      "Claim",
+      "Commit",
+      "TaskReceipt",
+      "AmbiguousEffect",
+      "Recover"
+    ]
+  },
+  {
+    "id": "Ingress-expanded",
+    "module": "Ingress",
+    "config": "Ingress-expanded.cfg",
+    "constants": {
+      "N": 3,
+      "Sessions": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "FrozenIdentity",
+      "CustodyCursor",
+      "AtomicControl",
+      "NoAmbiguousRetry"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Admit",
+      "Claim",
+      "Commit",
+      "TaskReceipt",
+      "AmbiguousEffect",
+      "Recover"
+    ]
+  },
+  {
+    "id": "Ingress-negative",
+    "module": "Ingress",
+    "config": "Ingress-negative.cfg",
+    "constants": {
+      "N": 2,
+      "Sessions": 1,
+      "Unsafe": true
+    },
+    "invariants": [
+      "NoAmbiguousRetry"
+    ],
+    "violation": "NoAmbiguousRetry",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "Tasks-small",
+    "module": "Tasks",
+    "config": "Tasks-small.cfg",
+    "constants": {
+      "N": 1,
+      "Cap": 1,
+      "Attempts": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "Capacity",
+      "CurrentOwner",
+      "ContinuationCause",
+      "OneWorkflowLaunch"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Start",
+      "Stop",
+      "Cancel",
+      "Resume"
+    ]
+  },
+  {
+    "id": "Tasks-expanded",
+    "module": "Tasks",
+    "config": "Tasks-expanded.cfg",
+    "constants": {
+      "N": 2,
+      "Cap": 2,
+      "Attempts": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "Capacity",
+      "CurrentOwner",
+      "ContinuationCause",
+      "OneWorkflowLaunch"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Start",
+      "Stop",
+      "Cancel",
+      "Resume"
+    ]
+  },
+  {
+    "id": "Tasks-negative",
+    "module": "Tasks",
+    "config": "Tasks-negative.cfg",
+    "constants": {
+      "N": 1,
+      "Cap": 1,
+      "Attempts": 2,
+      "Unsafe": true
+    },
+    "invariants": [
+      "OneWorkflowLaunch"
+    ],
+    "violation": "OneWorkflowLaunch",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "Effects-small",
+    "module": "Effects",
+    "config": "Effects-small.cfg",
+    "constants": {
+      "Retries": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "ReceiptAuthority",
+      "AuditEvidence",
+      "NoDuplicateExternal"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Begin",
+      "WireAccept",
+      "KnownReject",
+      "Receipt",
+      "Project",
+      "Crash",
+      "Offer",
+      "ChangeHead",
+      "Reconcile"
+    ]
+  },
+  {
+    "id": "Effects-expanded",
+    "module": "Effects",
+    "config": "Effects-expanded.cfg",
+    "constants": {
+      "Retries": 3,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "ReceiptAuthority",
+      "AuditEvidence",
+      "NoDuplicateExternal"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Begin",
+      "WireAccept",
+      "KnownReject",
+      "Receipt",
+      "Project",
+      "Crash",
+      "Offer",
+      "ChangeHead",
+      "Reconcile"
+    ]
+  },
+  {
+    "id": "Effects-negative",
+    "module": "Effects",
+    "config": "Effects-negative.cfg",
+    "constants": {
+      "Retries": 2,
+      "Unsafe": true
+    },
+    "invariants": [
+      "NoDuplicateExternal"
+    ],
+    "violation": "NoDuplicateExternal",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "Calendar-small",
+    "module": "Calendar",
+    "config": "Calendar-small.cfg",
+    "constants": {
+      "N": 1,
+      "FoldSecond": false,
+      "GapNext": false,
+      "SkipMissed": false,
+      "Unsafe": false,
+      "Steady": false,
+      "Stall": false
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicOccurrence",
+      "CursorForward"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Tick",
+      "Mutate",
+      "Edit",
+      "Observe",
+      "Admit",
+      "Finish",
+      "FetchReturn"
+    ]
+  },
+  {
+    "id": "Calendar-expanded",
+    "module": "Calendar",
+    "config": "Calendar-expanded.cfg",
+    "constants": {
+      "N": 2,
+      "FoldSecond": true,
+      "GapNext": true,
+      "SkipMissed": true,
+      "Unsafe": false,
+      "Steady": false,
+      "Stall": false
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicOccurrence",
+      "CursorForward"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Tick",
+      "Mutate",
+      "Edit",
+      "Observe",
+      "Admit",
+      "Finish",
+      "FetchReturn"
+    ]
+  },
+  {
+    "id": "Calendar-negative",
+    "module": "Calendar",
+    "config": "Calendar-negative.cfg",
+    "constants": {
+      "N": 1,
+      "FoldSecond": false,
+      "GapNext": false,
+      "SkipMissed": false,
+      "Unsafe": true,
+      "Steady": false,
+      "Stall": false
+    },
+    "invariants": [
+      "AtomicOccurrence"
+    ],
+    "violation": "AtomicOccurrence",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "Context-small",
+    "module": "Context",
+    "config": "Context-small.cfg",
+    "constants": {
+      "N": 1,
+      "Limit": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "PreferenceAuthority",
+      "NativeGeneration",
+      "NoticeDedup",
+      "NoInventedNotice"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Preference",
+      "Fact",
+      "Turn",
+      "Change",
+      "Observe",
+      "Send",
+      "Cancel"
+    ]
+  },
+  {
+    "id": "Context-expanded",
+    "module": "Context",
+    "config": "Context-expanded.cfg",
+    "constants": {
+      "N": 2,
+      "Limit": 1,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "PreferenceAuthority",
+      "NativeGeneration",
+      "NoticeDedup",
+      "NoInventedNotice"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Preference",
+      "Fact",
+      "Turn",
+      "Change",
+      "Observe",
+      "Send",
+      "Cancel"
+    ]
+  },
+  {
+    "id": "Context-negative",
+    "module": "Context",
+    "config": "Context-negative.cfg",
+    "constants": {
+      "N": 1,
+      "Limit": 2,
+      "Unsafe": true
+    },
+    "invariants": [
+      "NoticeDedup"
+    ],
+    "violation": "NoticeDedup",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "Replication-small",
+    "module": "Replication",
+    "config": "Replication-small.cfg",
+    "constants": {
+      "N": 1,
+      "Generations": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "CustodyBeforeProjection",
+      "NoAuthorityRollback",
+      "EpochFence"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Policy",
+      "Tick",
+      "Open",
+      "Request",
+      "Receive",
+      "Project",
+      "Partition",
+      "RestoreLatch",
+      "VerifyPin",
+      "Adopt",
+      "Fence"
+    ]
+  },
+  {
+    "id": "Replication-expanded",
+    "module": "Replication",
+    "config": "Replication-expanded.cfg",
+    "constants": {
+      "N": 2,
+      "Generations": 3,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "CustodyBeforeProjection",
+      "NoAuthorityRollback",
+      "EpochFence"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Policy",
+      "Tick",
+      "Open",
+      "Request",
+      "Receive",
+      "Project",
+      "Partition",
+      "RestoreLatch",
+      "VerifyPin",
+      "Adopt",
+      "Fence"
+    ]
+  },
+  {
+    "id": "Replication-negative",
+    "module": "Replication",
+    "config": "Replication-negative.cfg",
+    "constants": {
+      "N": 1,
+      "Generations": 2,
+      "Unsafe": true
+    },
+    "invariants": [
+      "EpochFence"
+    ],
+    "violation": "EpochFence",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "Process-small",
+    "module": "Process",
+    "config": "Process-small.cfg",
+    "constants": {
+      "Limit": 1,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "ClaimBeforeSpawn",
+      "SingleDispatchToken",
+      "DrainBeforeJoin"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Claim",
+      "Spawn",
+      "Progress",
+      "Tick",
+      "Cancel",
+      "Timeout",
+      "Exit",
+      "Drain",
+      "Kill",
+      "Join",
+      "Crash",
+      "Recover"
+    ]
+  },
+  {
+    "id": "Process-expanded",
+    "module": "Process",
+    "config": "Process-expanded.cfg",
+    "constants": {
+      "Limit": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "ClaimBeforeSpawn",
+      "SingleDispatchToken",
+      "DrainBeforeJoin"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Claim",
+      "Spawn",
+      "Progress",
+      "Tick",
+      "Cancel",
+      "Timeout",
+      "Exit",
+      "Drain",
+      "Kill",
+      "Join",
+      "Crash",
+      "Recover"
+    ]
+  },
+  {
+    "id": "Process-negative",
+    "module": "Process",
+    "config": "Process-negative.cfg",
+    "constants": {
+      "Limit": 1,
+      "Unsafe": true
+    },
+    "invariants": [
+      "SingleDispatchToken"
+    ],
+    "violation": "SingleDispatchToken",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "RuntimeComposition-small",
+    "module": "RuntimeComposition",
+    "config": "RuntimeComposition-small.cfg",
+    "constants": {
+      "N": 1,
+      "Cap": 1,
+      "Live": false,
+      "Stall": false,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicAdmission",
+      "NoOrphanOutbox",
+      "Capacity",
+      "ReceiptBeforeSent"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Accept",
+      "Start",
+      "Finish",
+      "Cancel",
+      "Crash",
+      "Send",
+      "Ack"
+    ]
+  },
+  {
+    "id": "RuntimeComposition-expanded",
+    "module": "RuntimeComposition",
+    "config": "RuntimeComposition-expanded.cfg",
+    "constants": {
+      "N": 2,
+      "Cap": 1,
+      "Live": false,
+      "Stall": false,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicAdmission",
+      "NoOrphanOutbox",
+      "Capacity",
+      "ReceiptBeforeSent"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Accept",
+      "Start",
+      "Finish",
+      "Cancel",
+      "Crash",
+      "Send",
+      "Ack"
+    ]
+  },
+  {
+    "id": "RuntimeComposition-negative",
+    "module": "RuntimeComposition",
+    "config": "RuntimeComposition-negative.cfg",
+    "constants": {
+      "N": 1,
+      "Cap": 1,
+      "Live": false,
+      "Stall": false,
+      "Unsafe": true
+    },
+    "invariants": [
+      "NoOrphanOutbox"
+    ],
+    "violation": "NoOrphanOutbox",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "RemoteComposition-small",
+    "module": "RemoteComposition",
+    "config": "RemoteComposition-small.cfg",
+    "constants": {
+      "Epochs": 1,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "SingleExecutionOwner",
+      "AuthenticatedOutbox",
+      "NoUnknownCompletion"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Reserve",
+      "LocalStart",
+      "RunnerStart",
+      "Sign",
+      "Receive",
+      "Apply",
+      "Cancel",
+      "Partition",
+      "Substitute",
+      "Recover"
+    ]
+  },
+  {
+    "id": "RemoteComposition-expanded",
+    "module": "RemoteComposition",
+    "config": "RemoteComposition-expanded.cfg",
+    "constants": {
+      "Epochs": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "SingleExecutionOwner",
+      "AuthenticatedOutbox",
+      "NoUnknownCompletion"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Reserve",
+      "LocalStart",
+      "RunnerStart",
+      "Sign",
+      "Receive",
+      "Apply",
+      "Cancel",
+      "Partition",
+      "Fence",
+      "Substitute",
+      "Recover"
+    ]
+  },
+  {
+    "id": "RemoteComposition-negative",
+    "module": "RemoteComposition",
+    "config": "RemoteComposition-negative.cfg",
+    "constants": {
+      "Epochs": 1,
+      "Unsafe": true
+    },
+    "invariants": [
+      "SingleExecutionOwner"
+    ],
+    "violation": "SingleExecutionOwner",
+    "liveness": false,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "RuntimeComposition-live-1",
+    "module": "RuntimeComposition",
+    "config": "RuntimeComposition-live-1.cfg",
+    "constants": {
+      "N": 1,
+      "Cap": 1,
+      "Live": true,
+      "Stall": false,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicAdmission",
+      "NoOrphanOutbox",
+      "Capacity",
+      "ReceiptBeforeSent"
+    ],
+    "violation": null,
+    "liveness": true,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Accept",
+      "Start",
+      "Finish",
+      "Send",
+      "Ack"
+    ]
+  },
+  {
+    "id": "RuntimeComposition-live-2",
+    "module": "RuntimeComposition",
+    "config": "RuntimeComposition-live-2.cfg",
+    "constants": {
+      "N": 2,
+      "Cap": 1,
+      "Live": true,
+      "Stall": false,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicAdmission",
+      "NoOrphanOutbox",
+      "Capacity",
+      "ReceiptBeforeSent"
+    ],
+    "violation": null,
+    "liveness": true,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits",
+    "required_actions": [
+      "Accept",
+      "Start",
+      "Finish",
+      "Send",
+      "Ack"
+    ]
+  },
+  {
+    "id": "RuntimeComposition-negative-liveness",
+    "module": "RuntimeComposition",
+    "config": "RuntimeComposition-negative-liveness.cfg",
+    "constants": {
+      "N": 1,
+      "Cap": 1,
+      "Live": true,
+      "Stall": true,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicAdmission",
+      "NoOrphanOutbox",
+      "Capacity",
+      "ReceiptBeforeSent"
+    ],
+    "violation": "AllSettled",
+    "liveness": true,
+    "bounds_note": "finite constants, no state constraints or depth truncation; CHECK_DEADLOCK FALSE permits intended terminal/quarantined waits"
+  },
+  {
+    "id": "WaitNoticeComposition-small",
+    "module": "WaitNoticeComposition",
+    "config": "WaitNoticeComposition-small.cfg",
+    "constants": {
+      "Limit": 1,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "SuccessfulEvidenceOnly",
+      "OneContinuation",
+      "NativePreferenceSnapshot",
+      "NoticeOrigin"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants; no state constraints/depth truncation",
+    "required_actions": [
+      "Source",
+      "Resume",
+      "Observe",
+      "BeginNotice",
+      "Ack",
+      "Cancel",
+      "Preference",
+      "Start"
+    ]
+  },
+  {
+    "id": "WaitNoticeComposition-expanded",
+    "module": "WaitNoticeComposition",
+    "config": "WaitNoticeComposition-expanded.cfg",
+    "constants": {
+      "Limit": 2,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "SuccessfulEvidenceOnly",
+      "OneContinuation",
+      "NativePreferenceSnapshot",
+      "NoticeOrigin"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants; no state constraints/depth truncation",
+    "required_actions": [
+      "Source",
+      "Resume",
+      "Observe",
+      "BeginNotice",
+      "Ack",
+      "Cancel",
+      "Preference",
+      "Start"
+    ]
+  },
+  {
+    "id": "WaitNoticeComposition-negative",
+    "module": "WaitNoticeComposition",
+    "config": "WaitNoticeComposition-negative.cfg",
+    "constants": {
+      "Limit": 1,
+      "Unsafe": true
+    },
+    "invariants": [
+      "SuccessfulEvidenceOnly"
+    ],
+    "violation": "SuccessfulEvidenceOnly",
+    "liveness": false,
+    "bounds_note": "finite constants; no state constraints/depth truncation"
+  },
+  {
+    "id": "History-small",
+    "module": "History",
+    "config": "History-small.cfg",
+    "constants": {
+      "Limit": 1,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "ContiguousPrefix",
+      "WriterAuthority",
+      "SourceBeforeMemory",
+      "AssignmentBeforeResult",
+      "NoReinterpretation"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants; no state constraints/depth truncation",
+    "required_actions": [
+      "Arrival",
+      "Apply"
+    ]
+  },
+  {
+    "id": "History-expanded",
+    "module": "History",
+    "config": "History-expanded.cfg",
+    "constants": {
+      "Limit": 3,
+      "Unsafe": false
+    },
+    "invariants": [
+      "TypeOK",
+      "ContiguousPrefix",
+      "WriterAuthority",
+      "SourceBeforeMemory",
+      "AssignmentBeforeResult",
+      "NoReinterpretation"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "finite constants; no state constraints/depth truncation",
+    "required_actions": [
+      "Arrival",
+      "Apply"
+    ]
+  },
+  {
+    "id": "History-negative",
+    "module": "History",
+    "config": "History-negative.cfg",
+    "constants": {
+      "Limit": 1,
+      "Unsafe": true
+    },
+    "invariants": [
+      "WriterAuthority"
+    ],
+    "violation": "WriterAuthority",
+    "liveness": false,
+    "bounds_note": "finite constants; no state constraints/depth truncation"
+  },
+  {
+    "id": "Calendar-live-blocked-fetch",
+    "module": "Calendar",
+    "config": "Calendar-live-blocked-fetch.cfg",
+    "constants": {
+      "N": 1,
+      "FoldSecond": true,
+      "GapNext": true,
+      "SkipMissed": false,
+      "Unsafe": false,
+      "Steady": true,
+      "Stall": false
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicOccurrence",
+      "CursorForward"
+    ],
+    "violation": null,
+    "liveness": true,
+    "required_actions": [
+      "Tick",
+      "Observe",
+      "Admit"
+    ],
+    "bounds_note": "Fair clock/reducer, coalesce, no edits/pause/cancel, fetch held blocked forever; negative mutation couples admission to fetch return"
+  },
+  {
+    "id": "Calendar-negative-liveness",
+    "module": "Calendar",
+    "config": "Calendar-negative-liveness.cfg",
+    "constants": {
+      "N": 1,
+      "FoldSecond": true,
+      "GapNext": true,
+      "SkipMissed": false,
+      "Unsafe": false,
+      "Steady": true,
+      "Stall": true
+    },
+    "invariants": [
+      "TypeOK",
+      "AtomicOccurrence",
+      "CursorForward"
+    ],
+    "violation": "EventuallyAdmitted",
+    "liveness": true,
+    "required_actions": [],
+    "bounds_note": "Fair clock/reducer, coalesce, no edits/pause/cancel, fetch held blocked forever; negative mutation couples admission to fetch return"
+  }
+]

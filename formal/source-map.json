@@ -1,0 +1,1276 @@
+{
+  "basis": "implementation-hashes.json pins exact pre-model runtime/test/shared-library bytes; declaration anchors below remain valid unless gate refuses stale pin",
+  "families": {
+    "Ingress": {
+      "owner": "Store IMMEDIATE transaction and authenticated webhook reducer; durable raw/inbox/outbox, volatile callback work",
+      "state": "phase, exact payload/frozen preimage, monotonic custody cursor, consumed inbox, reply outbox, external invocation count; independent SQL-control effect set, separate normal-task receipt crash cut",
+      "actions": {
+        "Admit": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "admit_telegram",
+            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "declarations": [
+              {
+                "line": 9,
+                "text": "pub(crate) fn admit_telegram("
+              }
+            ]
+          }
+        ],
+        "Claim": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "claim_telegram",
+            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "declarations": [
+              {
+                "line": 62,
+                "text": "pub(crate) fn claim_telegram(&self, seq: i64) -> Result<bool> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "pending_telegram",
+            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "declarations": [
+              {
+                "line": 124,
+                "text": "pub(crate) fn pending_telegram(&self) -> Result<Vec<String>> {"
+              }
+            ]
+          }
+        ],
+        "Commit": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "finish_telegram",
+            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "declarations": [
+              {
+                "line": 73,
+                "text": "pub(crate) fn finish_telegram(&self, seq: i64, outcome: &ProcessOutcome) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/inbox.rs",
+            "symbol": "admit_inbox_request",
+            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "declarations": [
+              {
+                "line": 61,
+                "text": "pub(crate) fn admit_inbox_request("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/inbox.rs",
+            "symbol": "record_inbox",
+            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "declarations": [
+              {
+                "line": 29,
+                "text": "pub(crate) fn record_inbox("
+              }
+            ]
+          }
+        ],
+        "AmbiguousEffect/Recover": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "recover_telegram_claims",
+            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "declarations": [
+              {
+                "line": 146,
+                "text": "pub(crate) fn recover_telegram_claims(&self) -> Result<()> {"
+              }
+            ]
+          }
+        ],
+        "TaskReceipt": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/inbox.rs",
+            "symbol": "admit_inbox_request",
+            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "declarations": [
+              {
+                "line": 61,
+                "text": "pub(crate) fn admit_inbox_request("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/inbox.rs",
+            "symbol": "record_inbox",
+            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "declarations": [
+              {
+                "line": 29,
+                "text": "pub(crate) fn record_inbox("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Exact identity replay; scoped older pending/applying fence; only designated already-authenticated reconciliation control may bypass older Unknown, not pending/applying. Runtime-control claim precedes external I/O; interrupted unproven applying becomes Unknown.",
+      "atomicity": "Raw admission+custody cursor; SQL control effect+done+reply share commits. Failed transactions stutter. Runtime external invocation is explicitly nontransactional.",
+      "gaps": "Designation e=N abstracts authenticated parser/classification; same/different sessions use finite aliases. Progress-message phase, media download, update integer parsing and every command payload not modeled; canonical bytes/signatures are opaque equality classes."
+    },
+    "Tasks": {
+      "owner": "SessionScheduler queue/lifecycle lock, Store logical head/attempt/wait, shared provider slots",
+      "state": "phase per logical task, current ordinal, per-physical-run workflow launch count, active slot set, sticky cancellation, continuation cause evidence",
+      "actions": {
+        "Start": [
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "dispatch_ready",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 964,
+                "text": "fn dispatch_ready(&self) {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "spawn_task",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 466,
+                "text": "fn spawn_task(&self, task_id: i64, request: TaskRequest) {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "run_task",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 559,
+                "text": "fn run_task("
+              }
+            ]
+          }
+        ],
+        "Stop": [
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "persist_result",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 717,
+                "text": "fn persist_result("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "persist_failure",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 894,
+                "text": "fn persist_failure("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_graph.rs",
+            "symbol": "register_task_wait",
+            "sha256": "5a1dbce30641d2ef4b5a5a367d651e794f4b6500d0db6fc9dfd8f681531f1a54",
+            "declarations": [
+              {
+                "line": 147,
+                "text": "pub(crate) fn register_task_wait("
+              }
+            ]
+          }
+        ],
+        "Cancel": [
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "cancel_task_for_session",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 217,
+                "text": "pub(crate) fn cancel_task_for_session("
+              }
+            ]
+          }
+        ],
+        "Resume": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_graph.rs",
+            "symbol": "link_task_continuation",
+            "sha256": "5a1dbce30641d2ef4b5a5a367d651e794f4b6500d0db6fc9dfd8f681531f1a54",
+            "declarations": [
+              {
+                "line": 95,
+                "text": "pub(crate) fn link_task_continuation("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_graph.rs",
+            "symbol": "resume_task_events",
+            "sha256": "5a1dbce30641d2ef4b5a5a367d651e794f4b6500d0db6fc9dfd8f681531f1a54",
+            "declarations": [
+              {
+                "line": 220,
+                "text": "pub(crate) fn resume_task_events(&self, now: &str) -> Result<Vec<(i64, TaskRequest)>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "resolve_approval",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 359,
+                "text": "pub(crate) fn resolve_approval("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Current task/actor/session/head, approval/dependency source success, no cancellation/Unknown, bounded global slots. Resume creates new ordinal rather than relaunching prior physical run.",
+      "atomicity": "Durable request and attempt ancestry share SQL commit; volatile lane dispatch follows. Crash after started workflow leaves Unknown, never restores dispatch token.",
+      "gaps": "Cap1/2 abstracts actual global5 and dev driver2. Two attempts maximum; approval authorization and full immutable ancestry snapshots are abstracted to Resume guard/evidence, not byte-level proof. Workflow launch is NOT count of subprocess retries inside one turn. FIFO ordering/batch32, graph cycles and late dependency uncertainty after snapshot remain source-test/refinement gaps."
+    },
+    "Effects": {
+      "owner": "Existing single delivery lock and durable operation/text plans; authenticated reconciliation SQL control",
+      "state": "plan phase, wire acceptance, bounded attempts, possible external acceptance count, persisted receipt, head revision, frozen offer revision, audit",
+      "actions": {
+        "Begin/WireAccept/KnownReject/Receipt": [
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
+            "symbol": "durable_op",
+            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "declarations": [
+              {
+                "line": 62,
+                "text": "fn durable_op("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
+            "symbol": "deliver_text",
+            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "declarations": [
+              {
+                "line": 121,
+                "text": "fn deliver_text("
+              }
+            ]
+          }
+        ],
+        "Project/Crash": [
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
+            "symbol": "acknowledged_text",
+            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "declarations": [
+              {
+                "line": 341,
+                "text": "pub(crate) fn acknowledged_text("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/mod.rs",
+            "symbol": "persist_delivery_state",
+            "sha256": "019fd8d6739bb3cfa146d59cb4dafaa3bab0887d1c227ac1172027c0be3893df",
+            "declarations": [
+              {
+                "line": 141,
+                "text": "pub(crate) fn persist_delivery_state("
+              }
+            ]
+          }
+        ],
+        "Offer/ChangeHead/Reconcile": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/reconciliation.rs",
+            "symbol": "reconciliation_evidence",
+            "sha256": "0c29b1a582280fa8b3c022efe04329712f604cf5f1abf8fbc46a650b797e833e",
+            "declarations": [
+              {
+                "line": 53,
+                "text": "fn reconciliation_evidence(&self, session: &SessionKey, target: Target) -> Result<Evidence> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/reconciliation.rs",
+            "symbol": "reconciliation_command",
+            "sha256": "0c29b1a582280fa8b3c022efe04329712f604cf5f1abf8fbc46a650b797e833e",
+            "declarations": [
+              {
+                "line": 153,
+                "text": "pub(crate) fn reconciliation_command("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/reconciliation.rs",
+            "symbol": "reconciliation_control",
+            "sha256": "0c29b1a582280fa8b3c022efe04329712f604cf5f1abf8fbc46a650b797e833e",
+            "declarations": [
+              {
+                "line": 180,
+                "text": "fn reconciliation_control("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Sending persisted before HTTP; definite rejection may return ready, ambiguity never does. Acknowledgment projection requires durable receipt. Reconciliation requires exact current offer snapshot, original owner/route/head and single supported rich-text receipt, never inferred external nonoccurrence.",
+      "atomicity": "External acceptance and durable acknowledgment are distinct cuts. Offer apply/audit/control reply share transaction; HTTP never shares SQL transaction.",
+      "gaps": "One rich-text operation only, not arbitrary media/chunk multiplicity, edit/fallback API semantics, HTTP parsing/rate deadlines or all completed-op byte guards. Definite rejection is a trusted response-class assumption; no generalized exactly-once guarantee for arbitrary external effects."
+    },
+    "Calendar": {
+      "owner": "Store schedule/occurrence transaction and scheduler-owned deadline/watcher intake with private connection",
+      "state": "bounded wall ticks and abstract fold/gap slots, per-schedule revision/state/cursor, unresolved/Unknown fences, independent occurrence/inbox/run sets, cached deadline, coalesced signal and blocked fetch",
+      "actions": {
+        "Tick/Slots/Following": [
+          {
+            "path": "crates/coconutclaw-cli/src/scheduling/mod.rs",
+            "symbol": "first",
+            "sha256": "85533f64ce25bef272035750d085e033f55b79410345f851daf30a68fbd15c98",
+            "declarations": [
+              {
+                "line": 197,
+                "text": "pub(crate) fn first(&self, now: DateTime<Utc>) -> Result<DateTime<Utc>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduling/mod.rs",
+            "symbol": "occurrence",
+            "sha256": "85533f64ce25bef272035750d085e033f55b79410345f851daf30a68fbd15c98",
+            "declarations": [
+              {
+                "line": 204,
+                "text": "pub(crate) fn occurrence(&self, now: DateTime<Utc>) -> Result<DateTime<Utc>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduling/mod.rs",
+            "symbol": "next",
+            "sha256": "85533f64ce25bef272035750d085e033f55b79410345f851daf30a68fbd15c98",
+            "declarations": [
+              {
+                "line": 215,
+                "text": "pub(crate) fn next(&self, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduling/mod.rs",
+            "symbol": "wall_bound",
+            "sha256": "85533f64ce25bef272035750d085e033f55b79410345f851daf30a68fbd15c98",
+            "declarations": [
+              {
+                "line": 222,
+                "text": "fn wall_bound("
+              }
+            ]
+          }
+        ],
+        "Mutate/Edit": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/schedules.rs",
+            "symbol": "set_schedule_state",
+            "sha256": "7f509a50febfa6cf94456b7b5f0c6fb515658306c640a75631b82576696b555a",
+            "declarations": [
+              {
+                "line": 77,
+                "text": "pub(crate) fn set_schedule_state(&self, session: &str, id: i64, state: &str) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/schedules.rs",
+            "symbol": "edit_schedule",
+            "sha256": "7f509a50febfa6cf94456b7b5f0c6fb515658306c640a75631b82576696b555a",
+            "declarations": [
+              {
+                "line": 89,
+                "text": "pub(crate) fn edit_schedule("
+              }
+            ]
+          }
+        ],
+        "Observe": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/schedules.rs",
+            "symbol": "next_schedule_deadline",
+            "sha256": "7f509a50febfa6cf94456b7b5f0c6fb515658306c640a75631b82576696b555a",
+            "declarations": [
+              {
+                "line": 68,
+                "text": "pub(crate) fn next_schedule_deadline(&self) -> Result<Option<i64>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler_calendar.rs",
+            "symbol": "start_calendar",
+            "sha256": "bbf912e0452f8744b2ec7a06fc163c4ca173d1f11535cd4a7f5d4373ec5cf61c",
+            "declarations": [
+              {
+                "line": 8,
+                "text": "pub(crate) fn start_calendar(&self) -> Result<()> {"
+              }
+            ]
+          }
+        ],
+        "Admit/Finish": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/schedules.rs",
+            "symbol": "due_schedule_events",
+            "sha256": "7f509a50febfa6cf94456b7b5f0c6fb515658306c640a75631b82576696b555a",
+            "declarations": [
+              {
+                "line": 125,
+                "text": "pub(crate) fn due_schedule_events("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "wake_due_with_store",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 180,
+                "text": "fn wake_due_with_store("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Only current active and unblocked schedule admits; stale cached deadline/fetch state has no authority. Coalesce latest slot or skip missed, exact occurrence key includes revision; future-only edits.",
+      "atomicity": "Occurrence+inbox+run ownership+cursor is one IMMEDIATE commit; provider dispatch afterward. Deadline cache/signals/fetch state volatile; durable scan reconstructs after restart.",
+      "gaps": "Finite slot oracle is NOT proof of chrono/IANA weekly arithmetic, leap/large-year bounds, whole-second skip precision or all timezone transitions. Batch32/row33 and actual 100ms/1s/30s timing/watch/clock-jump behavior are supported by Rust/executable tests and source guards, not real-time formal proof. Positive configs cover default and alternative fold/gap/missed policies, not their full Cartesian product. Conditional LiveSpec additionally checks eventual admission while fetch stays blocked forever, assuming fair clock/reducer, no administrative mutation and coalescing; Stall negative control restores fetch coupling."
+    },
+    "Context": {
+      "owner": "Authenticated preference control; scoped factual Store; core-derived blocker observer; existing delivery owner",
+      "state": "preference revisions/events, separate fact set, prompt/native snapshot generations, blocker identity vs observed projection, immutable decision identities/counts, sent and cancelled sets",
+      "actions": {
+        "Preference": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/preferences.rs",
+            "symbol": "incoming_control",
+            "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
+            "declarations": [
+              {
+                "line": 9,
+                "text": "pub(crate) fn incoming_control("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/preferences.rs",
+            "symbol": "preferences_command",
+            "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
+            "declarations": [
+              {
+                "line": 59,
+                "text": "pub(crate) fn preferences_command("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/preferences.rs",
+            "symbol": "preference_revision",
+            "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
+            "declarations": [
+              {
+                "line": 34,
+                "text": "pub(crate) fn preference_revision(&self, scope: &str) -> Result<i64> {"
+              }
+            ]
+          }
+        ],
+        "Fact/Turn": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/memory.rs",
+            "symbol": "memory_command",
+            "sha256": "6af7a12d6695dfadc36956fb8fc62a26d3bf01a4bc9bf44c03c01e0a8b6da9ae",
+            "declarations": [
+              {
+                "line": 179,
+                "text": "pub(crate) fn memory_command("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/turn.rs",
+            "symbol": "process_turn_with_status",
+            "sha256": "5b9ace9879ba426e130d592bf7ea2351280fd89c62244f3e04e874243b6f6915",
+            "declarations": [
+              {
+                "line": 69,
+                "text": "pub(crate) fn process_turn_with_status("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/context.rs",
+            "symbol": "build_context_scoped",
+            "sha256": "4b252a8139fa50c9677a57fab75c7da3a261d9f92859d77738eff38bed446a00",
+            "declarations": [
+              {
+                "line": 33,
+                "text": "pub(crate) fn build_context_scoped("
+              }
+            ]
+          }
+        ],
+        "Change/Observe": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/notifications.rs",
+            "symbol": "current_blocker",
+            "sha256": "67977f54f9b466257e0d1b5aab0f7f8531e7951f23178a8cb088bb07a8946e2a",
+            "declarations": [
+              {
+                "line": 24,
+                "text": "fn current_blocker(&self, run: i64) -> Result<Option<Blocker>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/notifications.rs",
+            "symbol": "record_blocker",
+            "sha256": "67977f54f9b466257e0d1b5aab0f7f8531e7951f23178a8cb088bb07a8946e2a",
+            "declarations": [
+              {
+                "line": 145,
+                "text": "fn record_blocker(&self, b: Blocker, initial: bool, now: &str) -> Result<bool> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/notifications.rs",
+            "symbol": "observe_blockers",
+            "sha256": "67977f54f9b466257e0d1b5aab0f7f8531e7951f23178a8cb088bb07a8946e2a",
+            "declarations": [
+              {
+                "line": 201,
+                "text": "pub(crate) fn observe_blockers(&self, now: &str) -> Result<usize> {"
+              }
+            ]
+          }
+        ],
+        "Send/Cancel": [
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/mod.rs",
+            "symbol": "deliver_notifications",
+            "sha256": "019fd8d6739bb3cfa146d59cb4dafaa3bab0887d1c227ac1172027c0be3893df",
+            "declarations": [
+              {
+                "line": 174,
+                "text": "pub(crate) fn deliver_notifications(cfg: &RuntimeConfig, store: &Store) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/notifications.rs",
+            "symbol": "notification_is_current",
+            "sha256": "67977f54f9b466257e0d1b5aab0f7f8531e7951f23178a8cb088bb07a8946e2a",
+            "declarations": [
+              {
+                "line": 230,
+                "text": "pub(crate) fn notification_is_current(&self, id: i64) -> Result<bool> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/notifications.rs",
+            "symbol": "persist_notification_delivery",
+            "sha256": "67977f54f9b466257e0d1b5aab0f7f8531e7951f23178a8cb088bb07a8946e2a",
+            "declarations": [
+              {
+                "line": 244,
+                "text": "pub(crate) fn persist_notification_delivery("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Original scope/actor authenticates user preference writes, facts/remote progress/history never choose instruction authority. Snapshot revision governs native reuse. Same semantic blocker does not allocate another decision; send checks current binding; stale/Unknown does not resend.",
+      "atomicity": "Preference+control reply and blocker decision+projection+outbox each commit atomically; external send remains separate. Preference change during a running prompt affects next generation, not retroactively its frozen snapshot.",
+      "gaps": "Factual records represented as role-separated scope bits, not full memory candidate/promote/correct/undo, recall/FTS ranking, retention/import/file projection. Semantic blocker progression monotonic0..Limit here; source allows returning to an earlier semantic identity with a fresh generation. Changed-notice batching/cursor fairness and full route snapshots remain executable-test coverage."
+    },
+    "Replication": {
+      "owner": "Exclusive synthetic ScopedPeer owner, signed membership high-water, lease boundary, immutable disclosure journal and projection repair",
+      "state": "policy generation/high-water, member, bounded monotonic clock/deadline, connection generation, queued/reordered messages, partitions, receipt/projection sets, quarantine/checkpoint and suspended fence",
+      "actions": {
+        "Policy/Tick/Open/Request/Receive/Partition": [
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership.rs",
+            "symbol": "install_policy",
+            "sha256": "da7e619c490f20695d4be7a9f8ac5b94bf27904bcc0c9c8fa76a187848e079ba",
+            "declarations": [
+              {
+                "line": 529,
+                "text": "pub fn install_policy(&mut self, signed: &SignedPolicy) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership.rs",
+            "symbol": "receive",
+            "sha256": "da7e619c490f20695d4be7a9f8ac5b94bf27904bcc0c9c8fa76a187848e079ba",
+            "declarations": [
+              {
+                "line": 602,
+                "text": "pub async fn receive("
+              }
+            ]
+          }
+        ],
+        "Project": [
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
+            "symbol": "commit",
+            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "declarations": [
+              {
+                "line": 172,
+                "text": "pub(super) fn commit("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
+            "symbol": "repair_projection",
+            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "declarations": [
+              {
+                "line": 249,
+                "text": "pub fn repair_projection(&mut self) -> Result<usize> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
+            "symbol": "validate",
+            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "declarations": [
+              {
+                "line": 96,
+                "text": "pub(super) fn validate("
+              }
+            ]
+          }
+        ],
+        "RestoreLatch/VerifyPin/Adopt": [
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
+            "symbol": "read_receipt",
+            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "declarations": [
+              {
+                "line": 89,
+                "text": "pub(super) fn read_receipt(root: &Path) -> Result<RecoveryState> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
+            "symbol": "restore",
+            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "declarations": [
+              {
+                "line": 191,
+                "text": "pub async fn restore("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
+            "symbol": "install_recovery_policy",
+            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "declarations": [
+              {
+                "line": 224,
+                "text": "pub fn install_recovery_policy("
+              }
+            ]
+          }
+        ],
+        "Fence": [
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/domain.rs",
+            "symbol": "apply",
+            "sha256": "75331e5eaa0ac426e3adc244f4a2fba9392c154ae57e2cd12aae62c35de6801c",
+            "declarations": [
+              {
+                "line": 367,
+                "text": "fn apply(&mut self, origin: &BoundOrigin, e: &Event) -> Result<()> {"
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Disclosure uses current membership/generation and live lease even with retained connection/request; policy update closes old connections. Immutable accepted receipts can repair derived projection without new disclosure. Restore requires independently CURRENT checkpoint/policy pin, not a pin discovered in backup. Domain fence suspends, never activates replacement.",
+      "atomicity": "Policy committed before activation; disclosure receipt precedes derived SQL projection; repair revalidates bytes. Recovery quarantine latch and rename/fsync cuts are abstracted to persistent latch.",
+      "gaps": "Cryptography/hash collision resistance, endpoint namespace/role capability, filesystem durability and current external-pin freshness are assumptions. Clock models monotonic lease time only; wall-clock rollback dual-check, physical reconnect/stream shutdown and metadata tombstone coverage are not proved. Domain fence and transport policy are distinct authorities; combined here conservatively, not an operational failover model."
+    },
+    "Process": {
+      "owner": "Provider process/pipe/activity owner plus runner durable workflow claim, no serializable dispatch permission",
+      "state": "durable claim vs volatile token, launch count, process/pipe EOF/leader/group-registration state, cancellation/timeout flags, bounded semantic fingerprints and abstract clock",
+      "actions": {
+        "Claim/Spawn": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "claim_mock",
+            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "declarations": [
+              {
+                "line": 483,
+                "text": "pub(super) fn claim_mock("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "start_mock",
+            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "declarations": [
+              {
+                "line": 316,
+                "text": "pub(super) async fn start_mock("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/lib.rs",
+            "symbol": "run_provider_process",
+            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "declarations": [
+              {
+                "line": 335,
+                "text": "fn run_provider_process("
+              }
+            ]
+          }
+        ],
+        "Progress/Tick/Timeout": [
+          {
+            "path": "crates/coconutclaw-provider/src/lib.rs",
+            "symbol": "run_child_process",
+            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "declarations": [
+              {
+                "line": 467,
+                "text": "fn run_child_process("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/lib.rs",
+            "symbol": "read_pipe",
+            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "declarations": [
+              {
+                "line": 573,
+                "text": "fn read_pipe("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/activity.rs",
+            "symbol": "observe",
+            "sha256": "3cd2bdd45183e1e43097564e79cf30db4b1f04bb9419b9be1f935906b738bf25",
+            "declarations": [
+              {
+                "line": 51,
+                "text": "pub fn observe(&mut self, line: &str, now: Instant) {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/activity.rs",
+            "symbol": "timeout",
+            "sha256": "3cd2bdd45183e1e43097564e79cf30db4b1f04bb9419b9be1f935906b738bf25",
+            "declarations": [
+              {
+                "line": 126,
+                "text": "pub fn timeout(&self, policy: TimeoutPolicy, start: Instant, now: Instant) -> Option<String> {"
+              }
+            ]
+          }
+        ],
+        "Cancel/Kill/Drain/Join": [
+          {
+            "path": "crates/coconutclaw-provider/src/lib.rs",
+            "symbol": "terminate_cancelled_child",
+            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "declarations": [
+              {
+                "line": 660,
+                "text": "fn terminate_cancelled_child("
+              },
+              {
+                "line": 699,
+                "text": "fn terminate_cancelled_child("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/lib.rs",
+            "symbol": "run_child_process",
+            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "declarations": [
+              {
+                "line": 467,
+                "text": "fn run_child_process("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/lib.rs",
+            "symbol": "kill_active_process_groups",
+            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "declarations": [
+              {
+                "line": 650,
+                "text": "pub fn kill_active_process_groups() {"
+              }
+            ]
+          }
+        ],
+        "Crash/Recover": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "restore_start",
+            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "declarations": [
+              {
+                "line": 367,
+                "text": "pub(super) fn restore_start("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "recover_result",
+            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "declarations": [
+              {
+                "line": 602,
+                "text": "pub(super) async fn recover_result("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Claim before spawn, consume volatile token once; restart never recreates it. Repeated semantic fingerprint does not refresh activity. Leader exit alone is not IO completion. Cancellation/timeout own process termination and eventual join decisions.",
+      "atomicity": "Start claim durable before process I/O; owned OS child and callback/pipe flags volatile. The model groupOwned flag means ownership registration, NOT proof every descendant is dead after normal exit.",
+      "gaps": "One workflow/subprocess launch abstraction only; existing turn configured retries and YOLO CLI-rejection retry are outside SingleDispatchToken claim. Unix group kill vs non-Unix child kill, blocked Windows pipe threads, PID reuse, OS kill failures and descendant cleanup require native tests; no arbitrary child cleanup proof. Bounded IO join detach paths are not all refined."
+    },
+    "History": {
+      "owner": "Synthetic signed immutable domain prefix, fixed owner/core/runner roles; inert memory/task projection",
+      "state": "out-of-order received typed events, contiguous accepted prefix, immutable journal rows and independent source/candidate/active/assignment/start/result/fence state",
+      "actions": {
+        "Arrival/Apply": [
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/domain.rs",
+            "symbol": "replay",
+            "sha256": "75331e5eaa0ac426e3adc244f4a2fba9392c154ae57e2cd12aae62c35de6801c",
+            "declarations": [
+              {
+                "line": 301,
+                "text": "pub fn replay("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/domain.rs",
+            "symbol": "next",
+            "sha256": "75331e5eaa0ac426e3adc244f4a2fba9392c154ae57e2cd12aae62c35de6801c",
+            "declarations": [
+              {
+                "line": 345,
+                "text": "pub fn next(&self, origin: &BoundOrigin, actor: EndpointId, action: Action) -> Result<Event> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/domain.rs",
+            "symbol": "apply",
+            "sha256": "75331e5eaa0ac426e3adc244f4a2fba9392c154ae57e2cd12aae62c35de6801c",
+            "declarations": [
+              {
+                "line": 367,
+                "text": "fn apply(&mut self, origin: &BoundOrigin, e: &Event) -> Result<()> {"
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Exact same sequence bytes, matching predecessor/origin and role; source before candidate, assigned runner before Start/Result; owner-only fence suspends all later apply.",
+      "atomicity": "Replay builds inert validated prefix; signed history does not authorize real external effects or new runtime activation.",
+      "gaps": "Actor aliases and opaque byte identity abstract signatures/hashes. Limit3 includes source/candidate/promote and assign/start/result paths but not complete mixed long histories. Correct/undo/spent-ID rules, descriptor preimages, unjournaled authorities and reconciliation-ledger observations inventoried but NOT model checked."
+    },
+    "RuntimeComposition": {
+      "owner": "One core connects schedule/raw custody -> request inbox -> scheduler -> provider outcome -> same outbox",
+      "state": "independent custody/inbox/occurrence/cursor sets, task status/slots, outcomes/outboxes, sending/receipt/sent and ambiguity/cancel flags",
+      "actions": {
+        "Accept": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/schedules.rs",
+            "symbol": "due_schedule_events",
+            "sha256": "7f509a50febfa6cf94456b7b5f0c6fb515658306c640a75631b82576696b555a",
+            "declarations": [
+              {
+                "line": 125,
+                "text": "pub(crate) fn due_schedule_events("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/inbox.rs",
+            "symbol": "admit_inbox_request",
+            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "declarations": [
+              {
+                "line": 61,
+                "text": "pub(crate) fn admit_inbox_request("
+              }
+            ]
+          }
+        ],
+        "Start/Finish/Crash/Cancel": [
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "dispatch_ready",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 964,
+                "text": "fn dispatch_ready(&self) {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "persist_result",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 717,
+                "text": "fn persist_result("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "recover",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 1157,
+                "text": "pub(crate) fn recover(&self) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "cancel_task_for_session",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 217,
+                "text": "pub(crate) fn cancel_task_for_session("
+              }
+            ]
+          }
+        ],
+        "Send/Ack": [
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
+            "symbol": "deliver_text",
+            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "declarations": [
+              {
+                "line": 121,
+                "text": "fn deliver_text("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
+            "symbol": "acknowledged_text",
+            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "declarations": [
+              {
+                "line": 341,
+                "text": "pub(crate) fn acknowledged_text("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Atomic admission and result/outbox links, bounded slots, cancellation/started ambiguity never grants new execution. Delivery receipt is separate from model completion.",
+      "atomicity": "Each atomic set update stands for named SQL transaction; starts/HTTP are separate actions. Crash cuts are only between transactions, not imaginary partial SQL commits.",
+      "gaps": "Each finite job is one scheduled/request occurrence, not a byte-level end-to-end refinement. Waiting continuations/notices are in separate WaitNoticeComposition; remote reservation in RemoteComposition. LiveSpec deliberately assumes no crash/cancel/ambiguity, fair core/SQLite/provider/HTTP progress and finite inputs; not availability under permanent partitions."
+    },
+    "RemoteComposition": {
+      "owner": "Original Store reservation, sole RuntimeDriver, runner signing/claim actor, verified transport custody, bounded runtime-result reducer/outbox",
+      "state": "policy/application epoch, durable reservation, independent local/remote calls, runner claim, signed result/custody, source outcome/outbox, cancellation, partition, frozen vs substituted route, quarantine",
+      "actions": {
+        "Reserve/LocalStart": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
+            "symbol": "reserve_runtime_run",
+            "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+            "declarations": [
+              {
+                "line": 11,
+                "text": "pub(super) fn reserve_runtime_run("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "run_task",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 559,
+                "text": "fn run_task("
+              }
+            ]
+          }
+        ],
+        "RunnerStart/Sign/Recover": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "claim_mock",
+            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "declarations": [
+              {
+                "line": 483,
+                "text": "pub(super) fn claim_mock("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "finish_claimed",
+            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "declarations": [
+              {
+                "line": 531,
+                "text": "pub(super) async fn finish_claimed("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "recover_result",
+            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "declarations": [
+              {
+                "line": 602,
+                "text": "pub(super) async fn recover_result("
+              }
+            ]
+          }
+        ],
+        "Receive/Apply": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
+            "symbol": "custody_runtime_result",
+            "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+            "declarations": [
+              {
+                "line": 48,
+                "text": "pub(super) fn custody_runtime_result("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
+            "symbol": "apply_runtime_results",
+            "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+            "declarations": [
+              {
+                "line": 149,
+                "text": "pub(crate) fn apply_runtime_results(&self, now: &str) -> Result<usize> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
+            "symbol": "runtime_result_is_literal",
+            "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+            "declarations": [
+              {
+                "line": 101,
+                "text": "pub(crate) fn runtime_result_is_literal(&self, id: i64) -> Result<bool> {"
+              }
+            ]
+          }
+        ],
+        "Cancel/Partition/Fence/Substitute": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "apply_cancellation",
+            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "declarations": [
+              {
+                "line": 252,
+                "text": "pub(super) fn apply_cancellation(&self, peer: &mut ScopedPeer, assignment: u64) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-sync/src/synthetic/membership/domain.rs",
+            "symbol": "apply",
+            "sha256": "75331e5eaa0ac426e3adc244f4a2fba9392c154ae57e2cd12aae62c35de6801c",
+            "declarations": [
+              {
+                "line": 367,
+                "text": "fn apply(&mut self, origin: &BoundOrigin, e: &Event) -> Result<()> {"
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Pre-provider reservation excludes local execution; claim is one-shot. Verified signed original assignment/run/actor/route before custody; raw receipt survives partition/restart. Original local cancellation or existing Unknown yields uncertain result, never clean success. Route substitution quarantines rather than reroutes or executes marker text.",
+      "atomicity": "Reservation+original request, signed custody+result inbox, original result+outbox each have separate commits; network/signature callbacks own no mutable Store. Application epoch2 suspends, not automatic failover.",
+      "gaps": "No actual socket/crypto/native-Codex execution; dev-only admission preserved. Conflicting signed proposals, RPC frame ordering and receipt-byte guards are source-test assumptions. Already-custodied results may project after later fencing; source cancellation after an already-committed completion does not retroactively rewrite outcome."
+    },
+    "WaitNoticeComposition": {
+      "owner": "Logical head/dependency completion reducer -> new physical continuation; blocker/notice sender; original preference scope",
+      "state": "independent source outcome, head/phase/cancel, frozen dependency evidence, continuation count, semantic blocker/observed decision, notices/sending/sent, preference/native snapshot generation",
+      "actions": {
+        "Source/Resume/Cancel": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_graph.rs",
+            "symbol": "resume_task_events",
+            "sha256": "5a1dbce30641d2ef4b5a5a367d651e794f4b6500d0db6fc9dfd8f681531f1a54",
+            "declarations": [
+              {
+                "line": 220,
+                "text": "pub(crate) fn resume_task_events(&self, now: &str) -> Result<Vec<(i64, TaskRequest)>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_graph.rs",
+            "symbol": "link_task_continuation",
+            "sha256": "5a1dbce30641d2ef4b5a5a367d651e794f4b6500d0db6fc9dfd8f681531f1a54",
+            "declarations": [
+              {
+                "line": 95,
+                "text": "pub(crate) fn link_task_continuation("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/scheduler.rs",
+            "symbol": "cancel_task_for_session",
+            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "declarations": [
+              {
+                "line": 217,
+                "text": "pub(crate) fn cancel_task_for_session("
+              }
+            ]
+          }
+        ],
+        "Observe/BeginNotice/Ack": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/notifications.rs",
+            "symbol": "observe_blockers",
+            "sha256": "67977f54f9b466257e0d1b5aab0f7f8531e7951f23178a8cb088bb07a8946e2a",
+            "declarations": [
+              {
+                "line": 201,
+                "text": "pub(crate) fn observe_blockers(&self, now: &str) -> Result<usize> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/notifications.rs",
+            "symbol": "notification_is_current",
+            "sha256": "67977f54f9b466257e0d1b5aab0f7f8531e7951f23178a8cb088bb07a8946e2a",
+            "declarations": [
+              {
+                "line": 230,
+                "text": "pub(crate) fn notification_is_current(&self, id: i64) -> Result<bool> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/notifications.rs",
+            "symbol": "persist_notification_delivery",
+            "sha256": "67977f54f9b466257e0d1b5aab0f7f8531e7951f23178a8cb088bb07a8946e2a",
+            "declarations": [
+              {
+                "line": 244,
+                "text": "pub(crate) fn persist_notification_delivery("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/mod.rs",
+            "symbol": "deliver_notifications",
+            "sha256": "019fd8d6739bb3cfa146d59cb4dafaa3bab0887d1c227ac1172027c0be3893df",
+            "declarations": [
+              {
+                "line": 174,
+                "text": "pub(crate) fn deliver_notifications(cfg: &RuntimeConfig, store: &Store) -> Result<()> {"
+              }
+            ]
+          }
+        ],
+        "Preference/Start": [
+          {
+            "path": "crates/coconutclaw-cli/src/store/preferences.rs",
+            "symbol": "preferences_command",
+            "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
+            "declarations": [
+              {
+                "line": 59,
+                "text": "pub(crate) fn preferences_command("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/turn.rs",
+            "symbol": "process_turn_with_status",
+            "sha256": "5b9ace9879ba426e130d592bf7ea2351280fd89c62244f3e04e874243b6f6915",
+            "declarations": [
+              {
+                "line": 69,
+                "text": "pub(crate) fn process_turn_with_status("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Only successful frozen original dependency evidence resumes current head. Unknown/cancel/reject blocks continuation. Notice is authorized before send, not after acknowledgment; valid in-flight ACK survives later cancellation. Native generation snapshots current inherited original-scope preference revision.",
+      "atomicity": "Continuation+inbox+ancestry+wait transition and blocker+decision/outbox each atomic, actual send distinct.",
+      "gaps": "One waiter/dependency and at most one continuation/blocker change; no arbitrary graph/cycle proof, actor aliases/route binding assumed from source checks. Approval equivalent cause handled by Tasks guard, not all approval/remote/task/schedule interleavings in one product model."
+    }
+  },
+  "refinement": "Hand-written over/under abstractions and contract compositions, NOT mechanically extracted Rust transition relation. All module paths classified in inventory.json; family membership is not full behavioral coverage."
+}
