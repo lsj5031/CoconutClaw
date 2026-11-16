@@ -28,6 +28,18 @@ fn wait(mut check: impl FnMut() -> bool) {
         thread::sleep(Duration::from_millis(20));
     }
 }
+fn reply_text(entry: &Value) -> String {
+    entry["params"]["text"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            entry["params"]["rich_message"]
+                .as_str()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .and_then(|rich| rich["markdown"].as_str().map(str::to_owned))
+                .unwrap_or_default()
+        })
+}
 fn stop(runtime: &mut Runtime) {
     assert!(
         Command::new("/bin/kill")
@@ -172,7 +184,10 @@ impl Telegram {
                     assert_eq!(params.get("chat_id").map(String::as_str), Some("321951227"));
                     json!({"message_id":seen.lock().unwrap().len()+1})
                 };
-                let limited = rate_method == Some(method);
+                // Busy intake has its own durable command acknowledgments on8.
+                // Rate-limit only the original target operation on7.
+                let limited = rate_method == Some(method)
+                    && params.get("message_thread_id").map(String::as_str) == Some("7");
                 if limited && rate_attempts == 0 {
                     // Force the reported boundary condition at response time.
                     loop {
@@ -345,9 +360,8 @@ print(json.dumps({"type":"thread.started","thread_id":"native-"+n}))
     telegram.message(8, Some(3), &format!("/cancel {first}"));
     wait(|| {
         telegram.transcript.lock().unwrap().iter().any(|entry| {
-            entry["params"]["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("not active for this chat"))
+            entry["params"]["message_thread_id"] == "3"
+                && reply_text(entry).contains("not active for this chat")
         })
     });
     assert!((1..=5).all(alive));
@@ -827,9 +841,7 @@ print('{"type":"thread.started","thread_id":"approval-native"}')
     wait(|| {
         telegram.transcript.lock().unwrap().iter().any(|entry| {
             entry["params"]["message_thread_id"] == "8"
-                && entry["params"]["text"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("not authorized"))
+                && reply_text(entry).contains("not authorized")
         })
     });
     assert_eq!(fs::read_to_string(dir.join("calls")).unwrap(), "initial\n");
@@ -837,6 +849,9 @@ print('{"type":"thread.started","thread_id":"approval-native"}')
     wait(|| {
         db.query_row("SELECT COUNT(*) FROM task_runs r JOIN task_payloads p ON p.task_run_id=r.id WHERE r.update_id=?1 AND p.delivered=1",
         [format!("approval:{approval}")],|r| r.get::<_,i64>(0)).unwrap()==1
+    });
+    wait(|| {
+        db.query_row("SELECT COUNT(*) FROM telegram_ingress WHERE update_id IN ('2','3') AND ack_phase='sent'",[],|r|r.get::<_,i64>(0)).unwrap()==2
     });
     stop(&mut restarted);
     assert_eq!(
@@ -867,9 +882,27 @@ print('{"type":"thread.started","thread_id":"approval-native"}')
         "telegram:321951227#7"
     );
     let transcript = telegram.transcript.lock().unwrap();
+    let controls = transcript
+        .iter()
+        .filter(|entry| {
+            entry["method"] == "sendRichMessage"
+                && (reply_text(entry) == "You are not authorized to approve this request."
+                    || reply_text(entry).starts_with("Approval recorded. Resuming as task #"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(controls.len(), 2);
+    assert!(controls.iter().any(
+        |e| e["params"]["message_thread_id"] == "8" && reply_text(e).contains("not authorized")
+    ));
+    assert!(
+        controls
+            .iter()
+            .any(|e| e["params"]["message_thread_id"] == "7"
+                && reply_text(e).starts_with("Approval recorded."))
+    );
     let finals: Vec<_> = transcript
         .iter()
-        .filter(|entry| entry["method"] == "sendRichMessage")
+        .filter(|entry| entry["method"] == "sendRichMessage" && !controls.contains(entry))
         .collect();
     assert_eq!(finals.len(), 2);
     assert!(
@@ -998,7 +1031,9 @@ fn polling_retry_after_preserves_full_interval_for_rich_and_regular_across_resta
         let transcript = telegram.transcript.lock().unwrap().clone();
         let receipts: Vec<_> = transcript
             .iter()
-            .filter(|entry| entry["method"] == method)
+            .filter(|entry| {
+                entry["method"] == method && entry["params"]["message_thread_id"] == "7"
+            })
             .cloned()
             .collect();
         let intervals: Vec<_> = receipts
@@ -1171,7 +1206,7 @@ else:
     let finals: Vec<_> = transcript
         .iter()
         .filter(|entry| {
-            entry["method"] == "sendRichMessage"
+            (entry["method"] == "sendRichMessage" && entry["params"]["message_thread_id"] == "7")
                 || (matches!(
                     entry["method"].as_str(),
                     Some("sendMessage" | "editMessageText")
@@ -1540,9 +1575,8 @@ pathlib.Path(args[args.index("--output-last-message")+1]).write_bytes((root/"pro
             let mut repeated_runtime = spawn(dir, &telegram, &provider);
             wait(|| {
                 telegram.transcript.lock().unwrap().iter().any(|entry| {
-                    entry["method"] == "sendMessage"
-                        && entry["params"]["message_thread_id"] == "8"
-                        && entry["params"]["text"] == "No active tasks."
+                    entry["params"]["message_thread_id"] == "8"
+                        && reply_text(entry) == "No active tasks."
                 })
             });
             stop(&mut repeated_runtime);
@@ -1550,7 +1584,10 @@ pathlib.Path(args[args.index("--output-last-message")+1]).write_bytes((root/"pro
             let transcript = telegram.transcript.lock().unwrap().clone();
             let finals: Vec<_> = transcript
                 .iter()
-                .filter(|entry| entry["method"] == "sendRichMessage")
+                .filter(|entry| {
+                    entry["method"] == "sendRichMessage"
+                        && entry["params"]["message_thread_id"] == "7"
+                })
                 .cloned()
                 .collect();
             let result = json!({"case":name,"raw":raw,"request":request,"normal":normal,"crash_seed":crash_seed,

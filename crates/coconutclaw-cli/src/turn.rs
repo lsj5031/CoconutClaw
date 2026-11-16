@@ -14,7 +14,7 @@ use coconutclaw_config::RuntimeConfig;
 use coconutclaw_provider::run_provider_session;
 
 use crate::cancel::CancelRouter;
-use crate::context::{append_memory_and_tasks, build_context};
+use crate::context::{append_memory_and_tasks, build_context, build_context_scoped};
 use crate::delivery::{DeliveryTarget, TaskSource};
 use crate::markers::{
     extract_assistant_text_from_json_stream, extract_error_summary, final_marker_payload,
@@ -135,12 +135,21 @@ pub(crate) fn process_turn_with_status(
     // Polling commands can change memory while a lane prepares its prompt.
     // Bind the prompt and native-session generation to one SQLite snapshot,
     // so an older in-flight prompt never populates a newer memory generation.
-    let (context, revision) = {
+    let (context, revision, preference_revision) = {
         let snapshot = store.conn.unchecked_transaction()?;
         let revision = store.memory_revision(&chat_id)?;
-        let context = build_context(cfg, store, &input, &ts, &chat_id, quoted)?;
+        let preference_scope = origin_session.unwrap_or(&chat_id);
+        let preference_revision = store.preference_revision(preference_scope)?;
+        let mut context = if preference_scope == chat_id {
+            build_context(cfg, store, &input, &ts, &chat_id, quoted)?
+        } else {
+            build_context_scoped(cfg, store, &input, &ts, &chat_id, quoted, preference_scope)?
+        };
+        if let Some(run) = task_run_id {
+            context.push_str(&store.task_progress_context(run)?);
+        }
         snapshot.commit()?;
-        (context, revision)
+        (context, revision, preference_revision)
     };
 
     let cancel_flag = external_cancel_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
@@ -206,6 +215,11 @@ pub(crate) fn process_turn_with_status(
     // Start an explicitly new context generation; retain every old ID/history
     // row, but never fall back to resuming those unscoped transcripts.
     let session_key = format!("{base_session_key}:context:scoped-tasks-v1");
+    let session_key = if preference_revision == 0 {
+        session_key
+    } else {
+        format!("{session_key}:preferences:{preference_revision}")
+    };
     let native_session = store.kv_get(&session_key)?;
     let mut provider_result = run_provider_session(
         input.attachment_path.as_ref(),

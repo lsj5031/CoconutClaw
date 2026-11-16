@@ -5,7 +5,9 @@
 //! progress updates, markdown rendering, and rate-limit retry.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -18,9 +20,9 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use reqwest::blocking::{Client, multipart};
 use serde_json::Value;
 
-use crate::markers::parse_markers;
-use crate::resolve_instance_path;
 use crate::util::value_to_string;
+#[cfg(test)]
+use crate::{markers::parse_markers, resolve_instance_path};
 
 pub(crate) const TELEGRAM_TEXT_CHAR_LIMIT: usize = 4096;
 
@@ -298,6 +300,8 @@ pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Res
         {"command": "cancel", "description": "Cancel the current task"},
         {"command": "tasks", "description": "List active tasks"},
         {"command": "memory", "description": "Remember, search, get, promote, correct or undo chat memory"},
+        {"command": "preferences", "description": "List, set or unset your conversation instructions/preferences"},
+        {"command": "notifications", "description": "Inspect scoped task notification decisions and delivery"},
         {"command": "approve", "description": "Approve a request by id"},
         {"command": "reject", "description": "Reject a request by id"},
     ]);
@@ -312,6 +316,9 @@ pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Res
     Ok(())
 }
 
+// Legacy wire-format/media compatibility test helper only. Runtime input and
+// result delivery now exclusively use the durable outbox owner.
+#[cfg(test)]
 pub(crate) fn dispatch_telegram_output(
     client: &Client,
     cfg: &RuntimeConfig,
@@ -659,6 +666,7 @@ pub(crate) fn send_or_edit_text(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn should_send_reply_as_document(text: &str) -> bool {
     text.chars().count() > TELEGRAM_TEXT_CHAR_LIMIT
 }

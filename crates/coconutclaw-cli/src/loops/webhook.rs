@@ -1,13 +1,11 @@
 use anyhow::{Context, Result};
 use coconutclaw_config::RuntimeConfig;
 use reqwest::blocking::Client;
+use rusqlite::{Transaction, TransactionBehavior, params};
 use serde_json::Value;
-use std::fs;
-use std::io::Write;
 
 use crate::commands::helpers::{
-    dispatch_process_outcome, enqueue_telegram, maybe_handle_telegram_command,
-    render_command_output,
+    enqueue_telegram, maybe_handle_telegram_command, render_command_output,
 };
 use crate::markers::render_output;
 use crate::scheduler::SessionScheduler;
@@ -19,82 +17,168 @@ use crate::types::{
 };
 use crate::util::{
     configured_telegram_chat_scope, extract_incoming_media, is_allowed_chat, iso_now,
-    shorten_log_text,
 };
-use crate::util::{extract_update_id_from_json, extract_update_id_from_value, value_to_string};
+use crate::util::{extract_update_id_from_value, value_to_string};
 
 pub(crate) fn restore_inflight_update(
     cfg: &RuntimeConfig,
     store: &mut Store,
     scheduler: &SessionScheduler,
-    telegram_client: Option<&Client>,
+    _telegram_client: Option<&Client>,
 ) -> Result<()> {
-    let Some(inflight_json) = store.kv_get("inflight_update_json")? else {
-        return Ok(());
-    };
-
-    if serde_json::from_str::<Value>(&inflight_json)?
-        .get("channel")
-        .and_then(Value::as_str)
-        == Some("slack")
-    {
-        anyhow::bail!(
-            "legacy non-Telegram inflight update preserved; see docs/migration-phase-0.md"
+    if let Some(raw) = store.kv_get("inflight_update_json")? {
+        let value: Value = serde_json::from_str(&raw)?;
+        anyhow::ensure!(
+            value.get("channel").and_then(Value::as_str) != Some("slack"),
+            "legacy non-Telegram checkpoint preserved; manual migration required"
         );
+        let (id, payload, session, _) = telegram_identity(cfg, &raw)?;
+        if let Some(old_id) = store
+            .kv_get("inflight_update_id")?
+            .filter(|v| !v.is_empty())
+        {
+            anyhow::ensure!(
+                old_id == id,
+                "legacy checkpoint identity mismatch; KV preserved"
+            );
+        }
+        let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+        let seq =
+            store.admit_telegram(&id, &payload, session.as_deref(), &iso_now(&cfg.timezone))?;
+        // The old KV has no effect/ack boundary. Never infer that it is safe to
+        // replay a control or resend an old result from its presence alone.
+        store.conn.execute("UPDATE telegram_ingress SET state='unknown',ack_phase='unknown' WHERE seq=?1 AND state='pending'",[seq])?;
+        store.clear_inflight()?;
+        tx.commit()?;
     }
-    let inflight_update_id = store.kv_get("inflight_update_id")?;
-    let resolved_id = if let Some(ref id) = inflight_update_id
-        && !id.trim().is_empty()
-    {
-        Some(id.clone())
-    } else {
-        match extract_update_id_from_json(&inflight_json) {
-            Ok(id) => id,
-            Err(err) => {
-                tracing::warn!("inflight JSON is malformed, clearing inflight record: {err:#}");
-                let _ = store.clear_inflight();
-                return Ok(());
+    store.recover_telegram_claims()?;
+    drain_telegram_ingress(cfg, store, scheduler)?;
+    scheduler.resume_ingress();
+    scheduler.wake_delivery();
+    Ok(())
+}
+
+fn telegram_identity(
+    cfg: &RuntimeConfig,
+    line: &str,
+) -> Result<(String, String, Option<String>, WebhookAction)> {
+    let value: Value = serde_json::from_str(line).context("invalid Telegram update")?;
+    let id = value
+        .get("update_id")
+        .and_then(Value::as_u64)
+        .context("numeric Telegram update_id required")?
+        .to_string();
+    let action = parse_webhook_value(cfg, &value)?;
+    let session = match &action {
+        WebhookAction::Fresh { session, .. } | WebhookAction::Cancel { session, .. } => {
+            Some(session.id())
+        }
+        WebhookAction::Turn(turn) => Some(turn.session.id()),
+        WebhookAction::Ignore { .. } => None,
+    };
+    Ok((id, value.to_string(), session, action))
+}
+
+pub(crate) fn drain_telegram_ingress(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    scheduler: &SessionScheduler,
+) -> Result<()> {
+    for raw in store.pending_telegram()? {
+        if process_webhook_line(cfg, store, scheduler, &raw).is_err() {
+            tracing::warn!(
+                "Telegram event retained pending or Unknown; effect not blindly repeated"
+            );
+        }
+    }
+    scheduler.resume_ingress();
+    Ok(())
+}
+
+/// Called by the existing bounded dispatcher under its delivery owner lock.
+/// Cached ProcessOutcome.output is diagnostic data, not permission to resend.
+pub(crate) fn deliver_telegram_acks(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+    // Finish the bounded read before HTTP or writes. A live row iterator keeps
+    // a WAL snapshot that cannot be promoted after another task commits.
+    let candidates = {
+        let mut stmt = store.conn.prepare(
+            "SELECT seq,output,route,session_id,delivery_state FROM telegram_ingress
+         WHERE state='done' AND output IS NOT NULL AND ack_phase='ready' ORDER BY seq",
+        )?;
+        let mut candidates = Vec::new();
+        for row in stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })? {
+            let (seq, output, route, origin, state) = row?;
+            let session = SessionKey::telegram(&route);
+            anyhow::ensure!(
+                session.id() == origin,
+                "ack route differs from admitted origin"
+            );
+            if !is_allowed_chat(cfg, Some(&session.root_id))
+                || (session.thread_id.is_some() && cfg.telegram_topics_enabled == Some(false))
+            {
+                continue;
+            }
+            candidates.push((seq, output, session, state));
+            if candidates.len() == 32 {
+                break;
             }
         }
+        candidates
     };
-
-    if let Some(update_id) = resolved_id.as_deref()
-        && store.turn_exists_for_update_id(update_id)?
-    {
-        store.clear_inflight()?;
-        tracing::info!("restored inflight update_id={update_id} (dedup)");
-        return Ok(());
-    }
-
-    let outcome = match process_webhook_line(cfg, store, scheduler, &inflight_json) {
-        Ok(outcome) => outcome,
-        Err(err) => {
-            tracing::warn!("failed to process inflight update, clearing: {err:#}");
-            let _ = store.clear_inflight();
-            return Ok(());
+    let mut client = None;
+    for (seq, output, session, state) in candidates {
+        if client.is_none() {
+            client = Some(crate::telegram::build_telegram_client(cfg)?);
         }
-    };
-
-    store.clear_inflight()?;
-    if let Some(output) = outcome.output.as_deref() {
-        if let Err(err) = dispatch_process_outcome(cfg, telegram_client, &outcome, output) {
-            tracing::warn!("failed to dispatch restored inflight output: {err:#}");
+        let target = crate::delivery::DeliveryTarget::Telegram {
+            chat_id: session.root_id,
+            thread_id: session.thread_id,
+        };
+        let result = crate::delivery::dispatch_task_output(
+            store,
+            cfg,
+            client.as_ref(),
+            &target,
+            crate::delivery::TaskDispatch {
+                task_id: crate::delivery::DeliveryKey::Telegram(seq),
+                output: &output,
+                progress_message_id: None,
+            },
+            &state,
+        );
+        if result.is_ok_and(|done| done) {
+            store.conn.execute(
+                "UPDATE telegram_ingress SET ack_phase='sent' WHERE seq=?1",
+                [seq],
+            )?;
         } else {
-            println!("{output}");
-            std::io::stdout().flush().ok();
+            // Including a crash after request transmission but before its ack:
+            // existing plans suspend the operation; never reconstruct/resend it.
+            store.conn.execute(
+                "UPDATE telegram_ingress SET ack_phase='unknown' WHERE seq=?1 AND EXISTS(
+                  SELECT 1 FROM json_tree(delivery_state) WHERE key='phase' AND value IN ('sending','unknown'))",[seq])?;
         }
     }
-    if let Some(path) = outcome.cleanup_path.as_deref() {
-        let _ = fs::remove_file(path);
-    }
-
     Ok(())
 }
 
 /// Parse a Telegram update received through polling.
+#[cfg(test)]
 pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<WebhookAction> {
     let value: Value = serde_json::from_str(line).context("invalid webhook JSON payload")?;
-    let update_id = extract_update_id_from_value(&value);
+    parse_webhook_value(cfg, &value)
+}
+
+fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookAction> {
+    let update_id = extract_update_id_from_value(value);
     let configured_chat = configured_telegram_chat_scope(cfg);
 
     if let Some(callback_query) = value.get("callback_query") {
@@ -109,6 +193,17 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
                 .and_then(|node| node.get("id"))
                 .map(value_to_string);
             if is_allowed_chat(cfg, chat_id.as_deref()) {
+                if callback_query
+                    .get("from")
+                    .and_then(|v| v.get("id"))
+                    .map(value_to_string)
+                    .is_some_and(|actor| Some(actor.as_str()) != chat_id.as_deref())
+                {
+                    return Ok(WebhookAction::Ignore {
+                        update_id,
+                        reason: "callback_sender_mismatch".into(),
+                    });
+                }
                 let session = match SessionKey::from_telegram_message(&callback_query["message"]) {
                     Ok(session) => session,
                     Err(error) => {
@@ -133,10 +228,7 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
         }
         return Ok(WebhookAction::Ignore {
             update_id,
-            reason: format!(
-                "callback_query_ignored data={}",
-                shorten_log_text(data.trim(), 64)
-            ),
+            reason: "callback_query_ignored".into(),
         });
     }
 
@@ -162,6 +254,17 @@ pub(crate) fn parse_webhook_action(cfg: &RuntimeConfig, line: &str) -> Result<We
         return Ok(WebhookAction::Ignore {
             update_id,
             reason: format!("chat_id_mismatch actual={chat_id} configured={configured_chat}"),
+        });
+    }
+    if message
+        .get("from")
+        .and_then(|v| v.get("id"))
+        .map(value_to_string)
+        .is_some_and(|actor| actor != chat_id)
+    {
+        return Ok(WebhookAction::Ignore {
+            update_id,
+            reason: "message_sender_mismatch".into(),
         });
     }
     let session = match SessionKey::from_telegram_message(message) {
@@ -280,8 +383,148 @@ pub(crate) fn process_webhook_line(
     scheduler: &SessionScheduler,
     line: &str,
 ) -> Result<ProcessOutcome> {
-    let action = parse_webhook_action(cfg, line)?;
+    let (id, payload, session, action) = telegram_identity(cfg, line)?;
+    let reconciliation = matches!(&action, WebhookAction::Turn(turn)
+        if turn.input.user_text.split_whitespace().next()
+            .and_then(|t| crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref()))
+            == Some("/reconcile"));
+    let custody = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+    let seq = store.admit_telegram(&id, &payload, session.as_deref(), &iso_now(&cfg.timezone))?;
+    if reconciliation {
+        store.conn.execute(
+            "INSERT OR IGNORE INTO telegram_reconciliation_controls VALUES(?1)",
+            [seq],
+        )?;
+    }
+    custody.commit()?;
+    let sql_only = match &action {
+        WebhookAction::Ignore { .. } | WebhookAction::Fresh { .. } => true,
+        WebhookAction::Turn(turn) => turn
+            .input
+            .user_text
+            .split_whitespace()
+            .next()
+            .and_then(|t| crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref()))
+            .is_some_and(|c| {
+                matches!(
+                    c,
+                    "/memory"
+                        | "/fresh"
+                        | "/schedules"
+                        | "/reconcile"
+                        | "/preferences"
+                        | "/notifications"
+                ) || (c == "/tasks" && turn.input.user_text.split_whitespace().nth(1).is_some())
+            }),
+        _ => false,
+    };
+    if sql_only {
+        let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+        if store.claim_telegram(seq)? {
+            let outcome = process_webhook_action(cfg, store, scheduler, action, None)?;
+            store.finish_telegram(seq, &outcome)?;
+        }
+        tx.commit()?;
+    } else if store.claim_telegram(seq)? {
+        let rollback_candidate = approval_command_id(cfg, &action);
+        let normal_turn = matches!(&action,WebhookAction::Turn(turn)
+            if !turn.input.user_text.split_whitespace().next()
+                .and_then(|t|crate::telegram::command_token(t,cfg.telegram_bot_username.as_deref()))
+                .is_some_and(|c|matches!(c,"/cancel"|"/approve"|"/reject"|"/tasks")));
+        let result = (|| {
+            let mut progress = None;
+            if let WebhookAction::Turn(turn) = &action {
+                let command = turn
+                    .input
+                    .user_text
+                    .split_whitespace()
+                    .next()
+                    .and_then(|t| {
+                        crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref())
+                    });
+                let control = command
+                    .is_some_and(|c| matches!(c, "/cancel" | "/approve" | "/reject" | "/tasks"));
+                if !control
+                    && !scheduler.has_task_for_update_id(&id)?
+                    && !store.turn_exists_for_update_id(&id)?
+                {
+                    store.conn.execute(
+                        "UPDATE telegram_ingress SET progress_state='sending' WHERE seq=?1",
+                        [seq],
+                    )?;
+                    let mut once = cfg.clone();
+                    once.telegram_api_retry_attempts = 0;
+                    progress = send_progress_message(&once, &turn.session.telegram_route_id())
+                        .ok()
+                        .flatten();
+                    store.conn.execute("UPDATE telegram_ingress SET progress_state=?2,progress_message_id=?3 WHERE seq=?1",
+                        params![seq,if progress.is_some(){"sent"}else{"unknown"},progress])?;
+                }
+            }
+            let legacy =
+                store.turn_exists_for_update_id(&id)? && !scheduler.has_task_for_update_id(&id)?;
+            let outcome = process_webhook_action(cfg, store, scheduler, action, progress)?;
+            let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+            store.finish_telegram(seq, &outcome)?;
+            if legacy {
+                store.conn.execute(
+                    "UPDATE telegram_ingress SET ack_phase='unknown' WHERE seq=?1",
+                    [seq],
+                )?;
+            }
+            tx.commit()?;
+            Ok::<_, anyhow::Error>(())
+        })();
+        if let Err(error) = result {
+            // Approval's existing transaction queues/cleans up only after commit.
+            // Pending + no decision receipt proves rollback, unlike cancellation
+            // flags, process effects or a committed approval/outcome gap.
+            let rolled_back=rollback_candidate.is_some_and(|approval|store.conn.query_row(
+                "SELECT status='pending' AND NOT EXISTS(SELECT 1 FROM runtime_inbox WHERE event_key=?2)
+                 FROM approvals WHERE id=?1",
+                params![approval,format!("approval:{approval}")],|r|r.get::<_,bool>(0)).unwrap_or(false));
+            let admitted = normal_turn && scheduler.has_task_for_update_id(&id).unwrap_or(false);
+            store.conn.execute(
+                "UPDATE telegram_ingress SET state=?2 WHERE seq=?1 AND state='applying'",
+                params![
+                    seq,
+                    if rolled_back {
+                        "pending"
+                    } else if admitted {
+                        "applying"
+                    } else {
+                        "unknown"
+                    }
+                ],
+            )?;
+            return Err(error);
+        }
+    }
+    scheduler.resume_ingress();
+    store.telegram_outcome(seq)
+}
 
+fn approval_command_id(cfg: &RuntimeConfig, action: &WebhookAction) -> Option<i64> {
+    let WebhookAction::Turn(turn) = action else {
+        return None;
+    };
+    let mut parts = turn.input.user_text.split_whitespace();
+    let command =
+        crate::telegram::command_token(parts.next()?, cfg.telegram_bot_username.as_deref())?;
+    if !matches!(command, "/approve" | "/reject") {
+        return None;
+    }
+    let id = parts.next()?.parse::<i64>().ok().filter(|id| *id > 0)?;
+    parts.next().is_none().then_some(id)
+}
+
+fn process_webhook_action(
+    cfg: &RuntimeConfig,
+    store: &Store,
+    scheduler: &SessionScheduler,
+    action: WebhookAction,
+    progress_message_id: Option<String>,
+) -> Result<ProcessOutcome> {
     match action {
         WebhookAction::Ignore { update_id, reason } => {
             let update_id_text = update_id.as_deref().unwrap_or_default().to_string();
@@ -297,9 +540,6 @@ pub(crate) fn process_webhook_line(
                     update_id_text.as_str()
                 }
             );
-            if let Some(update_id) = update_id.as_ref() {
-                let _ = store.kv_set("last_update_id", update_id);
-            }
             Ok(ProcessOutcome {
                 should_ack: true,
                 update_id,
@@ -317,9 +557,6 @@ pub(crate) fn process_webhook_line(
             } else {
                 "No active task for this chat.".to_string()
             };
-            if let Some(update_id) = update_id.as_ref() {
-                let _ = store.kv_set("last_update_id", update_id);
-            }
             Ok(ProcessOutcome {
                 should_ack: true,
                 update_id,
@@ -337,10 +574,7 @@ pub(crate) fn process_webhook_line(
                     tracing::info!("inserted context boundary for session={}", session.id())
                 }
                 Ok(false) => {}
-                Err(err) => tracing::warn!("failed to insert context boundary: {err:#}"),
-            }
-            if let Some(update_id) = update_id.as_ref() {
-                let _ = store.kv_set("last_update_id", update_id);
+                Err(err) => return Err(err),
             }
             Ok(ProcessOutcome {
                 should_ack: true,
@@ -365,21 +599,17 @@ pub(crate) fn process_webhook_line(
                 &chat_id,
                 &turn.input.user_text,
             )? {
-                if let Some(update_id) = outcome.update_id.as_ref() {
-                    let _ = store.kv_set("last_update_id", update_id);
-                }
                 return Ok(outcome);
             }
 
             if let Some(update_id) = turn.update_id.as_deref()
                 && store.turn_exists_for_update_id(update_id)?
             {
-                let _ = store.kv_set("last_update_id", update_id);
                 let managed: bool = store.conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM task_payloads p JOIN task_runs r ON r.id=p.task_run_id WHERE r.update_id=?1)",
                     [update_id], |r| r.get(0))?;
                 let replay_output = if managed {
-                    scheduler.retry_deliveries()?;
+                    scheduler.wake_delivery();
                     None
                 } else {
                     store.rendered_output_for_update_id(update_id)?
@@ -396,7 +626,6 @@ pub(crate) fn process_webhook_line(
             if let Some(update_id) = turn.update_id.as_deref()
                 && scheduler.has_task_for_update_id(update_id)?
             {
-                let _ = store.kv_set("last_update_id", update_id);
                 return Ok(ProcessOutcome {
                     should_ack: true,
                     update_id: Some(update_id.to_string()),
@@ -407,22 +636,10 @@ pub(crate) fn process_webhook_line(
                 });
             }
 
-            let progress_message_id = send_progress_message(cfg, &chat_id)
-                .map_err(|err| {
-                    tracing::warn!("failed to send progress message: {err:#}");
-                    err
-                })
-                .ok()
-                .flatten();
-
             let turn = *turn;
             let update_id = turn.update_id.clone();
             let task_id = enqueue_telegram(scheduler, turn, progress_message_id.clone())?;
             tracing::info!(task_id, session = %SessionKey::telegram(&chat_id).id(), "queued telegram task");
-
-            if let Some(update_id) = update_id.as_ref() {
-                let _ = store.kv_set("last_update_id", update_id);
-            }
 
             Ok(ProcessOutcome {
                 should_ack: true,

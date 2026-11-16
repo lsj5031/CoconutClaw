@@ -41,5 +41,86 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Test
-        run: cargo test --workspace --all-targets --locked
+      - name: Build normal executable for native lifecycle tests
+        run: cargo build -p coconutclaw --bin coconutclaw --locked
+
+      - name: Test and record native bridge and waiting coverage
+        shell: python {0}
+        run: |
+          import json, os, pathlib, re, subprocess, sys
+          os.environ["COCONUTCLAW_WAITING_GRAPH_ARTIFACTS"] = str(pathlib.Path("native-graph").resolve())
+          os.environ["COCONUTCLAW_RECONCILIATION_ARTIFACTS"] = str(pathlib.Path("native-reconciliation").resolve())
+          os.environ["COCONUTCLAW_CONTEXT_NOTIFICATION_ARTIFACTS"] = str(pathlib.Path("native-context-notifications").resolve())
+          os.environ["COCONUTCLAW_CALENDAR_ARTIFACTS"] = str(pathlib.Path("native-calendar").resolve())
+          command = ["cargo", "test", "--workspace", "--all-targets", "--locked"]
+          result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, encoding="utf-8", errors="replace")
+          print(result.stdout, end="")
+          pathlib.Path("native-tests.log").write_text(result.stdout, encoding="utf-8")
+          source = pathlib.Path("crates/coconutclaw-cli/src/store/task_adapter/tests/runtime_bridge.rs").read_text(encoding="utf-8")
+          expected = set(re.findall(r"async fn (runtime_bridge_\w+)\(", source))
+          actual = dict(re.findall(r"^test store::task_adapter::tests::runtime_bridge::(runtime_bridge_\w+) \.\.\. (\w+)",
+                                   result.stdout, re.MULTILINE))
+          missing = sorted(name for name in expected if actual.get(name) != "ok")
+          graph_source = pathlib.Path("crates/coconutclaw-cli/src/scheduler_integration_test.rs").read_text(encoding="utf-8")
+          graph_expected = set(re.findall(r"fn (waiting_graph_\w+)\(", graph_source))
+          graph_actual = dict(re.findall(r"^test scheduler::tests::(waiting_graph_\w+) \.\.\. (\w+)",
+                                         result.stdout, re.MULTILINE))
+          graph_missing = sorted(name for name in graph_expected if graph_actual.get(name) != "ok")
+          reconciliation_source = pathlib.Path("crates/coconutclaw-cli/src/reconciliation_tests.rs").read_text(encoding="utf-8")
+          reconciliation_expected = set(re.findall(r"fn (unknown_reconciliation_\w+)\(", reconciliation_source))
+          reconciliation_actual = dict(re.findall(r"^test scheduler::tests::reconciliation::(unknown_reconciliation_\w+) \.\.\. (\w+)",
+                                                   result.stdout, re.MULTILINE))
+          reconciliation_missing = sorted(name for name in reconciliation_expected if reconciliation_actual.get(name) != "ok")
+          context_source = pathlib.Path("crates/coconutclaw-cli/src/context_notification_tests.rs").read_text(encoding="utf-8")
+          context_expected = set(re.findall(r"fn (context_notifications_\w+)\(", context_source))
+          context_actual = dict(re.findall(r"^test scheduler::tests::context_notifications::(context_notifications_\w+) \.\.\. (\w+)",
+                                          result.stdout, re.MULTILINE))
+          context_missing = sorted(name for name in context_expected if context_actual.get(name) != "ok")
+          calendar_source = "\n".join(p.read_text(encoding="utf-8") for p in
+                                     pathlib.Path("crates/coconutclaw-cli/src/scheduling").glob("calendar_*tests.rs"))
+          calendar_expected = set(re.findall(r"fn (calendar_wake_\w+)\(", calendar_source))
+          calendar_actual = dict(re.findall(r"^test scheduler::tests::scheduling::calendar_wake::(?:\w+::)*(calendar_wake_\w+) \.\.\. (\w+)",
+                                            result.stdout, re.MULTILINE))
+          calendar_missing = sorted(name for name in calendar_expected if calendar_actual.get(name) != "ok")
+          suites = re.findall(r"test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored", result.stdout)
+          receipt = {
+              "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "event_sha": os.environ.get("GITHUB_SHA"),
+              "os": os.environ.get("RUNNER_OS"), "job": os.environ.get("GITHUB_JOB"),
+              "command": command, "exit": result.returncode, "suites": suites,
+              "critical_bridge_expected": sorted(expected), "critical_bridge_actual": actual,
+              "critical_bridge_missing_or_skipped": missing,
+              "critical_waiting_expected": sorted(graph_expected), "critical_waiting_actual": graph_actual,
+              "critical_waiting_missing_or_skipped": graph_missing,
+              "critical_reconciliation_expected": sorted(reconciliation_expected),
+              "critical_reconciliation_actual": reconciliation_actual,
+              "critical_reconciliation_missing_or_skipped": reconciliation_missing,
+              "critical_context_notifications_expected": sorted(context_expected),
+              "critical_context_notifications_actual": context_actual,
+              "critical_context_notifications_missing_or_skipped": context_missing,
+              "critical_calendar_expected": sorted(calendar_expected),
+              "critical_calendar_actual": calendar_actual,
+              "critical_calendar_missing_or_skipped": calendar_missing,
+              "whole_architecture_formal_native_gate": "pending separate source-wide coverage assessment",
+              "authenticated_windows_codex": "unverified; no real credentials in CI"
+          }
+          pathlib.Path("native-test-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+          sys.exit(result.returncode or int(bool(missing) or len(expected) < 11 or bool(graph_missing) or len(graph_expected) < 12
+                                           or bool(reconciliation_missing) or len(reconciliation_expected) < 12
+                                           or bool(context_missing) or len(context_expected) < 16
+                                           or bool(calendar_missing) or len(calendar_expected) < 15))
+
+      - name: Retain native test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-tests-${{ matrix.os }}
+          path: |
+            native-tests.log
+            native-test-receipt.json
+            native-graph/
+            native-reconciliation/
+            native-context-notifications/
+            native-calendar/
+          if-no-files-found: warn

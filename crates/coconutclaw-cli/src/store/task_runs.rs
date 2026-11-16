@@ -65,7 +65,7 @@ impl Store {
         self.conn.execute(
             "UPDATE task_runs
              SET status = CASE
-                    WHEN status IN ('queued', 'running', 'awaiting_approval') THEN ?2
+                    WHEN status IN ('queued', 'running', 'awaiting_approval', 'waiting_remote', 'waiting_event') THEN ?2
                     ELSE status
                  END,
                  cancel_requested_at = COALESCE(cancel_requested_at, ?3)
@@ -142,7 +142,7 @@ impl Store {
                     created_at, started_at, finished_at, cancel_requested_at, progress_message_id,
                     last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
-             WHERE status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
+             WHERE status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested', 'waiting_remote', 'waiting_event')
              ORDER BY id ASC",
         )?;
         let mut rows = stmt.query([])?;
@@ -181,7 +181,7 @@ impl Store {
                     last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
              WHERE session_id = ?1
-               AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
+               AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested', 'waiting_remote', 'waiting_event')
              ORDER BY id ASC",
         )?;
         let mut rows = stmt.query(params![session_id])?;
@@ -217,7 +217,7 @@ impl Store {
                     last_progress, error_summary, result_summary, scheduled_task_id
              FROM task_runs
              WHERE session_id = ?1
-               AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested')
+               AND status IN ('queued', 'running', 'awaiting_approval', 'cancel_requested', 'waiting_remote', 'waiting_event')
              ORDER BY CASE status
                     WHEN 'running' THEN 0
                     WHEN 'awaiting_approval' THEN 1
@@ -293,8 +293,9 @@ impl Store {
              SET status = 'failed',
                  finished_at = COALESCE(finished_at, ?1),
                  error_summary = COALESCE(error_summary, 'runtime restarted; outcome unknown, do not automatically retry')
-             WHERE status IN ('running', 'cancel_requested')
-                OR (status='queued' AND NOT EXISTS(SELECT 1 FROM task_payloads p WHERE p.task_run_id=task_runs.id))",
+             WHERE (status IN ('running', 'cancel_requested')
+                OR (status='queued' AND NOT EXISTS(SELECT 1 FROM task_payloads p WHERE p.task_run_id=task_runs.id)))
+             AND NOT EXISTS(SELECT 1 FROM runtime_remote_results c WHERE c.task_run_id=task_runs.id AND c.state='pending')",
             params![ts],
         )?;
         Ok(())

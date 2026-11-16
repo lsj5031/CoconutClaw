@@ -114,7 +114,7 @@ fn ingress_metadata_separates_root_topics_and_rejects_unexpected_routes() {
 #[test]
 fn memory_history_boundaries_and_resume_payloads_remain_topic_local() {
     let cfg = RuntimeConfig::test_config();
-    let mut store = Store::open(&cfg).unwrap();
+    let store = Store::open(&cfg).unwrap();
     for scope in ["telegram:321", "telegram:321#7", "telegram:321#8"] {
         store
             .memory_command(
@@ -149,7 +149,7 @@ fn memory_history_boundaries_and_resume_payloads_remain_topic_local() {
         &cfg,
         &mut mutable_store,
         &scheduler,
-        r#"{"message":{"chat":{"id":321},"message_thread_id":7,"text":"/fresh"}}"#,
+        r#"{"update_id":90001,"message":{"chat":{"id":321},"message_thread_id":7,"text":"/fresh"}}"#,
     )
     .unwrap();
     assert!(

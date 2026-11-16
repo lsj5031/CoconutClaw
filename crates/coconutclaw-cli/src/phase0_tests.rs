@@ -344,6 +344,19 @@ printf 'TELEGRAM_REPLY: done\n' > "$out"
     let older = make_stdout_request(SessionKey::local("fifo"), "older-queued");
     let older_id = save_request(&store, &older, None);
     let scheduler = SessionScheduler::new(cfg.clone(), None);
+    // Recovery selects the oldest eligible lane first. With multiple free
+    // slots, independent delegation and conversation providers may physically
+    // start in either OS order. Reserve four slots in this admission fixture
+    // so the real remaining slot must go to the older request.
+    for slot in 0..4 {
+        scheduler.inner.lanes.lock().unwrap().insert(
+            format!("capacity-fixture:{slot}"),
+            crate::scheduler::SessionLane {
+                active: Some(i64::MAX - slot),
+                ..Default::default()
+            },
+        );
+    }
     scheduler.recover().unwrap();
     let child: i64 = store
         .conn
@@ -354,6 +367,13 @@ printf 'TELEGRAM_REPLY: done\n' > "$out"
         )
         .unwrap();
     wait_for_terminal_tasks(&cfg, &[older_id, child]);
+    scheduler
+        .inner
+        .lanes
+        .lock()
+        .unwrap()
+        .retain(|key, _| !key.starts_with("capacity-fixture:"));
+    scheduler.shutdown().unwrap();
     assert_eq!(
         fs::read_to_string(trace)
             .unwrap()
@@ -463,15 +483,24 @@ printf 'TELEGRAM_REPLY: after-command-result\n' > "$out"
     }
     let count = updates.len();
     let shutdown = Arc::new(AtomicBool::new(false));
-    let stop = shutdown.clone();
     let replies = Arc::new(Mutex::new(Vec::new()));
     let recorded = replies.clone();
+    let stop = shutdown.clone();
+    let observed = replies.clone();
+    let expected_replies = cases.len();
+    let observer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while observed.lock().unwrap().len() < expected_replies && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, Ordering::SeqCst);
+        observed.lock().unwrap().len() == expected_replies
+    });
     let mut polls = 0;
     let server = FakeTelegramServer::start_with_response(move |request| {
         if request.starts_with("GET ") {
             polls += 1;
             if polls > 1 {
-                stop.store(true, Ordering::SeqCst);
                 return (200, json!({"ok":true,"result":[]}).to_string());
             }
             return (200, json!({"ok":true,"result":updates}).to_string());
@@ -480,7 +509,17 @@ printf 'TELEGRAM_REPLY: after-command-result\n' > "$out"
         let url = reqwest::Url::parse(&format!("http://localhost/?{body}")).unwrap();
         let fields: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
         if fields.get("chat_id").map(String::as_str) == Some("321") {
-            recorded.lock().unwrap().push(fields["text"].clone());
+            let text = fields
+                .get("rich_message")
+                .map(|rich| {
+                    serde_json::from_str::<serde_json::Value>(rich).unwrap()["markdown"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .or_else(|| fields.get("text").cloned())
+                .unwrap();
+            recorded.lock().unwrap().push(text);
         }
         (200, r#"{"ok":true,"result":{"message_id":123}}"#.into())
     });
@@ -488,6 +527,10 @@ printf 'TELEGRAM_REPLY: after-command-result\n' > "$out"
     let client = crate::telegram::build_telegram_client(&cfg).unwrap();
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     crate::loops::poll::run_poll_loop(&cfg, &mut store, &scheduler, &client, &shutdown).unwrap();
+    assert!(
+        observer.join().unwrap(),
+        "durable command replies did not dispatch"
+    );
     assert_eq!(
         store.kv_get("last_update_id").unwrap(),
         Some(count.to_string())
@@ -572,11 +615,20 @@ printf 'TELEGRAM_REPLY: after-command-result\n' > "$out"
                 let probe = Store::open(&probe_cfg).unwrap();
                 assert_eq!(
                     probe.kv_get("last_update_id").unwrap().as_deref(),
-                    Some("0")
-                );
-                assert_eq!(
-                    probe.kv_get("inflight_update_id").unwrap().as_deref(),
                     Some("100")
+                );
+                assert_eq!(probe.kv_get("inflight_update_id").unwrap(), None);
+                assert_eq!(
+                    probe
+                        .conn
+                        .query_row(
+                            "SELECT state FROM telegram_ingress WHERE update_id='100'",
+                            [],
+                            |r| r.get::<_, String>(0)
+                        )
+                        .unwrap(),
+                    "pending",
+                    "approval rollback is known, so retry is safe"
                 );
                 assert_eq!(
                     probe.get_pending_approval(1).unwrap().unwrap().status,
@@ -613,7 +665,7 @@ printf 'TELEGRAM_REPLY: after-command-result\n' > "$out"
         line.contains(&format!("offset={id}&")) || line.contains(&format!("offset={id} "))
     };
     assert!(
-        has_offset(&offsets[0], 1) && has_offset(&offsets[1], 1),
+        has_offset(&offsets[0], 1) && has_offset(&offsets[1], 101),
         "{offsets:?}"
     );
     assert!(has_offset(&offsets[2], 102), "{offsets:?}");
@@ -642,7 +694,7 @@ printf 'TELEGRAM_REPLY: after-command-result\n' > "$out"
 }
 
 #[test]
-fn polling_processing_failure_preserves_offset_and_inflight_checkpoint() {
+fn polling_processing_failure_preserves_raw_custody_before_acknowledging_offset() {
     use std::io::{BufRead, BufReader, Write};
     use std::sync::{
         Arc,
@@ -686,19 +738,29 @@ fn polling_processing_failure_preserves_offset_and_inflight_checkpoint() {
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     crate::loops::poll::run_poll_loop(&cfg, &mut store, &scheduler, &client, &shutdown).unwrap();
     let requests = server.join().unwrap();
-    assert!(
-        requests
-            .iter()
-            .all(|line| line.contains("offset=1&") || line.contains("offset=1 "))
-    );
+    assert!(requests[0].contains("offset=1&") || requests[0].contains("offset=1 "));
+    assert!(requests[1].contains("offset=101&") || requests[1].contains("offset=101 "));
     assert_eq!(
         store.kv_get("last_update_id").unwrap().as_deref(),
-        Some("0")
-    );
-    assert_eq!(
-        store.kv_get("inflight_update_id").unwrap().as_deref(),
         Some("100")
     );
+    assert_eq!(store.kv_get("inflight_update_id").unwrap().as_deref(), None);
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT state FROM telegram_ingress WHERE update_id='100'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "pending"
+    );
+    assert_eq!(
+        store.get_pending_approval(1).unwrap().unwrap().status,
+        "pending"
+    );
+    scheduler.shutdown().unwrap();
 }
 
 #[test]
@@ -1097,6 +1159,24 @@ fn recovery_finalizes_saved_result_without_agent_and_preserves_uncertain_outcome
     let unknown = store.get_task_run(unknown).unwrap().unwrap();
     assert_eq!(unknown.status, "failed");
     assert!(unknown.error_summary.unwrap().contains("outcome unknown"));
+    // Recovery materializes synchronously but network/stdout dispatch now has
+    // its own owner. Require automatic eventual delivery, not a manual drain.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !store
+        .conn
+        .query_row(
+            "SELECT delivered FROM task_payloads WHERE task_run_id=?1",
+            [saved],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "recovered outbox did not dispatch"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert!(
         store
             .conn

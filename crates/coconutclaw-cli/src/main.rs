@@ -13,6 +13,7 @@ mod markers;
 mod memory_import;
 mod recovery;
 mod scheduler;
+mod scheduling;
 mod service;
 mod session;
 mod store;
@@ -46,6 +47,7 @@ enum Commands {
     Doctor(DoctorArgs),
     Service(ServiceArgs),
     ImportOpenclaw(memory_import::ImportArgs),
+    Schedule(commands::schedule::ScheduleArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -100,6 +102,16 @@ fn main() -> Result<()> {
     let cfg = load_runtime_config(&overrides)?;
     let command = cli.command;
 
+    // Administrative calendar edits use SQLite transactions, not execution
+    // ownership. They must remain available while the single core is running.
+    if let Commands::Schedule(args) = &command {
+        let store = Store::open(&cfg)?;
+        println!(
+            "{}",
+            commands::schedule::run(&cfg, &store, args, chrono::Utc::now())?
+        );
+        return Ok(());
+    }
     if let Commands::Service(args) = &command {
         return service::run_service(&cfg, &overrides, args.clone());
     }
@@ -113,6 +125,7 @@ fn main() -> Result<()> {
         Commands::Doctor(args) => commands::run_doctor(&cfg, &args),
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
         Commands::ImportOpenclaw(_) => unreachable!("import handled before store setup"),
+        Commands::Schedule(_) => unreachable!("calendar command handled before execution lock"),
     }
 }
 #[cfg(test)]

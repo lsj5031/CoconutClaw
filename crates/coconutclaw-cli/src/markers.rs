@@ -14,6 +14,7 @@ pub(crate) enum Effect {
     SendVideo(String),
     SendApproval(String),
     DelegateTask(String),
+    WaitForTask(String),
     MemoryAppend(String),
     TaskAppend(String),
 }
@@ -29,6 +30,7 @@ impl Effect {
             Self::SendVideo(_) => "send_video",
             Self::SendApproval(_) => "send_approval",
             Self::DelegateTask(_) => "delegate_task",
+            Self::WaitForTask(_) => "wait_for_task",
             Self::MemoryAppend(_) => "memory_append",
             Self::TaskAppend(_) => "task_append",
         }
@@ -43,6 +45,7 @@ impl Effect {
             | Self::SendDocument(s)
             | Self::SendVideo(s)
             | Self::DelegateTask(s)
+            | Self::WaitForTask(s)
             | Self::SendApproval(s)
             | Self::MemoryAppend(s)
             | Self::TaskAppend(s) => s.as_str(),
@@ -62,6 +65,7 @@ pub(crate) fn render_effects(effects: &[Effect]) -> String {
             Effect::SendVideo(_) => "SEND_VIDEO: ",
             Effect::SendApproval(_) => "SEND_APPROVAL: ",
             Effect::DelegateTask(_) => "DELEGATE_TASK: ",
+            Effect::WaitForTask(_) => "WAIT_FOR_TASK: ",
             Effect::MemoryAppend(_) => "MEMORY_APPEND: ",
             Effect::TaskAppend(_) => "TASK_APPEND: ",
         };
@@ -86,6 +90,7 @@ pub(crate) struct ParsedMarkers {
     pub(crate) memory_append: Vec<String>,
     pub(crate) task_append: Vec<String>,
     pub(crate) delegate_task: Vec<String>,
+    pub(crate) wait_for_task: Vec<String>,
 }
 
 impl ParsedMarkers {
@@ -124,6 +129,9 @@ impl ParsedMarkers {
         }
         for text in &self.delegate_task {
             effects.push(Effect::DelegateTask(text.clone()));
+        }
+        for text in &self.wait_for_task {
+            effects.push(Effect::WaitForTask(text.clone()));
         }
         effects
     }
@@ -278,6 +286,7 @@ fn marker_prefixes() -> &'static [&'static str] {
         "SEND_VIDEO:",
         "SEND_APPROVAL:",
         "DELEGATE_TASK:",
+        "WAIT_FOR_TASK:",
         "MEMORY_APPEND:",
         "TASK_APPEND:",
         "SCHEDULE_PROMPT:",
@@ -294,6 +303,7 @@ fn detect_any_marker(line: &str) -> Option<(&'static str, &str)> {
         ("SEND_VIDEO", "SEND_VIDEO:"),
         ("SEND_APPROVAL", "SEND_APPROVAL:"),
         ("DELEGATE_TASK", "DELEGATE_TASK:"),
+        ("WAIT_FOR_TASK", "WAIT_FOR_TASK:"),
         ("MEMORY_APPEND", "MEMORY_APPEND:"),
         ("TASK_APPEND", "TASK_APPEND:"),
         ("SCHEDULE_PROMPT", "SCHEDULE_PROMPT:"),
@@ -330,6 +340,7 @@ fn commit_block(
         "TASK_APPEND" => markers.task_append.push(content.to_string()),
         "SCHEDULE_PROMPT" => {}
         "DELEGATE_TASK" => markers.delegate_task.push(content.to_string()),
+        "WAIT_FOR_TASK" => markers.wait_for_task.push(content.to_string()),
         _ => {}
     }
 }

@@ -72,7 +72,10 @@ fn write_test_provider_script(
         (path, windows_body, command)
     } else {
         let path = dir.join(format!("{stem}.sh"));
-        let command = path.display().to_string();
+        // Read completed fixture bytes with the shell, as other mocks do.
+        // Direct exec can hit ETXTBSY if a concurrent fork briefly inherits a
+        // writable fixture fd; production executable startup stays unchanged.
+        let command = format!("sh \"{}\"", path.display());
         (path, unix_body, command)
     };
 
@@ -87,6 +90,28 @@ fn write_test_provider_script(
     }
 
     command
+}
+
+#[test]
+#[cfg(unix)]
+fn mock_script_launch_does_not_depend_on_executable_write_exclusion() {
+    let mut cfg = RuntimeConfig::test_config();
+    cfg.codex.bin = write_test_provider_script(
+        &cfg.root_dir,
+        "writer-held",
+        "#!/bin/sh\ncat >/dev/null\nprintf 'TELEGRAM_REPLY: fixture ok\\n'\n",
+        "",
+    );
+    // Deterministically model a writable fd inherited across another thread's
+    // fork/exec window. The fixture content is complete and never modified.
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .open(cfg.root_dir.join("writer-held.sh"))
+        .unwrap();
+    let output = run_provider(None, &cfg, "artificial input", None, None, Some(5)).unwrap();
+    assert!(output.success);
+    assert_eq!(output.raw_output.trim(), "TELEGRAM_REPLY: fixture ok");
+    drop(writer);
 }
 
 #[test]

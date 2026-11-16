@@ -177,18 +177,25 @@ impl Store {
     /// Receipt, source turn, immutable history and effective/search state share
     /// one immediate transaction; retries return the original receipt.
     pub(crate) fn memory_command(
-        &mut self,
+        &self,
         scope: &str,
         text: &str,
         request_id: Option<&str>,
         ts: &str,
     ) -> Result<String> {
-        let tx = rusqlite::Transaction::new_unchecked(
-            &self.conn,
-            rusqlite::TransactionBehavior::Immediate,
-        )?;
+        let tx = self
+            .conn
+            .is_autocommit()
+            .then(|| {
+                rusqlite::Transaction::new_unchecked(
+                    &self.conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+            })
+            .transpose()?;
         if let Some(key) = request_id
-            && let Some(reply) = tx
+            && let Some(reply) = self
+                .conn
                 .query_row(
                     "SELECT reply FROM memory_command_receipts WHERE scope=?1 AND request_id=?2",
                     params![scope, key],
@@ -201,12 +208,14 @@ impl Store {
         // Store methods below operate on this connection inside the transaction.
         let reply = self.apply_memory_command(scope, text, ts)?;
         if let Some(key) = request_id {
-            tx.execute(
+            self.conn.execute(
                 "INSERT INTO memory_command_receipts(scope,request_id,reply) VALUES(?1,?2,?3)",
                 params![scope, key, reply],
             )?;
         }
-        tx.commit()?;
+        if let Some(tx) = tx {
+            tx.commit()?;
+        }
         Ok(reply)
     }
 

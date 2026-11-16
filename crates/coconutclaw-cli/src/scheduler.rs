@@ -1,10 +1,13 @@
+use crate::store::inbox::EventKind;
+use rusqlite::{Transaction, TransactionBehavior};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use coconutclaw_config::RuntimeConfig;
 
 use crate::approval::{
@@ -18,6 +21,9 @@ use crate::store::{Store, TaskRunStatus};
 use crate::telegram::build_telegram_client;
 use crate::turn::{hydrate_turn_input, process_turn_with_status};
 use crate::{IncomingMedia, QuotedMessage, TurnInput, iso_now, shorten_log_text};
+
+#[path = "scheduler_calendar.rs"]
+mod calendar;
 
 #[derive(Debug, Clone)]
 pub(crate) enum TaskMedia {
@@ -77,6 +83,10 @@ struct SchedulerInner {
     lifecycle: Mutex<()>,
     workers: Mutex<Vec<thread::JoinHandle<()>>>,
     queue_lock: Mutex<()>,
+    delivery_wake: mpsc::SyncSender<()>,
+    calendar_wake: Mutex<Option<mpsc::SyncSender<()>>>,
+    #[cfg(test)]
+    reservation_probe: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -86,7 +96,8 @@ pub(crate) struct SessionScheduler {
 
 impl SessionScheduler {
     pub(crate) fn new(cfg: RuntimeConfig, cancel_router: Option<Arc<CancelRouter>>) -> Self {
-        Self {
+        let (delivery_wake, receive) = mpsc::sync_channel(1);
+        let scheduler = Self {
             inner: Arc::new(SchedulerInner {
                 cfg,
                 lanes: Mutex::new(HashMap::new()),
@@ -98,8 +109,40 @@ impl SessionScheduler {
                 lifecycle: Mutex::new(()),
                 workers: Mutex::new(Vec::new()),
                 queue_lock: Mutex::new(()),
+                delivery_wake,
+                calendar_wake: Mutex::new(None),
+                #[cfg(test)]
+                reservation_probe: Mutex::new(None),
             }),
-        }
+        };
+        // One bounded dispatcher, outside model execution lanes. The waiting
+        // thread owns only a Weak reference, so dropping the runtime closes it.
+        let weak = Arc::downgrade(&scheduler.inner);
+        let dispatcher = thread::spawn(move || {
+            while receive.recv().is_ok() {
+                let Some(inner) = weak.upgrade() else {
+                    break;
+                };
+                let scheduler = Self { inner };
+                if scheduler
+                    .inner
+                    .stopping
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    break;
+                }
+                if let Err(error) = scheduler.retry_deliveries() {
+                    tracing::warn!("outbox dispatcher pending: {error:#}");
+                }
+            }
+        });
+        scheduler
+            .inner
+            .workers
+            .lock()
+            .expect("workers")
+            .push(dispatcher);
+        scheduler
     }
 
     pub(crate) fn enqueue(&self, request: TaskRequest) -> Result<i64> {
@@ -113,28 +156,54 @@ impl SessionScheduler {
         }
         let created_at = iso_now(&self.inner.cfg.timezone);
         let store = Store::open(&self.inner.cfg)?;
-        let tx = store.conn.unchecked_transaction()?;
-        let task_id = store.insert_task_run(crate::store::InsertTaskRunParams {
-            session_id: request.session.id(),
-            channel: request.source.channel_name().to_string(),
-            source_chat_id: Some(self.delivery_chat_id(&request.delivery).to_string()),
-            source_user_id: request.source_user_id.clone(),
-            update_id: request.update_id.clone(),
-            prompt: request.input.user_text.clone(),
-            created_at: created_at.clone(),
-            progress_message_id: request.progress_message_id.clone(),
-            scheduled_task_id: None,
-        })?;
-        store.conn.execute(
-            "INSERT INTO task_payloads(task_run_id,request) VALUES(?1,?2)",
-            rusqlite::params![
-                task_id,
-                crate::approval::build_resume_payload(&request, &request.input)?
-            ],
-        )?;
+        let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+        let key = request
+            .update_id
+            .as_ref()
+            .map(|id| format!("request:{}:{id}", request.source.channel_name()));
+        let (task_id, new) =
+            store.admit_inbox_request(EventKind::Request, key.as_deref(), &request, &created_at)?;
         tx.commit()?;
-        self.queue_existing(task_id, request);
+        if new {
+            self.queue_existing(task_id, request);
+        }
         Ok(task_id)
+    }
+
+    /// Clock-injected admission, shared by the deadline owner and behavior tests.
+    /// Only the existing scheduler starts models; the calendar emits inbox work.
+    #[cfg(test)]
+    pub(crate) fn wake_due(&self, now: chrono::DateTime<chrono::Utc>) -> Result<usize> {
+        self.wake_due_with_store(&Store::open(&self.inner.cfg)?, now)
+    }
+
+    fn wake_due_with_store(
+        &self,
+        store: &Store,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<usize> {
+        let _queue = self.inner.queue_lock.lock().expect("durable enqueue order");
+        if self
+            .inner
+            .stopping
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(0);
+        }
+        let accepted = store.due_schedule_events(now)?;
+        let count = accepted.len();
+        for (id, request) in accepted {
+            self.queue_existing(id, request);
+        }
+        Ok(count)
+    }
+
+    pub(crate) fn wake_delivery(&self) {
+        let _ = self.inner.delivery_wake.try_send(());
+    }
+
+    pub(crate) fn resume_ingress(&self) {
+        self.dispatch_ready();
     }
 
     /// Cancel a task by ID, without session scoping.
@@ -150,6 +219,7 @@ impl SessionScheduler {
         task_id: i64,
         session_id: Option<&str>,
     ) -> Result<bool> {
+        let _queue = self.inner.queue_lock.lock().expect("durable enqueue order");
         let now = iso_now(&self.inner.cfg.timezone);
         let store = Store::open(&self.inner.cfg)?;
         let Some(task) = store.get_task_run(task_id)? else {
@@ -167,30 +237,71 @@ impl SessionScheduler {
             return Ok(false);
         }
 
-        if task.status == TaskRunStatus::AwaitingApproval.as_str() {
-            self.cleanup_pending_approval_attachment(&store, task_id);
+        if matches!(task.status.as_str(), "awaiting_approval" | "waiting_event") {
+            let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+            let current = store.get_task_run(task_id)?.expect("task remains");
+            if !matches!(
+                current.status.as_str(),
+                "awaiting_approval" | "waiting_event"
+            ) {
+                return Ok(false);
+            }
+            let attachment = store
+                .pending_approval_resume_payload_for_task(task_id)?
+                .or_else(|| {
+                    store
+                        .conn
+                        .query_row(
+                            "SELECT resume_payload FROM runtime_waits WHERE run_id=?1",
+                            [task_id],
+                            |r| r.get(0),
+                        )
+                        .ok()
+                });
             store.expire_pending_approvals_for_task(task_id, &now)?;
             store.finish_task_run(
                 task_id,
                 TaskRunStatus::Cancelled,
                 &now,
                 None,
-                Some("approval cancelled"),
+                Some(if current.status == "awaiting_approval" {
+                    "approval cancelled"
+                } else {
+                    "dependency wait cancelled"
+                }),
             )?;
+            store.conn.execute(
+                "UPDATE runtime_waits SET state='cancelled' WHERE run_id=?1 AND state='waiting'",
+                [task_id],
+            )?;
+            tx.commit()?;
+            if let Some(payload) = attachment
+                && let Err(error) = cleanup_attachment_from_resume_payload(&payload)
+            {
+                tracing::warn!("cancelled wait attachment cleanup pending: {error:#}");
+            }
+            drop(_queue);
             self.complete_task(task_id, &task.session_id)?;
             return Ok(true);
+        }
+        if task.status == TaskRunStatus::WaitingRemote.as_str() {
+            store.mark_task_run_cancel_requested(task_id, &now)?;
+            return Ok(true); // Existing transport owner forwards signed intent.
         }
         if task.status == TaskRunStatus::Queued.as_str() {
             let mut removed = false;
             let mut removed_request: Option<TaskRequest> = None;
             {
                 let mut lanes = self.inner.lanes.lock().expect("lanes");
-                if let Some(lane) = lanes.get_mut(&task.session_id)
+                if let Some(lane) = lanes
+                    .values_mut()
+                    .find(|l| l.queue.iter().any(|q| q.id == task_id))
                     && let Some(index) = lane.queue.iter().position(|queued| queued.id == task_id)
                 {
                     removed_request = lane.queue.remove(index).map(|queued| queued.request);
                     removed = true;
                 }
+                lanes.retain(|_, l| l.active.is_some() || !l.queue.is_empty());
             }
             if removed {
                 if let Some(request) = removed_request.as_ref() {
@@ -245,24 +356,6 @@ impl SessionScheduler {
         Ok(store.find_task_run_by_update_id(update_id)?.is_some())
     }
 
-    fn cleanup_pending_approval_attachment(&self, store: &Store, task_id: i64) {
-        match store.pending_approval_resume_payload_for_task(task_id) {
-            Ok(Some(payload)) => {
-                if let Err(err) = cleanup_attachment_from_resume_payload(&payload) {
-                    tracing::warn!(
-                        "failed to cleanup pending approval attachment for task {task_id}: {err:#}"
-                    );
-                }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!(
-                    "failed to load pending approval payload for task {task_id}: {err:#}"
-                );
-            }
-        }
-    }
-
     pub(crate) fn resolve_approval(
         &self,
         approval_id: i64,
@@ -279,6 +372,7 @@ impl SessionScheduler {
         }
         let now = iso_now(&self.inner.cfg.timezone);
         let store = Store::open(&self.inner.cfg)?;
+        let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
         let Some(approval) = store.get_pending_approval(approval_id)? else {
             return Ok(Some("Approval request not found.".to_string()));
         };
@@ -293,10 +387,29 @@ impl SessionScheduler {
                 "You are not authorized to approve this request.".to_string(),
             ));
         }
-
+        let run = store
+            .get_task_run(approval.task_run_id)?
+            .context("approval run absent")?;
+        if run.status != "awaiting_approval"
+            || run.cancel_requested_at.is_some()
+            || run
+                .error_summary
+                .as_deref()
+                .is_some_and(|s| s.contains("outcome unknown"))
+            || !store.is_current_attempt(run.id)?
+        {
+            return Ok(Some(
+                "Approval source is no longer waiting; inspect current state.".into(),
+            ));
+        }
         match action {
             "approve" => {
-                let tx = store.conn.unchecked_transaction()?;
+                store.register_task_wait(
+                    run.id,
+                    "approval",
+                    approval_id,
+                    &approval.resume_payload,
+                )?;
                 store.resolve_approval(approval_id, "approved", &now, Some(actor_user_id))?;
                 store.finish_task_run(
                     approval.task_run_id,
@@ -305,25 +418,13 @@ impl SessionScheduler {
                     None,
                     Some("approval granted"),
                 )?;
-                let request = request_from_resume_payload(&approval.resume_payload)?;
-                let resume_id = store.insert_task_run(crate::store::InsertTaskRunParams {
-                    session_id: request.session.id(),
-                    channel: request.source.channel_name().into(),
-                    source_chat_id: Some(request.delivery.display_id().into()),
-                    source_user_id: request.source_user_id.clone(),
-                    update_id: Some(format!("approval:{approval_id}")),
-                    prompt: request.input.user_text.clone(),
-                    created_at: now.clone(),
-                    progress_message_id: None,
-                    scheduled_task_id: None,
-                })?;
-                store.conn.execute(
-                    "INSERT INTO task_payloads(task_run_id,request) VALUES(?1,?2)",
-                    rusqlite::params![
-                        resume_id,
-                        crate::approval::build_resume_payload(&request, &request.input)?
-                    ],
-                )?;
+                let mut request = request_from_resume_payload(&approval.resume_payload)?;
+                let key = format!("approval:{approval_id}");
+                request.update_id = Some(key.clone());
+                let (resume_id, _) =
+                    store.admit_inbox_request(EventKind::Approval, Some(&key), &request, &now)?;
+                store.link_task_continuation(approval.task_run_id, resume_id, &key)?;
+                store.inherit_schedule(approval.task_run_id, resume_id)?;
                 tx.commit()?;
                 self.queue_existing(resume_id, request);
                 Ok(Some(format!(
@@ -331,11 +432,14 @@ impl SessionScheduler {
                 )))
             }
             "reject" => {
-                if let Err(err) = cleanup_attachment_from_resume_payload(&approval.resume_payload) {
-                    tracing::warn!(
-                        "failed to cleanup rejected approval attachment #{approval_id}: {err:#}"
-                    );
-                }
+                store.record_inbox(
+                    &format!("approval:{approval_id}"),
+                    EventKind::Approval,
+                    &approval.session_id,
+                    &serde_json::json!({"decision":"reject","actor":actor_user_id}).to_string(),
+                    approval.task_run_id,
+                    &now,
+                )?;
                 store.resolve_approval(approval_id, "rejected", &now, Some(actor_user_id))?;
                 store.finish_task_run(
                     approval.task_run_id,
@@ -344,6 +448,14 @@ impl SessionScheduler {
                     None,
                     Some("approval rejected"),
                 )?;
+                store.conn.execute("UPDATE runtime_waits SET state='cancelled' WHERE run_id=?1 AND state='waiting'",[approval.task_run_id])?;
+                tx.commit()?;
+                if let Err(err) = cleanup_attachment_from_resume_payload(&approval.resume_payload) {
+                    tracing::warn!(
+                        "failed to cleanup rejected approval attachment #{approval_id}: {err:#}"
+                    );
+                }
+                drop(_queue);
                 self.complete_task(approval.task_run_id, &approval.session_id)?;
                 Ok(Some("Approval rejected. Task cancelled.".to_string()))
             }
@@ -393,7 +505,12 @@ impl SessionScheduler {
             };
 
             match task_result {
-                Ok(TaskCompletion::AwaitingApproval) => {
+                Ok(TaskCompletion::WaitingRemote) => {
+                    if let Err(err) = scheduler.complete_task(task_id, &request.session.id()) {
+                        tracing::warn!("failed to release remote reservation lane: {err:#}");
+                    }
+                }
+                Ok(TaskCompletion::Waiting) => {
                     if let Err(err) = scheduler.complete_task(task_id, &request.session.id()) {
                         tracing::warn!("failed to release approval lane: {err:#}");
                     }
@@ -409,31 +526,10 @@ impl SessionScheduler {
                     }
                 }
                 Err(err) => {
-                    if let Err(store_err) = store.finish_task_run(
-                        task_id,
-                        TaskRunStatus::Failed,
-                        &now,
-                        Some(&format!("{err:#}")),
-                        Some("task execution failed"),
-                    ) {
-                        tracing::warn!("failed to persist task failure {task_id}: {store_err:#}");
-                    }
-                    let output = crate::markers::render_output(
-                        &format!(
-                            "Task #{task_id} could not complete. Inspect local state before retrying; execution may have an unknown outcome."
-                        ),
-                        &[],
-                    );
-                    if let Err(save_err) = store.conn.execute(
-                        "UPDATE task_payloads SET output=COALESCE(output,?2) WHERE task_run_id=?1",
-                        rusqlite::params![task_id, output],
-                    ) {
-                        tracing::warn!("failed to persist failure result {task_id}: {save_err:#}");
-                    }
-                    if let Err(delivery_err) = scheduler.retry_deliveries() {
-                        tracing::warn!(
-                            "failed task result delivery pending {task_id}: {delivery_err:#}"
-                        );
+                    if let Err(error) =
+                        scheduler.persist_failure(&store, task_id, &request, &err, &now)
+                    {
+                        tracing::error!("task failure commit pending: {error:#}");
                     }
                     if let Err(advance_err) =
                         scheduler.complete_task(task_id, &request.session.id())
@@ -444,6 +540,7 @@ impl SessionScheduler {
                     }
                 }
             }
+            scheduler.wake_delivery();
         });
         let mut workers = self.inner.workers.lock().expect("workers");
         // Reap finished workers instead of retaining one handle per historic turn.
@@ -467,7 +564,32 @@ impl SessionScheduler {
     ) -> Result<TaskCompletion> {
         let mut store = Store::open(&self.inner.cfg)?;
         let started_at = iso_now(&self.inner.cfg.timezone);
-        store.update_task_run_started(task_id, &started_at)?;
+        {
+            let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+            if store.runtime_result_is_literal(task_id)? {
+                tx.commit()?;
+                return Ok(TaskCompletion::WaitingRemote);
+            }
+            let current = store.get_task_run(task_id)?.context("queued run absent")?;
+            if current.status != "queued"
+                || current.cancel_requested_at.is_some()
+                || !store.is_current_attempt(task_id)?
+            {
+                if current.status == "cancel_requested" && current.started_at.is_none() {
+                    store.finish_task_run(
+                        task_id,
+                        TaskRunStatus::Cancelled,
+                        &started_at,
+                        None,
+                        Some("cancelled before execution"),
+                    )?;
+                }
+                tx.commit()?;
+                return Ok(TaskCompletion::WaitingRemote);
+            }
+            store.update_task_run_started(task_id, &started_at)?;
+            tx.commit()?;
+        }
 
         let (input, cleanup_path) = match request.media.clone() {
             Some(TaskMedia::Telegram(media)) => hydrate_turn_input(
@@ -525,11 +647,8 @@ impl SessionScheduler {
                 &processed.output,
                 processed.status,
             )?;
-            if let Err(err) = self.retry_deliveries() {
-                tracing::warn!(task_id, "result persisted, delivery pending: {err:#}");
-            }
             if approval {
-                return Ok(TaskCompletion::AwaitingApproval);
+                return Ok(TaskCompletion::Waiting);
             }
             let status = match processed.status {
                 crate::TurnStatus::Cancelled => TaskRunStatus::Cancelled,
@@ -572,7 +691,7 @@ impl SessionScheduler {
         }
     }
 
-    fn complete_task(&self, task_id: i64, session_id: &str) -> Result<()> {
+    fn complete_task(&self, task_id: i64, _session_id: &str) -> Result<()> {
         {
             let mut task_state = self.inner.task_state.lock().expect("task_state");
             task_state.remove(&task_id);
@@ -580,16 +699,17 @@ impl SessionScheduler {
 
         {
             let mut lanes = self.inner.lanes.lock().expect("lanes");
-            if let Some(lane) = lanes.get_mut(session_id) {
+            if let Some(lane) = lanes.values_mut().find(|l| l.active == Some(task_id)) {
                 if lane.active != Some(task_id) {
                     return Ok(());
                 }
                 lane.active = None;
                 if lane.queue.is_empty() {
-                    lanes.remove(session_id);
+                    lanes.retain(|_, l| l.active.is_some() || !l.queue.is_empty());
                 }
             }
         }
+        self.resume_waiting_events()?;
         self.dispatch_ready();
         Ok(())
     }
@@ -604,7 +724,21 @@ impl SessionScheduler {
         status: crate::TurnStatus,
     ) -> Result<bool> {
         let _queue = self.inner.queue_lock.lock().expect("durable enqueue order");
-        let tx = store.conn.unchecked_transaction()?;
+        let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+        anyhow::ensure!(store.is_current_attempt(task_id)?, "stale outcome owner");
+        let fresh = store.record_inbox(
+            &format!("result:{task_id}"),
+            EventKind::Result,
+            &request.session.id(),
+            &serde_json::json!({"status":status.as_str(),"output":raw}).to_string(),
+            task_id,
+            &iso_now(&self.inner.cfg.timezone),
+        )?;
+        if !fresh {
+            return Ok(store.get_task_run(task_id)?.is_some_and(|r| {
+                matches!(r.status.as_str(), "awaiting_approval" | "waiting_event")
+            }));
+        }
         let mut output = if status == crate::TurnStatus::Cancelled {
             crate::markers::render_output("❌ Cancelled.", &[])
         } else {
@@ -619,7 +753,38 @@ impl SessionScheduler {
                 | crate::TurnStatus::ParseRecovered
                 | crate::TurnStatus::ParseFallback
         ) {
-            if let Some(prompt) = effects.iter().find_map(|e| match e {
+            if let Some(dependency) = effects.iter().find_map(|e| match e {
+                crate::markers::Effect::WaitForTask(id) => Some(id),
+                _ => None,
+            }) {
+                anyhow::ensure!(
+                    effects
+                        .iter()
+                        .filter(|e| matches!(e, crate::markers::Effect::WaitForTask(_)))
+                        .count()
+                        == 1
+                        && !effects.iter().any(|e| matches!(
+                            e,
+                            crate::markers::Effect::SendApproval(_)
+                                | crate::markers::Effect::DelegateTask(_)
+                        )),
+                    "one wait reason per outcome"
+                );
+                let dependency: i64 = dependency
+                    .trim()
+                    .parse()
+                    .context("invalid dependency task number")?;
+                store.wait_for_task(
+                    task_id,
+                    dependency,
+                    &crate::approval::build_resume_payload(request, input)?,
+                )?;
+                output = crate::markers::render_output(
+                    &format!("Task #{task_id} is waiting for task #{dependency}."),
+                    &[],
+                );
+                approval = true;
+            } else if let Some(prompt) = effects.iter().find_map(|e| match e {
                 crate::markers::Effect::SendApproval(p) => Some(p.as_str()),
                 _ => None,
             }) {
@@ -630,6 +795,12 @@ impl SessionScheduler {
                     task_id,
                     prompt,
                     &self.inner.cfg.timezone,
+                )?;
+                store.register_task_wait(
+                    task_id,
+                    "approval",
+                    id,
+                    &crate::approval::build_resume_payload(request, input)?,
                 )?;
                 output = crate::markers::render_output(
                     &format!("{prompt}\nApprove with /approve {id}, or reject with /reject {id}."),
@@ -663,24 +834,14 @@ impl SessionScheduler {
                         reply_text: None,
                         reply_ts: None,
                     };
-                    let id = store.insert_task_run(crate::store::InsertTaskRunParams {
-                        session_id: child.session.id(),
-                        channel: child.source.channel_name().into(),
-                        source_chat_id: Some(child.delivery.display_id().into()),
-                        source_user_id: child.source_user_id.clone(),
-                        update_id: child.update_id.clone(),
-                        prompt: prompt.clone(),
-                        created_at: iso_now(&self.inner.cfg.timezone),
-                        progress_message_id: None,
-                        scheduled_task_id: None,
-                    })?;
-                    store.conn.execute(
-                        "INSERT INTO task_payloads(task_run_id,request) VALUES(?1,?2)",
-                        rusqlite::params![
-                            id,
-                            crate::approval::build_resume_payload(&child, &child.input)?
-                        ],
+                    let (id, _) = store.admit_inbox_request(
+                        EventKind::Request,
+                        child.update_id.as_deref(),
+                        &child,
+                        &iso_now(&self.inner.cfg.timezone),
                     )?;
+                    store.link_task_child(task_id, id)?;
+                    store.inherit_schedule(task_id, id)?;
                     output.push_str(&format!("\nTELEGRAM_REPLY: Delegated task #{id}.\n"));
                     children.push((id, child));
                 }
@@ -714,6 +875,9 @@ impl SessionScheduler {
                 Some("result persisted"),
             )?;
         }
+        if approval {
+            store.record_initial_blocker(task_id, &iso_now(&self.inner.cfg.timezone))?;
+        }
         tx.commit()?;
         if !self
             .inner
@@ -727,10 +891,68 @@ impl SessionScheduler {
         Ok(approval)
     }
 
+    fn persist_failure(
+        &self,
+        store: &Store,
+        id: i64,
+        request: &TaskRequest,
+        error: &anyhow::Error,
+        now: &str,
+    ) -> Result<()> {
+        let _queue = self.inner.queue_lock.lock().expect("durable enqueue order");
+        let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+        let existing: Option<String> = store.conn.query_row(
+            "SELECT output FROM task_payloads WHERE task_run_id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        if existing.is_some() {
+            return Ok(());
+        }
+        let output = crate::markers::render_output(
+            &format!(
+                "Task #{id} could not complete. Inspect local state before retrying; execution may have an unknown outcome."
+            ),
+            &[],
+        );
+        store.record_inbox(
+            &format!("result:{id}"),
+            EventKind::Result,
+            &request.session.id(),
+            &serde_json::json!({"outcome":"unknown","output":output}).to_string(),
+            id,
+            now,
+        )?;
+        store.finish_task_run(
+            id,
+            TaskRunStatus::Failed,
+            now,
+            Some(&format!("outcome unknown; no automatic retry: {error:#}")),
+            Some("task execution failed"),
+        )?;
+        store.conn.execute(
+            "UPDATE task_payloads SET output=?2 WHERE task_run_id=?1",
+            rusqlite::params![id, output],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     fn queue_existing(&self, id: i64, request: TaskRequest) {
         {
             let mut lanes = self.inner.lanes.lock().expect("lanes");
-            let lane = lanes.entry(request.session.id()).or_default();
+            if lanes
+                .values()
+                .any(|l| l.active == Some(id) || l.queue.iter().any(|q| q.id == id))
+            {
+                return;
+            }
+            let key = if request.delegated {
+                format!("task:{id}")
+            } else {
+                request.session.id()
+            };
+            let lane = lanes.entry(key).or_default();
             lane.queue.push_back(QueuedTask { id, request });
         }
         self.dispatch_ready();
@@ -741,6 +963,27 @@ impl SessionScheduler {
     /// delegation and approval resumes use this same admission path.
     fn dispatch_ready(&self) {
         let ready = {
+            let Ok(store) = Store::open(&self.inner.cfg) else {
+                return;
+            };
+            // Serialize the ingress snapshot AND lane reservation with raw
+            // admission. Release this read-only writer gate before any spawn/I/O.
+            let Ok(_reservation) =
+                Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)
+            else {
+                return;
+            };
+            let Ok(blocked) = store.blocked_telegram_sessions() else {
+                return;
+            };
+            #[cfg(test)]
+            {
+                let probe = self.inner.reservation_probe.lock().unwrap().take();
+                if let Some((reached, resume)) = probe {
+                    reached.wait();
+                    resume.wait();
+                }
+            }
             let mut lanes = self.inner.lanes.lock().expect("lanes");
             if self
                 .inner
@@ -760,6 +1003,12 @@ impl SessionScheduler {
                 let Some(key) = lanes
                     .iter()
                     .filter(|(_, lane)| lane.active.is_none())
+                    .filter(|(_, lane)| {
+                        !lane
+                            .queue
+                            .front()
+                            .is_some_and(|q| blocked.contains(&q.request.session.id()))
+                    })
                     .filter(|(_, lane)| {
                         !lane.queue.front().is_some_and(|q| {
                             q.request.session.thread_id.is_some()
@@ -817,7 +1066,12 @@ impl SessionScheduler {
             |r| r.get(0),
         )?;
         let cancellation_output = crate::markers::render_output("❌ Cancelled.", &[]);
-        let output = if cancelled {
+        let was_wait: bool = store.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_waits WHERE run_id=?1)",
+            [id],
+            |r| r.get(0),
+        )?;
+        let output = if cancelled && !was_wait {
             if output != cancellation_output {
                 store.conn.execute(
                     "UPDATE task_payloads SET output=?2,delivery_state='[]' WHERE task_run_id=?1",
@@ -835,7 +1089,7 @@ impl SessionScheduler {
             client.as_ref(),
             &request.delivery,
             crate::delivery::TaskDispatch {
-                task_id: id,
+                task_id: crate::delivery::DeliveryKey::Task(id),
                 output,
                 progress_message_id: request.progress_message_id.as_deref(),
             },
@@ -846,7 +1100,8 @@ impl SessionScheduler {
                 [id],
             )?;
             let has_approval: bool = store.conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM approvals WHERE task_run_id=?1)",
+                "SELECT EXISTS(SELECT 1 FROM approvals WHERE task_run_id=?1)
+                  OR EXISTS(SELECT 1 FROM runtime_waits WHERE run_id=?1)",
                 [id],
                 |r| r.get(0),
             )?;
@@ -893,6 +1148,9 @@ impl SessionScheduler {
                 tracing::warn!(task_id = id, "delivery retry pending: {err:#}");
             }
         }
+        let _delivery_lock = self.inner.delivery_lock.lock().expect("delivery lock");
+        crate::loops::webhook::deliver_telegram_acks(&self.inner.cfg, &store)?;
+        crate::delivery::deliver_notifications(&self.inner.cfg, &store)?;
         Ok(())
     }
 
@@ -901,6 +1159,7 @@ impl SessionScheduler {
             .recovering
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let store = Store::open(&self.inner.cfg)?;
+        store.apply_runtime_results(&iso_now(&self.inner.cfg.timezone))?;
         store.mark_stale_task_runs_failed(&iso_now(&self.inner.cfg.timezone))?;
         let mut stmt = store.conn.prepare(
             "SELECT p.task_run_id,p.request FROM task_payloads p WHERE p.output IS NULL
@@ -929,9 +1188,11 @@ impl SessionScheduler {
              ' was interrupted. Outcome unknown; inspect local state before retrying.'
              WHERE output IS NULL AND EXISTS(SELECT 1 FROM task_runs r WHERE r.id=task_payloads.task_run_id
              AND r.status='failed' AND r.error_summary LIKE '%outcome unknown%')", [])?;
+        self.resume_waiting_events()?;
         let mut stmt = store.conn.prepare(
             "SELECT r.id,p.request FROM task_runs r JOIN task_payloads p ON p.task_run_id=r.id
-             WHERE r.status='queued' AND r.started_at IS NULL ORDER BY r.id",
+             WHERE r.status='queued' AND r.started_at IS NULL
+             AND NOT EXISTS(SELECT 1 FROM runtime_remote_runs m WHERE m.task_run_id=r.id) ORDER BY r.id",
         )?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
@@ -956,7 +1217,38 @@ impl SessionScheduler {
             .recovering
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.dispatch_ready();
-        self.retry_deliveries()
+        self.wake_delivery();
+        Ok(())
+    }
+
+    pub(crate) fn resume_runtime_results(&self) -> Result<()> {
+        {
+            let _queue = self.inner.queue_lock.lock().expect("durable result order");
+            Store::open(&self.inner.cfg)?
+                .apply_runtime_results(&iso_now(&self.inner.cfg.timezone))?;
+        }
+        self.resume_waiting_events()?;
+        self.wake_delivery();
+        Ok(())
+    }
+
+    pub(crate) fn resume_waiting_events(&self) -> Result<usize> {
+        let _queue = self.inner.queue_lock.lock().expect("durable event order");
+        if self
+            .inner
+            .stopping
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(0);
+        }
+        let store = Store::open(&self.inner.cfg)?;
+        let ready = store.resume_task_events(&iso_now(&self.inner.cfg.timezone))?;
+        store.observe_blockers(&iso_now(&self.inner.cfg.timezone))?;
+        let count = ready.len();
+        for (id, request) in ready {
+            self.queue_existing(id, request);
+        }
+        Ok(count)
     }
 
     pub(crate) fn request_shutdown(&self) {
@@ -964,6 +1256,16 @@ impl SessionScheduler {
         self.inner
             .stopping
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.wake_delivery();
+        if let Some(wake) = self
+            .inner
+            .calendar_wake
+            .lock()
+            .expect("calendar wake")
+            .as_ref()
+        {
+            let _ = wake.try_send(());
+        }
         for state in self.inner.task_state.lock().expect("task state").values() {
             state
                 .cancel_flag
@@ -1007,10 +1309,6 @@ impl SessionScheduler {
             thread::sleep(std::time::Duration::from_millis(25));
         }
     }
-
-    fn delivery_chat_id<'a>(&self, delivery: &'a DeliveryTarget) -> &'a str {
-        delivery.display_id()
-    }
 }
 
 // cleanup_attachment_path is defined in delivery module
@@ -1046,7 +1344,8 @@ fn render_active_task_lines(tasks: Vec<crate::store::TaskRun>, include_session_i
 
 #[derive(Debug)]
 enum TaskCompletion {
-    AwaitingApproval,
+    WaitingRemote,
+    Waiting,
     Finished {
         status: TaskRunStatus,
         summary: String,
@@ -1055,4 +1354,4 @@ enum TaskCompletion {
 
 #[cfg(test)]
 #[path = "scheduler_integration_test.rs"]
-mod tests;
+pub(crate) mod tests;

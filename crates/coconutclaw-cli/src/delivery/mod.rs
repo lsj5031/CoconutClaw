@@ -100,6 +100,22 @@ pub(crate) struct DeliveryState {
     pub(crate) operations: serde_json::Map<String, Value>,
 }
 impl DeliveryState {
+    pub(crate) fn from_json(raw: &str) -> Result<Self> {
+        let value: Value = serde_json::from_str(raw)?;
+        let (completed_ops, text_plan) = if value.is_array() {
+            (serde_json::from_value(value)?, None)
+        } else {
+            (
+                serde_json::from_value(value.get("completed_ops").cloned().unwrap_or(json!([])))?,
+                value.get("text_plan").filter(|v| !v.is_null()).cloned(),
+            )
+        };
+        Ok(Self {
+            completed_ops,
+            text_plan,
+            operations: value_operations(raw)?,
+        })
+    }
     pub(crate) fn has_telegram_op(&self, op: &str) -> bool {
         self.completed_ops.iter().any(|s| s == op)
     }
@@ -112,23 +128,121 @@ impl DeliveryState {
 }
 #[derive(Clone, Copy)]
 pub(crate) struct TaskDispatch<'a> {
-    pub(crate) task_id: i64,
+    pub(crate) task_id: DeliveryKey,
     pub(crate) output: &'a str,
     pub(crate) progress_message_id: Option<&'a str>,
 }
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DeliveryKey {
+    Task(i64),
+    Telegram(i64),
+    Notification(i64),
+}
 pub(crate) fn persist_delivery_state(
     store: &Store,
-    task_id: i64,
+    key: DeliveryKey,
     state: &DeliveryState,
 ) -> Result<()> {
-    store.conn.execute(
-        "UPDATE task_payloads SET delivery_state=?2 WHERE task_run_id=?1",
+    if let DeliveryKey::Notification(id) = key {
+        return store.persist_notification_delivery(id,
+            &json!({"completed_ops":state.completed_ops,"text_plan":state.text_plan,"operations":state.operations}).to_string(),
+            !state.has_telegram_op("telegram:text") && state.text_plan.as_ref().is_some_and(|p|p["phase"]=="sending"));
+    }
+    let (sql, id) = match key {
+        DeliveryKey::Task(id) => (
+            "UPDATE task_payloads SET delivery_state=?2 WHERE task_run_id=?1",
+            id,
+        ),
+        DeliveryKey::Telegram(id) => (
+            "UPDATE telegram_ingress SET delivery_state=?2 WHERE seq=?1",
+            id,
+        ),
+        DeliveryKey::Notification(_) => unreachable!("handled above"),
+    };
+    anyhow::ensure!(store.conn.execute(
+        sql,
         rusqlite::params![
-            task_id,
+            id,
             json!({"completed_ops":state.completed_ops,"text_plan":state.text_plan,"operations":state.operations}).to_string()
         ],
-    )?;
+    )? == 1,"delivery owner missing; no external effect authorized");
     Ok(())
+}
+
+/// Shares the scheduler's existing delivery lock and native durable sender.
+/// Freeze bounded candidates and release the SQLite read before any HTTP.
+pub(crate) fn deliver_notifications(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+    let rows=store.conn.prepare(
+        "SELECT id,target,output,delivery_state FROM runtime_notifications WHERE disposition='pending' ORDER BY id LIMIT 32")?
+        .query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut client = None;
+    for (id, target, output, raw) in rows {
+        let state = DeliveryState::from_json(&raw)?;
+        let uncertain = notification_delivery_ambiguous(store, id)?;
+        let disposition = if uncertain {
+            "unknown"
+        } else if state.has_telegram_op("telegram:text") {
+            "sent"
+        } else if !store.notification_is_current(id)? {
+            "superseded"
+        } else if state
+            .text_plan
+            .as_ref()
+            .is_some_and(|p| p["attempts"].as_u64().is_some_and(|n| n >= 3))
+        {
+            "suspended"
+        } else {
+            let Some(target) = parse_delivery_target(Some(&target)) else {
+                continue;
+            };
+            let DeliveryTarget::Telegram { chat_id, thread_id } = &target else {
+                continue;
+            };
+            if !crate::util::is_allowed_chat(cfg, Some(chat_id))
+                || (thread_id.is_some() && cfg.telegram_topics_enabled == Some(false))
+            {
+                continue;
+            }
+            if client.is_none() {
+                client = Some(crate::telegram::build_telegram_client(cfg)?);
+            }
+            match dispatch_task_output(
+                store,
+                cfg,
+                client.as_ref(),
+                &target,
+                TaskDispatch {
+                    task_id: DeliveryKey::Notification(id),
+                    output: &output,
+                    progress_message_id: None,
+                },
+                &raw,
+            ) {
+                Ok(true) => "sent",
+                Ok(false) | Err(_) => {
+                    if notification_delivery_ambiguous(store, id)? {
+                        "unknown"
+                    } else {
+                        continue;
+                    }
+                }
+            }
+        };
+        store.conn.execute(
+            "UPDATE runtime_notifications SET disposition=?2 WHERE id=?1",
+            rusqlite::params![id, disposition],
+        )?;
+    }
+    Ok(())
+}
+
+fn notification_delivery_ambiguous(store: &Store, id: i64) -> Result<bool> {
+    Ok(store.conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_notifications n,json_tree(n.delivery_state) j
+         WHERE n.id=?1 AND j.key='phase' AND (j.value='unknown' OR (j.value='sending'
+           AND NOT EXISTS(SELECT 1 FROM json_each(n.delivery_state,'$.completed_ops') WHERE value='telegram:text'))))",
+        [id],|r|r.get(0))?)
 }
 pub(crate) fn dispatch_task_output(
     store: &Store,
@@ -145,22 +259,7 @@ pub(crate) fn dispatch_task_output(
         }
         DeliveryTarget::Telegram { .. } => {
             let client = client.ok_or_else(|| anyhow::anyhow!("Telegram client missing"))?;
-            let value: Value = serde_json::from_str(raw_state)?;
-            let (completed_ops, text_plan) = if value.is_array() {
-                (serde_json::from_value(value)?, None)
-            } else {
-                (
-                    serde_json::from_value(
-                        value.get("completed_ops").cloned().unwrap_or(json!([])),
-                    )?,
-                    value.get("text_plan").filter(|v| !v.is_null()).cloned(),
-                )
-            };
-            let mut state = DeliveryState {
-                completed_ops,
-                text_plan,
-                operations: value_operations(raw_state)?,
-            };
+            let mut state = DeliveryState::from_json(raw_state)?;
             telegram::dispatch_task_output(
                 store,
                 cfg,

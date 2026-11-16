@@ -1,11 +1,9 @@
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use coconutclaw_config::RuntimeConfig;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-use crate::store::Store;
 use crate::types::IncomingMedia;
 
 pub(crate) fn shorten_log_text(text: &str, max_chars: usize) -> String {
@@ -121,18 +119,6 @@ pub(crate) fn configured_telegram_chat_scope(cfg: &RuntimeConfig) -> String {
     }
 }
 
-pub(crate) fn set_inflight_update(
-    store: &Store,
-    update_id: &str,
-    payload_json: &str,
-    timezone: &str,
-) -> Result<()> {
-    store.kv_set("inflight_update_id", update_id)?;
-    store.kv_set("inflight_update_json", payload_json)?;
-    store.kv_set("inflight_started_at", &iso_now(timezone))?;
-    Ok(())
-}
-
 pub(crate) fn resolve_instance_path(instance_dir: &Path, raw: PathBuf) -> PathBuf {
     if raw.is_absolute() {
         raw
@@ -168,7 +154,4 @@ pub(crate) fn value_to_string(value: &Value) -> String {
 }
 pub(crate) fn extract_update_id_from_value(value: &Value) -> Option<String> {
     value.get("update_id").map(value_to_string)
-}
-pub(crate) fn extract_update_id_from_json(raw: &str) -> Result<Option<String>> {
-    Ok(extract_update_id_from_value(&serde_json::from_str(raw)?))
 }

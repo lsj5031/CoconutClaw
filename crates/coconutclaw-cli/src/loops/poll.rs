@@ -1,7 +1,6 @@
 use anyhow::Result;
 use coconutclaw_config::RuntimeConfig;
 use reqwest::blocking::Client;
-use std::io::Write;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -11,11 +10,10 @@ use std::time::Duration;
 
 use crate::scheduler::SessionScheduler;
 use crate::store::Store;
-use crate::telegram::{dispatch_telegram_output, fetch_poll_updates};
+use crate::telegram::fetch_poll_updates;
 use crate::util::extract_update_id_from_value;
-use crate::util::set_inflight_update;
 
-use super::webhook::process_webhook_line;
+use super::webhook::{drain_telegram_ingress, process_webhook_line};
 
 pub(crate) fn run_poll_loop(
     cfg: &RuntimeConfig,
@@ -24,12 +22,15 @@ pub(crate) fn run_poll_loop(
     telegram_client: &Client,
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut offset = store
-        .kv_get("last_update_id")?
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|value| value.saturating_add(1));
-
+    scheduler.start_calendar()?;
     while !shutdown.load(Ordering::SeqCst) {
+        drain_telegram_ingress(cfg, store, scheduler)?;
+        scheduler.resume_runtime_results()?;
+        let offset = store
+            .kv_get("last_update_id")?
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|v| v.saturating_add(1));
+        scheduler.wake_delivery();
         let updates = match fetch_poll_updates(telegram_client, cfg, offset) {
             Ok(updates) => updates,
             Err(err) => {
@@ -40,7 +41,7 @@ pub(crate) fn run_poll_loop(
         };
 
         if updates.is_empty() {
-            scheduler.retry_deliveries()?;
+            scheduler.wake_delivery();
             sleep_until_poll_or_shutdown(cfg.poll_interval_seconds, shutdown);
             continue;
         }
@@ -52,65 +53,25 @@ pub(crate) fn run_poll_loop(
 
             let update_id =
                 extract_update_id_from_value(&update).and_then(|value| value.parse::<u64>().ok());
-            let line = match serde_json::to_string(&update) {
-                Ok(line) => line,
-                Err(err) => {
-                    tracing::warn!("failed to serialize polled update (dropping): {err:#}");
-                    if let Some(update_id) = update_id {
-                        offset = Some(update_id.saturating_add(1));
-                    }
-                    continue;
-                }
-            };
-            // Set inflight checkpoint before processing for crash recovery
-            set_inflight_update(
-                store,
-                update_id.map(|id| id.to_string()).as_deref().unwrap_or(""),
-                &line,
-                &cfg.timezone,
-            )?;
-            let outcome = match process_webhook_line(cfg, store, scheduler, &line) {
-                Ok(outcome) => outcome,
+            let line = serde_json::to_string(&update)?;
+            match process_webhook_line(cfg, store, scheduler, &line) {
+                Ok(_) => {}
                 Err(err) => {
                     tracing::warn!(
-                        "failed to process polled update_id={} (preserved for retry): {err:#}",
+                        "failed to process polled update_id={} (custody and effect boundary preserved): {err:#}",
                         update_id
                             .map(|id| id.to_string())
                             .unwrap_or_else(|| "unknown".to_string())
                     );
+                    // Do not acknowledge an identity that failed admission. A
+                    // pending SQL control, however, is already in durable custody.
                     sleep_until_poll_or_shutdown(cfg.poll_interval_seconds, shutdown);
                     break;
                 }
-            };
-
-            if let Some(output) = outcome.output.as_deref() {
-                if let Err(err) = dispatch_telegram_output(
-                    telegram_client,
-                    cfg,
-                    outcome.chat_id.as_deref(),
-                    output,
-                    outcome.progress_message_id.as_deref(),
-                ) {
-                    tracing::warn!("failed to dispatch polled output: {err:#}");
-                } else {
-                    println!("{output}");
-                    std::io::stdout().flush().ok();
-                }
-            }
-            if let Some(path) = outcome.cleanup_path.as_deref() {
-                let _ = std::fs::remove_file(path);
-            }
-
-            if let Err(err) = store.clear_inflight() {
-                tracing::warn!("failed to clear inflight after poll processing: {err:#}");
-            }
-
-            if let Some(update_id) = update_id {
-                offset = Some(update_id.saturating_add(1));
             }
         }
 
-        scheduler.retry_deliveries()?;
+        scheduler.wake_delivery();
     }
 
     tracing::info!("shutdown signal received, stopping poll loop");

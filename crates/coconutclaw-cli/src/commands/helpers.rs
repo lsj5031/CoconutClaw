@@ -58,7 +58,7 @@ fn enqueue_telegram_turn(
 
 pub(crate) fn maybe_handle_telegram_command(
     cfg: &RuntimeConfig,
-    store: &mut Store,
+    store: &Store,
     scheduler: &SessionScheduler,
     update_id: Option<String>,
     chat_id: &str,
@@ -84,7 +84,7 @@ pub(crate) fn maybe_handle_telegram_command(
                     tracing::info!("inserted context boundary for session={}", session.id())
                 }
                 Ok(false) => {}
-                Err(err) => tracing::warn!("failed to insert context boundary: {err:#}"),
+                Err(err) => return Err(err),
             }
             Some("Context cleared. Fresh start!".to_string())
         }
@@ -106,10 +106,27 @@ pub(crate) fn maybe_handle_telegram_command(
             };
             Some(reply)
         }
-        "/tasks" => Some(scheduler.render_active_tasks_for_session(&session.id())?),
-        "/schedules" => Some(
-            "Scheduling was removed; existing schedule data is preserved but inactive.".to_string(),
-        ),
+        "/tasks" => Some(if let Some(id) = arg {
+            store.task_status_command(&session, id, update_id.as_deref())?
+        } else {
+            scheduler.render_active_tasks_for_session(&session.id())?
+        }),
+        "/preferences" => Some(store.preferences_command(
+            &session,
+            arg.unwrap_or(""),
+            update_id.as_deref(),
+            &crate::iso_now(&cfg.timezone),
+        )?),
+        "/notifications" => {
+            Some(store.notifications_command(&session, arg.unwrap_or(""), update_id.as_deref())?)
+        }
+        "/schedules" => Some(store.list_schedules(&session.id())?.to_string()),
+        "/reconcile" => Some(store.reconciliation_command(
+            &session,
+            arg.unwrap_or(""),
+            update_id.as_deref(),
+            &crate::iso_now(&cfg.timezone),
+        )?),
         "/approve" | "/reject" => {
             if let Some(id) = arg.and_then(parse_task_id_arg) {
                 scheduler.resolve_approval(
@@ -147,21 +164,4 @@ pub(crate) fn enqueue_telegram(
     progress_message_id: Option<String>,
 ) -> Result<i64> {
     enqueue_telegram_turn(scheduler, turn, progress_message_id)
-}
-
-pub(crate) fn dispatch_process_outcome(
-    cfg: &RuntimeConfig,
-    telegram_client: Option<&reqwest::blocking::Client>,
-    outcome: &ProcessOutcome,
-    output: &str,
-) -> Result<()> {
-    let client =
-        telegram_client.ok_or_else(|| anyhow::anyhow!("Telegram client not configured"))?;
-    crate::telegram::dispatch_telegram_output(
-        client,
-        cfg,
-        outcome.chat_id.as_deref(),
-        output,
-        outcome.progress_message_id.as_deref(),
-    )
 }

@@ -25,7 +25,7 @@ fn count(store: &Store, table: &str) -> i64 {
 fn candidate_import_supersession_undo_replay_and_reopen() {
     let source = tempfile::tempdir().unwrap();
     let cfg = RuntimeConfig::test_config();
-    let mut store = Store::open(&cfg).unwrap();
+    let store = Store::open(&cfg).unwrap();
     let args = args(source.path());
     fs::write(
         source.path().join("MEMORY.md"),
@@ -96,7 +96,7 @@ fn candidate_import_supersession_undo_replay_and_reopen() {
             .contains("old orchard")
     );
     drop(store);
-    let mut store = Store::open(&cfg).unwrap();
+    let store = Store::open(&cfg).unwrap();
     assert_eq!(
         apply(&store, &preview(&cfg, &args).unwrap(), false).unwrap(),
         (0, 1)
@@ -133,7 +133,7 @@ fn candidate_import_supersession_undo_replay_and_reopen() {
 fn candidate_updates_retire_get_but_never_prune_missing_chunks() {
     let source = tempfile::tempdir().unwrap();
     let cfg = RuntimeConfig::test_config();
-    let mut store = Store::open(&cfg).unwrap();
+    let store = Store::open(&cfg).unwrap();
     let args = args(source.path());
     fs::write(source.path().join("MEMORY.md"), "first\n\nretained").unwrap();
     apply(&store, &preview(&cfg, &args).unwrap(), false).unwrap();
@@ -301,7 +301,7 @@ fn existing_bounded_memory_upgrade_preserves_ids_receipts_undo_and_search() {
     conn.execute_batch(include_str!("store/memory_pre_import_fixture.sql"))
         .unwrap();
     drop(conn);
-    let mut store = Store::open(&cfg).unwrap();
+    let store = Store::open(&cfg).unwrap();
     assert!(
         store
             .curated_memory("telegram:321")

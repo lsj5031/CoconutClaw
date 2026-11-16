@@ -3,11 +3,22 @@ use coconutclaw_config::RuntimeConfig;
 use rusqlite::Connection;
 use std::fs;
 pub(crate) mod approvals;
+pub(crate) mod inbox;
 pub(crate) mod kv;
 pub(crate) mod memory;
 pub(crate) mod migrations;
+pub(crate) mod notifications;
+pub(crate) mod preferences;
+pub(crate) mod reconciliation;
+pub(crate) mod runtime_results;
+pub(crate) mod schedules;
+pub(crate) mod task_graph;
 pub(crate) mod task_runs;
+pub(crate) mod telegram_ingress;
 pub(crate) mod turns;
+
+#[cfg(test)]
+mod task_adapter;
 
 const SCHEMA_SQL: &str = include_str!("../../../../sql/schema.sql");
 
@@ -41,6 +52,8 @@ pub(crate) enum TaskRunStatus {
     Queued,
     Running,
     AwaitingApproval,
+    WaitingRemote,
+    WaitingEvent,
     CancelRequested,
     Completed,
     Failed,
@@ -53,6 +66,8 @@ impl TaskRunStatus {
             Self::Queued => "queued",
             Self::Running => "running",
             Self::AwaitingApproval => "awaiting_approval",
+            Self::WaitingRemote => "waiting_remote",
+            Self::WaitingEvent => "waiting_event",
             Self::CancelRequested => "cancel_requested",
             Self::Completed => "completed",
             Self::Failed => "failed",
@@ -145,6 +160,7 @@ impl Store {
             .context("failed to apply sqlite schema")?;
         let store = Self { conn };
         store.run_migrations()?;
+        store.initialize_task_graph()?;
         store.initialize_memory()?;
         Ok(store)
     }

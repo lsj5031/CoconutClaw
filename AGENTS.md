@@ -26,8 +26,13 @@ Supported plain-text marker prefixes:
 - `TASK_APPEND:`
 - `SEND_APPROVAL:`
 - `DELEGATE_TASK:`
+- `WAIT_FOR_TASK:`
 
-Do not restore voice, alternate providers/transports, named assistant management
-or general scheduling. Historical schema columns do not enable supported
-features. Owner steering dropped legacy memory support after Phase 0; see
+Do not restore voice, alternate providers/transports or named assistant management.
+Owner's 16 November always-on amendment authorizes narrow durable inbox-backed
+one-off followups and recurring schedules in the existing Rust/SQLite runtime.
+Use explicit timezone/DST/missed-run policies and preserve Unknown without
+automatic effect retries. Historical schedule rows remain inactive, never
+implicitly imported. No actual user jobs without an explicit task/cadence.
+Owner steering dropped legacy memory support after Phase 0; see
 `docs/memory.md`. Phase 0's historical closeout is in `docs/validation-phase-0.md`.

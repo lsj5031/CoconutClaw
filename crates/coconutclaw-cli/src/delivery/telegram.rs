@@ -61,7 +61,7 @@ fn retry_deadline_seconds(delay: u64) -> u64 {
 /// Telegram has no caller-supplied idempotency key.
 fn durable_op(
     store: &Store,
-    task_id: i64,
+    task_id: crate::delivery::DeliveryKey,
     state: &mut DeliveryState,
     op: &str,
     send: impl FnOnce() -> Result<()>,
@@ -111,7 +111,7 @@ fn durable_op(
             }
             saved["phase"] = "unknown".into();
             persist_delivery_state(store, task_id, state)?;
-            tracing::warn!(task_id, op, "delivery outcome unknown; resend suspended");
+            tracing::warn!(?task_id, op, "delivery outcome unknown; resend suspended");
             Ok(false)
         }
     }
@@ -188,7 +188,7 @@ fn deliver_text(
                 state.text_plan.as_mut().expect("saved rich plan")["phase"] = "unknown".into();
                 persist_delivery_state(store, request.task_id, state)?;
                 tracing::warn!(
-                    task_id = request.task_id,
+                    task_id = ?request.task_id,
                     "rich delivery outcome unknown; automatic resend/fallback suspended"
                 );
                 return Ok(false);
@@ -303,6 +303,80 @@ fn deliver_text(
 
 /// Walk Telegram-bound effects and dispatch each op idempotently.
 /// Returns true if every attempted op succeeded; false if any retryable failure occurred.
+fn output_effects(
+    store: &Store,
+    key: crate::delivery::DeliveryKey,
+    output: &str,
+) -> Result<Vec<crate::markers::Effect>> {
+    let literal = match key {
+        crate::delivery::DeliveryKey::Task(id) => store.runtime_result_is_literal(id)?,
+        crate::delivery::DeliveryKey::Telegram(_)
+        | crate::delivery::DeliveryKey::Notification(_) => false,
+    };
+    Ok(if literal {
+        let uncertain = if let crate::delivery::DeliveryKey::Task(id) = key {
+            store.get_task_run(id)?.is_some_and(|r| {
+                r.error_summary
+                    .as_deref()
+                    .is_some_and(|s| s.contains("outcome unknown"))
+            })
+        } else {
+            false
+        };
+        let text = if uncertain {
+            format!(
+                "Outcome unknown; do not automatically retry. Retained runner evidence:\n{output}"
+            )
+        } else {
+            output.into()
+        };
+        vec![crate::markers::Effect::TelegramReply(text)]
+    } else {
+        parse_markers(output).to_effects()
+    })
+}
+
+/// Existing sender receipts prove this text operation only, not provider
+/// success, control effects, progress cleanup or any other external operation.
+pub(crate) fn acknowledged_text(
+    store: &Store,
+    key: crate::delivery::DeliveryKey,
+    output: &str,
+    state: &mut DeliveryState,
+) -> Result<()> {
+    anyhow::ensure!(
+        state.has_telegram_op("telegram:text"),
+        "Unknown retained: no durable text acknowledgment; timeout or operator assertion cannot prove nonoccurrence"
+    );
+    let effects = output_effects(store, key, output)?;
+    let [crate::markers::Effect::TelegramReply(reply)] = effects.as_slice() else {
+        anyhow::bail!(
+            "Unknown retained: this finite reconciliation supports one rich text operation only"
+        );
+    };
+    let plan = state
+        .text_plan
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("Unknown retained: missing frozen text plan"))?;
+    anyhow::ensure!(
+        !reply.trim().is_empty()
+            && plan["kind"] == "rich"
+            && plan["phase"] == "sending"
+            && plan["markdown"].as_str() == Some(reply.trim())
+            && plan["attempts"]
+                .as_u64()
+                .is_some_and(|n| (1..=3).contains(&n))
+            && state.completed_ops.len() == 1
+            && state.operations.is_empty(),
+        "Unknown retained: unsupported or conflicting delivery plan/operation evidence"
+    );
+    // The sender saves completed_ops after Ok, while its cached rich phase
+    // may still say sending. Explicit Unknown is contradictory evidence, not
+    // a cached success label that this slice can adjudicate.
+    plan["phase"] = "acknowledged".into();
+    Ok(())
+}
+
 pub(crate) fn dispatch_task_output(
     store: &Store,
     cfg: &RuntimeConfig,
@@ -315,7 +389,7 @@ pub(crate) fn dispatch_task_output(
     single_attempt.telegram_api_retry_attempts = 0;
     let cfg = &single_attempt;
     let chat_id = chat_id.map(str::trim).filter(|value| !value.is_empty());
-    let effects = parse_markers(request.output).to_effects();
+    let effects = output_effects(store, request.task_id, request.output)?;
 
     // Index counters for idempotent media tracking
     let mut photo_idx = 0usize;

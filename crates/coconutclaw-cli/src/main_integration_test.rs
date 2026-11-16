@@ -261,7 +261,21 @@ fn raw_reconstruction_matches_initial_final_content_and_effects() {
             r#"{"update_id":9300,"message":{"chat":{"id":"321"},"text":"synthetic duplicate"}}"#,
         )
         .unwrap();
-        assert_eq!(replayed.output.as_deref(), Some(replay.as_str()));
+        assert!(
+            replayed.output.is_none(),
+            "a legacy saved result is not proof its Telegram acknowledgment was absent"
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT state FROM telegram_ingress WHERE update_id='9300'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+            "unknown"
+        );
         let tasks = store.managed_pending_task_entries_from_db().unwrap();
         assert_eq!(
             tasks,
@@ -389,7 +403,7 @@ fn pending_turn_side_effects_reconcile_candidates_and_tasks() {
 }
 
 #[test]
-fn dedup_replays_previous_output_from_store() {
+fn legacy_saved_output_does_not_authorize_resending_telegram_effects() {
     let cfg = test_config();
     let mut store = Store::open(&cfg).expect("store");
 
@@ -414,10 +428,21 @@ fn dedup_replays_previous_output_from_store() {
     let update = r#"{"update_id":42,"message":{"chat":{"id":"321"},"text":"hello again"}}"#;
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
-    let output = outcome.output.unwrap_or_default();
-
-    assert!(output.contains("TELEGRAM_REPLY: Old reply"));
-    assert!(output.contains("SEND_DOCUMENT: /tmp/file.txt"));
+    assert!(outcome.output.is_none());
+    let saved = store.rendered_output_for_update_id("42").unwrap().unwrap();
+    assert!(saved.contains("TELEGRAM_REPLY: Old reply"));
+    assert!(saved.contains("SEND_DOCUMENT: /tmp/file.txt"));
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT state,ack_phase FROM telegram_ingress WHERE update_id='42'",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            )
+            .unwrap(),
+        ("unknown".into(), "unknown".into())
+    );
 }
 
 #[test]

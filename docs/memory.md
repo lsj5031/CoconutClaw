@@ -3,6 +3,11 @@
 One Rust/rusqlite implementation, using SQLite's already bundled FTS5. No
 embeddings, network service, engine interface, plugin or new dependency.
 
+Facts remain separate from [owner instructions/preferences, structured task
+progress and notification history](context-notifications.md). `/preferences`
+is an authenticated user-instruction control; memory content and model/remote
+output cannot create such authority. Notifications never enter factual recall.
+
 ## What the user sees
 
 Commands are incoming chat commands, not model markers:
@@ -77,9 +82,9 @@ the new revision.
 
 Scope is the runtime's canonical Telegram chat identity, never text inside a
 memory. Proposals derive scope and source ID from the stored turn. Commands use
-the already-authorized incoming chat. Group chats follow the existing chat
-allowlist, **not** a new per-human owner identity check; members who can command
-an allowed chat share that chat's authority. Local operator `once` is trusted.
+the already-authorized incoming private chat and exact topic. The current raw
+parser rejects groups and mismatched sender identities. Local operator `once`
+remains trusted for the existing memory interface.
 No cross-chat promote/get/search/undo operation exists.
 
 Content is JSON-quoted and labeled as data. Content resembling metadata or

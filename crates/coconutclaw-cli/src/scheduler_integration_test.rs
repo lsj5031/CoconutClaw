@@ -27,7 +27,849 @@ mod phase0;
 #[path = "topics_rich_tests.rs"]
 mod topics_rich;
 
-fn write_fake_provider_script(
+#[path = "scheduling/tests.rs"]
+mod scheduling;
+
+#[path = "telegram_ingress_tests.rs"]
+mod ingress;
+
+#[path = "reconciliation_tests.rs"]
+mod reconciliation;
+
+#[path = "context_notification_tests.rs"]
+mod context_notifications;
+
+fn graph_admit(store: &Store, session: &str, key: &str) -> (i64, TaskRequest) {
+    let mut request = make_stdout_request(SessionKey::from_id(session.into()), key);
+    request.update_id = Some(key.into());
+    let tx = store.conn.unchecked_transaction().unwrap();
+    let (id, _) = store
+        .admit_inbox_request(
+            crate::store::inbox::EventKind::Request,
+            Some(key),
+            &request,
+            "now",
+        )
+        .unwrap();
+    tx.commit().unwrap();
+    (id, request)
+}
+
+#[test]
+fn waiting_graph_control_ack_releases_snapshot_before_parallel_admission() {
+    let mut cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let probe = cfg.clone();
+    let wrote = Arc::new(AtomicBool::new(false));
+    let flag = wrote.clone();
+    let server = FakeTelegramServer::start_with_response(move |_| {
+        if !flag.swap(true, Ordering::SeqCst) {
+            let store = Store::open(&probe).unwrap();
+            graph_admit(&store, "local:independent", "admitted-during-ack");
+        }
+        (200, r#"{"ok":true,"result":{"message_id":123}}"#.into())
+    });
+    cfg.telegram_api_base = Some(server.base_url.clone());
+    let mut store = Store::open(&cfg).unwrap();
+    let scheduler = SessionScheduler::new(cfg.clone(), None);
+    scheduler.shutdown().unwrap(); // Explicitly drive the sole sender below.
+    crate::loops::webhook::process_webhook_line(
+        &cfg,
+        &mut store,
+        &scheduler,
+        r#"{"update_id":40,"message":{"chat":{"id":321,"type":"private"},"text":"/tasks"}}"#,
+    )
+    .unwrap();
+    crate::loops::webhook::deliver_telegram_acks(&cfg, &store).unwrap();
+    assert!(wrote.load(Ordering::SeqCst));
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT ack_phase FROM telegram_ingress WHERE update_id='40'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "sent"
+    );
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT COUNT(*) FROM task_runs", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    crate::loops::webhook::deliver_telegram_acks(&cfg, &store).unwrap();
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+
+fn graph_wait(store: &Store, run: i64, dependency: i64, request: &TaskRequest) {
+    let tx = store.conn.unchecked_transaction().unwrap();
+    store
+        .wait_for_task(
+            run,
+            dependency,
+            &build_resume_payload(request, &request.input).unwrap(),
+        )
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE task_payloads SET output='TELEGRAM_REPLY: waiting' WHERE task_run_id=?1",
+            [run],
+        )
+        .unwrap();
+    tx.commit().unwrap();
+}
+
+#[test]
+fn waiting_graph_attachment_rejection_and_cancelled_queue_cleanup() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let store = Store::open(&cfg).unwrap();
+    let (source, _) = graph_admit(&store, "local:owned", "source");
+    let (waiter, mut request) = graph_admit(&store, "local:owned", "waiter");
+    let path = cfg.tmp_dir.join("owned-wait.txt");
+    fs::write(&path, "owned fixture").unwrap();
+    request.input.attachment_path = Some(path.clone());
+    request.input.attachment_owned = true;
+    store
+        .conn
+        .execute(
+            "UPDATE task_payloads SET request=?2 WHERE task_run_id=?1",
+            rusqlite::params![
+                waiter,
+                build_resume_payload(&request, &request.input).unwrap()
+            ],
+        )
+        .unwrap();
+    graph_wait(&store, waiter, source, &request);
+    let scheduler = SessionScheduler::new(cfg.clone(), None);
+    scheduler.retry_deliveries().unwrap();
+    assert!(path.exists(), "waiting still owns continuation input");
+    assert!(
+        scheduler
+            .cancel_task_for_session(waiter, Some("local:owned"))
+            .unwrap()
+    );
+    assert!(!path.exists());
+    let (question, qr) = graph_admit(&store, "local:owned", "question");
+    let tx = store.conn.unchecked_transaction().unwrap();
+    let approval = crate::approval::create_approval_request(
+        &store,
+        &qr,
+        &qr.input,
+        question,
+        "decision",
+        &cfg.timezone,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert!(
+        scheduler
+            .resolve_approval(approval, "reject", "local:owned")
+            .unwrap()
+            .unwrap()
+            .contains("rejected")
+    );
+    scheduler.inner.recovering.store(true, Ordering::SeqCst);
+    let mut queued = make_stdout_request(SessionKey::local("owned"), "queued");
+    queued.delegated = true;
+    let id = scheduler.enqueue(queued).unwrap();
+    assert!(scheduler.cancel_task(id).unwrap());
+    assert!(scheduler.inner.lanes.lock().unwrap().is_empty());
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn waiting_graph_acknowledged_send_phase_is_not_an_unresolved_effect() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let store = Store::open(&cfg).unwrap();
+    let (source, sr) = graph_admit(&store, "local:ack", "source");
+    let (waiter, wr) = graph_admit(&store, "local:ack", "waiter");
+    graph_wait(&store, waiter, source, &wr);
+    graph_complete(&store, source, &sr);
+    // Exact shape retained by the real sender after acknowledging its text op.
+    store.conn.execute("UPDATE task_payloads SET delivered=0,delivery_state=?2 WHERE task_run_id=?1",
+        rusqlite::params![source,r#"{"completed_ops":["telegram:text"],"operations":{},"text_plan":{"attempts":1,"kind":"rich","markdown":"fixture complete","phase":"sending"}}"#]).unwrap();
+    assert!(store.resume_task_events("inflight").unwrap().is_empty());
+    store
+        .conn
+        .execute(
+            "UPDATE task_payloads SET delivered=1 WHERE task_run_id=?1",
+            [source],
+        )
+        .unwrap();
+    let child = store.resume_task_events("acknowledged").unwrap()[0].0;
+    assert!(store.task_progress_context(child).is_ok());
+    assert!(store.resume_task_events("replay").unwrap().is_empty());
+    let (blocked, request) = graph_admit(&store, "local:ack", "still-unknown");
+    graph_wait(&store, blocked, source, &request);
+    store.conn.execute("UPDATE task_payloads SET delivery_state=json_set(delivery_state,'$.text_plan.phase','unknown') WHERE task_run_id=?1",[source]).unwrap();
+    assert!(
+        store
+            .resume_task_events("unknown-is-not-ack")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.task_progress_context(child).is_err());
+}
+
+fn graph_complete(store: &Store, run: i64, request: &TaskRequest) {
+    let tx = store.conn.unchecked_transaction().unwrap();
+    store
+        .record_inbox(
+            &format!("result:{run}"),
+            crate::store::inbox::EventKind::Result,
+            &request.session.id(),
+            r#"{"status":"ok","output":"fixture complete"}"#,
+            run,
+            "now",
+        )
+        .unwrap();
+    store
+        .finish_task_run(
+            run,
+            crate::store::TaskRunStatus::Completed,
+            "now",
+            None,
+            Some("fixture complete"),
+        )
+        .unwrap();
+    store.conn.execute("UPDATE task_payloads SET output='TELEGRAM_REPLY: fixture complete' WHERE task_run_id=?1",[run]).unwrap();
+    tx.commit().unwrap();
+}
+
+#[test]
+fn waiting_graph_legacy_backfill_and_trigger_repair_preserve_custody() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let store = Store::open(&cfg).unwrap();
+    let (source, sr) = graph_admit(&store, "local:migration", "source");
+    let (waiter, wr) = graph_admit(&store, "local:migration", "waiter");
+    graph_complete(&store, source, &sr);
+    store.conn.execute_batch("DROP TRIGGER runtime_task_root; DROP TABLE runtime_waits;
+        DROP TABLE runtime_attempts; DROP TABLE runtime_tasks; DELETE FROM kv WHERE key='runtime_graph_v1'").unwrap();
+    drop(store);
+    let store = Store::open(&cfg).unwrap();
+    assert_eq!(store.task_identity(source).unwrap(), source);
+    assert_eq!(store.task_identity(waiter).unwrap(), waiter);
+    assert_eq!(
+        store.get_task_run(source).unwrap().unwrap().status,
+        "completed"
+    );
+    graph_wait(&store, waiter, source, &wr);
+    let child = store.resume_task_events("now").unwrap()[0].0;
+    store
+        .conn
+        .execute_batch("DROP TRIGGER runtime_task_root")
+        .unwrap();
+    let repaired = Store::open(&cfg).unwrap();
+    assert_eq!(repaired.task_identity(child).unwrap(), waiter);
+    let (extra, _) = graph_admit(&repaired, "local:migration", "after-repair");
+    assert_eq!(repaired.task_identity(extra).unwrap(), extra);
+    assert_eq!(
+        repaired
+            .conn
+            .query_row("SELECT COUNT(*) FROM runtime_tasks", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+}
+
+#[test]
+fn waiting_graph_frozen_evidence_and_stale_callback_do_not_overwrite_head() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let store = Store::open(&cfg).unwrap();
+    let (source, sr) = graph_admit(&store, "local:bound", "source");
+    let (waiter, wr) = graph_admit(&store, "local:bound", "waiter");
+    graph_wait(&store, waiter, source, &wr);
+    graph_complete(&store, source, &sr);
+    let child = store.resume_task_events("now").unwrap()[0].0;
+    store
+        .conn
+        .execute(
+            "UPDATE task_payloads SET output='substituted' WHERE task_run_id=?1",
+            [source],
+        )
+        .unwrap();
+    let data = store.task_progress_context(child).unwrap();
+    assert!(data.contains("fixture complete"));
+    assert!(!data.contains("substituted"));
+    let scheduler = SessionScheduler::new(cfg, None);
+    assert!(
+        scheduler
+            .persist_result(
+                &store,
+                waiter,
+                &wr,
+                &wr.input,
+                "TELEGRAM_REPLY: stale",
+                crate::TurnStatus::Ok
+            )
+            .is_err()
+    );
+    assert!(store.is_current_attempt(child).unwrap());
+    store
+        .conn
+        .execute(
+            "UPDATE task_runs SET error_summary='outcome unknown' WHERE id=?1",
+            [source],
+        )
+        .unwrap();
+    assert!(store.task_progress_context(child).is_err());
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn waiting_graph_scopes_cycles_stale_owner_and_consumed_events_refuse() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let store = Store::open(&cfg).unwrap();
+    let (a, ar) = graph_admit(&store, "local:scope", "a");
+    let (b, br) = graph_admit(&store, "local:scope", "b");
+    let (foreign, _) = graph_admit(&store, "local:other", "foreign");
+    for dependency in [b, foreign] {
+        let tx = store.conn.unchecked_transaction().unwrap();
+        assert!(
+            store
+                .wait_for_task(
+                    b,
+                    dependency,
+                    &build_resume_payload(&br, &br.input).unwrap()
+                )
+                .is_err()
+        );
+        drop(tx);
+    }
+    graph_wait(&store, a, b, &ar);
+    let tx = store.conn.unchecked_transaction().unwrap();
+    assert!(
+        store
+            .wait_for_task(b, a, &build_resume_payload(&br, &br.input).unwrap())
+            .is_err()
+    );
+    drop(tx);
+    graph_complete(&store, b, &br);
+    let ready = store.resume_task_events("later").unwrap();
+    assert_eq!(ready.len(), 1);
+    let child = ready[0].0;
+    assert_eq!(store.task_identity(child).unwrap(), a);
+    assert!(!store.is_current_attempt(a).unwrap());
+    assert!(store.resume_task_events("again").unwrap().is_empty());
+    let tx = store.conn.unchecked_transaction().unwrap();
+    assert!(
+        store
+            .wait_for_task(a, b, &build_resume_payload(&ar, &ar.input).unwrap())
+            .is_err()
+    );
+    assert!(
+        store
+            .wait_for_task(
+                child,
+                b,
+                &build_resume_payload(&ready[0].1, &ready[0].1.input).unwrap()
+            )
+            .is_err()
+    );
+    drop(tx);
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT COUNT(*) FROM task_runs", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+}
+
+#[test]
+fn waiting_graph_custody_rollback_conflicts_and_unknown_do_not_resume() {
+    for cut in ["rollback", "unknown", "actor", "payload", "event", "cancel"] {
+        let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+        let store = Store::open(&cfg).unwrap();
+        let (source, sr) = graph_admit(&store, "local:graph", "source");
+        let (waiter, wr) = graph_admit(&store, "local:graph", "waiter");
+        graph_wait(&store, waiter, source, &wr);
+        graph_complete(&store, source, &sr);
+        match cut {
+            "rollback" => {
+                store.conn.execute_batch("CREATE TRIGGER resume_cut BEFORE UPDATE OF current_run_id ON runtime_tasks BEGIN SELECT RAISE(ABORT,'resume cut'); END").unwrap();
+                assert!(store.resume_task_events("now").is_err());
+                store.conn.execute_batch("DROP TRIGGER resume_cut").unwrap();
+            }
+            "unknown" => {
+                store
+                    .conn
+                    .execute(
+                        "UPDATE task_runs SET error_summary='outcome unknown' WHERE id=?1",
+                        [source],
+                    )
+                    .unwrap();
+            }
+            "actor" => {
+                store
+                    .conn
+                    .execute(
+                        "UPDATE task_runs SET source_user_id='foreign' WHERE id=?1",
+                        [source],
+                    )
+                    .unwrap();
+            }
+            "payload" => {
+                store
+                    .conn
+                    .execute(
+                        "UPDATE task_payloads SET request='{}' WHERE task_run_id=?1",
+                        [waiter],
+                    )
+                    .unwrap();
+            }
+            "event" => {
+                let tx = store.conn.unchecked_transaction().unwrap();
+                store
+                    .record_inbox(
+                        &format!("dependency:{waiter}"),
+                        crate::store::inbox::EventKind::Request,
+                        "local:foreign",
+                        "{}",
+                        waiter,
+                        "now",
+                    )
+                    .unwrap();
+                tx.commit().unwrap();
+                assert!(store.resume_task_events("now").is_err());
+            }
+            _ => {
+                let scheduler = SessionScheduler::new(cfg.clone(), None);
+                assert!(
+                    scheduler
+                        .cancel_task_for_session(waiter, Some("local:graph"))
+                        .unwrap()
+                );
+                scheduler.shutdown().unwrap();
+            }
+        }
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM task_runs", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        if cut == "rollback" {
+            let reopened = Store::open(&cfg).unwrap();
+            assert_eq!(reopened.resume_task_events("restart").unwrap().len(), 1);
+            assert!(reopened.resume_task_events("replay").unwrap().is_empty());
+        } else if cut != "event" {
+            assert!(store.resume_task_events("retry").unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn waiting_graph_bounded_thirty_three_waits_preserve_last_until_next_drain() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let store = Store::open(&cfg).unwrap();
+    let (source, sr) = graph_admit(&store, "local:batch", "source");
+    for i in 0..33 {
+        let (run, request) = graph_admit(&store, "local:batch", &format!("wait-{i}"));
+        graph_wait(&store, run, source, &request);
+    }
+    graph_complete(&store, source, &sr);
+    assert_eq!(store.resume_task_events("first").unwrap().len(), 32);
+    assert!(store.is_current_attempt(34).unwrap());
+    assert_eq!(
+        store.get_task_run(34).unwrap().unwrap().status,
+        "waiting_event"
+    );
+    assert_eq!(store.resume_task_events("second").unwrap().len(), 1);
+    assert!(store.resume_task_events("third").unwrap().is_empty());
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT COUNT(*) FROM runtime_tasks", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        34
+    );
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT COUNT(*) FROM runtime_attempts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        67
+    );
+}
+
+#[test]
+fn waiting_graph_approval_cancel_race_has_at_most_one_bound_continuation() {
+    for _ in 0..6 {
+        let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+        let store = Store::open(&cfg).unwrap();
+        let (run, request) = graph_admit(&store, "local:race", "question");
+        let tx = store.conn.unchecked_transaction().unwrap();
+        let approval = crate::approval::create_approval_request(
+            &store,
+            &request,
+            &request.input,
+            run,
+            "decision",
+            &cfg.timezone,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let a = SessionScheduler::new(cfg.clone(), None);
+        let b = SessionScheduler::new(cfg, None);
+        a.inner.recovering.store(true, Ordering::SeqCst);
+        b.inner.recovering.store(true, Ordering::SeqCst);
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let g = gate.clone();
+        let aa = a.clone();
+        let worker = std::thread::spawn(move || {
+            g.wait();
+            aa.resolve_approval(approval, "approve", "local:race")
+                .unwrap();
+        });
+        gate.wait();
+        b.cancel_task_for_session(run, Some("local:race")).unwrap();
+        worker.join().unwrap();
+        let state = store
+            .get_pending_approval(approval)
+            .unwrap()
+            .unwrap()
+            .status;
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_attempts WHERE task_id=?1",
+                [run],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, if state == "approved" { 2 } else { 1 });
+        assert!(matches!(state.as_str(), "approved" | "expired"));
+        a.shutdown().unwrap();
+        b.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn waiting_graph_delegated_same_conversation_uses_five_slots_and_cleans_up() {
+    let cfgroot = tempfile::tempdir().unwrap();
+    let mut cfg = RuntimeConfig::test_config_at(cfgroot.path().to_path_buf());
+    cfg.codex.bin = write_fake_provider_script(
+        &cfg.instance_dir,
+        "graph-capacity",
+        "#!/bin/sh\nbase=$(dirname \"$0\"); out=''; while [ \"$#\" -gt 0 ]; do if [ \"$1\" = '--output-last-message' ]; then shift; out=\"$1\"; fi; shift; done; touch \"$base/started-$$\"; while [ ! -f \"$base/release\" ]; do sleep 0.02; done; printf 'TELEGRAM_REPLY: capacity complete' > \"$out\"",
+        "$base=$PSScriptRoot; $a=$args; $i=[Array]::IndexOf($a,'--output-last-message'); [IO.File]::WriteAllText((Join-Path $base \"started-$PID\"),'started'); while(-not(Test-Path (Join-Path $base 'release'))){Start-Sleep -Milliseconds 20}; [IO.File]::WriteAllText($a[$i+1],'TELEGRAM_REPLY: capacity complete')",
+    );
+    let scheduler = SessionScheduler::new(cfg.clone(), None);
+    struct Release(PathBuf, SessionScheduler);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "release");
+            let _ = self.1.shutdown();
+        }
+    }
+    let _release = Release(cfg.instance_dir.join("release"), scheduler.clone());
+    let mut ids = Vec::new();
+    for i in 0..6 {
+        let mut req =
+            make_stdout_request(SessionKey::local("same-owner"), &format!("independent-{i}"));
+        req.delegated = true;
+        ids.push(scheduler.enqueue(req).unwrap());
+    }
+    let started = || {
+        fs::read_dir(&cfg.instance_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with("started-"))
+            .count()
+    };
+    let until = Instant::now() + Duration::from_secs(10);
+    while started() < 5 {
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(started(), 5);
+    assert_eq!(scheduler.inner.task_state.lock().unwrap().len(), 5);
+    assert_eq!(
+        scheduler
+            .inner
+            .lanes
+            .lock()
+            .unwrap()
+            .values()
+            .map(|l| l.queue.len())
+            .sum::<usize>(),
+        1
+    );
+    fs::write(cfg.instance_dir.join("release"), "release").unwrap();
+    wait_for_terminal_tasks(&cfg, &ids);
+    scheduler.shutdown().unwrap();
+    assert_eq!(started(), 6);
+    assert!(scheduler.inner.task_state.lock().unwrap().is_empty());
+}
+
+#[test]
+fn waiting_graph_normal_binary_wait_event_attempt_outbox_and_restart() {
+    use std::sync::atomic::AtomicUsize;
+    let stage = Arc::new(AtomicUsize::new(0));
+    let step = stage.clone();
+    let polls = Arc::new(AtomicUsize::new(0));
+    let fetched = polls.clone();
+    let server = FakeTelegramServer::start_with_response(move |request| {
+        let body = if request.contains("/getMe ") {
+            json!({"ok":true,"result":{"is_bot":true,"username":"GraphFixtureBot","has_topics_enabled":true}})
+        } else if request.contains("/getUpdates?") {
+            fetched.fetch_add(1, Ordering::SeqCst);
+            let phase = step.load(Ordering::SeqCst);
+            let result = if phase < 3 {
+                json!([{"update_id":40+phase,"message":{"from":{"id":321},"chat":{"id":321,"type":"private"},"message_thread_id":7,"text":match phase{0=>"waiter fixture",1=>"independent fixture",_=>"/approve 1"}}}])
+            } else {
+                json!([])
+            };
+            json!({"ok":true,"result":result})
+        } else {
+            json!({"ok":true,"result":{"message_id":123}})
+        };
+        (200, body.to_string())
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut cfg = RuntimeConfig::test_config_at(root.path().to_path_buf());
+    struct Evidence(PathBuf);
+    impl Drop for Evidence {
+        fn drop(&mut self) {
+            if let Some(target) = std::env::var_os("COCONUTCLAW_WAITING_GRAPH_ARTIFACTS") {
+                let target = PathBuf::from(target).join("fixture-diagnostics");
+                let _ = fs::create_dir_all(&target);
+                if let Ok(files) = fs::read_dir(&self.0) {
+                    for entry in files.flatten() {
+                        let name = entry.file_name();
+                        if entry.path().is_file()
+                            && (name.to_string_lossy().starts_with("graph-") || name == "state.db")
+                        {
+                            let _ = fs::copy(entry.path(), target.join(name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let _evidence = Evidence(cfg.instance_dir.clone());
+    cfg.codex.bin = write_fake_provider_script(
+        &cfg.instance_dir,
+        "graph-provider",
+        "#!/bin/sh\nbase=$(dirname \"$0\"); out=''; while [ \"$#\" -gt 0 ]; do if [ \"$1\" = '--output-last-message' ]; then shift; out=\"$1\"; fi; shift; done; input=$(cat); printf '%s' \"$input\" > \"$base/graph-last-context\"; echo run >> \"$base/graph-calls\"; case \"$input\" in *'independent fixture'*) printf 'TELEGRAM_REPLY: graph-independent' > \"$out\" ;; *'waiter fixture'*) if [ ! -f \"$base/waited\" ]; then touch \"$base/waited\"; printf 'WAIT_FOR_TASK: 1' > \"$out\"; else printf 'TELEGRAM_REPLY: graph-final' > \"$out\"; fi ;; *) printf 'TELEGRAM_REPLY: graph-independent' > \"$out\" ;; esac",
+        "$a=$args; $i=[Array]::IndexOf($a,'--output-last-message'); $prompt=[Console]::In.ReadToEnd(); [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'graph-last-context'),$prompt); [IO.File]::AppendAllText((Join-Path $PSScriptRoot 'graph-calls'),\"run`n\"); $flag=Join-Path $PSScriptRoot 'waited'; if($prompt.Contains('independent fixture')){$text='TELEGRAM_REPLY: graph-independent'}elseif($prompt.Contains('waiter fixture')){if(-not(Test-Path $flag)){[IO.File]::WriteAllText($flag,'waited');$text='WAIT_FOR_TASK: 1'}else{$text='TELEGRAM_REPLY: graph-final'}}else{$text='TELEGRAM_REPLY: graph-independent'}; [IO.File]::WriteAllText($a[$i+1],$text)",
+    );
+    let store = Store::open(&cfg).unwrap();
+    let mut dependency = make_request(
+        SessionKey::telegram("321#7"),
+        "telegram",
+        "dependency fixture",
+    );
+    dependency.source_user_id = Some("321".into());
+    dependency.delivery = DeliveryTarget::Telegram {
+        chat_id: "321".into(),
+        thread_id: Some("7".into()),
+    };
+    let tx = store.conn.unchecked_transaction().unwrap();
+    let (run, _) = store
+        .admit_inbox_request(
+            crate::store::inbox::EventKind::Request,
+            Some("graph-dependency"),
+            &dependency,
+            "now",
+        )
+        .unwrap();
+    assert_eq!(run, 1);
+    crate::approval::create_approval_request(
+        &store,
+        &dependency,
+        &dependency.input,
+        run,
+        "genuine decision",
+        &cfg.timezone,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(format!("coconutclaw{}", std::env::consts::EXE_SUFFIX))
+        });
+    let before = blake3::hash(&fs::read(&binary).unwrap()).to_string();
+    struct Owned(std::process::Child);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+            }
+            let _ = self.0.wait();
+        }
+    }
+    let start = |round| {
+        let log = cfg.instance_dir.join(format!("graph-normal-{round}.log"));
+        Owned(
+            std::process::Command::new(&binary)
+                .arg("--data-dir")
+                .arg(&cfg.instance_dir)
+                .arg("run")
+                .env_clear()
+                .env("HOME", &cfg.instance_dir)
+                .env("PATH", std::env::var_os("PATH").unwrap())
+                .env("FACTORY_AIRGAP_ENABLED", "1")
+                .env("TELEGRAM_BOT_TOKEN", "123:token")
+                .env("TELEGRAM_CHAT_ID", "321")
+                .env(
+                    "TELEGRAM_API_BASE",
+                    server.base_url.trim_end_matches("/bot123:token"),
+                )
+                .env("POLL_INTERVAL_SECONDS", "1")
+                .env("TELEGRAM_API_RETRY_ATTEMPTS", "0")
+                .env("CODEX_BIN", &cfg.codex.bin)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::from(fs::File::create(log).unwrap()))
+                .spawn()
+                .unwrap(),
+        )
+    };
+    let wait = |id, status: &str| {
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(r) = store.get_task_run(id).unwrap() {
+                assert_ne!(r.status, "failed", "{:?}", r.error_summary);
+                let delivered: bool = store
+                    .conn
+                    .query_row(
+                        "SELECT delivered FROM task_payloads WHERE task_run_id=?1",
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                if r.status == status && delivered {
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < until,
+                "graph run{id} did not reach {status}: {:?}; all runs: {:?}",
+                store.get_task_run(id).unwrap(),
+                (1..=5)
+                    .map(|i| store.get_task_run(i).unwrap())
+                    .collect::<Vec<_>>()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let first = start(0);
+    wait(2, "waiting_event");
+    stage.store(1, Ordering::SeqCst);
+    wait(3, "completed");
+    assert_eq!(
+        fs::read_to_string(cfg.instance_dir.join("graph-calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    drop(first);
+    stage.store(2, Ordering::SeqCst);
+    let second = start(1);
+    wait(5, "completed");
+    assert_eq!(store.task_identity(5).unwrap(), 2);
+    assert_eq!(store.task_identity(4).unwrap(), 1);
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT ordinal FROM runtime_attempts WHERE run_id=5",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        2
+    );
+    drop(second);
+    stage.store(3, Ordering::SeqCst);
+    let before_polls = polls.load(Ordering::SeqCst);
+    let third = start(2);
+    let until = Instant::now() + Duration::from_secs(10);
+    while polls.load(Ordering::SeqCst) == before_polls {
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(third);
+    let context = fs::read_to_string(cfg.instance_dir.join("graph-last-context")).unwrap();
+    let progress = context
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["dependency_run_id"] == 4)
+        .expect("native resumption receives structured triggering outcome");
+    assert_eq!(progress["task_id"], 2);
+    assert_eq!(progress["attempt"], 2);
+    assert!(
+        progress["previous_outcome"]
+            .as_str()
+            .unwrap()
+            .contains("WAIT_FOR_TASK: 1")
+    );
+    assert!(
+        progress["dependency_output"]
+            .as_str()
+            .unwrap()
+            .contains("graph-independent")
+    );
+    assert_eq!(
+        fs::read_to_string(cfg.instance_dir.join("graph-calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        4
+    );
+    assert_eq!(
+        server
+            .full_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.contains("graph-final"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        before,
+        blake3::hash(&fs::read(&binary).unwrap()).to_string()
+    );
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT COUNT(*) FROM runtime_tasks", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    if let Some(path) = std::env::var_os("COCONUTCLAW_WAITING_GRAPH_ARTIFACTS") {
+        let path = PathBuf::from(path);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("normal-graph-acceptance.json"),serde_json::to_string_pretty(&json!({"binary":binary,"blake3_unchanged":before,"starts":3,"provider_invocations":4,"logical_tasks":3,"runs":5,"waiting_run":2,"resumed_run":5,"final_sends":1,"independent_run":3})).unwrap()).unwrap();
+        for round in 0..3 {
+            fs::copy(
+                cfg.instance_dir.join(format!("graph-normal-{round}.log")),
+                path.join(format!("normal-{round}.log")),
+            )
+            .unwrap();
+        }
+    }
+}
+
+pub(crate) fn write_fake_provider_script(
     dir: &std::path::Path,
     stem: &str,
     unix_body: &str,
@@ -103,6 +945,59 @@ fn make_stdout_request(session: SessionKey, prompt: &str) -> TaskRequest {
     make_request(session, "local", prompt)
 }
 
+#[test]
+fn waiting_graph_approval_continuation_has_one_logical_owner() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let store = Store::open(&cfg).unwrap();
+    let request = make_stdout_request(SessionKey::local("graph"), "approved work");
+    let tx = store.conn.unchecked_transaction().unwrap();
+    let (run, _) = store
+        .admit_inbox_request(
+            crate::store::inbox::EventKind::Request,
+            Some("graph-request"),
+            &request,
+            "now",
+        )
+        .unwrap();
+    let approval = crate::approval::create_approval_request(
+        &store,
+        &request,
+        &request.input,
+        run,
+        "decision",
+        &cfg.timezone,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let scheduler = SessionScheduler::new(cfg, None);
+    scheduler
+        .inner
+        .recovering
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    scheduler
+        .resolve_approval(approval, "approve", &request.session.id())
+        .unwrap();
+    let child: i64 = store
+        .conn
+        .query_row(
+            "SELECT task_run_id FROM runtime_inbox WHERE event_key=?1",
+            [format!("approval:{approval}")],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let linked: (i64, i64, i64) = store
+        .conn
+        .query_row(
+            "SELECT task_id,ordinal,parent_run_id FROM runtime_attempts WHERE run_id=?1",
+            [child],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(linked, (run, 2, run));
+    assert_ne!(run, child);
+    scheduler.shutdown().unwrap();
+}
+
 fn wait_for_terminal_tasks(cfg: &RuntimeConfig, task_ids: &[i64]) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -128,16 +1023,16 @@ fn wait_for_terminal_tasks(cfg: &RuntimeConfig, task_ids: &[i64]) {
     }
 }
 
-struct FakeTelegramServer {
-    base_url: String,
-    requests: Arc<Mutex<Vec<String>>>,
-    full_requests: Arc<Mutex<Vec<String>>>,
+pub(crate) struct FakeTelegramServer {
+    pub(crate) base_url: String,
+    pub(crate) requests: Arc<Mutex<Vec<String>>>,
+    pub(crate) full_requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl FakeTelegramServer {
-    fn start() -> Self {
+    pub(crate) fn start() -> Self {
         Self::start_with_response(|_| {
             (
                 200,
@@ -146,7 +1041,7 @@ impl FakeTelegramServer {
         })
     }
 
-    fn start_with_response(
+    pub(crate) fn start_with_response(
         mut respond: impl FnMut(&str) -> (u16, String) + Send + 'static,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake telegram server");
