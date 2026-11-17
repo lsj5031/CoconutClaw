@@ -1516,10 +1516,14 @@ fn multihost_role_entry() {
 fn announce(config: &RoleConfig, ready: &Ready) -> Result<()> {
     write_json(&config.root.join("ready.json"), ready)?;
     if let Some(socket) = &config.ready_socket {
-        write_frame(
-            &mut UnixStream::connect(socket)?,
-            &serde_json::to_vec(ready)?,
-        )?;
+        let mut stream = UnixStream::connect(socket)?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        write_frame(&mut stream, &serde_json::to_vec(ready)?)?;
+        // Keep the peer live until its reader has installed the timeout and
+        // consumed Ready. macOS can reject SO_RCVTIMEO after peer disconnect.
+        let mut ack = [0];
+        stream.read_exact(&mut ack)?;
+        ensure!(ack == [1], "invalid ready acknowledgment");
     }
     Ok(())
 }

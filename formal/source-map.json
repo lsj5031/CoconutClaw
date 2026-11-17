@@ -427,7 +427,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler_calendar.rs",
             "symbol": "start_calendar",
-            "sha256": "bbf912e0452f8744b2ec7a06fc163c4ca173d1f11535cd4a7f5d4373ec5cf61c",
+            "sha256": "3b60a33e48c63bd4d0873b94cb593cadf1991088ff1d3486e075f4aeab2c84c8",
             "declarations": [
               {
                 "line": 8,
@@ -1117,7 +1117,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
             "symbol": "RemoteState::handle",
-            "sha256": "2e75736223463a8e77eaf4fa47caaa8f66b970efa4a2113c819cf0e73cd9262c",
+            "sha256": "78f3935ded1f82a077c25af8327fb5675248e80b23513b46f4ce6184c608d4d9",
             "declarations": [
               {
                 "line": 323,

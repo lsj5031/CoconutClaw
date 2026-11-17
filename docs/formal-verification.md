@@ -212,3 +212,14 @@ control-socket/descendant-stdin EOF cleanup on macOS. The Linux-specific,
 owner-authorized real-Codex acceptance remains opt-in and Linux-only. This
 test-harness follow-up refreshes five inspected pins without changing model
 actions or normal executable behavior; Linux results are not macOS evidence.
+
+The next native test stage exposed physical-path assumptions on macOS.
+Memory-import fixtures now select their canonical source root, preserving the
+importer's rejection of all symlink components. Process fixtures likewise use
+canonical paths, and overlap assertions use Unix process liveness rather than
+Linux `/proc`. The calendar owner watches its canonical database parent so
+FSEvents receives writes through macOS path aliases; its admission and wake
+policies are unchanged. Disposable role readiness now waits for a reader
+acknowledgment before closing its socket, retaining the existing finite deadline.
+These changes refresh inspected pins and unchanged action declaration hashes,
+not the bounded models or their action mappings.

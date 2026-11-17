@@ -54,7 +54,9 @@ impl SessionScheduler {
             },
             notify::Config::default(),
         )?;
-        watcher.watch(parent, RecursiveMode::NonRecursive)?;
+        // FSEvents requires the physical directory, not macOS's /var or /tmp
+        // symlink spelling. Keep the database-name event filter unchanged.
+        watcher.watch(&parent.canonicalize()?, RecursiveMode::NonRecursive)?;
         let weak = Arc::downgrade(&self.inner);
         let worker = thread::spawn(move || {
             let _watcher = watcher;

@@ -3,7 +3,9 @@ use std::fs;
 
 fn args(root: &Path) -> ImportArgs {
     ImportArgs {
-        source_root: root.to_owned(),
+        // macOS temporary paths can pass through /var -> /private/var. The
+        // importer deliberately refuses symlink components, including parents.
+        source_root: root.canonicalize().unwrap(),
         chat_id: "321".into(),
         topic_id: None,
         files: vec!["MEMORY.md".into()],

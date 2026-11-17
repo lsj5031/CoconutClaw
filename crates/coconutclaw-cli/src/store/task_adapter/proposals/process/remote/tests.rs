@@ -296,6 +296,7 @@ raise SystemExit(tool.wait())
     let began = std::time::Instant::now();
     let cancelled = control(&core_cfg.root, "cancel", None);
     let acknowledgment_time = began.elapsed();
+    println!("cancellation custody acknowledgment: {acknowledgment_time:?}");
     if cancelled["cancel_requested"] != true {
         drop(core);
         drop(runner);
@@ -462,6 +463,7 @@ fn launch(mut config: RoleConfig) -> Role {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     let ready = serde_json::from_slice(&read_frame(&mut stream).unwrap()).unwrap();
+    stream.write_all(&[1]).unwrap();
     std::fs::remove_file(ack).unwrap();
     Role { child, ready }
 }

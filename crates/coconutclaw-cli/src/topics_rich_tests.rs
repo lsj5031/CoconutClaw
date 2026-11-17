@@ -539,7 +539,11 @@ pathlib.Path(out).write_text("TELEGRAM_REPLY: done "+number)
     let alive = |n| {
         fs::read_to_string(cfg.tmp_dir.join(format!("started-{n}")))
             .ok()
-            .is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists())
+            .is_some_and(|pid| {
+                let pid: i32 = pid.parse().unwrap();
+                assert!(pid > 1);
+                unsafe { libc::kill(pid, 0) == 0 }
+            })
     };
     assert!(
         (1..=5).all(alive),
