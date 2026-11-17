@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -86,6 +86,47 @@ struct Telegram {
     stopping: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
+
+fn configure_mock_connection(stream: &TcpStream) {
+    // Darwin inherits O_NONBLOCK from the listener; Linux does not. The
+    // request reader needs blocking reads to wait for headers and body.
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+}
+
+#[test]
+fn mock_connection_waits_for_request_after_nonblocking_accept() {
+    use std::os::fd::AsRawFd;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut connection, _) = listener.accept().unwrap();
+    // Reproduce Darwin's accepted descriptor state on every Unix platform.
+    connection.set_nonblocking(true).unwrap();
+    let flags = unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0);
+    assert_ne!(flags & libc::O_NONBLOCK, 0);
+    assert_eq!(
+        connection.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    configure_mock_connection(&connection);
+    let flags = unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0);
+    assert_eq!(flags & libc::O_NONBLOCK, 0);
+    let sender = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        client.write_all(b"GET /").unwrap();
+    });
+    let mut request = [0; 5];
+    connection.read_exact(&mut request).unwrap();
+    assert_eq!(&request, b"GET /");
+    sender.join().unwrap();
+}
+
 impl Drop for Telegram {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::SeqCst);
@@ -120,9 +161,7 @@ impl Telegram {
                     thread::sleep(Duration::from_millis(5));
                     continue;
                 };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
+                configure_mock_connection(&stream);
                 let mut data = Vec::new();
                 let mut buffer = [0; 8192];
                 loop {
