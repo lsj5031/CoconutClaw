@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use coconutclaw_config::RuntimeConfig;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::fs;
 pub(crate) mod approvals;
 pub(crate) mod inbox;
@@ -10,6 +10,7 @@ pub(crate) mod migrations;
 pub(crate) mod notifications;
 pub(crate) mod preferences;
 pub(crate) mod reconciliation;
+mod retention;
 pub(crate) mod runtime_results;
 pub(crate) mod schedules;
 pub(crate) mod status;
@@ -150,6 +151,8 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    /// Bootstrap once at each process entry point, before starting workers.
+    /// Ordinary runtime connections must use `connect` instead.
     pub(crate) fn open(cfg: &RuntimeConfig) -> Result<Self> {
         if let Some(parent) = cfg.sqlite_db_path.parent() {
             fs::create_dir_all(parent)
@@ -170,18 +173,43 @@ impl Store {
         initialization
             .lock()
             .context("failed to lock sqlite initialization")?;
-        let conn = Connection::open(&cfg.sqlite_db_path)
-            .with_context(|| format!("failed to open {}", cfg.sqlite_db_path.display()))?;
-        conn.execute_batch(SCHEMA_SQL)
+        let store = Self::connection(cfg, true)?;
+        store
+            .conn
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .context("failed to select sqlite WAL mode")?;
+        store
+            .conn
+            .execute_batch(SCHEMA_SQL)
             .context("failed to apply sqlite schema")?;
-        let store = Self { conn };
         store.run_migrations()?;
         store.initialize_task_graph()?;
         store.initialize_memory()?;
         Ok(store)
+    }
+
+    /// Open an already initialized database, without schema writes or locks.
+    pub(crate) fn connect(cfg: &RuntimeConfig) -> Result<Self> {
+        Self::connection(cfg, false)
+    }
+
+    fn connection(cfg: &RuntimeConfig, create: bool) -> Result<Self> {
+        let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        if create {
+            flags |= OpenFlags::SQLITE_OPEN_CREATE;
+        }
+        let conn = Connection::open_with_flags(&cfg.sqlite_db_path, flags)
+            .with_context(|| format!("failed to open {}", cfg.sqlite_db_path.display()))?;
+        // Connection-local settings belong here, before the first SQL statement,
+        // not in schema.sql. Retain the existing foreign_keys default.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(Self { conn })
     }
 }
 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod startup_tests;

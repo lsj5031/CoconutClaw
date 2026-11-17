@@ -23,7 +23,14 @@ pub(crate) fn run_poll_loop(
     shutdown: &Arc<AtomicBool>,
 ) -> Result<()> {
     scheduler.start_calendar()?;
+    let mut next_retention = std::time::Instant::now();
     while !shutdown.load(Ordering::SeqCst) {
+        if std::time::Instant::now() >= next_retention {
+            if let Err(error) = store.retain_operational_rows(chrono::Utc::now().timestamp()) {
+                tracing::warn!("operational retention deferred: {error:#}");
+            }
+            next_retention = std::time::Instant::now() + Duration::from_secs(60);
+        }
         drain_telegram_ingress(cfg, store, scheduler)?;
         scheduler.resume_runtime_results()?;
         let offset = store

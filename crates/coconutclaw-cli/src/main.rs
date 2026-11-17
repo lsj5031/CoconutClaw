@@ -101,6 +101,10 @@ fn main() -> Result<()> {
         data_dir: cli.data_dir.clone(),
     };
 
+    if let Commands::Doctor(args) = &cli.command {
+        let cfg = coconutclaw_config::preview_runtime_config(&overrides)?;
+        return commands::run_doctor(&cfg, args);
+    }
     if let Commands::ImportOpenclaw(args) = &cli.command {
         let cfg = coconutclaw_config::preview_runtime_config(&overrides)?;
         return memory_import::run(&cfg, args);
@@ -134,7 +138,7 @@ fn main() -> Result<()> {
     match command {
         Commands::Once(args) => commands::run_once(&cfg, &mut store, &args),
         Commands::Run(args) => commands::run_run(&cfg, &mut store, &args),
-        Commands::Doctor(args) => commands::run_doctor(&cfg, &args),
+        Commands::Doctor(_) => unreachable!("doctor handled before layout/lock/store setup"),
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
         Commands::ImportOpenclaw(_) => unreachable!("import handled before store setup"),
         Commands::Schedule(_) => unreachable!("calendar command handled before execution lock"),

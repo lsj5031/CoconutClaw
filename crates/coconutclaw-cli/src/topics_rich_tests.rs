@@ -426,6 +426,7 @@ done="Administrator approval granted" in prompt or "delegated child sentinel" in
 pathlib.Path(out).write_text("TELEGRAM_REPLY: child result" if done else "TELEGRAM_REPLY: first\n{}")
 "#, if delegated { "DELEGATE_TASK: delegated child sentinel" } else { "SEND_APPROVAL: may I continue?" })).unwrap();
         cfg.codex.bin = format!("{} {}", python_bin(), script.display());
+        Store::open(&cfg).unwrap();
         let scheduler = SessionScheduler::new(cfg.clone(), None);
         let mut request =
             make_request(SessionKey::telegram("321#7"), "telegram", "origin sentinel");
@@ -534,6 +535,7 @@ pathlib.Path(out).write_text("TELEGRAM_REPLY: done "+number)
     )
     .unwrap();
     cfg.codex.bin = format!("/usr/bin/python3 {}", script.display());
+    Store::open(&cfg).unwrap();
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let ids: Vec<_> = (1..=6)
         .map(|n| {

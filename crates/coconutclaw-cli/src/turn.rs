@@ -177,7 +177,7 @@ pub(crate) fn process_turn_with_status(
     let collector_stop = Arc::new(AtomicBool::new(false));
     let collector_stopped = collector_stop.clone();
     let progress_collector = std::thread::spawn(move || {
-        let store = Store::open(&progress_cfg).ok();
+        let store = Store::connect(&progress_cfg).ok();
         loop {
             let first = match progress_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                 Ok(first) => first,

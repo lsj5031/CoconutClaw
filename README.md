@@ -2,6 +2,9 @@
 
 A local Telegram agent using Codex for conversation and delegated tasks.
 
+SQLite startup, live doctor behavior, retention and archival policy:
+[storage lifecycle](docs/storage-retention.md).
+
 ## Start here (Linux and macOS)
 
 CoconutClaw runs on your computer: Telegram supplies messages, your locally

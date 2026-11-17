@@ -562,6 +562,7 @@ fn waiting_graph_delegated_same_conversation_uses_five_slots_and_cleans_up() {
         "#!/bin/sh\nbase=$(dirname \"$0\"); out=''; while [ \"$#\" -gt 0 ]; do if [ \"$1\" = '--output-last-message' ]; then shift; out=\"$1\"; fi; shift; done; touch \"$base/started-$$\"; while [ ! -f \"$base/release\" ]; do sleep 0.02; done; printf 'TELEGRAM_REPLY: capacity complete' > \"$out\"",
         "$base=$PSScriptRoot; $a=$args; $i=[Array]::IndexOf($a,'--output-last-message'); [IO.File]::WriteAllText((Join-Path $base \"started-$PID\"),'started'); while(-not(Test-Path (Join-Path $base 'release'))){Start-Sleep -Milliseconds 20}; [IO.File]::WriteAllText($a[$i+1],'TELEGRAM_REPLY: capacity complete')",
     );
+    Store::open(&cfg).unwrap();
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     struct Release(PathBuf, SessionScheduler);
     impl Drop for Release {
@@ -897,6 +898,7 @@ pub(crate) fn write_fake_provider_script(
 fn scheduler_test_config(provider_bin: String) -> RuntimeConfig {
     let mut cfg = RuntimeConfig::test_config();
     cfg.codex.bin = provider_bin;
+    Store::open(&cfg).expect("bootstrap scheduler fixture");
     cfg
 }
 
@@ -1477,6 +1479,7 @@ New-Item -ItemType File -Path "{broken_marker}" -Force | Out-Null
     );
     let mut cfg = scheduler_test_config(provider_bin);
     cfg.sqlite_db_path = db_parent.join("state.sqlite");
+    Store::open(&cfg).expect("bootstrap relocated scheduler fixture");
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let session = SessionKey::local("reopen-failure");
     let session_id = session.id();

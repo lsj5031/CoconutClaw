@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS telegram_ui_inputs (
     kind TEXT NOT NULL,
     expires_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS telegram_ui_controls_expiry ON telegram_ui_controls(expires_at);
+CREATE INDEX IF NOT EXISTS telegram_ui_inputs_expiry ON telegram_ui_inputs(expires_at);
 -- Remote ingress remains gated by the existing verified transport adapter.
 -- These are exact source-run bindings/custody, never new notification tasks.
 CREATE TABLE IF NOT EXISTS runtime_remote_runs (
@@ -45,9 +47,6 @@ CREATE TABLE IF NOT EXISTS task_payloads (
     delivery_state TEXT NOT NULL DEFAULT '[]',
     delivered INTEGER NOT NULL DEFAULT 0
 );
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
-
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

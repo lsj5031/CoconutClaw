@@ -95,6 +95,7 @@ pub(crate) struct SessionScheduler {
 }
 
 impl SessionScheduler {
+    /// The process entry point must bootstrap Store before starting workers.
     pub(crate) fn new(cfg: RuntimeConfig, cancel_router: Option<Arc<CancelRouter>>) -> Self {
         let (delivery_wake, receive) = mpsc::sync_channel(1);
         let scheduler = Self {
@@ -155,7 +156,7 @@ impl SessionScheduler {
             anyhow::bail!("runtime is stopping; request was not accepted");
         }
         let created_at = iso_now(&self.inner.cfg.timezone);
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
         let key = request
             .update_id
@@ -174,7 +175,7 @@ impl SessionScheduler {
     /// Only the existing scheduler starts models; the calendar emits inbox work.
     #[cfg(all(test, unix))]
     pub(crate) fn wake_due(&self, now: chrono::DateTime<chrono::Utc>) -> Result<usize> {
-        self.wake_due_with_store(&Store::open(&self.inner.cfg)?, now)
+        self.wake_due_with_store(&Store::connect(&self.inner.cfg)?, now)
     }
 
     fn wake_due_with_store(
@@ -221,7 +222,7 @@ impl SessionScheduler {
     ) -> Result<bool> {
         let _queue = self.inner.queue_lock.lock().expect("durable enqueue order");
         let now = iso_now(&self.inner.cfg.timezone);
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         let Some(task) = store.get_task_run(task_id)? else {
             return Ok(false);
         };
@@ -333,7 +334,7 @@ impl SessionScheduler {
     }
 
     pub(crate) fn cancel_active_for_session(&self, session_id: &str) -> Result<Option<i64>> {
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         let Some(task) = store.find_active_task_for_session(session_id)? else {
             return Ok(None);
         };
@@ -346,13 +347,13 @@ impl SessionScheduler {
     // cancel_task_for_session is now merged into cancel_task above
 
     pub(crate) fn render_active_tasks_for_session(&self, session_id: &str) -> Result<String> {
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         let tasks = store.list_active_task_runs_for_session(session_id)?;
         Ok(render_active_task_lines(tasks, false))
     }
 
     pub(crate) fn has_task_for_update_id(&self, update_id: &str) -> Result<bool> {
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         Ok(store.find_task_run_by_update_id(update_id)?.is_some())
     }
 
@@ -371,7 +372,7 @@ impl SessionScheduler {
             anyhow::bail!("runtime is stopping; approval was not resumed");
         }
         let now = iso_now(&self.inner.cfg.timezone);
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
         let Some(approval) = store.get_pending_approval(approval_id)? else {
             return Ok(Some("Approval request not found.".to_string()));
@@ -489,7 +490,7 @@ impl SessionScheduler {
             let now = iso_now(&inner.cfg.timezone);
             let task_result =
                 scheduler.run_task(task_id, request.clone(), Arc::clone(&cancel_flag));
-            let store = match Store::open(&inner.cfg) {
+            let store = match Store::connect(&inner.cfg) {
                 Ok(store) => store,
                 Err(err) => {
                     tracing::error!("failed to reopen store after task {task_id}: {err:#}");
@@ -562,7 +563,7 @@ impl SessionScheduler {
         request: TaskRequest,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<TaskCompletion> {
-        let mut store = Store::open(&self.inner.cfg)?;
+        let mut store = Store::connect(&self.inner.cfg)?;
         let started_at = iso_now(&self.inner.cfg.timezone);
         {
             let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
@@ -973,7 +974,7 @@ impl SessionScheduler {
     /// delegation and approval resumes use this same admission path.
     fn dispatch_ready(&self) {
         let ready = {
-            let Ok(store) = Store::open(&self.inner.cfg) else {
+            let Ok(store) = Store::connect(&self.inner.cfg) else {
                 return;
             };
             // Serialize the ingress snapshot AND lane reservation with raw
@@ -1133,7 +1134,7 @@ impl SessionScheduler {
         {
             return Ok(());
         }
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         let mut stmt = store.conn.prepare(
             "SELECT task_run_id,request,output FROM task_payloads WHERE delivered=0 AND output IS NOT NULL ORDER BY task_run_id")?;
         let rows = stmt
@@ -1168,7 +1169,7 @@ impl SessionScheduler {
         self.inner
             .recovering
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         store.apply_runtime_results(&iso_now(&self.inner.cfg.timezone))?;
         crate::nodes::recover(&store, &iso_now(&self.inner.cfg.timezone))?;
         store.mark_stale_task_runs_failed(&iso_now(&self.inner.cfg.timezone))?;
@@ -1235,7 +1236,7 @@ impl SessionScheduler {
     pub(crate) fn resume_runtime_results(&self) -> Result<()> {
         {
             let _queue = self.inner.queue_lock.lock().expect("durable result order");
-            Store::open(&self.inner.cfg)?
+            Store::connect(&self.inner.cfg)?
                 .apply_runtime_results(&iso_now(&self.inner.cfg.timezone))?;
         }
         self.resume_waiting_events()?;
@@ -1252,7 +1253,7 @@ impl SessionScheduler {
         {
             return Ok(0);
         }
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         let ready = store.resume_task_events(&iso_now(&self.inner.cfg.timezone))?;
         store.observe_blockers(&iso_now(&self.inner.cfg.timezone))?;
         let count = ready.len();

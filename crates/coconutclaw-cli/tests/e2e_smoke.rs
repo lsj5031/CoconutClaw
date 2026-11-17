@@ -54,10 +54,24 @@ printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","comman
     )
     .unwrap();
     fs::set_permissions(&provider, fs::Permissions::from_mode(0o755)).unwrap();
-    let generated = command(dir).args(["doctor", "--json"]).output().unwrap();
+    // A read-only doctor no longer bootstraps storage. Use a local administrative
+    // entry point, which initializes schema without allocating work or effects.
+    let generated = command(dir)
+        .args(["schedule", "--session", "local:fixture", "list"])
+        .output()
+        .unwrap();
     assert!(generated.status.success());
     let generated_config = fs::read_to_string(dir.join("config.toml")).unwrap();
     assert!(generated_config.contains("CODEX_BIN = \"codex\""));
+    {
+        let db = rusqlite::Connection::open(dir.join("state.db")).unwrap();
+        db.execute_batch(
+            "INSERT INTO telegram_ui_controls VALUES('expired','telegram:321','321','home',1,0,0);
+             INSERT INTO telegram_ui_controls VALUES('live','telegram:321','321','home',1,9223372036854775807,0);
+             INSERT INTO telegram_ui_inputs VALUES('expired','321','old','memory',0);
+             INSERT INTO telegram_ui_inputs VALUES('live','321','current','memory',9223372036854775807);",
+        ).unwrap();
+    }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -181,6 +195,20 @@ printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","comman
             .contains("resume\nruntime-thread\n")
     );
     let conn = rusqlite::Connection::open(dir.join("state.db")).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT token FROM telegram_ui_controls", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "live",
+        "the real polling entry point must expire UI controls"
+    );
+    assert_eq!(
+        conn.query_row("SELECT session_id FROM telegram_ui_inputs", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "live",
+        "the real polling entry point must expire UI inputs"
+    );
     let ids: Vec<String> = conn
         .prepare("SELECT DISTINCT chat_id FROM turns WHERE status!='boundary'")
         .unwrap()
@@ -411,7 +439,7 @@ fn actual_once_large_corpus_has_fixed_memory_budget_and_scoped_bounded_fetch() {
     let provider = memory_provider(dir);
     assert!(
         command(dir)
-            .args(["doctor", "--json"])
+            .args(["schedule", "--session", "local:fixture", "list"])
             .output()
             .unwrap()
             .status

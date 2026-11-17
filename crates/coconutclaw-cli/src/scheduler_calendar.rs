@@ -21,7 +21,7 @@ impl SessionScheduler {
         }
         // One connection, moved to one owner. In particular do not reinitialize
         // Store on every watcher event (schema/backfill writes would self-wake).
-        let store = Store::open(&self.inner.cfg)?;
+        let store = Store::connect(&self.inner.cfg)?;
         let path = self.inner.cfg.sqlite_db_path.clone();
         let parent = path.parent().context("database parent missing")?;
         let name = path

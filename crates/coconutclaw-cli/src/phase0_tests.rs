@@ -270,6 +270,7 @@ done
 printf 'TELEGRAM_REPLY: complete\n' > "$out"
 "#).unwrap();
     cfg.codex.bin = format!("sh \"{}\"", script.display());
+    Store::open(&cfg).unwrap();
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let request = make_stdout_request(SessionKey::local("progress"), "progress");
     let id = scheduler.enqueue(request.clone()).unwrap();
