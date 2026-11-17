@@ -427,10 +427,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler_calendar.rs",
             "symbol": "start_calendar",
-            "sha256": "3b60a33e48c63bd4d0873b94cb593cadf1991088ff1d3486e075f4aeab2c84c8",
+            "sha256": "c1e2ebffd940e638661e889a91a03f35cabe6c74adc32d1883ab22e6bd971097",
             "declarations": [
               {
-                "line": 8,
+                "line": 12,
                 "text": "pub(crate) fn start_calendar(&self) -> Result<()> {"
               }
             ]

@@ -217,9 +217,13 @@ The next native test stage exposed physical-path assumptions on macOS.
 Memory-import fixtures now select their canonical source root, preserving the
 importer's rejection of all symlink components. Process fixtures likewise use
 canonical paths, and overlap assertions use Unix process liveness rather than
-Linux `/proc`. The calendar owner watches its canonical database parent so
-FSEvents receives writes through macOS path aliases; its admission and wake
-policies are unchanged. Disposable role readiness now waits for a reader
+Linux `/proc`. The calendar owner watches its canonical database parent and,
+on macOS, uses kqueue vnode watches for the open database/WAL/journal files.
+FSEvents alone did not report the live WAL writes within the existing wake
+gates, even after canonicalizing the parent. Admission and wake policies are
+unchanged. Disposable role readiness now waits for a reader
 acknowledgment before closing its socket, retaining the existing finite deadline.
 These changes refresh inspected pins and unchanged action declaration hashes,
 not the bounded models or their action mappings.
+Isolated fake-provider startup diagnostics retain the actual failure instead of
+reporting only an expired handshake. Native macOS execution remains the gate.

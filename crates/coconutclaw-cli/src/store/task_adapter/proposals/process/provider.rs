@@ -277,6 +277,16 @@ impl State {
                 None,
                 resume.as_deref(),
             );
+            // Preserve startup failures from this explicit, isolated fixture;
+            // otherwise the parent only sees an expired handshake socket.
+            let diagnostic = match &result {
+                Ok(output) if !output.success => Some(output.raw_output.clone()),
+                Err(error) => Some(format!("{error:#}")),
+                _ => None,
+            };
+            if let Some(diagnostic) = diagnostic {
+                let _ = std::fs::write(job.join("startup-error.txt"), diagnostic);
+            }
             completed.store(true, Ordering::SeqCst);
             let _ = notice.write_all(&[1]);
             result
