@@ -1,6 +1,10 @@
 //! Deadline/event intake owned by SessionScheduler, never a second executor.
 use super::*;
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+#[cfg(target_os = "macos")]
+use notify::KqueueWatcher as CalendarWatcher;
+#[cfg(not(target_os = "macos"))]
+use notify::RecommendedWatcher as CalendarWatcher;
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -26,9 +30,11 @@ impl SessionScheduler {
             .to_os_string();
         let wal = format!("{}-wal", name.to_string_lossy());
         let journal = format!("{}-journal", name.to_string_lossy());
+        #[cfg(target_os = "macos")]
+        let watched_files = [name.clone(), wal.clone().into(), journal.clone().into()];
         let (send, receive) = mpsc::sync_channel(1);
         let signal = send.clone();
-        let mut watcher = RecommendedWatcher::new(
+        let mut watcher = CalendarWatcher::new(
             move |event: notify::Result<Event>| {
                 let changed = match event {
                     Ok(event) => {
@@ -54,7 +60,19 @@ impl SessionScheduler {
             },
             notify::Config::default(),
         )?;
-        watcher.watch(parent, RecursiveMode::NonRecursive)?;
+        // FSEvents requires the physical directory, not macOS's /var or /tmp
+        // symlink spelling. Keep the database-name event filter unchanged.
+        let physical_parent = parent.canonicalize()?;
+        watcher.watch(&physical_parent, RecursiveMode::NonRecursive)?;
+        // FSEvents can defer writes until an open SQLite WAL is closed. Vnode
+        // notifications must watch the existing files, not only directory entries.
+        #[cfg(target_os = "macos")]
+        for file in watched_files {
+            let file = physical_parent.join(file);
+            if file.exists() {
+                watcher.watch(&file, RecursiveMode::NonRecursive)?;
+            }
+        }
         let weak = Arc::downgrade(&self.inner);
         let worker = thread::spawn(move || {
             let _watcher = watcher;

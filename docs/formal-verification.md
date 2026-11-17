@@ -185,3 +185,78 @@ The zero-invocation preflight also exchanges an inert public nonce in both
 directions through the real scoped data transport, gateway-initiated first.
 These are not domain events or task admissions; this transport probe remains
 an executable obligation rather than an added formal application transition.
+
+## macOS/Linux CI follow-up, 17 November
+
+The native-test runtime locator no longer assumes Cargo's test-artifact directory
+depth. Five existing real-process lifecycle tests share it; a regression checks
+both directory layouts and fail-closed explicit selection. The macOS lint fix
+asserts valid descendant PIDs before the existing Linux-specific zombie checks.
+Only the test profile optimizes the unchanged `curve25519-dalek` dependency,
+whose unoptimized arithmetic dominated the measured 45-second fixture deadlines.
+No signature check, timeout, domain action, runtime owner, SQL or protocol changes.
+
+These inspected test/build changes refresh eight existing pins and add the
+test-only locator (137 current inputs). All eleven model files, 38 configurations,
+case inventory and action/declaration mappings remain unchanged. Their existing
+finite-model results are qualified for reuse, not claimed as a new full formal
+execution or native macOS/Windows result. The source-map checker and executable
+regressions remain required. Independent review is still deferred, not approved.
+
+PR #22's native macOS lint exposed a Linux-only gate around the Unix process
+suite and its local orchestration helpers. The suite now also runs on macOS,
+including signed replay, crash cuts, cancellation, provider and descendant
+cleanup. Exit assertions use Linux pidfds or macOS kqueue process events.
+The fake provider retains Linux parent-death signaling and uses its existing
+control-socket/descendant-stdin EOF cleanup on macOS. The Linux-specific,
+owner-authorized real-Codex acceptance remains opt-in and Linux-only. This
+test-harness follow-up refreshes five inspected pins without changing model
+actions or normal executable behavior; Linux results are not macOS evidence.
+
+The next native test stage exposed physical-path assumptions on macOS.
+Memory-import fixtures now select their canonical source root, preserving the
+importer's rejection of all symlink components. Process fixtures likewise use
+canonical paths, and overlap assertions use Unix process liveness rather than
+Linux `/proc`. The calendar owner watches its canonical database parent and,
+on macOS, uses kqueue vnode watches for the open database/WAL/journal files.
+FSEvents alone did not report the live WAL writes within the existing wake
+gates, even after canonicalizing the parent. Admission and wake policies are
+unchanged. Disposable role readiness now waits for a reader
+acknowledgment before closing its socket, retaining the existing finite deadline.
+These changes refresh inspected pins and unchanged action declaration hashes,
+not the bounded models or their action mappings.
+Isolated fake-provider startup diagnostics retain the actual failure instead of
+reporting only an expired handshake. Native macOS execution remains the gate.
+
+The authorized PR #22 reconciliation merges completed owner Windows fixes from
+main `2f47ba8`. The native-binary helper keeps its upstream callers and delegates
+to the shared layout/override regression-tested locator; Windows environment
+scrubbing and its 120-second hung-test bound are preserved, while Unix retains
+the original 45-second bound. Inspected implementation pins and unchanged action
+declaration locations are refreshed for the merged source. Affected small cases
+are rechecked, not claimed as a new full formal gate or native OS acceptance.
+
+Native run 44007997530 confirms the macOS vnode calendar wake fix and the merged
+Windows/Linux gates. It also exposed overlapping first-open schema setup.
+Store initialization now holds a database-specific OS file lock through schema,
+migration and graph/memory initialization, released before normal operations.
+The concurrent first-open regression retains separate live connections; existing
+projection concurrency assertions are unchanged. This startup ownership is an
+executable obligation, not a new model action or a proof of filesystem behavior.
+
+Run 44010259517 confirms initialization ownership on all three OS jobs and narrows
+the remaining macOS fixture startup failures to SDK-launcher environment injection.
+The fake-provider profile resolves the explicit interpreter with the system
+`xcrun --find python3` on macOS instead of executing `/usr/bin/python3`'s launcher.
+The Linux-only parent-death fixture imports `ctypes` only on Linux. The original
+closed environment allowlist is retained, with no ambient executable fallback.
+Run 44011947680 confirms that bypassing the SDK launcher removes all four SDK
+path variables. CoreFoundation still adds its UID/encoding/region metadata.
+The fixture validates that metadata's closed numeric form and current UID before
+removing it, then applies the original environment assertion. SDK paths and
+unknown environment names remain rejected; no provider lifecycle test is skipped.
+Run 44013736760 passes all native macOS unit cases, including the nine local
+process/provider cases. Executable import fixtures also need physical temporary
+roots; their source traversal/symlink refusal remains unchanged. The subsequent
+Unix topic integration fixture now checks owned PIDs with `kill(pid, 0)` rather
+than Linux `/proc`, retaining both overlap and cleanup assertions.

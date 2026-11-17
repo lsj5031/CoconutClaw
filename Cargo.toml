@@ -30,3 +30,8 @@ toml = "0.8"
 pulldown-cmark = { version = "0.12", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Native lifecycle tests verify real signatures. Optimize the arithmetic rather
+# than relaxing their deadlines or removing verification on small CI runners.
+[profile.test.package.curve25519-dalek]
+opt-level = 3

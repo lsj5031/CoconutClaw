@@ -57,7 +57,7 @@ fn command(destination: &Path, chat: &str, text: &str) -> String {
 
 #[test]
 fn preview_zero_mutations_then_apply_search_get_duplicate_correct_undo_restart() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = temp.path().join("source");
     let dest = temp.path().join("destination");
     fs::create_dir(&source).unwrap();
@@ -117,7 +117,7 @@ fn preview_zero_mutations_then_apply_search_get_duplicate_correct_undo_restart()
 
 #[test]
 fn topic_explicit_curation_authorization_and_source_tree_unchanged() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = temp.path().join("source");
     let dest = temp.path().join("dest");
     fs::create_dir(&source).unwrap();
@@ -164,7 +164,7 @@ fn topic_explicit_curation_authorization_and_source_tree_unchanged() {
 
 #[test]
 fn cli_rejects_escape_symlinks_oversize_and_never_mutates_sources() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = temp.path().join("source");
     let dest = temp.path().join("dest");
     fs::create_dir(&source).unwrap();
@@ -202,7 +202,7 @@ fn cli_rejects_escape_symlinks_oversize_and_never_mutates_sources() {
 
 #[test]
 fn executable_failed_apply_is_atomic_across_restart() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = temp.path().join("source");
     let dest = temp.path().join("dest");
     fs::create_dir(&source).unwrap();
@@ -248,7 +248,7 @@ fn executable_failed_apply_is_atomic_across_restart() {
 
 #[test]
 fn maximum_preview_output_and_imported_corpus_never_expand_bootstrap() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = temp.path().join("source");
     let dest = temp.path().join("dest");
     fs::create_dir_all(source.join("memory")).unwrap();

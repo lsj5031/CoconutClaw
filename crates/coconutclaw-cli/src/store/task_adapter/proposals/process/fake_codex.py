@@ -1,5 +1,4 @@
 """Disposable explicit Codex fixture, no network/auth or ambient configuration."""
-import ctypes
 import json
 import os
 import signal
@@ -10,8 +9,36 @@ import sys
 import sqlite3
 from pathlib import Path
 
-libc = ctypes.CDLL(None)
-libc.prctl(1, signal.SIGTERM, 0, 0, 0)  # Parent death also closes this fixture.
+
+def validate_environment(environment, platform, uid):
+    if platform == "darwin" and "__CF_USER_TEXT_ENCODING" in environment:
+        # CoreFoundation adds UID/encoding/region metadata even to the explicitly
+        # scrubbed interpreter. Validate it before removing it from the fixture.
+        encoding = environment["__CF_USER_TEXT_ENCODING"].split(":")
+        assert len(encoding) == 3 and all(
+            part.startswith("0x") and 1 <= len(part[2:]) <= 8
+            and all(c in "0123456789abcdefABCDEF" for c in part[2:])
+            for part in encoding
+        )
+        assert int(encoding[0], 16) == uid
+        del environment["__CF_USER_TEXT_ENCODING"]
+    allowed_environment = {
+        "HOME", "CODEX_HOME", "LC_CTYPE", "FACTORY_AIRGAP_ENABLED",
+        "COCONUTCLAW_MOCK_PROCESS_SOCKET",
+    }
+    assert set(environment) <= allowed_environment, (
+        "unexpected environment names: " + ", ".join(sorted(set(environment) - allowed_environment))
+    )
+    assert environment["FACTORY_AIRGAP_ENABLED"] == "1"
+
+
+if sys.platform == "linux":
+    import ctypes
+
+    libc = ctypes.CDLL(None)
+    libc.prctl(1, signal.SIGTERM, 0, 0, 0)
+# On every Unix host, runner death closes the control socket (and a terminated
+# leader closes its descendant's stdin). The EOF paths below still reap children.
 
 if sys.argv[1] == "--descendant":
     print("ready", flush=True)
@@ -27,11 +54,7 @@ if behavior != "normal":
     args = args[1:]
 assert args[0] == "exec" and args[-1] == "-" and "--json" in args
 assert "--dangerously-bypass-approvals-and-sandbox" not in args
-assert set(os.environ) <= {
-    "HOME", "CODEX_HOME", "LC_CTYPE", "FACTORY_AIRGAP_ENABLED",
-    "COCONUTCLAW_MOCK_PROCESS_SOCKET",
-}
-assert os.environ["FACTORY_AIRGAP_ENABLED"] == "1"
+validate_environment(os.environ, sys.platform, os.getuid())
 root = Path(__file__).parent
 with sqlite3.connect("file:" + str(root / "work/state.db") + "?mode=ro", uri=True) as store:
     claim = store.execute(

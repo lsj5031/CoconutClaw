@@ -1,5 +1,5 @@
 {
-  "basis": "135 original pre-model implementation inputs plus one host-local callback (136 current); eight inspected test-only harness pins refreshed for controlled three-host preparation; official affected checks and executable regressions required",
+  "basis": "135 original pre-model implementation inputs plus host-local callback and test-only native runtime locator (137 current); reconciled native CI refreshes inspected pins with unchanged modeled domain actions. Store startup initialization locking and platform filesystem/process behavior are executable obligations, not modeled proofs.",
   "families": {
     "Ingress": {
       "owner": "Store IMMEDIATE transaction and authenticated webhook reducer; durable raw/inbox/outbox, volatile callback work",
@@ -127,7 +127,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "dispatch_ready",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 964,
@@ -138,7 +138,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "spawn_task",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 466,
@@ -149,7 +149,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "run_task",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 559,
@@ -162,7 +162,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_result",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 717,
@@ -173,7 +173,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_failure",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 894,
@@ -197,7 +197,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 217,
@@ -232,7 +232,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "resolve_approval",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 359,
@@ -427,10 +427,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler_calendar.rs",
             "symbol": "start_calendar",
-            "sha256": "bbf912e0452f8744b2ec7a06fc163c4ca173d1f11535cd4a7f5d4373ec5cf61c",
+            "sha256": "c1e2ebffd940e638661e889a91a03f35cabe6c74adc32d1883ab22e6bd971097",
             "declarations": [
               {
-                "line": 8,
+                "line": 12,
                 "text": "pub(crate) fn start_calendar(&self) -> Result<()> {"
               }
             ]
@@ -451,7 +451,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "wake_due_with_store",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 180,
@@ -646,10 +646,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
             "symbol": "commit",
-            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "sha256": "dd86e7451950060e9019cbb486d973f90c498bf1f1eec4d1414295a426c52a5a",
             "declarations": [
               {
-                "line": 172,
+                "line": 174,
                 "text": "pub(super) fn commit("
               }
             ]
@@ -657,10 +657,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
             "symbol": "repair_projection",
-            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "sha256": "dd86e7451950060e9019cbb486d973f90c498bf1f1eec4d1414295a426c52a5a",
             "declarations": [
               {
-                "line": 249,
+                "line": 251,
                 "text": "pub fn repair_projection(&mut self) -> Result<usize> {"
               }
             ]
@@ -668,10 +668,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
             "symbol": "validate",
-            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "sha256": "dd86e7451950060e9019cbb486d973f90c498bf1f1eec4d1414295a426c52a5a",
             "declarations": [
               {
-                "line": 96,
+                "line": 98,
                 "text": "pub(super) fn validate("
               }
             ]
@@ -681,7 +681,7 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
             "symbol": "read_receipt",
-            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "sha256": "19615c9fb7d470970cff0e17b33c8183e01062a771dcbe0a627ef42e6b323131",
             "declarations": [
               {
                 "line": 89,
@@ -692,10 +692,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
             "symbol": "restore",
-            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "sha256": "19615c9fb7d470970cff0e17b33c8183e01062a771dcbe0a627ef42e6b323131",
             "declarations": [
               {
-                "line": 191,
+                "line": 193,
                 "text": "pub async fn restore("
               }
             ]
@@ -703,10 +703,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
             "symbol": "install_recovery_policy",
-            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "sha256": "19615c9fb7d470970cff0e17b33c8183e01062a771dcbe0a627ef42e6b323131",
             "declarations": [
               {
-                "line": 224,
+                "line": 226,
                 "text": "pub fn install_recovery_policy("
               }
             ]
@@ -959,7 +959,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "dispatch_ready",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 964,
@@ -970,7 +970,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_result",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 717,
@@ -981,7 +981,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "recover",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 1157,
@@ -992,7 +992,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 217,
@@ -1049,7 +1049,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "run_task",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 559,
@@ -1060,7 +1060,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::queue",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "ca16d11b58dccbbd726134168817e9a721d60af78a81d98d97658d044cea3a3b",
             "declarations": [
               {
                 "line": 465,
@@ -1106,7 +1106,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::reconcile",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "ca16d11b58dccbbd726134168817e9a721d60af78a81d98d97658d044cea3a3b",
             "declarations": [
               {
                 "line": 283,
@@ -1117,7 +1117,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
             "symbol": "RemoteState::handle",
-            "sha256": "2e75736223463a8e77eaf4fa47caaa8f66b970efa4a2113c819cf0e73cd9262c",
+            "sha256": "78f3935ded1f82a077c25af8327fb5675248e80b23513b46f4ce6184c608d4d9",
             "declarations": [
               {
                 "line": 323,
@@ -1163,7 +1163,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::accept",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "ca16d11b58dccbbd726134168817e9a721d60af78a81d98d97658d044cea3a3b",
             "declarations": [
               {
                 "line": 586,
@@ -1174,10 +1174,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::accept_proposal",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "ca16d11b58dccbbd726134168817e9a721d60af78a81d98d97658d044cea3a3b",
             "declarations": [
               {
-                "line": 695,
+                "line": 693,
                 "text": "pub(super) async fn accept_proposal(&mut self, bytes: Vec<u8>) -> Result<Step> {"
               }
             ]
@@ -1253,7 +1253,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 217,

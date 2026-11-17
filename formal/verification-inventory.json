@@ -361,6 +361,12 @@
       "classification": "offline test-only harness regression",
       "owner_and_scope": "Nonsecret profile projection, owned gate lifecycle and original-context auth callback",
       "state_coverage_and_gap": "Executable tests, not a model; no live credentials/provider invocation"
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/test_runtime.rs",
+      "classification": "test-only native runtime locator",
+      "owner_and_scope": "Filesystem lookup for existing separate-process lifecycle tests; no normal executable activation",
+      "state_coverage_and_gap": "Old/deep Cargo layouts and fail-closed explicit override; no modeled application transition or changed action owner"
     }
   ],
   "complete_path_inventory_not_complete_implicit_machine_proof": true

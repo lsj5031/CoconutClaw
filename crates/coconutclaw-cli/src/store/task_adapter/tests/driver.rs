@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::oneshot;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod process;
 mod proposals;
 
@@ -115,7 +115,8 @@ impl Fixture {
 async fn bounded(future: impl std::future::Future<Output = ()>) {
     // Windows CI runners take several times longer than a workstation; the
     // bound only exists to stop a hung test, not to pace healthy execution.
-    tokio::time::timeout(Duration::from_secs(120), future)
+    let seconds = if cfg!(windows) { 120 } else { 45 };
+    tokio::time::timeout(Duration::from_secs(seconds), future)
         .await
         .unwrap();
 }

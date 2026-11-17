@@ -56,12 +56,12 @@ pub(super) enum Step {
     Stopped(u64),
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub(super) struct ProcessRelease {
     release: Option<tokio::sync::oneshot::Sender<()>>,
     cancelled: tokio::sync::oneshot::Receiver<Result<()>>,
 }
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl ProcessRelease {
     pub(super) fn release(self) -> Result<()> {
         if let Some(release) = self.release {
@@ -105,7 +105,7 @@ pub(super) struct RuntimeDriver {
 impl RuntimeDriver {
     /// Parent future only orchestrates child controls and forwards signed bytes.
     /// The child claims, executes, journals and signs the mock outcome.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(super) async fn admit_process(
         &mut self,
         assignment: u64,

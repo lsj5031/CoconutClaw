@@ -417,7 +417,23 @@ impl RunnerClient {
         assignment: u64,
         mode: Mode,
     ) -> Result<()> {
-        self.control(Command::Begin { assignment, mode }).await?;
+        self.control(Command::Begin { assignment, mode })
+            .await
+            .map_err(|error| {
+                let diagnostic = self.process().ok().and_then(|process| {
+                    std::fs::read_to_string(
+                        process
+                            .root
+                            .join(format!("provider-{assignment}/startup-error.txt")),
+                    )
+                    .ok()
+                });
+                if let Some(diagnostic) = diagnostic {
+                    error.context(diagnostic)
+                } else {
+                    error
+                }
+            })?;
         Ok(())
     }
     pub(in crate::store::task_adapter) async fn finish(&self, assignment: u64) -> Result<Vec<u8>> {

@@ -713,6 +713,7 @@ exit 0
         start.elapsed().as_millis()
     );
     let pid = fs::read_to_string(&descendant).unwrap();
+    assert!(pid.trim().parse::<u32>().unwrap() > 1);
     #[cfg(target_os = "linux")]
     if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
         assert_eq!(stat.split(") ").nth(1).unwrap().chars().next(), Some('Z'));
@@ -936,6 +937,7 @@ wait
         );
         for file in [&leader, &descendant] {
             let pid = fs::read_to_string(file).unwrap();
+            assert!(pid.trim().parse::<u32>().unwrap() > 1);
             #[cfg(target_os = "linux")]
             if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
                 assert_eq!(

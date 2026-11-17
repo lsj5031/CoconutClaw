@@ -11,11 +11,12 @@ impl ProcessFixture {
     async fn new() -> (Self, RuntimeDriver) {
         Self::build(false).await
     }
+    #[cfg(target_os = "linux")]
     async fn new_real() -> (Self, RuntimeDriver) {
         Self::build(true).await
     }
     async fn build(real: bool) -> (Self, RuntimeDriver) {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let bootstrap = if real {
             Bootstrap::launch_real(root.path())
         } else {

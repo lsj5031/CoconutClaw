@@ -876,6 +876,8 @@ fn owned_input_attachment_is_kept_until_delivery_is_acknowledged() {
             )
             .unwrap()
     );
+    // Model a restart, not two live delivery owners competing for one lease.
+    scheduler.shutdown().unwrap();
     let server = FakeTelegramServer::start();
     cfg.telegram_api_base = Some(
         server

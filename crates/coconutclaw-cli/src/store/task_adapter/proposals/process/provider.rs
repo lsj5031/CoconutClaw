@@ -3,6 +3,56 @@ use super::*;
 use std::sync::{atomic::AtomicBool, mpsc};
 
 const SCRIPT: &str = include_str!("fake_codex.py");
+
+#[test]
+fn fixture_environment_normalizes_only_valid_macos_metadata_and_refuses_sdk_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let mut child = OsCommand::new(Config::expected(root.path()).unwrap().executable)
+        .args(["-I", "-c", r#"
+import ast, sys
+source = ast.parse(sys.stdin.read())
+function = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == "validate_environment")
+namespace = {}
+exec(compile(ast.Module(body=[function], type_ignores=[]), "<fixture-environment>", "exec"), namespace)
+validate = namespace["validate_environment"]
+base = {"HOME": "/fixture-home", "FACTORY_AIRGAP_ENABLED": "1"}
+valid = dict(base, __CF_USER_TEXT_ENCODING="0x1f5:0x8000100:0x0")
+validate(valid, "darwin", 501)
+assert valid == base
+validate(dict(base), "linux", 501)
+def refused(environment, platform="darwin"):
+    try:
+        validate(environment, platform, 501)
+    except AssertionError:
+        return
+    raise AssertionError("unsafe fixture environment accepted")
+for value in ["0x1f6:0x0:0x0", "0x1f5:0x0", "0x1f5:bogus:0x0", "0x1f5:0x0:0x0:0x0"]:
+    refused(dict(base, __CF_USER_TEXT_ENCODING=value))
+refused(dict(base, __CF_USER_TEXT_ENCODING="0x1f5:0x0:0x0"), "linux")
+for key in ["SDKROOT", "CPATH", "LIBRARY_PATH", "MANPATH", "UNKNOWN_FIXTURE_KEY"]:
+    refused(dict(base, **{key: "fixture-only"}))
+refused(dict(base, FACTORY_AIRGAP_ENABLED="0"))
+"#])
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(SCRIPT.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 pub(in crate::store::task_adapter) mod host;
 mod real;
 
@@ -16,18 +66,37 @@ struct Config {
     codex_home: PathBuf,
 }
 impl Config {
-    fn expected(root: &Path) -> Self {
-        Self {
-            executable: "/usr/bin/python3".into(),
+    fn expected(root: &Path) -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        let executable = {
+            // /usr/bin/python3 is an SDK launcher on macOS. Resolve its explicit
+            // interpreter rather than letting the launcher inject SDK variables
+            // after the runner has scrubbed the child's environment.
+            let output = OsCommand::new("/usr/bin/xcrun")
+                .args(["--find", "python3"])
+                .env_clear()
+                .output()?;
+            ensure!(output.status.success(), "fixture Python lookup failed");
+            let path = PathBuf::from(std::str::from_utf8(&output.stdout)?.trim());
+            ensure!(
+                path.is_absolute() && path.is_file(),
+                "invalid fixture Python path"
+            );
+            path
+        };
+        #[cfg(not(target_os = "macos"))]
+        let executable = PathBuf::from("/usr/bin/python3");
+        Ok(Self {
+            executable,
             script: root.join("fake-codex.py"),
             workspace: root.join("workspace"),
             home: root.join("home"),
             codex_home: root.join("codex-home"),
-        }
+        })
     }
     fn load(root: &Path) -> Result<Self> {
         let cfg: Self = serde_json::from_slice(&std::fs::read(root.join("provider.json"))?)?;
-        let expected = Self::expected(root);
+        let expected = Self::expected(root)?;
         ensure!(
             cfg.executable == expected.executable
                 && cfg.executable.is_file()
@@ -55,7 +124,7 @@ pub(in crate::store::task_adapter) fn provision(root: &Path) -> Result<()> {
         std::fs::read_to_string(root.join("disposable"))? == MARKER,
         "not disposable"
     );
-    let cfg = Config::expected(root);
+    let cfg = Config::expected(root)?;
     OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -277,6 +346,16 @@ impl State {
                 None,
                 resume.as_deref(),
             );
+            // Preserve startup failures from this explicit, isolated fixture;
+            // otherwise the parent only sees an expired handshake socket.
+            let diagnostic = match &result {
+                Ok(output) if !output.success => Some(output.raw_output.clone()),
+                Err(error) => Some(format!("{error:#}")),
+                _ => None,
+            };
+            if let Some(diagnostic) = diagnostic {
+                let _ = std::fs::write(job.join("startup-error.txt"), diagnostic);
+            }
             completed.store(true, Ordering::SeqCst);
             let _ = notice.write_all(&[1]);
             result

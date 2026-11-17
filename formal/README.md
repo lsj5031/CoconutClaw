@@ -23,10 +23,13 @@ and records commands, input bytes/hashes, exits, elapsed time, state counts and
 action coverage. A timeout or resource/tool error is incomplete, never a proof.
 `--cases` selects named entries for affected rechecks, not a claim of the full gate.
 
-- `implementation-hashes.json`:136 runtime/shared/test/build inputs. The original
+- `implementation-hashes.json`:137 runtime/shared/test/build inputs. The original
  135 were pinned before modeling. The17 November test-only multihost delta
  refreshes eight changed pins and adds the host-local auth callback; it changes
  no normal executable/dependency/SQL behavior. See the source-map supplement.
+ The macOS/Linux CI follow-up adds a test-only native-binary locator pin and
+ refreshes inspected test/build pins. Its test-profile arithmetic optimization
+ changes neither signature validation nor model actions; no deadline is relaxed.
 - `inventory.json`:171 pre-formal repository paths, including explicit excluded
   and evidence-only paths, declaration/SQL/conditional scans and individual gaps.
 - `source-map.json`:owners, independent state, source declaration/hash anchors,

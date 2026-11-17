@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -14,13 +14,39 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct Runtime(Child);
+struct Runtime(Child, PathBuf);
+
+fn process_alive(pid: &str) -> bool {
+    let pid: i32 = pid.trim().parse().unwrap();
+    assert!(pid > 1);
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        true
+    } else {
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        false
+    }
+}
+
 impl Drop for Runtime {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if thread::panicking() {
+            if let Ok(log) = fs::read_to_string(&self.1) {
+                eprintln!("synthetic runtime diagnostics:\n{log}");
+            }
+            if let Some(dir) = self.1.parent()
+                && let Ok(counter) = fs::read_to_string(dir.join("counter.json"))
+            {
+                eprintln!("synthetic provider counter: {counter}");
+            }
+        }
     }
 }
+#[track_caller]
 fn wait(mut check: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !check() {
@@ -60,6 +86,47 @@ struct Telegram {
     stopping: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
+
+fn configure_mock_connection(stream: &TcpStream) {
+    // Darwin inherits O_NONBLOCK from the listener; Linux does not. The
+    // request reader needs blocking reads to wait for headers and body.
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+}
+
+#[test]
+fn mock_connection_waits_for_request_after_nonblocking_accept() {
+    use std::os::fd::AsRawFd;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut connection, _) = listener.accept().unwrap();
+    // Reproduce Darwin's accepted descriptor state on every Unix platform.
+    connection.set_nonblocking(true).unwrap();
+    let flags = unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0);
+    assert_ne!(flags & libc::O_NONBLOCK, 0);
+    assert_eq!(
+        connection.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    configure_mock_connection(&connection);
+    let flags = unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_GETFL) };
+    assert!(flags >= 0);
+    assert_eq!(flags & libc::O_NONBLOCK, 0);
+    let sender = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        client.write_all(b"GET /").unwrap();
+    });
+    let mut request = [0; 5];
+    connection.read_exact(&mut request).unwrap();
+    assert_eq!(&request, b"GET /");
+    sender.join().unwrap();
+}
+
 impl Drop for Telegram {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::SeqCst);
@@ -94,9 +161,7 @@ impl Telegram {
                     thread::sleep(Duration::from_millis(5));
                     continue;
                 };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
+                configure_mock_connection(&stream);
                 let mut data = Vec::new();
                 let mut buffer = [0; 8192];
                 loop {
@@ -257,6 +322,16 @@ fn spawn(dir: &Path, telegram: &Telegram, provider: &Path) -> Runtime {
     let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_coconutclaw")));
+    let log = std::env::var_os("COCONUTCLAW_ACCEPTANCE_ARTIFACTS")
+        .map(|artifacts| {
+            let artifacts = PathBuf::from(artifacts);
+            fs::create_dir_all(&artifacts).unwrap();
+            artifacts.join(format!(
+                "runtime-{}.log",
+                dir.file_name().unwrap().to_string_lossy()
+            ))
+        })
+        .unwrap_or_else(|| dir.join("runtime.log"));
     Runtime(
         Command::new(binary)
             .arg("--data-dir")
@@ -276,26 +351,16 @@ fn spawn(dir: &Path, telegram: &Telegram, provider: &Path) -> Runtime {
             )
             .env("POLL_INTERVAL_SECONDS", "1")
             .stdout(Stdio::null())
-            .stderr(
-                std::env::var_os("COCONUTCLAW_ACCEPTANCE_ARTIFACTS")
-                    .map(|artifacts| {
-                        let artifacts = PathBuf::from(artifacts);
-                        fs::create_dir_all(&artifacts).unwrap();
-                        Stdio::from(
-                            fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(artifacts.join(format!(
-                                    "runtime-{}.log",
-                                    dir.file_name().unwrap().to_string_lossy()
-                                )))
-                                .unwrap(),
-                        )
-                    })
-                    .unwrap_or_else(Stdio::null),
-            )
+            .stderr(Stdio::from(
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log)
+                    .unwrap(),
+            ))
             .spawn()
             .unwrap(),
+        log,
     )
 }
 
@@ -310,13 +375,17 @@ args=sys.argv[1:]
 out=args[args.index("--output-last-message")+1]
 prompt=sys.stdin.read()
 n=re.findall(r"gate-(\d+)",prompt)[-1]
+def alive(pid):
+ try: os.kill(pid,0)
+ except ProcessLookupError: return False
+ return True
 (root/("prompt-"+n)).write_text(prompt)
 (root/("args-"+n)).write_text("\n".join(args))
 with (root/"counter.lock").open("w") as lock:
  fcntl.flock(lock,fcntl.LOCK_EX)
  file=root/"counter.json"
  state=json.loads(file.read_text()) if file.exists() else {"pids":[],"peak":0,"starts":[]}
- state["pids"]=[pid for pid in state["pids"] if pathlib.Path("/proc/"+str(pid)).exists()]
+ state["pids"]=[pid for pid in state["pids"] if alive(pid)]
  state["pids"].append(os.getpid())
  state["peak"]=max(state["peak"],len(state["pids"]))
  state["starts"].append(int(n))
@@ -336,7 +405,7 @@ print(json.dumps({"type":"thread.started","thread_id":"native-"+n}))
     let alive = |n| {
         fs::read_to_string(dir.join(format!("started-{n}")))
             .ok()
-            .is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists())
+            .is_some_and(|pid| process_alive(&pid))
     };
     assert!((1..=5).all(alive), "all five actual providers overlap");
     assert!(!dir.join("started-6").exists());
@@ -870,7 +939,7 @@ print('{"type":"thread.started","thread_id":"approval-native"}')
     );
     for stage in ["initial", "approved"] {
         let pid = fs::read_to_string(dir.join(format!("{stage}-pid"))).unwrap();
-        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        assert!(!process_alive(&pid));
     }
     assert_eq!(
         db.query_row(
