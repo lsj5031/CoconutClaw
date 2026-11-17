@@ -216,12 +216,11 @@ fn mac_status(names: &ServiceNames) -> Result<()> {
 fn mac_uninstall(names: &ServiceNames) -> Result<()> {
     mac_stop(names)?;
     let dir = mac_launchagents_dir()?;
-    for path in [dir.join(format!("{}.plist", names.run_label))] {
-        if let Err(err) = fs::remove_file(&path)
-            && err.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(err).with_context(|| format!("failed to remove {}", path.display()));
-        }
+    let path = dir.join(format!("{}.plist", names.run_label));
+    if let Err(err) = fs::remove_file(&path)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(err).with_context(|| format!("failed to remove {}", path.display()));
     }
     println!("removed launchd agents from {}", dir.display());
     Ok(())

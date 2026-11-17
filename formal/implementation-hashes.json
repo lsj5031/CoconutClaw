@@ -40,7 +40,7 @@
   "crates/coconutclaw-cli/src/scheduling/calendar_wake_tests.rs": "4e07e08dee581e71b5cdba2f856cc2b07a890437421f251ddf0ab8082b4047c2",
   "crates/coconutclaw-cli/src/scheduling/mod.rs": "85533f64ce25bef272035750d085e033f55b79410345f851daf30a68fbd15c98",
   "crates/coconutclaw-cli/src/scheduling/tests.rs": "5e8050fa442dc06294345ed3d14c5825b229db6e178e113e619314df03f771fb",
-  "crates/coconutclaw-cli/src/service.rs": "5b892f6b90a07434d76a2f7ace44e00fab10545b750cf4c3d7b8490667616e14",
+  "crates/coconutclaw-cli/src/service.rs": "31ce87bbb082604d758a6a287e4e4a736bec3bc10c09751e893a62d6e8ed21bf",
   "crates/coconutclaw-cli/src/service_tests.rs": "f62819d88fa8bfa67ea9f9be42370a987d3d078037399d79a869cb254c1a06bc",
   "crates/coconutclaw-cli/src/session.rs": "955cd6aabd1c8e2fcf3eaf16ae9f3dad45f7781d0bc1b3808b329ed08167fde7",
   "crates/coconutclaw-cli/src/session_tests.rs": "a4cb494cbaeaaaa9e9e939f60f6df724ef51debb05f7bb686b636a972439d084",
