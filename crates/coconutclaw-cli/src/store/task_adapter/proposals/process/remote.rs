@@ -109,26 +109,11 @@ pub(in crate::store::task_adapter) struct Client {
 }
 
 fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>> {
-    let body = serde_json::to_vec(v)?;
-    ensure!(
-        !body.is_empty() && body.len() <= MAX_FRAME,
-        "remote frame exceeds limit"
-    );
-    let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
-    bytes.extend(body);
-    Ok(bytes)
+    crate::runner_wire::encode(v, MAX_FRAME)
 }
 
 fn decode<T: for<'a> Deserialize<'a> + Serialize>(bytes: &[u8]) -> Result<T> {
-    ensure!(
-        bytes.len() > 4 && bytes.len() <= MAX_FRAME + 4,
-        "invalid remote frame"
-    );
-    let size = u32::from_be_bytes(bytes[..4].try_into()?) as usize;
-    ensure!(size == bytes.len() - 4, "remote frame length mismatch");
-    let value = serde_json::from_slice(&bytes[4..])?;
-    ensure!(encode(&value)? == bytes, "noncanonical remote frame");
-    Ok(value)
+    crate::runner_wire::decode(bytes, MAX_FRAME)
 }
 
 async fn endpoint(network: &AcceptanceNetwork, key: SecretKey) -> Result<Endpoint> {

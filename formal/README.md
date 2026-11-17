@@ -3,6 +3,13 @@
 These are hand-written TLA+ transition contracts linked to exact CoconutClaw
 source bytes, not a Rust refinement proof or independent review.
 
+The production runner lane adds `production-reconciliation.json`, preserving
+every inherited pin and historical review record while separately recording
+inspected production deltas/new inputs. `test_mapping.py` checks that complete
+ancestry, not just current hashes. See `production-runners.md` for actual handler
+actions and native evidence gaps. Affected official configurations are rechecked
+on the final source identity; old harness receipts do not validate activation.
+
 Use the already provisioned official tools, offline:
 
 ```sh

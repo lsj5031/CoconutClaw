@@ -5,10 +5,9 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
 impl Store {
-    // Only the existing development transport ingress creates reservations.
-    // Normal production remote admission remains unavailable.
-    #[cfg(test)]
-    pub(super) fn reserve_runtime_run(
+    // Both production and retained development ingress must commit the exact
+    // assignment and original route before any consequential remote request.
+    pub(crate) fn reserve_runtime_run(
         &self,
         id: i64,
         origin: &str,
@@ -43,9 +42,8 @@ impl Store {
     }
 
     /// Caller has already verified signed history, role, assignment and exact
-    /// source request with TaskAdapter. Commit this BEFORE acknowledging custody.
-    #[cfg(test)]
-    pub(super) fn custody_runtime_result(
+    /// source request with the domain adapter. Commit BEFORE acknowledging custody.
+    pub(crate) fn custody_runtime_result(
         &self,
         id: i64,
         start: &[u8],

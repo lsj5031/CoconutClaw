@@ -11,7 +11,9 @@ mod delivery;
 mod loops;
 mod markers;
 mod memory_import;
+mod nodes;
 mod recovery;
+mod runner_wire;
 mod scheduler;
 mod scheduling;
 mod service;
@@ -51,6 +53,7 @@ enum Commands {
     Service(ServiceArgs),
     ImportOpenclaw(memory_import::ImportArgs),
     Schedule(commands::schedule::ScheduleArgs),
+    Nodes(nodes::Args),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -104,6 +107,12 @@ fn main() -> Result<()> {
     }
     let cfg = load_runtime_config(&overrides)?;
     let command = cli.command;
+    if let Commands::Nodes(args) = &command {
+        return nodes::run(&cfg, args);
+    }
+    if matches!(&command, Commands::Run(_) | Commands::Once(_)) {
+        nodes::require_coordinator(&cfg)?;
+    }
 
     // Administrative calendar edits use SQLite transactions, not execution
     // ownership. They must remain available while the single core is running.
@@ -129,6 +138,7 @@ fn main() -> Result<()> {
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
         Commands::ImportOpenclaw(_) => unreachable!("import handled before store setup"),
         Commands::Schedule(_) => unreachable!("calendar command handled before execution lock"),
+        Commands::Nodes(_) => unreachable!("nodes handled before execution lock"),
     }
 }
 #[cfg(test)]

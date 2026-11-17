@@ -57,7 +57,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/inbox.rs",
             "symbol": "admit_inbox_request",
-            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "sha256": "e3cbc95f07fc14c031291e060a99767241a04c347808bbfa6429d3fc2e300a07",
             "declarations": [
               {
                 "line": 61,
@@ -68,7 +68,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/inbox.rs",
             "symbol": "record_inbox",
-            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "sha256": "e3cbc95f07fc14c031291e060a99767241a04c347808bbfa6429d3fc2e300a07",
             "declarations": [
               {
                 "line": 29,
@@ -94,7 +94,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/inbox.rs",
             "symbol": "admit_inbox_request",
-            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "sha256": "e3cbc95f07fc14c031291e060a99767241a04c347808bbfa6429d3fc2e300a07",
             "declarations": [
               {
                 "line": 61,
@@ -105,7 +105,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/inbox.rs",
             "symbol": "record_inbox",
-            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "sha256": "e3cbc95f07fc14c031291e060a99767241a04c347808bbfa6429d3fc2e300a07",
             "declarations": [
               {
                 "line": 29,
@@ -118,10 +118,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "observation_control",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 139,
+                "line": 142,
                 "text": "pub(crate) fn observation_control("
               }
             ]
@@ -195,10 +195,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "dispatch_ready",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
-                "line": 964,
+                "line": 974,
                 "text": "fn dispatch_ready(&self) {"
               }
             ]
@@ -206,7 +206,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "spawn_task",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
                 "line": 466,
@@ -217,7 +217,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "run_task",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
                 "line": 559,
@@ -230,10 +230,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_result",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
-                "line": 717,
+                "line": 727,
                 "text": "fn persist_result("
               }
             ]
@@ -241,10 +241,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_failure",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
-                "line": 894,
+                "line": 904,
                 "text": "fn persist_failure("
               }
             ]
@@ -265,7 +265,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
                 "line": 217,
@@ -300,11 +300,22 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "resolve_approval",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
                 "line": 359,
                 "text": "pub(crate) fn resolve_approval("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "recover",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 729,
+                "text": "pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {"
               }
             ]
           }
@@ -312,7 +323,7 @@
       },
       "guards": "Current task/actor/session/head, approval/dependency source success, no cancellation/Unknown, bounded global slots. Resume creates new ordinal rather than relaunching prior physical run.",
       "atomicity": "Durable request and attempt ancestry share SQL commit; volatile lane dispatch follows. Crash after started workflow leaves Unknown, never restores dispatch token.",
-      "gaps": "Cap1/2 abstracts actual global5 and dev driver2. Two attempts maximum; approval authorization and full immutable ancestry snapshots are abstracted to Resume guard/evidence, not byte-level proof. Workflow launch is NOT count of subprocess retries inside one turn. FIFO ordering/batch32, graph cycles and late dependency uncertainty after snapshot remain source-test/refinement gaps."
+      "gaps": "Cap1/2 abstracts actual global5 and dev driver2. Two attempts maximum; approval authorization and full immutable ancestry snapshots are abstracted to Resume guard/evidence, not byte-level proof. Workflow launch is NOT count of subprocess retries inside one turn. FIFO ordering/batch32, graph cycles and late dependency uncertainty after snapshot remain source-test/refinement gaps. Production handlers retain coarse claim/authority/Unknown cuts with independent histories. No native sandbox, descendant cleanup, key ACL, heartbeat, whole-backup freshness or external exactly-once proof. See production-runners.md."
     },
     "Effects": {
       "owner": "Existing single delivery lock and durable operation/text plans; authenticated reconciliation SQL control",
@@ -541,7 +552,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "wake_due_with_store",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
                 "line": 180,
@@ -850,11 +861,33 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "run_provider_process",
-            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
             "declarations": [
               {
-                "line": 335,
+                "line": 378,
                 "text": "fn run_provider_process("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "Runner::admit",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 487,
+                "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/lib.rs",
+            "symbol": "run_workspace",
+            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+            "declarations": [
+              {
+                "line": 252,
+                "text": "pub fn run_workspace("
               }
             ]
           }
@@ -863,10 +896,10 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "run_child_process",
-            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
             "declarations": [
               {
-                "line": 467,
+                "line": 510,
                 "text": "fn run_child_process("
               }
             ]
@@ -874,10 +907,10 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "read_pipe",
-            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
             "declarations": [
               {
-                "line": 573,
+                "line": 616,
                 "text": "fn read_pipe("
               }
             ]
@@ -909,14 +942,14 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "terminate_cancelled_child",
-            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
             "declarations": [
               {
-                "line": 660,
+                "line": 703,
                 "text": "fn terminate_cancelled_child("
               },
               {
-                "line": 699,
+                "line": 703,
                 "text": "fn terminate_cancelled_child("
               }
             ]
@@ -924,10 +957,10 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "run_child_process",
-            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
             "declarations": [
               {
-                "line": 467,
+                "line": 510,
                 "text": "fn run_child_process("
               }
             ]
@@ -935,11 +968,22 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "kill_active_process_groups",
-            "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
             "declarations": [
               {
-                "line": 650,
+                "line": 693,
                 "text": "pub fn kill_active_process_groups() {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes/transport.rs",
+            "symbol": "serve",
+            "sha256": "79ce0ff9b5b706e6ee75cd7c5e7c0249afa9f5642a0b73c55fbeec4c5c01a009",
+            "declarations": [
+              {
+                "line": 195,
+                "text": "pub(super) async fn serve(cfg: RuntimeConfig) -> Result<()> {"
               }
             ]
           }
@@ -966,12 +1010,23 @@
                 "text": "pub(super) async fn recover_result("
               }
             ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "Runner::open",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 448,
+                "text": "fn open(cfg: RuntimeConfig) -> Result<Self> {"
+              }
+            ]
           }
         ]
       },
       "guards": "Claim before spawn, consume volatile token once; restart never recreates it. Repeated semantic fingerprint does not refresh activity. Leader exit alone is not IO completion. Cancellation/timeout own process termination and eventual join decisions.",
       "atomicity": "Start claim durable before process I/O; owned OS child and callback/pipe flags volatile. The model groupOwned flag means ownership registration, NOT proof every descendant is dead after normal exit.",
-      "gaps": "One workflow/subprocess launch abstraction only; existing turn configured retries and YOLO CLI-rejection retry are outside SingleDispatchToken claim. Unix group kill vs non-Unix child kill, blocked Windows pipe threads, PID reuse, OS kill failures and descendant cleanup require native tests; no arbitrary child cleanup proof. Bounded IO join detach paths are not all refined. The new in-place host auth callback is opaque native I/O, not a modeled credential protocol; physical cleanup remains a node-side acceptance obligation. PR22 keeps Windows scrubbed environment/120s fixture bound, Unix45s bound and macOS process tests; pidfd/kqueue observers, explicit Python SDK resolution and validated CF metadata remain native fixture evidence, not OS/refinement proofs."
+      "gaps": "One workflow/subprocess launch abstraction only; existing turn configured retries and YOLO CLI-rejection retry are outside SingleDispatchToken claim. Unix group kill vs non-Unix child kill, blocked Windows pipe threads, PID reuse, OS kill failures and descendant cleanup require native tests; no arbitrary child cleanup proof. Bounded IO join detach paths are not all refined. The new in-place host auth callback is opaque native I/O, not a modeled credential protocol; physical cleanup remains a node-side acceptance obligation. PR22 keeps Windows scrubbed environment/120s fixture bound, Unix45s bound and macOS process tests; pidfd/kqueue observers, explicit Python SDK resolution and validated CF metadata remain native fixture evidence, not OS/refinement proofs. Production handlers retain coarse claim/authority/Unknown cuts with independent histories. No native sandbox, descendant cleanup, key ACL, heartbeat, whole-backup freshness or external exactly-once proof. See production-runners.md."
     },
     "History": {
       "owner": "Synthetic signed immutable domain prefix, fixed owner/core/runner roles; inert memory/task projection",
@@ -1036,7 +1091,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/inbox.rs",
             "symbol": "admit_inbox_request",
-            "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+            "sha256": "e3cbc95f07fc14c031291e060a99767241a04c347808bbfa6429d3fc2e300a07",
             "declarations": [
               {
                 "line": 61,
@@ -1049,10 +1104,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "dispatch_ready",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
-                "line": 964,
+                "line": 974,
                 "text": "fn dispatch_ready(&self) {"
               }
             ]
@@ -1060,10 +1115,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_result",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
-                "line": 717,
+                "line": 727,
                 "text": "fn persist_result("
               }
             ]
@@ -1071,10 +1126,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "recover",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
-                "line": 1157,
+                "line": 1167,
                 "text": "pub(crate) fn recover(&self) -> Result<()> {"
               }
             ]
@@ -1082,7 +1137,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
                 "line": 217,
@@ -1121,25 +1176,25 @@
       "gaps": "Each finite job is one scheduled/request occurrence, not a byte-level end-to-end refinement. Waiting continuations/notices are in separate WaitNoticeComposition; remote reservation in RemoteComposition. LiveSpec deliberately assumes no crash/cancel/ambiguity, fair core/SQLite/provider/HTTP progress and finite inputs; not availability under permanent partitions."
     },
     "RemoteComposition": {
-      "owner": "Original Store reservation, sole RuntimeDriver, runner signing/claim actor, verified transport custody, bounded runtime-result reducer/outbox",
+      "owner": "Original source Store reservation; retained fixture RuntimeDriver or production nodes adapter; independent runner claim/signing Store, authenticated transport custody and literal runtime-result reducer/outbox.",
       "state": "policy/application epoch, durable reservation, independent local/remote calls, runner claim, signed result/custody, source outcome/outbox, cancellation, partition, frozen vs substituted route, quarantine",
       "actions": {
         "Reserve/LocalStart": [
           {
             "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
             "symbol": "reserve_runtime_run",
-            "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+            "sha256": "3931572ddf03196a30cb6e63a75278ba30a1880662ece6a6e2b270c2a19676e1",
             "declarations": [
               {
-                "line": 11,
-                "text": "pub(super) fn reserve_runtime_run("
+                "line": 10,
+                "text": "pub(crate) fn reserve_runtime_run("
               }
             ]
           },
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "run_task",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
                 "line": 559,
@@ -1155,6 +1210,17 @@
               {
                 "line": 465,
                 "text": "pub(super) async fn queue(&mut self, run: i64) -> Result<u64> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "execute",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 644,
+                "text": "pub(crate) fn execute("
               }
             ]
           }
@@ -1207,11 +1273,33 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
             "symbol": "RemoteState::handle",
-            "sha256": "78f3935ded1f82a077c25af8327fb5675248e80b23513b46f4ce6184c608d4d9",
+            "sha256": "61dea3a84da5f743f2e34386fcffca358a686ff57532843f0b417778fb1ee688",
             "declarations": [
               {
-                "line": 323,
+                "line": 308,
                 "text": "async fn handle(&mut self, request: Request) -> Result<Response> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "Runner::admit",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 487,
+                "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "Runner::finish",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 522,
+                "text": "fn finish(&mut self, bundle: &Bundle, mut outcome: Outcome, output: &str) -> Result<()> {"
               }
             ]
           }
@@ -1220,21 +1308,21 @@
           {
             "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
             "symbol": "custody_runtime_result",
-            "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+            "sha256": "3931572ddf03196a30cb6e63a75278ba30a1880662ece6a6e2b270c2a19676e1",
             "declarations": [
               {
-                "line": 48,
-                "text": "pub(super) fn custody_runtime_result("
+                "line": 46,
+                "text": "pub(crate) fn custody_runtime_result("
               }
             ]
           },
           {
             "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
             "symbol": "apply_runtime_results",
-            "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+            "sha256": "3931572ddf03196a30cb6e63a75278ba30a1880662ece6a6e2b270c2a19676e1",
             "declarations": [
               {
-                "line": 149,
+                "line": 147,
                 "text": "pub(crate) fn apply_runtime_results(&self, now: &str) -> Result<usize> {"
               }
             ]
@@ -1242,10 +1330,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
             "symbol": "runtime_result_is_literal",
-            "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+            "sha256": "3931572ddf03196a30cb6e63a75278ba30a1880662ece6a6e2b270c2a19676e1",
             "declarations": [
               {
-                "line": 101,
+                "line": 99,
                 "text": "pub(crate) fn runtime_result_is_literal(&self, id: i64) -> Result<bool> {"
               }
             ]
@@ -1269,6 +1357,17 @@
               {
                 "line": 693,
                 "text": "pub(super) async fn accept_proposal(&mut self, bytes: Vec<u8>) -> Result<Step> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "accept",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 739,
+                "text": "fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {"
               }
             ]
           }
@@ -1306,12 +1405,23 @@
                 "text": "pub(super) fn verify_cancellation("
               }
             ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "Runner::cancel",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 568,
+                "text": "fn cancel(&mut self, bundle: &Bundle, command: &Cancellation) -> Result<()> {"
+              }
+            ]
           }
         ]
       },
       "guards": "Pre-provider reservation excludes local execution; claim is one-shot. Verified signed original assignment/run/actor/route before custody; raw receipt survives partition/restart. Original local cancellation or existing Unknown yields uncertain result, never clean success. Route substitution quarantines rather than reroutes or executes marker text.",
       "atomicity": "Reservation+original request, signed custody+result inbox, original result+outbox each have separate commits; network/signature callbacks own no mutable Store. Application epoch2 suspends, not automatic failover.",
-      "gaps": "No actual socket/crypto/native-Codex execution; dev-only admission preserved. Conflicting signed proposals, RPC frame ordering and receipt-byte guards are source-test assumptions. Already-custodied results may project after later fencing; source cancellation after an already-committed completion does not retroactively rewrite outcome. Controlled fixture file gates, before-original-ACK fault cut and coordinator-only detach/reconnect are new executable regressions, not native/Rust refinement proofs. Separate original Stores do not prove a shared-core two-runner composition. Inert nonce preflight exchanges use generic scoped artifact custody, not domain-event receipt, and are executable-test coverage only. PR22 Ready write/read acknowledgment before socket close refines physical harness readiness only, not signed task/domain custody. Physical socket blocking and readiness delivery remain executable obligations."
+      "gaps": "No actual socket/crypto/native-Codex execution; dev-only admission preserved. Conflicting signed proposals, RPC frame ordering and receipt-byte guards are source-test assumptions. Already-custodied results may project after later fencing; source cancellation after an already-committed completion does not retroactively rewrite outcome. Controlled fixture file gates, before-original-ACK fault cut and coordinator-only detach/reconnect are new executable regressions, not native/Rust refinement proofs. Separate original Stores do not prove a shared-core two-runner composition. Inert nonce preflight exchanges use generic scoped artifact custody, not domain-event receipt, and are executable-test coverage only. PR22 Ready write/read acknowledgment before socket close refines physical harness readiness only, not signed task/domain custody. Physical socket blocking and readiness delivery remain executable obligations. Production handlers retain coarse claim/authority/Unknown cuts with independent histories. No native sandbox, descendant cleanup, key ACL, heartbeat, whole-backup freshness or external exactly-once proof. See production-runners.md."
     },
     "WaitNoticeComposition": {
       "owner": "Logical head/dependency completion reducer -> new physical continuation; blocker/notice sender; original preference scope",
@@ -1343,7 +1453,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
             "declarations": [
               {
                 "line": 217,
@@ -1435,7 +1545,7 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "button",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
                 "line": 32,
@@ -1470,10 +1580,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "runtime_control",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 124,
+                "line": 127,
                 "text": "pub(crate) fn runtime_control(store: &Store, session: &SessionKey, text: &str) -> Result<bool> {"
               }
             ]
@@ -1481,10 +1591,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 210,
+                "line": 213,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1516,7 +1626,7 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "epoch",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
                 "line": 22,
@@ -1527,10 +1637,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 210,
+                "line": 213,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1551,10 +1661,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 210,
+                "line": 213,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1580,12 +1690,23 @@
                 "text": "pub(crate) fn recover_telegram_claims(&self) -> Result<()> {"
               }
             ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "selection",
+            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "declarations": [
+              {
+                "line": 587,
+                "text": "pub(crate) fn selection(store: &Store, session: &str, id: Option<&str>) -> Result<()> {"
+              }
+            ]
           }
         ]
       },
       "guards": "Issued unexpired unconsumed token, exact session/root actor, current allowed route/topic mode. Two scopes alias private root/topic; actor 2 is foreign. Revocation includes topic disable. Observations repeat; runtime consumption precedes invocation and survives crashes.",
       "atomicity": "SQL issue/control lives in ingress transaction. Runtime consumption commits before nontransactional effects. Crash drops volatile invocation permission, retains consumption/Unknown.",
-      "gaps": "Two controls/two actors/one or two scopes; monotonic expiry/revocation episode. Entropy/collisions, full parsing, config reload during synchronous invocation, arbitrary repeated uses and exact scheduler/approval target semantics are not proved. Guided SQL writes are a separate contract. Use evidence records authority at acceptance, not after later revocation."
+      "gaps": "Two controls/two actors/one or two scopes; monotonic expiry/revocation episode. Entropy/collisions, full parsing, config reload during synchronous invocation, arbitrary repeated uses and exact scheduler/approval target semantics are not proved. Guided SQL writes are a separate contract. Use evidence records authority at acceptance, not after later revocation. Production handlers retain coarse claim/authority/Unknown cuts with independent histories. No native sandbox, descendant cleanup, key ACL, heartbeat, whole-backup freshness or external exactly-once proof. See production-runners.md."
     },
     "GuidedInput": {
       "owner": "Authenticated ingress SQL-control transaction, per-session actor/input row and existing memory/preferences validators",
@@ -1595,10 +1716,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 210,
+                "line": 213,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1619,10 +1740,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 210,
+                "line": 213,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1654,10 +1775,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 210,
+                "line": 213,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1667,10 +1788,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
             "declarations": [
               {
-                "line": 210,
+                "line": 213,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1766,5 +1887,6 @@
       "RemoteComposition"
     ],
     "remaining_families": "Reused only on identical model/config/source owners, not re-exhausted"
-  }
+  },
+  "production_mapping": "production-reconciliation.json; implementation self-mapping, independent review deferred."
 }

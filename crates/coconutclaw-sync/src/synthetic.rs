@@ -35,7 +35,9 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_RECORD: usize = 8192;
 pub const MAX_ARTIFACT: usize = 4096;
-const SCOPE: &str = "synthetic/chat-a";
+/// Retained wire scope label. Signed origins/namespaces provide task isolation;
+/// callers must still independently authorize each origin and actor.
+pub const SCOPE: &str = "synthetic/chat-a";
 const MARKER: &str = "CoconutClaw synthetic iroh increment 1\n";
 
 /// This pin is local test policy, not replicated membership or owner authority.

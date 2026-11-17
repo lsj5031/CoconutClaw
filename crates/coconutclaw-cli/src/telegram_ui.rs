@@ -38,6 +38,9 @@ fn button(
 ) -> Result<serde_json::Value> {
     let id = token(store)?;
     let label = match (label, action.split_once(':')) {
+        ("Use remote", Some(("node-select", id))) => {
+            format!("Use remote {}", &id[..id.len().min(8)])
+        }
         (
             "Run details" | "Schedule details" | "Cancel run" | "Approve" | "Reject",
             Some((_, id)),
@@ -344,6 +347,21 @@ pub(crate) fn handle(
             update,
             &crate::iso_now(&cfg.timezone),
         )?
+    } else if let Some(node) = action.strip_prefix("node-select:") {
+        let transaction = store
+            .conn
+            .is_autocommit()
+            .then(|| store.conn.unchecked_transaction())
+            .transpose()?;
+        crate::nodes::selection(store, &session.id(), (node != "local").then_some(node))?;
+        store.conn.execute(
+            "UPDATE telegram_ui_controls SET consumed=1 WHERE token=?1",
+            [arg],
+        )?;
+        if let Some(transaction) = transaction {
+            transaction.commit()?;
+        }
+        "Execution node selected for new tasks in this conversation/topic. Existing assignments are unchanged. Remote tasks accept text only and use that node's permitted workspace; unavailable nodes never fall back to local execution.".into()
     } else if action == "fresh" {
         store.insert_boundary_turn(
             &crate::iso_now(&cfg.timezone),
@@ -473,61 +491,198 @@ fn render_snapshot(
     match action {
         "status" => {
             lines.push(format!("Runtime health: {}\nTransport: {} pending, {} applying, {} unknown.\nLast received: {}\n{} tasks, {} runs; {} schedules.\nThese are persisted observations, not polling/network health. Global operator telemetry unavailable.",snapshot.runtime_health,snapshot.transport.pending,snapshot.transport.applying,snapshot.transport.unknown,snapshot.transport.latest_received_at.as_deref().unwrap_or("unavailable"),snapshot.task_count,snapshot.run_count,snapshot.schedule_count));
-            let attention=snapshot.tasks.iter().filter(|t|t.attention).count();
+            let attention = snapshot.tasks.iter().filter(|t| t.attention).count();
             lines.push(format!("Attention: {attention} among {} tasks in the bounded snapshot. Open Tasks and Scheduled tasks for details. Transport counts include this request being inspected.",snapshot.tasks.len()));
-            actions.extend([("Tasks","tasks".into()),("Scheduled tasks","schedules".into())]);
+            actions.extend([
+                ("Tasks", "tasks".into()),
+                ("Scheduled tasks", "schedules".into()),
+            ]);
         }
-        "nodes" => lines.push(format!("Node health: {}.\nNo production node heartbeat/connectivity registry exists. Configured runners and the test-only remote harness are not observed live nodes. Global telemetry unavailable.",snapshot.node_health)),
-        a if a=="schedules" || a.starts_with("schedules-page:") => {
-            let offset=a.strip_prefix("schedules-page:").and_then(|p|p.parse::<usize>().ok()).unwrap_or(0).min(50);
+        "nodes" => {
+            lines.push(format!(
+                "Current node health: {} (no continuous heartbeat).",
+                snapshot.node_health
+            ));
+            lines.push(crate::nodes::status(store, Some(&session.id()))?);
+            actions.push(("Use local", "node-select:local".into()));
+            for node in crate::nodes::choices(store)? {
+                actions.push(("Use remote", format!("node-select:{node}")));
+            }
+        }
+        a if a == "schedules" || a.starts_with("schedules-page:") => {
+            let offset = a
+                .strip_prefix("schedules-page:")
+                .and_then(|p| p.parse::<usize>().ok())
+                .unwrap_or(0)
+                .min(50);
             lines.push(format!("Scheduled tasks: {} total; {} available in bounded snapshot, {} on this page. Next due is a persisted cursor, not a promise of execution. Historical schedules are inactive and not imported.",snapshot.schedule_count,snapshot.schedules.len(),snapshot.schedules.len().saturating_sub(offset).min(10)));
             for s in snapshot.schedules.iter().skip(offset).take(10) {
-                lines.push(format!("#{}: {} | next {} | latest run {}: {}{}",s.id,s.state,s.next_due.as_deref().unwrap_or("unavailable"),s.latest_run_id.map(|id|id.to_string()).unwrap_or_else(||"none".into()),s.latest_status.unwrap_or("unavailable"),if s.blocked{" | attention: blocked"}else{""}));
-                actions.push(("Schedule details",format!("schedule:{}",s.id)));
+                lines.push(format!(
+                    "#{}: {} | next {} | latest run {}: {}{}",
+                    s.id,
+                    s.state,
+                    s.next_due.as_deref().unwrap_or("unavailable"),
+                    s.latest_run_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".into()),
+                    s.latest_status.unwrap_or("unavailable"),
+                    if s.blocked {
+                        " | attention: blocked"
+                    } else {
+                        ""
+                    }
+                ));
+                actions.push(("Schedule details", format!("schedule:{}", s.id)));
             }
-            if offset+10<snapshot.schedules.len() {actions.push(("Next page",format!("schedules-page:{}",offset+10)));}
-            if offset>0 {actions.push(("Previous page",format!("schedules-page:{}",offset.saturating_sub(10))));}
-            lines.push(format!("Page {}. At most 50 schedules in each snapshot.",offset/10+1));
+            if offset + 10 < snapshot.schedules.len() {
+                actions.push(("Next page", format!("schedules-page:{}", offset + 10)));
+            }
+            if offset > 0 {
+                actions.push((
+                    "Previous page",
+                    format!("schedules-page:{}", offset.saturating_sub(10)),
+                ));
+            }
+            lines.push(format!(
+                "Page {}. At most 50 schedules in each snapshot.",
+                offset / 10 + 1
+            ));
             lines.push("Create/change schedules with the existing local schedule CLI; this view never invents jobs or retries Unknown effects.".into());
         }
         a if a.starts_with("schedule:") => {
-            let id=a.strip_prefix("schedule:").and_then(|s|s.parse::<i64>().ok());
-            if let Some(s)=snapshot.schedules.iter().find(|s|Some(s.id)==id) {
-                lines.push(format!("Schedule #{} revision {}: {}\nNext due: {}\nBlocked: {}\nLatest run: {} ({})",s.id,s.revision,s.state,s.next_due.as_deref().unwrap_or("unavailable"),s.blocked,s.latest_run_id.map(|id|id.to_string()).unwrap_or_else(||"none".into()),s.latest_status.unwrap_or("unavailable")));
-                if let Some(t)=&s.timing {
-                    lines.push(format!("{}\nTimezone: {}; DST fold: {}; gap: {}; missed: {}",t.cadence,t.timezone,t.fold,t.gap,t.missed));
-                } else {lines.push("Timing unavailable.".into());}
-            } else { lines.push("Schedule unavailable in this conversation/topic or outside bounded snapshot.".into()); }
-        }
-        a if a=="tasks" || a.starts_with("tasks-page:") || a.starts_with("run:") => {
-            let id=a.strip_prefix("run:").and_then(|s|s.parse::<i64>().ok());
-            let offset=a.strip_prefix("tasks-page:").and_then(|p|p.parse::<usize>().ok()).unwrap_or(0).min(50);
-            actions.push(("Notifications","notifications:".into()));
-            lines.push(format!("Tasks: {} logical tasks, {} runs. {} available in bounded snapshot.",snapshot.task_count,snapshot.run_count,snapshot.tasks.len()));
-            if id.is_none() {lines.push(format!("{} on this page.",snapshot.tasks.len().saturating_sub(offset).min(10)));}
-            for t in snapshot.tasks.iter().filter(|t|id.is_none_or(|id|t.run_id==id)).skip(offset).take(if id.is_some(){1}else{10}) {
-                lines.push(format!("Task #{} / run #{} (attempt {}): {}\nProgress: {}. Delivery: {}.{}{}",t.task_id,t.run_id,t.attempt,t.status,if t.progress_recorded{"recorded (detail unavailable)"}else{"unavailable"},t.delivery,if t.outcome_unknown{" Outcome unknown; do not retry automatically."}else{""},if t.attention{" Attention required."}else{""}));
-                if let Some(wait)=t.wait_kind {lines.push(format!("Waiting: {wait}"));}
-                if id.is_some() {lines.push(format!("Created: {}\nStarted: {}\nFinished: {}\nCancellation requested: {}",t.created_at.as_deref().unwrap_or("unavailable"),t.started_at.as_deref().unwrap_or("unavailable"),t.finished_at.as_deref().unwrap_or("unavailable"),t.cancel_requested));}
-                if id.is_none() {actions.push(("Run details",format!("run:{}",t.run_id)));}
-                if matches!(t.status,"queued"|"running"|"awaiting_approval"|"waiting_remote"|"waiting_event"|"cancel_requested") {
-                    actions.push(("Cancel run",format!("cancel:{}",t.run_id)));
+            let id = a
+                .strip_prefix("schedule:")
+                .and_then(|s| s.parse::<i64>().ok());
+            if let Some(s) = snapshot.schedules.iter().find(|s| Some(s.id) == id) {
+                lines.push(format!(
+                    "Schedule #{} revision {}: {}\nNext due: {}\nBlocked: {}\nLatest run: {} ({})",
+                    s.id,
+                    s.revision,
+                    s.state,
+                    s.next_due.as_deref().unwrap_or("unavailable"),
+                    s.blocked,
+                    s.latest_run_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".into()),
+                    s.latest_status.unwrap_or("unavailable")
+                ));
+                if let Some(t) = &s.timing {
+                    lines.push(format!(
+                        "{}\nTimezone: {}; DST fold: {}; gap: {}; missed: {}",
+                        t.cadence, t.timezone, t.fold, t.gap, t.missed
+                    ));
+                } else {
+                    lines.push("Timing unavailable.".into());
                 }
-                if let Some(approval)=t.approval_id {
-                    actions.push(("Approve",format!("approve:{approval}")));
-                    actions.push(("Reject",format!("reject:{approval}")));
+            } else {
+                lines.push(
+                    "Schedule unavailable in this conversation/topic or outside bounded snapshot."
+                        .into(),
+                );
+            }
+        }
+        a if a == "tasks" || a.starts_with("tasks-page:") || a.starts_with("run:") => {
+            let id = a.strip_prefix("run:").and_then(|s| s.parse::<i64>().ok());
+            let offset = a
+                .strip_prefix("tasks-page:")
+                .and_then(|p| p.parse::<usize>().ok())
+                .unwrap_or(0)
+                .min(50);
+            actions.push(("Notifications", "notifications:".into()));
+            lines.push(format!(
+                "Tasks: {} logical tasks, {} runs. {} available in bounded snapshot.",
+                snapshot.task_count,
+                snapshot.run_count,
+                snapshot.tasks.len()
+            ));
+            if id.is_none() {
+                lines.push(format!(
+                    "{} on this page.",
+                    snapshot.tasks.len().saturating_sub(offset).min(10)
+                ));
+            }
+            for t in snapshot
+                .tasks
+                .iter()
+                .filter(|t| id.is_none_or(|id| t.run_id == id))
+                .skip(offset)
+                .take(if id.is_some() { 1 } else { 10 })
+            {
+                lines.push(format!(
+                    "Task #{} / run #{} (attempt {}): {}\nProgress: {}. Delivery: {}.{}{}",
+                    t.task_id,
+                    t.run_id,
+                    t.attempt,
+                    t.status,
+                    if t.progress_recorded {
+                        "recorded (detail unavailable)"
+                    } else {
+                        "unavailable"
+                    },
+                    t.delivery,
+                    if t.outcome_unknown {
+                        " Outcome unknown; do not retry automatically."
+                    } else {
+                        ""
+                    },
+                    if t.attention {
+                        " Attention required."
+                    } else {
+                        ""
+                    }
+                ));
+                if let Some(wait) = t.wait_kind {
+                    lines.push(format!("Waiting: {wait}"));
+                }
+                if id.is_some() {
+                    lines.push(format!(
+                        "Created: {}\nStarted: {}\nFinished: {}\nCancellation requested: {}",
+                        t.created_at.as_deref().unwrap_or("unavailable"),
+                        t.started_at.as_deref().unwrap_or("unavailable"),
+                        t.finished_at.as_deref().unwrap_or("unavailable"),
+                        t.cancel_requested
+                    ));
+                }
+                if id.is_none() {
+                    actions.push(("Run details", format!("run:{}", t.run_id)));
+                }
+                if matches!(
+                    t.status,
+                    "queued"
+                        | "running"
+                        | "awaiting_approval"
+                        | "waiting_remote"
+                        | "waiting_event"
+                        | "cancel_requested"
+                ) {
+                    actions.push(("Cancel run", format!("cancel:{}", t.run_id)));
+                }
+                if let Some(approval) = t.approval_id {
+                    actions.push(("Approve", format!("approve:{approval}")));
+                    actions.push(("Reject", format!("reject:{approval}")));
                 }
             }
-            if snapshot.tasks.is_empty() {lines.push("No tasks in this conversation/topic.".into());}
-            if let Some(id)=id.filter(|id|!snapshot.tasks.iter().any(|t|t.run_id==*id)) {
-                let raw=store.task_status_command(session,&id.to_string(),update)?;
-                if let Ok(row)=serde_json::from_str::<serde_json::Value>(&raw) {
+            if snapshot.tasks.is_empty() {
+                lines.push("No tasks in this conversation/topic.".into());
+            }
+            if let Some(id) = id.filter(|id| !snapshot.tasks.iter().any(|t| t.run_id == *id)) {
+                let raw = store.task_status_command(session, &id.to_string(), update)?;
+                if let Ok(row) = serde_json::from_str::<serde_json::Value>(&raw) {
                     lines.push(format!("Task #{} / requested run #{}: {}\nCurrent run: {}. Attempt: {}. Waiting: {}\nHistorical attempt; current-run actions are available from Tasks.",row["task_id"],id,row["status"].as_str().unwrap_or("unknown"),row["current_run"],row["attempt"],row["wait_kind"].as_str().unwrap_or("none/unavailable")));
-                } else {lines.push(raw);}
+                } else {
+                    lines.push(raw);
+                }
             }
             if id.is_none() {
-                if offset+10<snapshot.tasks.len() {actions.push(("Next page",format!("tasks-page:{}",offset+10)));}
-                if offset>0 {actions.push(("Previous page",format!("tasks-page:{}",offset.saturating_sub(10))));}
+                if offset + 10 < snapshot.tasks.len() {
+                    actions.push(("Next page", format!("tasks-page:{}", offset + 10)));
+                }
+                if offset > 0 {
+                    actions.push((
+                        "Previous page",
+                        format!("tasks-page:{}", offset.saturating_sub(10)),
+                    ));
+                }
                 lines.push(format!("Page {}. At most 50 tasks in each snapshot; /tasks run-ID can inspect an older attempt.",offset/10+1));
             }
         }

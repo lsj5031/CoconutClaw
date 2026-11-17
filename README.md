@@ -149,10 +149,24 @@ remains in its separately provisioned local home. Keep state private and back it
 up consistently while stopped; copying only `state.db` during a running WAL
 transaction is not a safe backup procedure.
 
-## Connect an experimental runner (Linux/macOS)
+## Pair a native execution node (Linux/macOS)
 
-There is **no production `runner add` command** yet. The implemented connection
-path is the disposable native **test-harness** launcher below. It runs one owned
+`coconutclaw nodes enroll`, `pair`, `start`, and `status` provide the native
+text-task path. One coordinator polls Telegram; trusted runners use host-local
+Codex authentication and an explicitly permitted workspace. Home → Nodes
+selects the executor for new tasks in that conversation/topic. Unavailable or
+interrupted work remains Unknown, never local fallback or automatic retry.
+
+Read [setup, admission, recovery and rollback](docs/production-nodes.md) before
+pairing. Source checks are separate from parent-owned native/live acceptance;
+no deployment or independent review is implied. Native Windows activation
+currently refuses pending actual host access, key ACL and descendant-cleanup
+acceptance. Never copy credentials or private node roots between hosts.
+
+## Historical experimental runner fixture
+
+The older connection path is the disposable native **test-harness** launcher
+below. It runs one owned
 file fixture through the same signed Start/Result/cancellation and durable Store
 path; it is not general remote Telegram task dispatch. Independent review is
 **deferred, not approved**. Shared-original-Store multi-runner concurrency remains

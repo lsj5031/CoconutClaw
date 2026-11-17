@@ -47,6 +47,8 @@ pub struct ProviderCtx<'a> {
     /// Activity-based idle limits apply independently.
     pub timeout_secs: Option<u64>,
     pub session_id: Option<&'a str>,
+    /// Remote text runs never inherit a dangerous host sandbox setting.
+    pub workspace_only: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +135,11 @@ impl ProviderRunner for CodexRunner {
         cmd.arg("--skip-git-repo-check")
             .arg("--output-last-message")
             .arg(&out_file);
+        if ctx.workspace_only {
+            cmd.args(["--sandbox", "workspace-write"])
+                .args(["-c", "approval_policy=\"never\""])
+                .args(["-c", "shell_environment_policy.inherit=\"none\""]);
+        }
 
         if let Some(model) = &ctx.config.codex.model {
             cmd.arg("--model").arg(model);
@@ -231,12 +238,48 @@ pub fn run_provider_session(
         progress_tx,
         timeout_secs,
         session_id,
+        workspace_only: false,
     };
 
     let runner = CodexRunner {
         out_file: RefCell::new(None),
     };
     run_provider_impl(&runner, &ctx)
+}
+
+/// A fresh, non-retrying workspace-scoped invocation for an explicitly paired
+/// runner. Authentication and provider routing remain entirely host-local.
+pub fn run_workspace(
+    config: &RuntimeConfig,
+    context: &str,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Result<ProviderOutput> {
+    let mut config = config.clone();
+    config.exec_policy = "safe".into();
+    let ctx = ProviderCtx {
+        config: &config,
+        attachment_path: None,
+        context,
+        cancel_flag: Some(cancel_flag),
+        progress_tx: None,
+        timeout_secs: None,
+        session_id: None,
+        workspace_only: true,
+    };
+    if cancel_flag.load(Ordering::SeqCst) {
+        return Ok(ProviderOutput {
+            raw_output: "cancelled".into(),
+            success: false,
+            exit_code: 130,
+            session_id: None,
+        });
+    }
+    run_provider_impl(
+        &CodexRunner {
+            out_file: RefCell::new(None),
+        },
+        &ctx,
+    )
 }
 
 // ---------------------------------------------------------------------------

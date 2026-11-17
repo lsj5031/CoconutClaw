@@ -13,6 +13,19 @@ def load(name):
     return json.loads((FORMAL / name).read_text())
 
 
+def production_pin(path, previous):
+    """Preserve historical integration evidence and check the next exact delta."""
+    changes = {row["path"]: row for row in load("production-reconciliation.json")["changes"]}
+    if path not in changes:
+        return previous
+    row = changes[path]
+    if row["before"] != previous:
+        raise AssertionError(f"broken production mapping ancestry: {path}")
+    if not row["inspection"] or not row["affected_families"]:
+        raise AssertionError(f"missing production mapping inspection: {path}")
+    return row["after"]
+
+
 class Mapping(unittest.TestCase):
     def test_current_inventory_and_all_pins_agree(self):
         rows = load("inventory.json")["paths"]
@@ -61,13 +74,13 @@ class Mapping(unittest.TestCase):
                 delta = integration[row["path"]]
                 self.assertEqual(reviewed, delta["feature_sha256"])
                 reviewed = delta["integrated_sha256"]
-            self.assertEqual(reviewed, pins[row["path"]])
+            self.assertEqual(production_pin(row["path"], reviewed), pins[row["path"]])
             self.assertNotEqual(row["pin"], row["current"])
             self.assertTrue(row["inspection"])
             self.assertTrue(row["resolution"])
             self.assertRegex(row["reviewed_delta_sha256"], r"^[0-9a-f]{64}$")
         for row in audit["new_inputs"]:
-            self.assertEqual(row["sha256"], pins[row["path"]])
+            self.assertEqual(production_pin(row["path"], row["sha256"]), pins[row["path"]])
 
     def test_integration_reviews_cover_pin_union_without_losing_ui_history(self):
         pins = load("implementation-hashes.json")
@@ -77,14 +90,38 @@ class Mapping(unittest.TestCase):
         unchanged = set(audit["unchanged_feature_inputs"])
         self.assertEqual(len(rows), len(reviewed))
         self.assertFalse(reviewed & unchanged)
-        self.assertEqual(reviewed | unchanged, set(pins))
+        added = load("production-reconciliation.json")["new_inputs"]
+        self.assertFalse(set(added) & (reviewed | unchanged))
+        self.assertEqual(reviewed | unchanged | set(added), set(pins))
         for row in rows:
-            self.assertEqual(row["integrated_sha256"], pins[row["path"]])
+            self.assertEqual(production_pin(row["path"], row["integrated_sha256"]), pins[row["path"]])
             self.assertEqual(row["main_sha256"], row["main_pin_sha256"])
             self.assertTrue(row["inspection"])
             self.assertTrue(row["affected_families"])
             self.assertRegex(row["reviewed_delta_sha256"], r"^[0-9a-f]{64}$")
         self.assertFalse(audit["inherited_main_pin_mismatches"])
+
+    def test_production_deltas_and_new_inputs_have_exact_provenance(self):
+        pins = load("implementation-hashes.json")
+        audit = load("production-reconciliation.json")
+        changes = {r["path"]: r for r in audit["changes"]}
+        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]), set(pins))
+        for path, inherited in audit["inherited_pins"].items():
+            if path in changes:
+                self.assertEqual(changes[path]["before"], inherited)
+            else:
+                self.assertEqual(pins[path], inherited)
+        self.assertEqual(len(audit["changes"]), len({r["path"] for r in audit["changes"]}))
+        for row in audit["changes"]:
+            self.assertEqual(row["after"], pins[row["path"]])
+            self.assertNotEqual(row["before"], row["after"])
+            self.assertRegex(row["delta_sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(row["inspection"])
+            self.assertTrue(row["affected_families"])
+        for path, row in audit["new_inputs"].items():
+            self.assertEqual(row["sha256"], pins[path])
+            self.assertTrue(row["inspection"])
+            self.assertTrue(row["affected_families"])
 
     def test_case_inventory_and_required_actions_exist(self):
         cases = load("cases.json")

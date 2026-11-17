@@ -1,5 +1,10 @@
 # iroh Phase 2, synthetic increments
 
+The historical fixture status below predates the isolated production-node
+implementation lane. See [paired execution nodes](production-nodes.md) for its
+separate source path, activation limits and required native acceptance. Historical
+fixture receipts are not evidence for that new path.
+
 16 November 2026. **Partial, unreviewed, not deployed. Replicated application
 state is not complete.** No production cross-host runner, CLI network configuration or live
 production runtime adapters are enabled. `coconutclaw-sync` remains separate from the

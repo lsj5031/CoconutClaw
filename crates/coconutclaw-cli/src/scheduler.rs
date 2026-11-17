@@ -591,6 +591,16 @@ impl SessionScheduler {
             tx.commit()?;
         }
 
+        if crate::nodes::execute(
+            &self.inner.cfg,
+            &store,
+            task_id,
+            &request,
+            cancel_flag.clone(),
+        )? {
+            return Ok(TaskCompletion::WaitingRemote);
+        }
+
         let (input, cleanup_path) = match request.media.clone() {
             Some(TaskMedia::Telegram(media)) => hydrate_turn_input(
                 &self.inner.cfg,
@@ -1160,6 +1170,7 @@ impl SessionScheduler {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let store = Store::open(&self.inner.cfg)?;
         store.apply_runtime_results(&iso_now(&self.inner.cfg.timezone))?;
+        crate::nodes::recover(&store, &iso_now(&self.inner.cfg.timezone))?;
         store.mark_stale_task_runs_failed(&iso_now(&self.inner.cfg.timezone))?;
         let mut stmt = store.conn.prepare(
             "SELECT p.task_run_id,p.request FROM task_payloads p WHERE p.output IS NULL

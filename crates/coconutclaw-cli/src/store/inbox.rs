@@ -116,6 +116,7 @@ impl Store {
             "UPDATE runtime_attempts SET cause_event_key=?2 WHERE run_id=?1",
             params![id, key.unwrap_or(&generated)],
         )?;
+        crate::nodes::freeze_route(self, id, &request.session.id())?;
         Ok((id, true))
     }
 

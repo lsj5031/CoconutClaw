@@ -157,8 +157,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "acb939d627ffec4d1fb227cd0479087f381b35d2339acaa0cf091cbc396d635e",
-      "lines": 364,
+      "sha256": "f19003e45b324a57939c23d602ceda6748271ed769846750cd580e09113e2118",
+      "lines": 378,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
@@ -166,7 +166,8 @@
       "conditional_branches": [],
       "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
       "previous_inventory_sha256": "49f5bbc84aafccee79437073719b128fc83ca2be961d3dddd920dcacf2853cba",
-      "previous_ui_inventory_sha256": "2f2400e3950a1bc230246c671be627b378281f6bdb9872674624a53e94e49d58"
+      "previous_ui_inventory_sha256": "2f2400e3950a1bc230246c671be627b378281f6bdb9872674624a53e94e49d58",
+      "production_before_sha256": "acb939d627ffec4d1fb227cd0479087f381b35d2339acaa0cf091cbc396d635e"
     },
     {
       "path": "SOUL.md",
@@ -214,8 +215,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/Cargo.toml",
-      "sha256": "56c2192e9a910ba3e8f7e3931cc25dc4acae81a7298aa4bfae07e5a12ef80f7c",
-      "lines": 36,
+      "sha256": "5a52b4cfc2b64b587e0851bee60314639e2935badcc4fb713568cb83204147e0",
+      "lines": 37,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -226,30 +227,11 @@
       ],
       "scope": "runtime or shared library",
       "declarations": [],
-      "conditional_branches": [
-        {
-          "line": 26,
-          "text": "notify = { version = \"8.2.0\", features = [\"macos_kqueue\"] }"
-        },
-        {
-          "line": 33,
-          "text": "iroh = { version = \"=1.4.1\", default-features = false, features = [\"tls-ring\", \"test-utils\"] }"
-        },
-        {
-          "line": 34,
-          "text": "iroh-docs = { version = \"=0.101.0\", default-features = false, features = [\"fs-store\"] }"
-        },
-        {
-          "line": 35,
-          "text": "serde = { version = \"1\", features = [\"derive\"] }"
-        },
-        {
-          "line": 36,
-          "text": "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"time\", \"sync\", \"net\", \"io-util\"] }"
-        }
-      ],
+      "conditional_branches": [],
       "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
-      "previous_ui_inventory_sha256": "c752330f4b14af6b04814493428309967d55b57200e54b74fb546fa851b026e8"
+      "previous_ui_inventory_sha256": "c752330f4b14af6b04814493428309967d55b57200e54b74fb546fa851b026e8",
+      "production_before_sha256": "56c2192e9a910ba3e8f7e3931cc25dc4acae81a7298aa4bfae07e5a12ef80f7c",
+      "production_inspection": "Promote only existing lock-pinned sync/iroh/serde/Tokio/BLAKE3 dependencies; test-utils stays a dev feature."
     },
     {
       "path": "crates/coconutclaw-cli/src/approval.rs",
@@ -1128,8 +1110,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/main.rs",
-      "sha256": "045f0b9b3f2a305550631b150741922f7b4326e40addac0b1d1b0cefdbb5d794",
-      "lines": 136,
+      "sha256": "ecfafc9096910d396b8bffcaf1dfb1fd0a94a29fc7f27f5830f60cd6c54cbac2",
+      "lines": 146,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -1174,98 +1156,108 @@
         },
         {
           "line": 14,
-          "text": "mod recovery;"
+          "text": "mod nodes;"
         },
         {
           "line": 15,
-          "text": "mod scheduler;"
+          "text": "mod recovery;"
         },
         {
           "line": 16,
-          "text": "mod scheduling;"
+          "text": "mod runner_wire;"
         },
         {
           "line": 17,
-          "text": "mod service;"
+          "text": "mod scheduler;"
         },
         {
           "line": 18,
-          "text": "mod session;"
+          "text": "mod scheduling;"
         },
         {
           "line": 19,
-          "text": "mod store;"
+          "text": "mod service;"
         },
         {
           "line": 20,
-          "text": "mod telegram;"
+          "text": "mod session;"
         },
         {
           "line": 21,
-          "text": "mod telegram_ui;"
+          "text": "mod store;"
+        },
+        {
+          "line": 22,
+          "text": "mod telegram;"
         },
         {
           "line": 23,
-          "text": "mod test_runtime;"
-        },
-        {
-          "line": 24,
-          "text": "mod turn;"
+          "text": "mod telegram_ui;"
         },
         {
           "line": 25,
-          "text": "mod types;"
+          "text": "mod test_runtime;"
         },
         {
           "line": 26,
+          "text": "mod turn;"
+        },
+        {
+          "line": 27,
+          "text": "mod types;"
+        },
+        {
+          "line": 28,
           "text": "mod util;"
         },
         {
-          "line": 39,
+          "line": 41,
           "text": "struct Cli {"
         },
         {
-          "line": 47,
+          "line": 49,
           "text": "enum Commands {"
         },
         {
-          "line": 57,
+          "line": 60,
           "text": "struct DoctorArgs {"
         },
         {
-          "line": 63,
+          "line": 66,
           "text": "struct TurnArgs {"
         },
         {
-          "line": 73,
+          "line": 76,
           "text": "struct ServiceArgs {"
         },
         {
-          "line": 79,
+          "line": 82,
           "text": "enum ServiceAction {"
         },
         {
-          "line": 87,
+          "line": 90,
           "text": "fn main() -> Result<()> {"
         },
         {
-          "line": 136,
+          "line": 146,
           "text": "mod tests;"
         }
       ],
       "conditional_branches": [
         {
-          "line": 22,
+          "line": 24,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 134,
+          "line": 144,
           "text": "#[cfg(test)]"
         }
       ],
       "gap": "Admission/control/startup contracts only; full parser flags, diagnostics, migration and every CLI command sequence not exhaustively refined.",
       "previous_inventory_sha256": "7fa6e36a251f39b6334dea30d5523260868492d058e17102f03acc33582b7d73",
-      "previous_ui_inventory_sha256": "29f063011774f51521da1ef9be6d4754bea51558054b781d3b561a923df65c47"
+      "previous_ui_inventory_sha256": "29f063011774f51521da1ef9be6d4754bea51558054b781d3b561a923df65c47",
+      "production_before_sha256": "045f0b9b3f2a305550631b150741922f7b4326e40addac0b1d1b0cefdbb5d794",
+      "production_inspection": "Explicit nodes command dispatch; enrolled runner identities refuse ordinary polling/turn entry points; un-enrolled behavior preserved."
     },
     {
       "path": "crates/coconutclaw-cli/src/main_integration_test.rs",
@@ -2235,8 +2227,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/scheduler.rs",
-      "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
-      "lines": 1357,
+      "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+      "lines": 1368,
       "classification": "abstracted-family",
       "families": [
         "Calendar",
@@ -2275,6 +2267,10 @@
         {
           "line": 93,
           "text": "pub(crate) struct SessionScheduler {"
+        },
+        {
+          "line": 97,
+          "text": "impl SessionScheduler {"
         },
         {
           "line": 98,
@@ -2333,71 +2329,71 @@
           "text": "fn run_task("
         },
         {
-          "line": 672,
+          "line": 682,
           "text": "fn task_cleanup_path("
         },
         {
-          "line": 684,
+          "line": 694,
           "text": "fn cleanup_task_attachment("
         },
         {
-          "line": 694,
+          "line": 704,
           "text": "fn complete_task(&self, task_id: i64, _session_id: &str) -> Result<()> {"
         },
         {
-          "line": 717,
+          "line": 727,
           "text": "fn persist_result("
         },
         {
-          "line": 894,
+          "line": 904,
           "text": "fn persist_failure("
         },
         {
-          "line": 941,
+          "line": 951,
           "text": "fn queue_existing(&self, id: i64, request: TaskRequest) {"
         },
         {
-          "line": 964,
+          "line": 974,
           "text": "fn dispatch_ready(&self) {"
         },
         {
-          "line": 1036,
+          "line": 1046,
           "text": "fn deliver(&self, store: &Store, id: i64, request: &TaskRequest, output: &str) -> Result<()> {"
         },
         {
-          "line": 1118,
+          "line": 1128,
           "text": "pub(crate) fn retry_deliveries(&self) -> Result<()> {"
         },
         {
-          "line": 1157,
+          "line": 1167,
           "text": "pub(crate) fn recover(&self) -> Result<()> {"
         },
         {
-          "line": 1224,
+          "line": 1235,
           "text": "pub(crate) fn resume_runtime_results(&self) -> Result<()> {"
         },
         {
-          "line": 1235,
+          "line": 1246,
           "text": "pub(crate) fn resume_waiting_events(&self) -> Result<usize> {"
         },
         {
-          "line": 1254,
+          "line": 1265,
           "text": "pub(crate) fn request_shutdown(&self) {"
         },
         {
-          "line": 1278,
+          "line": 1289,
           "text": "pub(crate) fn shutdown(&self) -> Result<()> {"
         },
         {
-          "line": 1318,
+          "line": 1329,
           "text": "fn render_active_task_lines(tasks: Vec<crate::store::TaskRun>, include_session_id: bool) -> String {"
         },
         {
-          "line": 1346,
+          "line": 1357,
           "text": "enum TaskCompletion {"
         },
         {
-          "line": 1357,
+          "line": 1368,
           "text": "pub(crate) mod tests;"
         }
       ],
@@ -2415,16 +2411,18 @@
           "text": "#[cfg(all(test, unix))]"
         },
         {
-          "line": 979,
+          "line": 989,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 1355,
+          "line": 1366,
           "text": "#[cfg(test)]"
         }
       ],
       "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
-      "previous_inventory_sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea"
+      "previous_inventory_sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+      "production_before_sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
+      "production_inspection": "Frozen node route replaces local provider invocation; existing result reducer, recovery and outbox remain authoritative."
     },
     {
       "path": "crates/coconutclaw-cli/src/scheduler_calendar.rs",
@@ -3382,8 +3380,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/inbox.rs",
-      "sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
-      "lines": 130,
+      "sha256": "e3cbc95f07fc14c031291e060a99767241a04c347808bbfa6429d3fc2e300a07",
+      "lines": 131,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -3397,8 +3395,16 @@
           "text": "pub(crate) enum EventKind {"
         },
         {
+          "line": 15,
+          "text": "impl EventKind {"
+        },
+        {
           "line": 16,
           "text": "fn as_str(self) -> &'static str {"
+        },
+        {
+          "line": 26,
+          "text": "impl Store {"
         },
         {
           "line": 29,
@@ -3409,12 +3415,14 @@
           "text": "pub(crate) fn admit_inbox_request("
         },
         {
-          "line": 122,
+          "line": 123,
           "text": "pub(crate) fn inherit_schedule(&self, parent: i64, child: i64) -> Result<()> {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "production_before_sha256": "f275eabef42c64720386af0c42f1c5747945b8b0853a7569fb8a31dc817fc5db",
+      "production_inspection": "Freeze session node selection in the same task/payload/inbox transaction; duplicate admissions do not change assignments."
     },
     {
       "path": "crates/coconutclaw-cli/src/store/kv.rs",
@@ -3917,8 +3925,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/runtime_results.rs",
-      "sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
-      "lines": 240,
+      "sha256": "3931572ddf03196a30cb6e63a75278ba30a1880662ece6a6e2b270c2a19676e1",
+      "lines": 238,
       "classification": "abstracted-family",
       "families": [
         "RemoteComposition",
@@ -3928,33 +3936,30 @@
       "scope": "runtime or shared library",
       "declarations": [
         {
-          "line": 11,
-          "text": "pub(super) fn reserve_runtime_run("
+          "line": 7,
+          "text": "impl Store {"
         },
         {
-          "line": 48,
-          "text": "pub(super) fn custody_runtime_result("
+          "line": 10,
+          "text": "pub(crate) fn reserve_runtime_run("
         },
         {
-          "line": 101,
+          "line": 46,
+          "text": "pub(crate) fn custody_runtime_result("
+        },
+        {
+          "line": 99,
           "text": "pub(crate) fn runtime_result_is_literal(&self, id: i64) -> Result<bool> {"
         },
         {
-          "line": 149,
+          "line": 147,
           "text": "pub(crate) fn apply_runtime_results(&self, now: &str) -> Result<usize> {"
         }
       ],
-      "conditional_branches": [
-        {
-          "line": 10,
-          "text": "#[cfg(test)]"
-        },
-        {
-          "line": 47,
-          "text": "#[cfg(test)]"
-        }
-      ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "conditional_branches": [],
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "production_before_sha256": "c4f5769c303fb2357693d12d2b697f6a763817ee1d12bb4720c4ddd1943a4e74",
+      "production_inspection": "Expose existing exact assignment reservation/custody methods; retain source request/route, literal delivery and Unknown guards."
     },
     {
       "path": "crates/coconutclaw-cli/src/store/schedules.rs",
@@ -5296,8 +5301,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
-      "sha256": "78f3935ded1f82a077c25af8327fb5675248e80b23513b46f4ce6184c608d4d9",
-      "lines": 1531,
+      "sha256": "61dea3a84da5f743f2e34386fcffca358a686ff57532843f0b417778fb1ee688",
+      "lines": 1516,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -5307,18 +5312,6 @@
       ],
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
       "declarations": [
-        {
-          "line": 13,
-          "text": "const ALPN: &[u8] = b\"/coconutclaw/disposable-runner/1\";"
-        },
-        {
-          "line": 14,
-          "text": "const ROLE_MARKER: &str = \"CoconutClaw disposable multihost acceptance v1\\n\";"
-        },
-        {
-          "line": 15,
-          "text": "const ENTRY: &str = \"store::task_adapter::proposals::process::remote::multihost_role_entry\";"
-        },
         {
           "line": 19,
           "text": "pub(in crate::store::task_adapter) struct Locator {"
@@ -5360,183 +5353,205 @@
           "text": "fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>> {"
         },
         {
-          "line": 122,
+          "line": 115,
           "text": "fn decode<T: for<'a> Deserialize<'a> + Serialize>(bytes: &[u8]) -> Result<T> {"
         },
         {
-          "line": 134,
+          "line": 119,
           "text": "async fn endpoint(network: &AcceptanceNetwork, key: SecretKey) -> Result<Endpoint> {"
         },
         {
-          "line": 151,
+          "line": 136,
           "text": "fn dial(addr: &EndpointAddr, network: &AcceptanceNetwork) -> EndpointAddr {"
         },
         {
-          "line": 162,
+          "line": 146,
+          "text": "impl Client {"
+        },
+        {
+          "line": 147,
           "text": "async fn probe_transport(&self, publisher: &mut ScopedPeer) -> Result<()> {"
         },
         {
-          "line": 202,
+          "line": 187,
           "text": "pub(in crate::store::task_adapter) fn data_id(&self) -> EndpointId {"
         },
         {
-          "line": 205,
+          "line": 190,
           "text": "pub(in crate::store::task_adapter) fn run_id(&self) -> &str {"
         },
         {
-          "line": 208,
+          "line": 193,
           "text": "pub(in crate::store::task_adapter) fn hostname(&self) -> &str {"
         },
         {
-          "line": 211,
+          "line": 196,
           "text": "pub(in crate::store::task_adapter) fn controlled_fixture(&self) -> bool {"
         },
         {
-          "line": 214,
+          "line": 199,
           "text": "async fn request(&self, request: Request) -> Result<Response> {"
         },
         {
-          "line": 237,
+          "line": 222,
           "text": "pub(in crate::store::task_adapter::proposals) async fn call("
         },
         {
-          "line": 248,
+          "line": 233,
           "text": "pub(in crate::store::task_adapter) async fn wait(&self, assignment: u64) -> Result<()> {"
         },
         {
-          "line": 255,
+          "line": 240,
           "text": "async fn initialize("
         },
         {
-          "line": 275,
+          "line": 260,
           "text": "pub(in crate::store::task_adapter) async fn import("
         },
         {
-          "line": 292,
+          "line": 277,
           "text": "pub(in crate::store::task_adapter) async fn publish("
         },
         {
-          "line": 304,
+          "line": 288,
+          "text": "impl RunnerClient {"
+        },
+        {
+          "line": 289,
           "text": "pub(in crate::store::task_adapter) fn remote(&self) -> Option<&Arc<Client>> {"
         },
         {
-          "line": 312,
+          "line": 297,
           "text": "struct RemoteState {"
         },
         {
-          "line": 323,
+          "line": 307,
+          "text": "impl RemoteState {"
+        },
+        {
+          "line": 308,
           "text": "async fn handle(&mut self, request: Request) -> Result<Response> {"
         },
         {
-          "line": 612,
+          "line": 597,
           "text": "struct RpcCall {"
         },
         {
-          "line": 620,
+          "line": 605,
           "text": "struct Handler {"
         },
         {
-          "line": 627,
+          "line": 611,
+          "text": "impl Handler {"
+        },
+        {
+          "line": 612,
           "text": "async fn serve(&self, conn: &IrohConnection) -> Result<()> {"
         },
         {
-          "line": 652,
+          "line": 636,
+          "text": "impl RemoteState {"
+        },
+        {
+          "line": 637,
           "text": "async fn dispatch(&mut self, call: RpcCall) -> Result<bool> {"
         },
         {
-          "line": 720,
+          "line": 704,
+          "text": "impl ProtocolHandler for Handler {"
+        },
+        {
+          "line": 705,
           "text": "async fn accept(&self, conn: IrohConnection) -> Result<(), AcceptError> {"
         },
         {
-          "line": 732,
+          "line": 717,
           "text": "pub(in crate::store::task_adapter) fn hostname() -> Result<String> {"
         },
         {
-          "line": 738,
+          "line": 723,
           "text": "fn machine_hash() -> Result<String> {"
         },
         {
-          "line": 754,
+          "line": 739,
           "text": "fn macos_identity(success: bool, stdout: &[u8]) -> Result<String> {"
         },
         {
-          "line": 794,
+          "line": 779,
           "text": "fn namespace(config: &RoleConfig) -> NamespaceSecret {"
         },
         {
-          "line": 810,
+          "line": 795,
           "text": "fn local_key(root: &Path, name: &str) -> Result<SecretKey> {"
         },
         {
-          "line": 828,
+          "line": 813,
           "text": "fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {"
         },
         {
-          "line": 842,
+          "line": 827,
           "text": "async fn peer(config: &RoleConfig, name: &str, owner: EndpointId) -> Result<ScopedPeer> {"
         },
         {
-          "line": 853,
+          "line": 838,
           "text": "fn check_root(config: &RoleConfig) -> Result<File> {"
         },
         {
-          "line": 885,
+          "line": 870,
           "text": "async fn serve_role(config: RoleConfig) -> Result<()> {"
         },
         {
-          "line": 987,
+          "line": 972,
           "text": "pub(in crate::store::task_adapter) struct LocalRequest {"
         },
         {
-          "line": 993,
+          "line": 978,
           "text": "async fn control_server("
         },
         {
-          "line": 1038,
+          "line": 1023,
           "text": "async fn coordinator("
         },
         {
-          "line": 1271,
+          "line": 1256,
           "text": "async fn run_fixture("
         },
         {
-          "line": 1450,
+          "line": 1435,
           "text": "async fn probe("
         },
         {
-          "line": 1454,
-          "text": "type PayloadSnapshot = (i64, Option<String>, i64, String);"
-        },
-        {
-          "line": 1492,
+          "line": 1477,
           "text": "fn multihost_role_entry() {"
         },
         {
-          "line": 1516,
+          "line": 1501,
           "text": "fn announce(config: &RoleConfig, ready: &Ready) -> Result<()> {"
         },
         {
-          "line": 1531,
+          "line": 1516,
           "text": "mod tests;"
         }
       ],
       "conditional_branches": [
         {
-          "line": 739,
+          "line": 724,
           "text": "#[cfg(target_os = \"linux\")]"
         },
         {
-          "line": 741,
+          "line": 726,
           "text": "#[cfg(target_os = \"macos\")]"
         },
         {
-          "line": 749,
+          "line": 734,
           "text": "#[cfg(not(any(target_os = \"linux\", target_os = \"macos\")))]"
         }
       ],
       "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
       "previous_inventory_sha256": "9ba8a6239766916149ff354602a851a01b22877363339463f68fc3d900e3e4a0",
-      "previous_ui_inventory_sha256": "2e75736223463a8e77eaf4fa47caaa8f66b970efa4a2113c819cf0e73cd9262c"
+      "previous_ui_inventory_sha256": "2e75736223463a8e77eaf4fa47caaa8f66b970efa4a2113c819cf0e73cd9262c",
+      "production_before_sha256": "78f3935ded1f82a077c25af8327fb5675248e80b23513b46f4ce6184c608d4d9",
+      "production_inspection": "Delegate retained remote fixture framing to shared canonical code using its unchanged MAX_FRAME."
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote/tests.rs",
@@ -8258,8 +8273,8 @@
     },
     {
       "path": "crates/coconutclaw-provider/src/lib.rs",
-      "sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
-      "lines": 897,
+      "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+      "lines": 940,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -8285,183 +8300,191 @@
           "text": "pub struct ProviderCtx<'a> {"
         },
         {
-          "line": 56,
+          "line": 58,
           "text": "trait ProviderRunner {"
         },
         {
-          "line": 58,
+          "line": 60,
           "text": "fn bin_name(&self) -> &str;"
         },
         {
-          "line": 62,
+          "line": 64,
           "text": "fn build_cmd(&self, ctx: &ProviderCtx, include_dangerous: bool) -> std::io::Result<Command>;"
         },
         {
-          "line": 67,
+          "line": 69,
           "text": "fn context_via_stdin(&self) -> bool {"
         },
         {
-          "line": 72,
+          "line": 74,
           "text": "fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {"
         },
         {
-          "line": 77,
+          "line": 79,
           "text": "fn extract_final(&self, _run_result: &RunResult, _ctx: &ProviderCtx) -> Option<String> {"
         },
         {
-          "line": 82,
+          "line": 84,
           "text": "fn prefer_stdout(&self) -> bool {"
         },
         {
-          "line": 88,
+          "line": 90,
           "text": "fn has_dangerous_flag(&self) -> bool {"
         },
         {
-          "line": 94,
+          "line": 96,
           "text": "fn post_process("
         },
         {
-          "line": 108,
+          "line": 110,
           "text": "struct CodexRunner {"
         },
         {
-          "line": 115,
+          "line": 116,
+          "text": "impl ProviderRunner for CodexRunner {"
+        },
+        {
+          "line": 117,
           "text": "fn bin_name(&self) -> &str {"
         },
         {
-          "line": 119,
+          "line": 121,
           "text": "fn build_cmd(&self, ctx: &ProviderCtx, include_dangerous: bool) -> std::io::Result<Command> {"
         },
         {
-          "line": 158,
+          "line": 165,
           "text": "fn context_via_stdin(&self) -> bool {"
         },
         {
-          "line": 162,
+          "line": 169,
           "text": "fn progress_parser(&self) -> Option<fn(&str) -> Option<String>> {"
         },
         {
-          "line": 166,
+          "line": 173,
           "text": "fn extract_final(&self, run_result: &RunResult, _ctx: &ProviderCtx) -> Option<String> {"
         },
         {
-          "line": 172,
+          "line": 179,
           "text": "fn has_dangerous_flag(&self) -> bool {"
         },
         {
-          "line": 176,
+          "line": 183,
           "text": "fn post_process("
         },
         {
-          "line": 189,
+          "line": 196,
           "text": "pub fn run_provider("
         },
         {
-          "line": 209,
+          "line": 216,
           "text": "pub fn run_provider_session("
         },
         {
-          "line": 246,
+          "line": 252,
+          "text": "pub fn run_workspace("
+        },
+        {
+          "line": 289,
           "text": "fn run_provider_impl<P: ProviderRunner>(provider: &P, ctx: &ProviderCtx) -> Result<ProviderOutput> {"
         },
         {
-          "line": 325,
+          "line": 368,
           "text": "fn new_provider_command(bin_raw: &str) -> Command {"
         },
         {
-          "line": 335,
+          "line": 378,
           "text": "fn run_provider_process("
         },
         {
-          "line": 404,
+          "line": 447,
           "text": "fn fallback_text(run_result: &RunResult, prefer_stdout: bool) -> String {"
         },
         {
-          "line": 418,
+          "line": 461,
           "text": "fn finalize_output("
         },
         {
-          "line": 457,
+          "line": 500,
           "text": "struct RunResult {"
         },
         {
-          "line": 467,
+          "line": 510,
           "text": "fn run_child_process("
         },
         {
-          "line": 564,
+          "line": 607,
           "text": "fn set_nonblocking(pipe: &impl std::os::fd::AsRawFd) -> Result<()> {"
         },
         {
-          "line": 573,
+          "line": 616,
           "text": "fn read_pipe("
         },
         {
-          "line": 634,
-          "text": "static ACTIVE_GROUPS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());"
-        },
-        {
-          "line": 635,
+          "line": 678,
           "text": "struct ActiveGroup(u32);"
         },
         {
-          "line": 637,
+          "line": 679,
+          "text": "impl ActiveGroup {"
+        },
+        {
+          "line": 680,
           "text": "fn register(id: u32) -> Self {"
         },
         {
-          "line": 643,
+          "line": 685,
+          "text": "impl Drop for ActiveGroup {"
+        },
+        {
+          "line": 686,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 650,
+          "line": 693,
           "text": "pub fn kill_active_process_groups() {"
         },
         {
-          "line": 660,
+          "line": 703,
           "text": "fn terminate_cancelled_child("
         },
         {
-          "line": 699,
+          "line": 742,
           "text": "fn terminate_cancelled_child("
         },
         {
-          "line": 713,
+          "line": 756,
           "text": "fn parse_codex_progress_line(line: &str) -> Option<String> {"
         },
         {
-          "line": 725,
+          "line": 768,
           "text": "fn parse_codex_item_progress(item: &Value, started: bool) -> Option<String> {"
         },
         {
-          "line": 789,
+          "line": 832,
           "text": "fn shorten_status_text(text: &str, max_chars: usize) -> String {"
         },
         {
-          "line": 800,
+          "line": 843,
           "text": "fn parse_bin_with_env(raw: &str) -> (HashMap<String, String>, String, Vec<String>) {"
         },
         {
-          "line": 835,
+          "line": 878,
           "text": "fn split_command_spec(raw: &str) -> Vec<String> {"
         },
         {
-          "line": 861,
+          "line": 904,
           "text": "fn should_retry_without_dangerous_flag(stdout: &str, stderr: &str) -> bool {"
         },
         {
-          "line": 872,
+          "line": 915,
           "text": "fn now_nanos() -> u128 {"
         },
         {
-          "line": 879,
-          "text": "const POISONED_ENV_VARS: &[&str] = &[\"CLAUDECODE\"];"
-        },
-        {
-          "line": 881,
+          "line": 924,
           "text": "fn configure_child_command(_cmd: &mut Command) {"
         },
         {
-          "line": 897,
+          "line": 940,
           "text": "mod tests;"
         }
       ],
@@ -8475,39 +8498,41 @@
           "text": "#[cfg(test)]"
         },
         {
-          "line": 359,
+          "line": 402,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 481,
+          "line": 524,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 563,
+          "line": 606,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 651,
+          "line": 694,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 659,
+          "line": 702,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 698,
+          "line": 741,
           "text": "#[cfg(not(unix))]"
         },
         {
-          "line": 885,
+          "line": 928,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 895,
+          "line": 938,
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Workflow/process token and IO state abstraction only. Existing configured turn retries and YOLO textual-rejection compatibility retry are NOT proof of external nonoccurrence; no universal exactly-once external-effect claim. Unix process groups differ from non-Unix child-only kill."
+      "gap": "Workflow/process token and IO state abstraction only. Existing configured turn retries and YOLO textual-rejection compatibility retry are NOT proof of external nonoccurrence; no universal exactly-once external-effect claim. Unix process groups differ from non-Unix child-only kill.",
+      "production_before_sha256": "eb1eab33e0d0efbac2cfdde06b179bcea3b61292179199280b74f754d663ad87",
+      "production_inspection": "Narrow workspace provider uses explicit sandbox, fresh session, no inherited tool environment and no dangerous compatibility retry; existing cancellation/timeout driver retained."
     },
     {
       "path": "crates/coconutclaw-provider/src/lib_tests.rs",
@@ -8759,8 +8784,8 @@
     },
     {
       "path": "crates/coconutclaw-sync/src/synthetic.rs",
-      "sha256": "c456143f3ce126d37af0abcd00d6ae8ba44cf1bb1695ecd660a681076ac07690",
-      "lines": 588,
+      "sha256": "a72fdf1adfd87ffb2fc09da5a41840a1eff0c1e881727dbcbcdefcb7caada4b8",
+      "lines": 590,
       "classification": "abstracted-family",
       "families": [
         "Replication",
@@ -8769,185 +8794,167 @@
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
       "declarations": [
         {
-          "line": 36,
-          "text": "pub const MAX_RECORD: usize = 8192;"
-        },
-        {
-          "line": 37,
-          "text": "pub const MAX_ARTIFACT: usize = 4096;"
-        },
-        {
-          "line": 38,
-          "text": "const SCOPE: &str = \"synthetic/chat-a\";"
-        },
-        {
-          "line": 39,
-          "text": "const MARKER: &str = \"CoconutClaw synthetic iroh increment 1\\n\";"
-        },
-        {
-          "line": 43,
+          "line": 45,
           "text": "pub struct ReadPin {"
         },
         {
-          "line": 50,
+          "line": 52,
           "text": "pub struct Artifact {"
         },
         {
-          "line": 57,
+          "line": 59,
           "text": "pub struct Record {"
         },
         {
-          "line": 67,
+          "line": 68,
+          "text": "impl Record {"
+        },
+        {
+          "line": 69,
           "text": "pub fn key(&self) -> String {"
         },
         {
-          "line": 71,
+          "line": 73,
           "text": "fn validate(&self, author: AuthorId, key: &[u8]) -> Result<Hash> {"
         },
         {
-          "line": 96,
+          "line": 98,
           "text": "struct PinnedProtocol<P> {"
         },
         {
-          "line": 102,
+          "line": 103,
+          "text": "impl<P: ProtocolHandler> ProtocolHandler for PinnedProtocol<P> {"
+        },
+        {
+          "line": 104,
           "text": "async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {"
         },
         {
-          "line": 110,
+          "line": 112,
           "text": "async fn shutdown(&self) {"
         },
         {
-          "line": 116,
+          "line": 118,
           "text": "pub struct Peer {"
         },
         {
-          "line": 130,
+          "line": 131,
+          "text": "impl Peer {"
+        },
+        {
+          "line": 132,
           "text": "fn check_address(&self, peer: &EndpointAddr) -> Result<()> {"
         },
         {
-          "line": 151,
+          "line": 153,
           "text": "pub async fn create(root: &Path, key: SecretKey, peers: BTreeSet<EndpointId>) -> Result<Self> {"
         },
         {
-          "line": 164,
+          "line": 166,
           "text": "pub async fn reopen(root: &Path, key: SecretKey, peers: BTreeSet<EndpointId>) -> Result<Self> {"
         },
         {
-          "line": 173,
+          "line": 175,
           "text": "async fn reopen_with_builder("
         },
         {
-          "line": 182,
+          "line": 184,
           "text": "async fn reopen_with_boundary("
         },
         {
-          "line": 204,
+          "line": 206,
           "text": "async fn reopen_locked("
         },
         {
-          "line": 216,
-          "text": "CREATE TABLE IF NOT EXISTS identity(endpoint TEXT PRIMARY KEY);"
-        },
-        {
-          "line": 217,
-          "text": "CREATE TABLE IF NOT EXISTS publication("
-        },
-        {
-          "line": 221,
-          "text": "CREATE TABLE IF NOT EXISTS received("
-        },
-        {
-          "line": 225,
-          "text": "CREATE INDEX IF NOT EXISTS publication_namespace_id ON publication(namespace,id);\","
-        },
-        {
-          "line": 310,
+          "line": 312,
           "text": "pub fn addr(&self) -> EndpointAddr {"
         },
         {
-          "line": 318,
+          "line": 320,
           "text": "pub async fn author(&self) -> Result<AuthorId> {"
         },
         {
-          "line": 322,
+          "line": 324,
           "text": "pub async fn create_document(&self) -> Result<Doc> {"
         },
         {
-          "line": 331,
+          "line": 333,
           "text": "pub async fn open_document(&self, id: NamespaceId) -> Result<Doc> {"
         },
         {
-          "line": 341,
+          "line": 343,
           "text": "pub async fn import_readonly(&self, pin: &ReadPin) -> Result<Doc> {"
         },
         {
-          "line": 351,
+          "line": 353,
           "text": "pub async fn connect(&self, doc: &Doc, peer: EndpointAddr) -> Result<()> {"
         },
         {
-          "line": 365,
+          "line": 367,
           "text": "pub async fn prepare(&mut self, doc: &Doc, text: &str, artifact: &[u8]) -> Result<Record> {"
         },
         {
-          "line": 401,
+          "line": 403,
           "text": "pub async fn flush(&self, doc: &Doc) -> Result<()> {"
         },
         {
-          "line": 476,
+          "line": 478,
           "text": "pub async fn project(&mut self, doc: &Doc, pin: &ReadPin, key: &[u8]) -> Result<bool> {"
         },
         {
-          "line": 525,
+          "line": 527,
           "text": "async fn verified(&self, hash: Hash, size: u64, limit: usize) -> Result<Vec<u8>> {"
         },
         {
-          "line": 540,
+          "line": 542,
           "text": "pub async fn fetch("
         },
         {
-          "line": 569,
+          "line": 571,
           "text": "pub fn received(&self) -> Result<Vec<Record>> {"
         },
         {
-          "line": 579,
+          "line": 581,
           "text": "pub async fn shutdown(self) -> Result<()> {"
         },
         {
-          "line": 586,
+          "line": 588,
           "text": "mod tests;"
         },
         {
-          "line": 588,
+          "line": 590,
           "text": "pub mod membership;"
         }
       ],
       "conditional_branches": [
         {
-          "line": 125,
+          "line": 127,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 132,
+          "line": 134,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 153,
+          "line": 155,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 305,
+          "line": 307,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 311,
+          "line": 313,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 585,
+          "line": 587,
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "production_before_sha256": "c456143f3ce126d37af0abcd00d6ae8ba44cf1bb1695ecd660a681076ac07690",
+      "production_inspection": "Export retained exact wire scope constant only; no signature, membership or scope-validation predicate changed."
     },
     {
       "path": "crates/coconutclaw-sync/src/synthetic/membership.rs",
@@ -10464,14 +10471,15 @@
     },
     {
       "path": "docs/iroh-phase2.md",
-      "sha256": "f527c452c63b054544b4b18fe2e1646da12462457a481a324e9bf28437e2ed7b",
-      "lines": 1266,
+      "sha256": "98a0c9c9a0f33e09b9eeeacf2dc7c854343ab77c7f93644f7c2cdd74abc72a3f",
+      "lines": 1271,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate."
+      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
+      "production_before_sha256": "f527c452c63b054544b4b18fe2e1646da12462457a481a324e9bf28437e2ed7b"
     },
     {
       "path": "docs/memory.md",
@@ -10956,8 +10964,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
-      "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
-      "lines": 537,
+      "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+      "lines": 692,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -10967,18 +10975,6 @@
       ],
       "scope": "runtime or shared library",
       "declarations": [
-        {
-          "line": 9,
-          "text": "pub(crate) const PREFIX: &str = \"COCONUT_UI_V1:\";"
-        },
-        {
-          "line": 11,
-          "text": "const BUTTON_LIFETIME: i64 = 24 * 60 * 60;"
-        },
-        {
-          "line": 12,
-          "text": "const INPUT_LIFETIME: i64 = 15 * 60;"
-        },
         {
           "line": 15,
           "text": "pub(crate) struct Message {"
@@ -10996,48 +10992,46 @@
           "text": "fn button("
         },
         {
-          "line": 56,
+          "line": 59,
           "text": "fn controls("
         },
         {
-          "line": 86,
+          "line": 89,
           "text": "fn encoded("
         },
         {
-          "line": 111,
+          "line": 114,
           "text": "pub(crate) fn decode(output: &str) -> Option<Message> {"
         },
         {
-          "line": 124,
+          "line": 127,
           "text": "pub(crate) fn runtime_control(store: &Store, session: &SessionKey, text: &str) -> Result<bool> {"
         },
         {
-          "line": 139,
+          "line": 142,
           "text": "pub(crate) fn observation_control("
         },
         {
-          "line": 181,
+          "line": 184,
           "text": "fn callback_message(store: &Store, update: Option<&str>, token: &str) -> Result<Option<String>> {"
         },
         {
-          "line": 207,
-          "text": "const HELP: &str = \"Use Home to inspect this conversation/topic. Reports are dated snapshots, not live dashboards. New snapshot sends a new report.\\n\\nTasks are logical work; runs are attempts. Cancel requests cancellation, not proof it stopped. Approve/Reject apply only to pending requests.\\n\\nCommands: /start, /help, /fresh (new context, keeps memory), /tasks [run ID], /cancel [run ID], /memory, /preferences, /notifications, /schedules, /approve ID, /reject ID, /reconcile.\\n\\n/reconcile only acknowledges proven delivery recovery. It is never a generic retry. Unknown effects are not retried automatically.\\n\\nMemory and preference input uses an explicit /input code so unrelated conversation messages remain ordinary messages. /input cancel abandons it; a new input replaces the previous one. Inputs expire after 15 minutes.\";"
-        },
-        {
-          "line": 210,
+          "line": 213,
           "text": "pub(crate) fn handle("
         },
         {
-          "line": 449,
+          "line": 467,
           "text": "fn callback_id(store: &Store, update: Option<&str>) -> Result<Option<String>> {"
         },
         {
-          "line": 463,
+          "line": 481,
           "text": "fn render_snapshot("
         }
       ],
       "conditional_branches": [],
-      "gap": "Finite authority/guide contracts, not token entropy, full parser, arbitrary memory operations, clock rollback or rendering proof."
+      "gap": "Finite authority/guide contracts, not token entropy, full parser, arbitrary memory operations, clock rollback or rendering proof.",
+      "production_before_sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+      "production_inspection": "Authenticated session token selects future-task node; atomic selection/token consumption, existing task routes unchanged; show persisted node observations."
     },
     {
       "path": "crates/coconutclaw-cli/src/store/status.rs",
@@ -11245,12 +11239,435 @@
       ],
       "conditional_branches": [],
       "gap": "Unchanged validated PR22 locator/regression for explicit override and old/deep Cargo layouts. No production state transition or provider invocation."
+    },
+    {
+      "path": "crates/coconutclaw-cli/build.rs",
+      "sha256": "3c9db6e13c7d9b7a35b662878cf36b9a34635def86b29218a105f6cae977a6fb",
+      "lines": 26,
+      "classification": "abstracted-family",
+      "families": [
+        "Process",
+        "RemoteComposition"
+      ],
+      "scope": "production runner or direct behavior evidence",
+      "declarations": [
+        {
+          "line": 1,
+          "text": "fn main() {"
+        }
+      ],
+      "conditional_branches": [],
+      "gap": "Implementation-owned finite contracts, not native OS/sandbox/custody/refinement or live fleet proof."
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/nodes.rs",
+      "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+      "lines": 802,
+      "classification": "abstracted-family",
+      "families": [
+        "Process",
+        "RemoteComposition",
+        "UIAuthority",
+        "Tasks"
+      ],
+      "scope": "production runner or direct behavior evidence",
+      "declarations": [
+        {
+          "line": 28,
+          "text": "mod tests;"
+        },
+        {
+          "line": 29,
+          "text": "mod transport;"
+        },
+        {
+          "line": 35,
+          "text": "pub(crate) struct Args {"
+        },
+        {
+          "line": 40,
+          "text": "enum Command {"
+        },
+        {
+          "line": 71,
+          "text": "enum Role {"
+        },
+        {
+          "line": 78,
+          "text": "struct Card {"
+        },
+        {
+          "line": 87,
+          "text": "struct Local {"
+        },
+        {
+          "line": 92,
+          "text": "fn directory(cfg: &RuntimeConfig) -> PathBuf {"
+        },
+        {
+          "line": 95,
+          "text": "fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {"
+        },
+        {
+          "line": 100,
+          "text": "fn local(cfg: &RuntimeConfig) -> Result<Local> {"
+        },
+        {
+          "line": 108,
+          "text": "fn key(cfg: &RuntimeConfig) -> Result<SecretKey> {"
+        },
+        {
+          "line": 119,
+          "text": "pub(crate) fn require_coordinator(cfg: &RuntimeConfig) -> Result<()> {"
+        },
+        {
+          "line": 128,
+          "text": "fn create_private(path: &Path, bytes: &[u8]) -> Result<()> {"
+        },
+        {
+          "line": 136,
+          "text": "fn initialize(store: &Store) -> Result<()> {"
+        },
+        {
+          "line": 146,
+          "text": "fn paired(store: &Store, id: EndpointId) -> Result<Card> {"
+        },
+        {
+          "line": 160,
+          "text": "pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {"
+        },
+        {
+          "line": 318,
+          "text": "struct Bundle {"
+        },
+        {
+          "line": 322,
+          "text": "impl Bundle {"
+        },
+        {
+          "line": 323,
+          "text": "fn history(&self) -> Result<History> {"
+        },
+        {
+          "line": 331,
+          "text": "fn validate(&self, core: EndpointId, runner: EndpointId) -> Result<String> {"
+        },
+        {
+          "line": 350,
+          "text": "fn bundle(core: &SecretKey, runner: EndpointId, text: &str) -> Result<Bundle> {"
+        },
+        {
+          "line": 391,
+          "text": "struct Cancellation {"
+        },
+        {
+          "line": 396,
+          "text": "impl Cancellation {"
+        },
+        {
+          "line": 397,
+          "text": "fn preimage(origin: &str, assignment: &str) -> Vec<u8> {"
+        },
+        {
+          "line": 400,
+          "text": "fn sign(bundle: &Bundle, key: &SecretKey) -> Result<Self> {"
+        },
+        {
+          "line": 409,
+          "text": "fn verify(&self, bundle: &Bundle) -> Result<()> {"
+        },
+        {
+          "line": 424,
+          "text": "enum Request {"
+        },
+        {
+          "line": 432,
+          "text": "enum Reply {"
+        },
+        {
+          "line": 441,
+          "text": "struct Runner {"
+        },
+        {
+          "line": 447,
+          "text": "impl Runner {"
+        },
+        {
+          "line": 448,
+          "text": "fn open(cfg: RuntimeConfig) -> Result<Self> {"
+        },
+        {
+          "line": 474,
+          "text": "fn evidence(&self, bundle: &Bundle) -> Result<Reply> {"
+        },
+        {
+          "line": 487,
+          "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
+        },
+        {
+          "line": 522,
+          "text": "fn finish(&mut self, bundle: &Bundle, mut outcome: Outcome, output: &str) -> Result<()> {"
+        },
+        {
+          "line": 568,
+          "text": "fn cancel(&mut self, bundle: &Bundle, command: &Cancellation) -> Result<()> {"
+        },
+        {
+          "line": 582,
+          "text": "pub(crate) fn freeze_route(store: &Store, run: i64, session: &str) -> Result<()> {"
+        },
+        {
+          "line": 587,
+          "text": "pub(crate) fn selection(store: &Store, session: &str, id: Option<&str>) -> Result<()> {"
+        },
+        {
+          "line": 599,
+          "text": "pub(crate) fn choices(store: &Store) -> Result<Vec<String>> {"
+        },
+        {
+          "line": 607,
+          "text": "pub(crate) fn status(store: &Store, session: Option<&str>) -> Result<String> {"
+        },
+        {
+          "line": 644,
+          "text": "pub(crate) fn execute("
+        },
+        {
+          "line": 729,
+          "text": "pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {"
+        },
+        {
+          "line": 739,
+          "text": "fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {"
+        },
+        {
+          "line": 775,
+          "text": "async fn reconcile(cfg: &RuntimeConfig, store: &Store, run: i64) -> Result<()> {"
+        }
+      ],
+      "conditional_branches": [
+        {
+          "line": 27,
+          "text": "#[cfg(test)]"
+        },
+        {
+          "line": 192,
+          "text": "#[cfg(unix)]"
+        }
+      ],
+      "gap": "Implementation-owned finite contracts, not native OS/sandbox/custody/refinement or live fleet proof."
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/nodes/transport.rs",
+      "sha256": "79ce0ff9b5b706e6ee75cd7c5e7c0249afa9f5642a0b73c55fbeec4c5c01a009",
+      "lines": 232,
+      "classification": "abstracted-family",
+      "families": [
+        "Process",
+        "RemoteComposition"
+      ],
+      "scope": "production runner or direct behavior evidence",
+      "declarations": [
+        {
+          "line": 12,
+          "text": "pub(super) fn runtime() -> Result<&'static tokio::runtime::Runtime> {"
+        },
+        {
+          "line": 25,
+          "text": "pub(super) async fn endpoint(key: SecretKey, bind: SocketAddr) -> Result<Endpoint> {"
+        },
+        {
+          "line": 35,
+          "text": "pub(super) async fn coordinator(cfg: &RuntimeConfig) -> Result<Endpoint> {"
+        },
+        {
+          "line": 46,
+          "text": "pub(super) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {"
+        },
+        {
+          "line": 49,
+          "text": "pub(super) fn decode<T: Serialize + for<'a> Deserialize<'a>>(bytes: &[u8]) -> Result<T> {"
+        },
+        {
+          "line": 52,
+          "text": "pub(super) async fn call(endpoint: &Endpoint, card: &Card, request: Request) -> Result<Reply> {"
+        },
+        {
+          "line": 78,
+          "text": "pub(super) struct Handler {"
+        },
+        {
+          "line": 83,
+          "text": "impl std::fmt::Debug for Handler {"
+        },
+        {
+          "line": 84,
+          "text": "fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {"
+        },
+        {
+          "line": 88,
+          "text": "impl ProtocolHandler for Handler {"
+        },
+        {
+          "line": 89,
+          "text": "async fn accept(&self, connection: Connection) -> std::result::Result<(), AcceptError> {"
+        },
+        {
+          "line": 95,
+          "text": "impl Handler {"
+        },
+        {
+          "line": 96,
+          "text": "pub(super) fn new(runner: Arc<Mutex<Runner>>) -> Self {"
+        },
+        {
+          "line": 103,
+          "text": "async fn handle(&self, connection: Connection) -> Result<()> {"
+        },
+        {
+          "line": 130,
+          "text": "fn dispatch(&self, peer: EndpointId, request: Request) -> Result<Reply> {"
+        },
+        {
+          "line": 195,
+          "text": "pub(super) async fn serve(cfg: RuntimeConfig) -> Result<()> {"
+        }
+      ],
+      "conditional_branches": [],
+      "gap": "Implementation-owned finite contracts, not native OS/sandbox/custody/refinement or live fleet proof."
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/nodes/tests.rs",
+      "sha256": "c9723614d1cbc74f116fbb76572fd47b2ab9a85c95497a4ab0ff1d41436bcc4f",
+      "lines": 652,
+      "classification": "evidence-only",
+      "families": [
+        "Process",
+        "RemoteComposition",
+        "UIAuthority",
+        "Tasks"
+      ],
+      "scope": "production runner or direct behavior evidence",
+      "declarations": [
+        {
+          "line": 8,
+          "text": "fn fixture(role: Role, seed: u8) -> (tempfile::TempDir, RuntimeConfig) {"
+        },
+        {
+          "line": 36,
+          "text": "fn pair(a: &RuntimeConfig, b: &RuntimeConfig) {"
+        },
+        {
+          "line": 48,
+          "text": "fn request() -> TaskRequest {"
+        },
+        {
+          "line": 77,
+          "text": "fn admit(store: &Store, request: &TaskRequest) -> i64 {"
+        },
+        {
+          "line": 92,
+          "text": "fn durable_claim_replay_restart_and_signed_cancellation_do_not_reinvoke() {"
+        },
+        {
+          "line": 148,
+          "text": "fn admission_rejects_foreign_tasks_and_route_changes_without_claims() {"
+        },
+        {
+          "line": 170,
+          "text": "fn node_selection_is_frozen_per_ordinary_admission_and_session_scoped() {"
+        },
+        {
+          "line": 212,
+          "text": "fn nodes_buttons_use_authenticated_session_tokens_and_do_not_reroute_old_tasks() {"
+        },
+        {
+          "line": 282,
+          "text": "fn source_restart_and_late_signed_result_preserve_unknown_without_second_admission() {"
+        },
+        {
+          "line": 373,
+          "text": "fn ordinary_production_adapter_over_native_iroh_has_one_invocation_per_assignment() {"
+        },
+        {
+          "line": 511,
+          "text": "fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {"
+        },
+        {
+          "line": 557,
+          "text": "fn cancellation_over_production_handler_stops_owned_fake_provider_once() {"
+        }
+      ],
+      "conditional_branches": [
+        {
+          "line": 371,
+          "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 555,
+          "text": "#[cfg(unix)]"
+        }
+      ],
+      "gap": "Implementation-owned finite contracts, not native OS/sandbox/custody/refinement or live fleet proof."
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/runner_wire.rs",
+      "sha256": "ae74c54661351262af5dc85e5054eee3f5e9cc31507973081296c04a14e47c92",
+      "lines": 30,
+      "classification": "abstracted-family",
+      "families": [
+        "Process",
+        "RemoteComposition"
+      ],
+      "scope": "production runner or direct behavior evidence",
+      "declarations": [
+        {
+          "line": 6,
+          "text": "pub(crate) fn encode<T: Serialize>(value: &T, limit: usize) -> Result<Vec<u8>> {"
+        },
+        {
+          "line": 17,
+          "text": "pub(crate) fn decode<T: Serialize + for<'a> Deserialize<'a>>("
+        }
+      ],
+      "conditional_branches": [],
+      "gap": "Implementation-owned finite contracts, not native OS/sandbox/custody/refinement or live fleet proof."
+    },
+    {
+      "path": "crates/coconutclaw-cli/tests/nodes_cli.rs",
+      "sha256": "2b8ad9cf077c02efb3c9ee330fca903b498faa09d9c0426e602e425e9e645393",
+      "lines": 114,
+      "classification": "evidence-only",
+      "families": [
+        "Process",
+        "RemoteComposition",
+        "UIAuthority",
+        "Tasks"
+      ],
+      "scope": "production runner or direct behavior evidence",
+      "declarations": [
+        {
+          "line": 10,
+          "text": "fn cli(data: &Path, args: &[&str]) -> Output {"
+        },
+        {
+          "line": 23,
+          "text": "fn public_pair_flow_preserves_private_keys_and_runner_refuses_polling() {"
+        }
+      ],
+      "conditional_branches": [
+        {
+          "line": 21,
+          "text": "#[cfg(not(windows))]"
+        }
+      ],
+      "gap": "Implementation-owned finite contracts, not native OS/sandbox/custody/refinement or live fleet proof."
     }
   ],
   "counts": {
-    "excluded-nonruntime": 39,
-    "abstracted-family": 78,
-    "evidence-only": 54
+    "excluded-nonruntime": 40,
+    "abstracted-family": 84,
+    "evidence-only": 59
   },
   "external_exclusions": [
     ".git internal objects/index (identity pinned separately)",
@@ -11260,5 +11677,6 @@
     "production/private stores, credentials, real services, and authenticated native provider tasks (not inspected/executed)"
   ],
   "verification_additions": "formal/*.tla, *.cfg, cases.json, source-map.json, implementation-hashes.json, inventory.json, test_runner.py and scripts/check-formal.py inventoried separately by final verification input manifest, not deployed runtime",
-  "reconciliation": "Historical UI inspection in reconciliation.json; each merged pin/source delta inspected in integration-reconciliation.json. Physical startup/watchers/sockets/Python details remain native evidence, not Rust refinement."
+  "reconciliation": "Historical UI inspection in reconciliation.json; each merged pin/source delta inspected in integration-reconciliation.json. Physical startup/watchers/sockets/Python details remain native evidence, not Rust refinement.",
+  "production_mapping": "production-reconciliation.json preserves all inherited pins and individually inspected deltas."
 }
