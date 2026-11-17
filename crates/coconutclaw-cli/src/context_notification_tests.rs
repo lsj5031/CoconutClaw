@@ -873,7 +873,7 @@ fn context_notifications_normal_binary_context_change_blocker_and_restart() {
         )
         .unwrap();
     tx.commit().unwrap();
-    let binary = crate::test_runtime::binary();
+    let binary = crate::util::test_binary_path();
     let hash = blake3::hash(&fs::read(&binary).unwrap());
     struct Owned(std::process::Child);
     impl Drop for Owned {
@@ -886,13 +886,11 @@ fn context_notifications_normal_binary_context_change_blocker_and_restart() {
     }
     let start = |n| {
         Owned(
-            std::process::Command::new(&binary)
+            crate::util::scrubbed_command(&binary)
                 .arg("--data-dir")
                 .arg(&cfg.instance_dir)
                 .arg("run")
-                .env_clear()
                 .env("HOME", &cfg.instance_dir)
-                .env("PATH", std::env::var_os("PATH").unwrap())
                 .env("FACTORY_AIRGAP_ENABLED", "1")
                 .env("TELEGRAM_BOT_TOKEN", "123:token")
                 .env("TELEGRAM_CHAT_ID", "321")
@@ -913,7 +911,7 @@ fn context_notifications_normal_binary_context_change_blocker_and_restart() {
         )
     };
     let wait = |sql: &str| {
-        let until = Instant::now() + Duration::from_secs(20);
+        let until = Instant::now() + Duration::from_secs(90);
         loop {
             if store
                 .conn

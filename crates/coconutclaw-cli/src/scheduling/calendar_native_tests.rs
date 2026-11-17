@@ -47,15 +47,13 @@ fn calendar_wake_normal_binary_deadline_during_fetch_and_restart() {
         }
     }
     let _evidence = Evidence(cfg.instance_dir.clone());
-    let binary = crate::test_runtime::binary();
+    let binary = crate::util::test_binary_path();
     let hash = blake3::hash(&fs::read(&binary).unwrap());
     let command = || {
-        let mut c = std::process::Command::new(&binary);
+        let mut c = crate::util::scrubbed_command(&binary);
         c.arg("--data-dir")
             .arg(&cfg.instance_dir)
-            .env_clear()
             .env("HOME", &cfg.instance_dir)
-            .env("PATH", std::env::var_os("PATH").unwrap())
             .env("FACTORY_AIRGAP_ENABLED", "1")
             .env("TELEGRAM_BOT_TOKEN", "123:token")
             .env("TELEGRAM_CHAT_ID", "321")
@@ -104,7 +102,7 @@ fn calendar_wake_normal_binary_deadline_during_fetch_and_restart() {
         )
     };
     let wait = |sql: &str| {
-        let until = Instant::now() + Duration::from_secs(20);
+        let until = Instant::now() + Duration::from_secs(90);
         while !store
             .conn
             .query_row(sql, [], |r| r.get::<_, bool>(0))

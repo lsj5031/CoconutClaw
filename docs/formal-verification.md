@@ -227,3 +227,11 @@ These changes refresh inspected pins and unchanged action declaration hashes,
 not the bounded models or their action mappings.
 Isolated fake-provider startup diagnostics retain the actual failure instead of
 reporting only an expired handshake. Native macOS execution remains the gate.
+
+The authorized PR #22 reconciliation merges completed owner Windows fixes from
+main `2f47ba8`. The native-binary helper keeps its upstream callers and delegates
+to the shared layout/override regression-tested locator; Windows environment
+scrubbing and its 120-second hung-test bound are preserved, while Unix retains
+the original 45-second bound. Inspected implementation pins and unchanged action
+declaration locations are refreshed for the merged source. Affected small cases
+are rechecked, not claimed as a new full formal gate or native OS acceptance.

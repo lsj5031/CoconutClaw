@@ -693,7 +693,7 @@ fn waiting_graph_normal_binary_wait_event_attempt_outbox_and_restart() {
     )
     .unwrap();
     tx.commit().unwrap();
-    let binary = crate::test_runtime::binary();
+    let binary = crate::util::test_binary_path();
     let before = blake3::hash(&fs::read(&binary).unwrap()).to_string();
     struct Owned(std::process::Child);
     impl Drop for Owned {
@@ -707,13 +707,11 @@ fn waiting_graph_normal_binary_wait_event_attempt_outbox_and_restart() {
     let start = |round| {
         let log = cfg.instance_dir.join(format!("graph-normal-{round}.log"));
         Owned(
-            std::process::Command::new(&binary)
+            crate::util::scrubbed_command(&binary)
                 .arg("--data-dir")
                 .arg(&cfg.instance_dir)
                 .arg("run")
-                .env_clear()
                 .env("HOME", &cfg.instance_dir)
-                .env("PATH", std::env::var_os("PATH").unwrap())
                 .env("FACTORY_AIRGAP_ENABLED", "1")
                 .env("TELEGRAM_BOT_TOKEN", "123:token")
                 .env("TELEGRAM_CHAT_ID", "321")
@@ -731,7 +729,7 @@ fn waiting_graph_normal_binary_wait_event_attempt_outbox_and_restart() {
         )
     };
     let wait = |id, status: &str| {
-        let until = Instant::now() + Duration::from_secs(20);
+        let until = Instant::now() + Duration::from_secs(90);
         loop {
             if let Some(r) = store.get_task_run(id).unwrap() {
                 assert_ne!(r.status, "failed", "{:?}", r.error_summary);
@@ -867,8 +865,10 @@ pub(crate) fn write_fake_provider_script(
 ) -> String {
     let (path, command) = if cfg!(windows) {
         let path = dir.join(format!("{stem}.ps1"));
+        // Windows PowerShell 5.1 rejects the provider's bare `-` stdin marker
+        // when a script is launched with -File; PowerShell 7 passes it through.
         let command = format!(
-            "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+            "pwsh -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
             path.display()
         );
         (path, command)
@@ -989,7 +989,7 @@ fn waiting_graph_approval_continuation_has_one_logical_owner() {
 }
 
 fn wait_for_terminal_tasks(cfg: &RuntimeConfig, task_ids: &[i64]) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let store = crate::store::Store::open(cfg).expect("open store");
         let all_done = task_ids.iter().all(|task_id| {
@@ -1052,23 +1052,43 @@ impl FakeTelegramServer {
                         let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
                         let mut buf = [0_u8; 8192];
                         let mut data = Vec::new();
+                        let deadline = Instant::now() + Duration::from_secs(10);
                         loop {
-                            let read = stream.read(&mut buf).unwrap_or(0);
-                            if read == 0 {
+                            if Instant::now() >= deadline {
                                 break;
                             }
+                            let read = match stream.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(read) => read,
+                                // A short read timeout means the body is still
+                                // arriving, not that the request ended.
+                                Err(err)
+                                    if matches!(
+                                        err.kind(),
+                                        std::io::ErrorKind::WouldBlock
+                                            | std::io::ErrorKind::TimedOut
+                                    ) =>
+                                {
+                                    continue;
+                                }
+                                Err(_) => break,
+                            };
                             data.extend_from_slice(&buf[..read]);
                             let request = String::from_utf8_lossy(&data);
                             if let Some((header, body)) = request.split_once("\r\n\r\n") {
-                                let len = header
-                                    .lines()
-                                    .find_map(|line| {
-                                        line.to_ascii_lowercase()
-                                            .strip_prefix("content-length:")
-                                            .and_then(|s| s.trim().parse::<usize>().ok())
-                                    })
-                                    .unwrap_or(0);
-                                if body.len() >= len {
+                                let low = header.to_ascii_lowercase();
+                                let len = low.lines().find_map(|line| {
+                                    line.strip_prefix("content-length:")
+                                        .and_then(|s| s.trim().parse::<usize>().ok())
+                                });
+                                let complete = match len {
+                                    Some(len) => body.len() >= len,
+                                    None if low.contains("transfer-encoding: chunked") => {
+                                        body.ends_with("\r\n0\r\n\r\n") || body == "0\r\n\r\n"
+                                    }
+                                    None => true,
+                                };
+                                if complete {
                                     break;
                                 }
                             }

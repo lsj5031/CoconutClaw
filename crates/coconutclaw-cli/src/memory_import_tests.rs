@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use super::*;
 use std::fs;
 

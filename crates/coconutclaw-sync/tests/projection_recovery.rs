@@ -284,6 +284,8 @@ fn receipt_crash_sql_loss_divergence_and_revocation_across_processes() {
                 use std::os::unix::process::ExitStatusExt;
                 assert_eq!(status.signal(), Some(9));
             }
+            #[cfg(not(unix))]
+            assert!(!status.success(), "receipt child survived external kill");
         } else {
             let output = child.wait_with_output().unwrap();
             assert!(

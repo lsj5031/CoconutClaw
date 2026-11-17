@@ -828,7 +828,21 @@ fn queued_attachment_identity_survives_restart_without_approval_authorization() 
 #[test]
 fn owned_input_attachment_is_kept_until_delivery_is_acknowledged() {
     let mut cfg = RuntimeConfig::test_config();
-    cfg.telegram_api_base = Some("http://127.0.0.1:1".into());
+    // A definite API rejection is safely retryable on every platform. An
+    // unreachable local port can time out instead of refusing on Windows and is
+    // then (correctly) held as an unknown delivery outcome with no retry.
+    let rejecting = FakeTelegramServer::start_with_response(|_| {
+        (
+            400,
+            r#"{"ok":false,"error_code":400,"description":"fixture rejection"}"#.into(),
+        )
+    });
+    cfg.telegram_api_base = Some(
+        rejecting
+            .base_url
+            .trim_end_matches("/bot123:token")
+            .to_string(),
+    );
     cfg.telegram_api_timeout_secs = 1;
     cfg.telegram_api_retry_attempts = 0;
     let store = Store::open(&cfg).unwrap();

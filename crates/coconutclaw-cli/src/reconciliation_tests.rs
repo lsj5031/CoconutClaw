@@ -853,7 +853,7 @@ fn unknown_reconciliation_normal_binary_restart_uses_same_sender() {
             [fence],
         )
         .unwrap();
-    let binary = crate::test_runtime::binary();
+    let binary = crate::util::test_binary_path();
     let hash = blake3::hash(&fs::read(&binary).unwrap());
     struct Owned(std::process::Child);
     impl Drop for Owned {
@@ -866,13 +866,11 @@ fn unknown_reconciliation_normal_binary_restart_uses_same_sender() {
     }
     let start = |round| {
         Owned(
-            std::process::Command::new(&binary)
+            crate::util::scrubbed_command(&binary)
                 .arg("--data-dir")
                 .arg(&cfg.instance_dir)
                 .arg("run")
-                .env_clear()
                 .env("HOME", &cfg.instance_dir)
-                .env("PATH", std::env::var_os("PATH").unwrap())
                 .env("FACTORY_AIRGAP_ENABLED", "1")
                 .env("TELEGRAM_BOT_TOKEN", "123:token")
                 .env("TELEGRAM_CHAT_ID", "321")
@@ -896,7 +894,7 @@ fn unknown_reconciliation_normal_binary_restart_uses_same_sender() {
         )
     };
     let wait = |id| {
-        let until = Instant::now() + Duration::from_secs(20);
+        let until = Instant::now() + Duration::from_secs(90);
         loop {
             let done: bool=store.conn.query_row("SELECT EXISTS(SELECT 1 FROM telegram_ingress WHERE update_id=?1 AND ack_phase='sent')",[id],|r|r.get(0)).unwrap();
             if done {

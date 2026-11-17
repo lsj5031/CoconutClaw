@@ -322,7 +322,7 @@ async fn runtime_bridge_normal_binary_consumes_real_custody_and_restarts_without
         .conn
         .execute_batch("DROP TRIGGER normal_cut")
         .unwrap();
-    let binary = crate::test_runtime::binary();
+    let binary = crate::util::test_binary_path();
     let cfg = b.cfg.clone();
     let api = server
         .base_url
@@ -353,13 +353,11 @@ async fn runtime_bridge_normal_binary_consumes_real_custody_and_restarts_without
                 .instance_dir
                 .join(format!("normal-bridge-{attempt}.log"));
             let mut child = Owned(
-                std::process::Command::new(&child_binary)
+                crate::util::scrubbed_command(&child_binary)
                     .arg("--data-dir")
                     .arg(&cfg.instance_dir)
                     .arg("run")
-                    .env_clear()
                     .env("HOME", &cfg.instance_dir)
-                    .env("PATH", std::env::var_os("PATH").unwrap())
                     .env("FACTORY_AIRGAP_ENABLED", "1")
                     .env("TELEGRAM_BOT_TOKEN", "123:token")
                     .env("TELEGRAM_CHAT_ID", "321")
@@ -375,7 +373,7 @@ async fn runtime_bridge_normal_binary_consumes_real_custody_and_restarts_without
                     .unwrap(),
             );
             let store = Store::open(&cfg).unwrap();
-            let until = std::time::Instant::now() + Duration::from_secs(10);
+            let until = std::time::Instant::now() + Duration::from_secs(90);
             loop {
                 let done: bool = store
                     .conn
@@ -743,7 +741,7 @@ async fn runtime_bridge_raw_fence_retains_custody_while_another_topic_executes()
         scheduler.recover().unwrap();
         crate::loops::webhook::process_webhook_line(&cfg,&mut store,&scheduler,
             r#"{"update_id":41,"message":{"chat":{"id":321,"type":"private"},"message_thread_id":8,"text":"independent fixture"}}"#).unwrap();
-        let until=std::time::Instant::now()+Duration::from_secs(10);
+        let until=std::time::Instant::now()+Duration::from_secs(90);
         loop{
             if store.conn.query_row("SELECT COUNT(*) FROM task_runs WHERE update_id='41' AND status='completed'",[],|r|r.get::<_,i64>(0)).unwrap()==1{break;}
             let failed:Option<String>=store.conn.query_row("SELECT error_summary FROM task_runs WHERE update_id='41' AND status='failed'",[],|r|r.get(0)).optional().unwrap().flatten();
@@ -848,7 +846,7 @@ async fn runtime_bridge_genuine_approval_is_not_overwritten_by_late_result() {
                 |r| r.get(0),
             )
             .unwrap();
-        let until = std::time::Instant::now() + Duration::from_secs(10);
+        let until = std::time::Instant::now() + Duration::from_secs(90);
         loop {
             let run = store.get_task_run(child).unwrap().unwrap();
             if run.status == "completed" {

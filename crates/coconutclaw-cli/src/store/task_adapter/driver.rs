@@ -599,8 +599,6 @@ impl RuntimeDriver {
         } else {
             None
         };
-        #[cfg(not(unix))]
-        let remote_publication: Option<((), ())> = None;
         #[cfg(unix)]
         let record = if let Some((locator, artifact)) = remote_publication {
             ensure!(

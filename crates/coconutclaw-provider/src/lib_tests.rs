@@ -66,7 +66,9 @@ fn write_test_provider_script(
     let (path, body, command) = if cfg!(windows) {
         let path = dir.join(format!("{stem}.ps1"));
         let command = format!(
-            "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+            // Windows PowerShell 5.1 rejects the provider's bare `-` stdin
+            // marker for -File scripts; PowerShell 7 passes it through.
+            "pwsh -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
             path.display()
         );
         (path, windows_body, command)
