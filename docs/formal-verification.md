@@ -243,3 +243,10 @@ migration and graph/memory initialization, released before normal operations.
 The concurrent first-open regression retains separate live connections; existing
 projection concurrency assertions are unchanged. This startup ownership is an
 executable obligation, not a new model action or a proof of filesystem behavior.
+
+Run 44010259517 confirms initialization ownership on all three OS jobs and narrows
+the remaining macOS fixture startup failures to SDK-launcher environment injection.
+The fake-provider profile resolves the explicit interpreter with the system
+`xcrun --find python3` on macOS instead of executing `/usr/bin/python3`'s launcher.
+The Linux-only parent-death fixture imports `ctypes` only on Linux. The original
+closed environment allowlist is retained, with no ambient executable fallback.

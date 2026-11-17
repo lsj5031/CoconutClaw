@@ -1,5 +1,4 @@
 """Disposable explicit Codex fixture, no network/auth or ambient configuration."""
-import ctypes
 import json
 import os
 import signal
@@ -11,6 +10,8 @@ import sqlite3
 from pathlib import Path
 
 if sys.platform == "linux":
+    import ctypes
+
     libc = ctypes.CDLL(None)
     libc.prctl(1, signal.SIGTERM, 0, 0, 0)
 # On every Unix host, runner death closes the control socket (and a terminated

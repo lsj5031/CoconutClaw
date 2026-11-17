@@ -16,18 +16,37 @@ struct Config {
     codex_home: PathBuf,
 }
 impl Config {
-    fn expected(root: &Path) -> Self {
-        Self {
-            executable: "/usr/bin/python3".into(),
+    fn expected(root: &Path) -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        let executable = {
+            // /usr/bin/python3 is an SDK launcher on macOS. Resolve its explicit
+            // interpreter rather than letting the launcher inject SDK variables
+            // after the runner has scrubbed the child's environment.
+            let output = OsCommand::new("/usr/bin/xcrun")
+                .args(["--find", "python3"])
+                .env_clear()
+                .output()?;
+            ensure!(output.status.success(), "fixture Python lookup failed");
+            let path = PathBuf::from(std::str::from_utf8(&output.stdout)?.trim());
+            ensure!(
+                path.is_absolute() && path.is_file(),
+                "invalid fixture Python path"
+            );
+            path
+        };
+        #[cfg(not(target_os = "macos"))]
+        let executable = PathBuf::from("/usr/bin/python3");
+        Ok(Self {
+            executable,
             script: root.join("fake-codex.py"),
             workspace: root.join("workspace"),
             home: root.join("home"),
             codex_home: root.join("codex-home"),
-        }
+        })
     }
     fn load(root: &Path) -> Result<Self> {
         let cfg: Self = serde_json::from_slice(&std::fs::read(root.join("provider.json"))?)?;
-        let expected = Self::expected(root);
+        let expected = Self::expected(root)?;
         ensure!(
             cfg.executable == expected.executable
                 && cfg.executable.is_file()
@@ -55,7 +74,7 @@ pub(in crate::store::task_adapter) fn provision(root: &Path) -> Result<()> {
         std::fs::read_to_string(root.join("disposable"))? == MARKER,
         "not disposable"
     );
-    let cfg = Config::expected(root);
+    let cfg = Config::expected(root)?;
     OpenOptions::new()
         .create_new(true)
         .write(true)
