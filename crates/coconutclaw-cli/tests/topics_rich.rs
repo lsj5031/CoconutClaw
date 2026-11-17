@@ -15,6 +15,21 @@ use std::{
 };
 
 struct Runtime(Child);
+
+fn process_alive(pid: &str) -> bool {
+    let pid: i32 = pid.trim().parse().unwrap();
+    assert!(pid > 1);
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        true
+    } else {
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        false
+    }
+}
+
 impl Drop for Runtime {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -310,13 +325,17 @@ args=sys.argv[1:]
 out=args[args.index("--output-last-message")+1]
 prompt=sys.stdin.read()
 n=re.findall(r"gate-(\d+)",prompt)[-1]
+def alive(pid):
+ try: os.kill(pid,0)
+ except ProcessLookupError: return False
+ return True
 (root/("prompt-"+n)).write_text(prompt)
 (root/("args-"+n)).write_text("\n".join(args))
 with (root/"counter.lock").open("w") as lock:
  fcntl.flock(lock,fcntl.LOCK_EX)
  file=root/"counter.json"
  state=json.loads(file.read_text()) if file.exists() else {"pids":[],"peak":0,"starts":[]}
- state["pids"]=[pid for pid in state["pids"] if pathlib.Path("/proc/"+str(pid)).exists()]
+ state["pids"]=[pid for pid in state["pids"] if alive(pid)]
  state["pids"].append(os.getpid())
  state["peak"]=max(state["peak"],len(state["pids"]))
  state["starts"].append(int(n))
@@ -336,7 +355,7 @@ print(json.dumps({"type":"thread.started","thread_id":"native-"+n}))
     let alive = |n| {
         fs::read_to_string(dir.join(format!("started-{n}")))
             .ok()
-            .is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists())
+            .is_some_and(|pid| process_alive(&pid))
     };
     assert!((1..=5).all(alive), "all five actual providers overlap");
     assert!(!dir.join("started-6").exists());
@@ -870,7 +889,7 @@ print('{"type":"thread.started","thread_id":"approval-native"}')
     );
     for stage in ["initial", "approved"] {
         let pid = fs::read_to_string(dir.join(format!("{stage}-pid"))).unwrap();
-        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        assert!(!process_alive(&pid));
     }
     assert_eq!(
         db.query_row(

@@ -255,3 +255,8 @@ path variables. CoreFoundation still adds its UID/encoding/region metadata.
 The fixture validates that metadata's closed numeric form and current UID before
 removing it, then applies the original environment assertion. SDK paths and
 unknown environment names remain rejected; no provider lifecycle test is skipped.
+Run 44013736760 passes all native macOS unit cases, including the nine local
+process/provider cases. Executable import fixtures also need physical temporary
+roots; their source traversal/symlink refusal remains unchanged. The subsequent
+Unix topic integration fixture now checks owned PIDs with `kill(pid, 0)` rather
+than Linux `/proc`, retaining both overlap and cleanup assertions.
