@@ -1,5 +1,5 @@
 {
-  "basis": "135 original pre-model implementation inputs plus host-local callback and test-only native runtime locator (137 current); macOS/Linux CI refreshes inspected test/build pins, without model action or runtime owner changes",
+  "basis": "135 original pre-model implementation inputs plus host-local callback and test-only native runtime locator (137 current); reconciled native CI refreshes inspected pins with unchanged modeled domain actions. Store startup initialization locking and platform filesystem/process behavior are executable obligations, not modeled proofs.",
   "families": {
     "Ingress": {
       "owner": "Store IMMEDIATE transaction and authenticated webhook reducer; durable raw/inbox/outbox, volatile callback work",

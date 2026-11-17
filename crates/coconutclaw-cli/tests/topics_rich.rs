@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct Runtime(Child);
+struct Runtime(Child, PathBuf);
 
 fn process_alive(pid: &str) -> bool {
     let pid: i32 = pid.trim().parse().unwrap();
@@ -34,8 +34,19 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if thread::panicking() {
+            if let Ok(log) = fs::read_to_string(&self.1) {
+                eprintln!("synthetic runtime diagnostics:\n{log}");
+            }
+            if let Some(dir) = self.1.parent()
+                && let Ok(counter) = fs::read_to_string(dir.join("counter.json"))
+            {
+                eprintln!("synthetic provider counter: {counter}");
+            }
+        }
     }
 }
+#[track_caller]
 fn wait(mut check: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !check() {
@@ -272,6 +283,16 @@ fn spawn(dir: &Path, telegram: &Telegram, provider: &Path) -> Runtime {
     let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_coconutclaw")));
+    let log = std::env::var_os("COCONUTCLAW_ACCEPTANCE_ARTIFACTS")
+        .map(|artifacts| {
+            let artifacts = PathBuf::from(artifacts);
+            fs::create_dir_all(&artifacts).unwrap();
+            artifacts.join(format!(
+                "runtime-{}.log",
+                dir.file_name().unwrap().to_string_lossy()
+            ))
+        })
+        .unwrap_or_else(|| dir.join("runtime.log"));
     Runtime(
         Command::new(binary)
             .arg("--data-dir")
@@ -291,26 +312,16 @@ fn spawn(dir: &Path, telegram: &Telegram, provider: &Path) -> Runtime {
             )
             .env("POLL_INTERVAL_SECONDS", "1")
             .stdout(Stdio::null())
-            .stderr(
-                std::env::var_os("COCONUTCLAW_ACCEPTANCE_ARTIFACTS")
-                    .map(|artifacts| {
-                        let artifacts = PathBuf::from(artifacts);
-                        fs::create_dir_all(&artifacts).unwrap();
-                        Stdio::from(
-                            fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(artifacts.join(format!(
-                                    "runtime-{}.log",
-                                    dir.file_name().unwrap().to_string_lossy()
-                                )))
-                                .unwrap(),
-                        )
-                    })
-                    .unwrap_or_else(Stdio::null),
-            )
+            .stderr(Stdio::from(
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log)
+                    .unwrap(),
+            ))
             .spawn()
             .unwrap(),
+        log,
     )
 }
 
