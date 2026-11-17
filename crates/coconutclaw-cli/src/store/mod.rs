@@ -12,6 +12,7 @@ pub(crate) mod preferences;
 pub(crate) mod reconciliation;
 pub(crate) mod runtime_results;
 pub(crate) mod schedules;
+pub(crate) mod status;
 pub(crate) mod task_graph;
 pub(crate) mod task_runs;
 pub(crate) mod telegram_ingress;
