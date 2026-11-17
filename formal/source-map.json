@@ -1,5 +1,5 @@
 {
-  "basis": "135 original pre-model implementation inputs plus one host-local callback (136 current); eight inspected test-only harness pins refreshed for controlled three-host preparation; official affected checks and executable regressions required",
+  "basis": "139 current implementation inputs; 31 inherited/UI changed pins individually inspected in reconciliation.json; declaration anchors rechecked. Three UI/backend inputs added. Complete official matrix required, not Rust refinement.",
   "families": {
     "Ingress": {
       "owner": "Store IMMEDIATE transaction and authenticated webhook reducer; durable raw/inbox/outbox, volatile callback work",
@@ -9,7 +9,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
             "symbol": "admit_telegram",
-            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
             "declarations": [
               {
                 "line": 9,
@@ -22,7 +22,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
             "symbol": "claim_telegram",
-            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
             "declarations": [
               {
                 "line": 62,
@@ -33,10 +33,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
             "symbol": "pending_telegram",
-            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
             "declarations": [
               {
-                "line": 124,
+                "line": 125,
                 "text": "pub(crate) fn pending_telegram(&self) -> Result<Vec<String>> {"
               }
             ]
@@ -46,10 +46,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
             "symbol": "finish_telegram",
-            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
             "declarations": [
               {
-                "line": 73,
+                "line": 74,
                 "text": "pub(crate) fn finish_telegram(&self, seq: i64, outcome: &ProcessOutcome) -> Result<()> {"
               }
             ]
@@ -81,10 +81,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
             "symbol": "recover_telegram_claims",
-            "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
             "declarations": [
               {
-                "line": 146,
+                "line": 148,
                 "text": "pub(crate) fn recover_telegram_claims(&self) -> Result<()> {"
               }
             ]
@@ -113,11 +113,79 @@
               }
             ]
           }
+        ],
+        "ObserveClaim/ObservePastPending/ObservePastApplying/ObservePastUnknown/ObserveCommit": [
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "observation_control",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 139,
+                "text": "pub(crate) fn observation_control("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
+            "symbol": "process_webhook_line",
+            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "declarations": [
+              {
+                "line": 398,
+                "text": "pub(crate) fn process_webhook_line("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "claim_telegram",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
+            "declarations": [
+              {
+                "line": 62,
+                "text": "pub(crate) fn claim_telegram(&self, seq: i64) -> Result<bool> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "pending_telegram",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
+            "declarations": [
+              {
+                "line": 125,
+                "text": "pub(crate) fn pending_telegram(&self) -> Result<Vec<String>> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "finish_telegram",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
+            "declarations": [
+              {
+                "line": 74,
+                "text": "pub(crate) fn finish_telegram(&self, seq: i64, outcome: &ProcessOutcome) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "sql/schema.sql",
+            "symbol": "telegram_ui_observations",
+            "sha256": "d4399ef2dab8e7c64984d2cd52a05da479f6e59ee6290d4f9dfc6a5b181dbad0",
+            "declarations": [
+              {
+                "line": 2,
+                "text": "CREATE TABLE IF NOT EXISTS telegram_ui_observations (seq INTEGER PRIMARY KEY);"
+              }
+            ]
+          }
         ]
       },
-      "guards": "Exact identity replay; scoped older pending/applying fence; only designated already-authenticated reconciliation control may bypass older Unknown, not pending/applying. Runtime-control claim precedes external I/O; interrupted unproven applying becomes Unknown.",
-      "atomicity": "Raw admission+custody cursor; SQL control effect+done+reply share commits. Failed transactions stutter. Runtime external invocation is explicitly nontransactional.",
-      "gaps": "Designation e=N abstracts authenticated parser/classification; same/different sessions use finite aliases. Progress-message phase, media download, update integer parsing and every command payload not modeled; canonical bytes/signatures are opaque equality classes."
+      "guards": "Authenticated parser first. Ordinary events retain same-session pending/applying/Unknown fences. Designated reconciliation e=N bypasses older Unknown only. Designated observation e=N bypasses all older fences but has no domain mutation, task receipt or runtime effect; interaction metadata/reply writes are allowed.",
+      "atomicity": "Raw custody/cursor and observation classification share admission commit. SQL control effect/done/reply share one commit. Separate claim/commit model steps conservatively overapproximate SQL cuts; runtime external invocation is nontransactional.",
+      "gaps": "Observation/Reconciliation classification is a trusted designation linked to parser/token lookup; UIAuthority separately checks finite actor/scope/expiry/consumption. Raw IDs/bytes are opaque aliases. No full product with UI/guide contracts, arbitrary payload parsing, progress or media. Separate SQL claim/commit overapproximate source crash cuts."
     },
     "Tasks": {
       "owner": "SessionScheduler queue/lifecycle lock, Store logical head/attempt/wait, shared provider slots",
@@ -127,7 +195,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "dispatch_ready",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 964,
@@ -138,7 +206,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "spawn_task",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 466,
@@ -149,7 +217,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "run_task",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 559,
@@ -162,7 +230,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_result",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 717,
@@ -173,7 +241,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_failure",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 894,
@@ -197,7 +265,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 217,
@@ -232,7 +300,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "resolve_approval",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 359,
@@ -254,7 +322,7 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "durable_op",
-            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
             "declarations": [
               {
                 "line": 62,
@@ -265,11 +333,33 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "deliver_text",
-            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
             "declarations": [
               {
-                "line": 121,
+                "line": 128,
                 "text": "fn deliver_text("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
+            "symbol": "deliver_text",
+            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
+            "declarations": [
+              {
+                "line": 128,
+                "text": "fn deliver_text("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/telegram.rs",
+            "symbol": "telegram_send_ui",
+            "sha256": "f75b24e8edfbd04257928f91e9964c60ee21fb63cfb96d8075ebe6345902bba3",
+            "declarations": [
+              {
+                "line": 324,
+                "text": "pub(crate) fn telegram_send_ui("
               }
             ]
           }
@@ -278,10 +368,10 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "acknowledged_text",
-            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
             "declarations": [
               {
-                "line": 341,
+                "line": 370,
                 "text": "pub(crate) fn acknowledged_text("
               }
             ]
@@ -336,7 +426,7 @@
       },
       "guards": "Sending persisted before HTTP; definite rejection may return ready, ambiguity never does. Acknowledgment projection requires durable receipt. Reconciliation requires exact current offer snapshot, original owner/route/head and single supported rich-text receipt, never inferred external nonoccurrence.",
       "atomicity": "External acceptance and durable acknowledgment are distinct cuts. Offer apply/audit/control reply share transaction; HTTP never shares SQL transaction.",
-      "gaps": "One rich-text operation only, not arbitrary media/chunk multiplicity, edit/fallback API semantics, HTTP parsing/rate deadlines or all completed-op byte guards. Definite rejection is a trusted response-class assumption; no generalized exactly-once guarantee for arbitrary external effects."
+      "gaps": "One rich-text operation only, not arbitrary media/chunk multiplicity, edit/fallback API semantics, HTTP parsing/rate deadlines or all completed-op byte guards. Definite rejection is a trusted response-class assumption; no generalized exactly-once guarantee for arbitrary external effects. UI acknowledged aliases positive receipt; navigation not-modified is a known idempotent edit. Spinner attempt is persisted after report receipt, never gates report; its one-shot wire/crash behavior is executable evidence, not this model."
     },
     "Calendar": {
       "owner": "Store schedule/occurrence transaction and scheduler-owned deadline/watcher intake with private connection",
@@ -451,7 +541,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "wake_due_with_store",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 180,
@@ -473,7 +563,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/preferences.rs",
             "symbol": "incoming_control",
-            "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
+            "sha256": "5a2a0d65513d105c9e2c8c2364d5f5c40e3aee6ff5ee8c471f8b84d6fa32dd02",
             "declarations": [
               {
                 "line": 9,
@@ -484,10 +574,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/preferences.rs",
             "symbol": "preferences_command",
-            "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
+            "sha256": "5a2a0d65513d105c9e2c8c2364d5f5c40e3aee6ff5ee8c471f8b84d6fa32dd02",
             "declarations": [
               {
-                "line": 59,
+                "line": 64,
                 "text": "pub(crate) fn preferences_command("
               }
             ]
@@ -495,10 +585,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/preferences.rs",
             "symbol": "preference_revision",
-            "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
+            "sha256": "5a2a0d65513d105c9e2c8c2364d5f5c40e3aee6ff5ee8c471f8b84d6fa32dd02",
             "declarations": [
               {
-                "line": 34,
+                "line": 39,
                 "text": "pub(crate) fn preference_revision(&self, scope: &str) -> Result<i64> {"
               }
             ]
@@ -646,10 +736,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
             "symbol": "commit",
-            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "sha256": "dd86e7451950060e9019cbb486d973f90c498bf1f1eec4d1414295a426c52a5a",
             "declarations": [
               {
-                "line": 172,
+                "line": 174,
                 "text": "pub(super) fn commit("
               }
             ]
@@ -657,10 +747,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
             "symbol": "repair_projection",
-            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "sha256": "dd86e7451950060e9019cbb486d973f90c498bf1f1eec4d1414295a426c52a5a",
             "declarations": [
               {
-                "line": 249,
+                "line": 251,
                 "text": "pub fn repair_projection(&mut self) -> Result<usize> {"
               }
             ]
@@ -668,10 +758,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
             "symbol": "validate",
-            "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
+            "sha256": "dd86e7451950060e9019cbb486d973f90c498bf1f1eec4d1414295a426c52a5a",
             "declarations": [
               {
-                "line": 96,
+                "line": 98,
                 "text": "pub(super) fn validate("
               }
             ]
@@ -681,7 +771,7 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
             "symbol": "read_receipt",
-            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "sha256": "19615c9fb7d470970cff0e17b33c8183e01062a771dcbe0a627ef42e6b323131",
             "declarations": [
               {
                 "line": 89,
@@ -692,10 +782,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
             "symbol": "restore",
-            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "sha256": "19615c9fb7d470970cff0e17b33c8183e01062a771dcbe0a627ef42e6b323131",
             "declarations": [
               {
-                "line": 191,
+                "line": 193,
                 "text": "pub async fn restore("
               }
             ]
@@ -703,10 +793,10 @@
           {
             "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
             "symbol": "install_recovery_policy",
-            "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
+            "sha256": "19615c9fb7d470970cff0e17b33c8183e01062a771dcbe0a627ef42e6b323131",
             "declarations": [
               {
-                "line": 224,
+                "line": 226,
                 "text": "pub fn install_recovery_policy("
               }
             ]
@@ -728,7 +818,7 @@
       },
       "guards": "Disclosure uses current membership/generation and live lease even with retained connection/request; policy update closes old connections. Immutable accepted receipts can repair derived projection without new disclosure. Restore requires independently CURRENT checkpoint/policy pin, not a pin discovered in backup. Domain fence suspends, never activates replacement.",
       "atomicity": "Policy committed before activation; disclosure receipt precedes derived SQL projection; repair revalidates bytes. Recovery quarantine latch and rename/fsync cuts are abstracted to persistent latch.",
-      "gaps": "Cryptography/hash collision resistance, endpoint namespace/role capability, filesystem durability and current external-pin freshness are assumptions. Clock models monotonic lease time only; wall-clock rollback dual-check, physical reconnect/stream shutdown and metadata tombstone coverage are not proved. Domain fence and transport policy are distinct authorities; combined here conservatively, not an operational failover model."
+      "gaps": "Cryptography/hash collision resistance, endpoint namespace/role capability, filesystem durability and current external-pin freshness are assumptions. Clock models monotonic lease time only; wall-clock rollback dual-check, physical reconnect/stream shutdown and metadata tombstone coverage are not proved. Domain fence and transport policy are distinct authorities; combined here conservatively, not an operational failover model. Unix flushes directory entries; Windows omits directory-entry fsync. Trusted durable-store actions do not prove Windows rename/directory power-loss durability; kill tests do not close it."
     },
     "Process": {
       "owner": "Provider process/pipe/activity owner plus runner durable workflow claim, no serializable dispatch permission",
@@ -959,7 +1049,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "dispatch_ready",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 964,
@@ -970,7 +1060,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_result",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 717,
@@ -981,7 +1071,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "recover",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 1157,
@@ -992,7 +1082,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 217,
@@ -1005,10 +1095,10 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "deliver_text",
-            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
             "declarations": [
               {
-                "line": 121,
+                "line": 128,
                 "text": "fn deliver_text("
               }
             ]
@@ -1016,10 +1106,10 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "acknowledged_text",
-            "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
+            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
             "declarations": [
               {
-                "line": 341,
+                "line": 370,
                 "text": "pub(crate) fn acknowledged_text("
               }
             ]
@@ -1049,7 +1139,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "run_task",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 559,
@@ -1060,7 +1150,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::queue",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "df722fd7ddf45ed491fffb13f1959d7939eaf5d0dda6f535f367c70dd78bc729",
             "declarations": [
               {
                 "line": 465,
@@ -1106,7 +1196,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::reconcile",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "df722fd7ddf45ed491fffb13f1959d7939eaf5d0dda6f535f367c70dd78bc729",
             "declarations": [
               {
                 "line": 283,
@@ -1163,7 +1253,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::accept",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "df722fd7ddf45ed491fffb13f1959d7939eaf5d0dda6f535f367c70dd78bc729",
             "declarations": [
               {
                 "line": 586,
@@ -1174,10 +1264,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::accept_proposal",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "df722fd7ddf45ed491fffb13f1959d7939eaf5d0dda6f535f367c70dd78bc729",
             "declarations": [
               {
-                "line": 695,
+                "line": 693,
                 "text": "pub(super) async fn accept_proposal(&mut self, bytes: Vec<u8>) -> Result<Step> {"
               }
             ]
@@ -1253,7 +1343,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+            "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
             "declarations": [
               {
                 "line": 217,
@@ -1312,10 +1402,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/preferences.rs",
             "symbol": "preferences_command",
-            "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
+            "sha256": "5a2a0d65513d105c9e2c8c2364d5f5c40e3aee6ff5ee8c471f8b84d6fa32dd02",
             "declarations": [
               {
-                "line": 59,
+                "line": 64,
                 "text": "pub(crate) fn preferences_command("
               }
             ]
@@ -1336,6 +1426,282 @@
       "guards": "Only successful frozen original dependency evidence resumes current head. Unknown/cancel/reject blocks continuation. Notice is authorized before send, not after acknowledgment; valid in-flight ACK survives later cancellation. Native generation snapshots current inherited original-scope preference revision.",
       "atomicity": "Continuation+inbox+ancestry+wait transition and blocker+decision/outbox each atomic, actual send distinct.",
       "gaps": "One waiter/dependency and at most one continuation/blocker change; no arbitrary graph/cycle proof, actor aliases/route binding assumed from source checks. Approval equivalent cause handled by Tasks guard, not all approval/remote/task/schedule interleavings in one product model."
+    },
+    "UIAuthority": {
+      "owner": "Authenticated Telegram parser and persisted actor/session-bound token lookup; consumption before runtime cancellation/approval",
+      "state": "Issued/expired tokens, allowed root/topic aliases, durable consumed set, volatile ready set, Unknown, invocation counts and authority-at-use records",
+      "actions": {
+        "Issue": [
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "button",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 32,
+                "text": "fn button("
+              }
+            ]
+          },
+          {
+            "path": "sql/schema.sql",
+            "symbol": "telegram_ui_controls",
+            "sha256": "d4399ef2dab8e7c64984d2cd52a05da479f6e59ee6290d4f9dfc6a5b181dbad0",
+            "declarations": [
+              {
+                "line": 3,
+                "text": "CREATE TABLE IF NOT EXISTS telegram_ui_controls ("
+              }
+            ]
+          }
+        ],
+        "Read/Consume": [
+          {
+            "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
+            "symbol": "parse_webhook_value",
+            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "declarations": [
+              {
+                "line": 180,
+                "text": "fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookAction> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "runtime_control",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 124,
+                "text": "pub(crate) fn runtime_control(store: &Store, session: &SessionKey, text: &str) -> Result<bool> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "handle",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 210,
+                "text": "pub(crate) fn handle("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/preferences.rs",
+            "symbol": "incoming_control",
+            "sha256": "5a2a0d65513d105c9e2c8c2364d5f5c40e3aee6ff5ee8c471f8b84d6fa32dd02",
+            "declarations": [
+              {
+                "line": 9,
+                "text": "pub(crate) fn incoming_control("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/status.rs",
+            "symbol": "status_snapshot",
+            "sha256": "8147a0b1d8807dbadc7d3d4a5746933f37b645a5de3702939d1cfc8fc2e856e5",
+            "declarations": [
+              {
+                "line": 135,
+                "text": "pub(crate) fn status_snapshot("
+              }
+            ]
+          }
+        ],
+        "Expire/Revoke": [
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "epoch",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 22,
+                "text": "fn epoch() -> i64 {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "handle",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 210,
+                "text": "pub(crate) fn handle("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
+            "symbol": "parse_webhook_value",
+            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "declarations": [
+              {
+                "line": 180,
+                "text": "fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookAction> {"
+              }
+            ]
+          }
+        ],
+        "Invoke/Crash": [
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "handle",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 210,
+                "text": "pub(crate) fn handle("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
+            "symbol": "process_webhook_line",
+            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "declarations": [
+              {
+                "line": 398,
+                "text": "pub(crate) fn process_webhook_line("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
+            "symbol": "recover_telegram_claims",
+            "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
+            "declarations": [
+              {
+                "line": 148,
+                "text": "pub(crate) fn recover_telegram_claims(&self) -> Result<()> {"
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Issued unexpired unconsumed token, exact session/root actor, current allowed route/topic mode. Two scopes alias private root/topic; actor 2 is foreign. Revocation includes topic disable. Observations repeat; runtime consumption precedes invocation and survives crashes.",
+      "atomicity": "SQL issue/control lives in ingress transaction. Runtime consumption commits before nontransactional effects. Crash drops volatile invocation permission, retains consumption/Unknown.",
+      "gaps": "Two controls/two actors/one or two scopes; monotonic expiry/revocation episode. Entropy/collisions, full parsing, config reload during synchronous invocation, arbitrary repeated uses and exact scheduler/approval target semantics are not proved. Guided SQL writes are a separate contract. Use evidence records authority at acceptance, not after later revocation."
+    },
+    "GuidedInput": {
+      "owner": "Authenticated ingress SQL-control transaction, per-session actor/input row and existing memory/preferences validators",
+      "state": "Current code per scope, two non-reused codes/scopes, expiry, submissions/effect counts, exact and stale cancellation, ordinary message evidence",
+      "actions": {
+        "Start/Replace": [
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "handle",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 210,
+                "text": "pub(crate) fn handle("
+              }
+            ]
+          },
+          {
+            "path": "sql/schema.sql",
+            "symbol": "telegram_ui_inputs",
+            "sha256": "d4399ef2dab8e7c64984d2cd52a05da479f6e59ee6290d4f9dfc6a5b181dbad0",
+            "declarations": [
+              {
+                "line": 12,
+                "text": "CREATE TABLE IF NOT EXISTS telegram_ui_inputs ("
+              }
+            ]
+          }
+        ],
+        "Expire/Submit/ExpiredInput": [
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "handle",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 210,
+                "text": "pub(crate) fn handle("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/preferences.rs",
+            "symbol": "incoming_control",
+            "sha256": "5a2a0d65513d105c9e2c8c2364d5f5c40e3aee6ff5ee8c471f8b84d6fa32dd02",
+            "declarations": [
+              {
+                "line": 9,
+                "text": "pub(crate) fn incoming_control("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/preferences.rs",
+            "symbol": "preferences_command",
+            "sha256": "5a2a0d65513d105c9e2c8c2364d5f5c40e3aee6ff5ee8c471f8b84d6fa32dd02",
+            "declarations": [
+              {
+                "line": 64,
+                "text": "pub(crate) fn preferences_command("
+              }
+            ]
+          }
+        ],
+        "Cancel/StaleCancel": [
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "handle",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 210,
+                "text": "pub(crate) fn handle("
+              }
+            ]
+          }
+        ],
+        "Ordinary": [
+          {
+            "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+            "symbol": "handle",
+            "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+            "declarations": [
+              {
+                "line": 210,
+                "text": "pub(crate) fn handle("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/commands/helpers.rs",
+            "symbol": "maybe_handle_telegram_command",
+            "sha256": "0d6d27fcba5a194b6526d90d5bef7734b354fc2ab357d03292b880b8df82a36c",
+            "declarations": [
+              {
+                "line": 61,
+                "text": "pub(crate) fn maybe_handle_telegram_command("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
+            "symbol": "process_webhook_action",
+            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "declarations": [
+              {
+                "line": 559,
+                "text": "fn process_webhook_action("
+              }
+            ]
+          }
+        ]
+      },
+      "guards": "Parser/incoming_control authenticates scope/actor before this contract. Only explicit current unexpired /input CODE VALUE submits. Invalid data clears guide without domain mutation. Fresh code replaces old; stale button cancel cannot delete replacement. Ordinary text leaves guide intact.",
+      "atomicity": "Guide replace/cancel/input effect and reply share SQL-only ingress transaction; failed commit stutters. Variables are durable across restart, not a physical durability proof.",
+      "gaps": "Two codes, one/two scopes, non-reused aliases, two value-validity classes. Wall clocks/rollback, arbitrary command text/code parsing and entropy are excluded. Authority is linked precondition, not parser product. Cancel aliases authenticated cancel-current or matching button; stale button separate. Search/get are read-only refinements. Full memory correct/undo/spent-ID and preference validation remain executable evidence; no Rust/SQLite refinement. Blank/mismatched-code input stutters; invalidValue is nonblank data rejected by existing validator. Monotonic expiry per validation episode is assumed; clock rollback across classification/reduction is not modeled."
     }
   },
   "refinement": "Hand-written over/under abstractions and contract compositions, NOT mechanically extracted Rust transition relation. All module paths classified in inventory.json; family membership is not full behavioral coverage.",

@@ -185,3 +185,67 @@ The zero-invocation preflight also exchanges an inert public nonce in both
 directions through the real scoped data transport, gateway-initiated first.
 These are not domain events or task admissions; this transport probe remains
 an executable obligation rather than an added formal application transition.
+
+## 17 November button-first UI source reconciliation
+
+This supersedes the old source counts/reuse statements for the local UI lane,
+not the historical receipts, platform acceptance or publication restrictions.
+Runtime remains exactly UI commit `3d67b70` with backend `94db7c7`; this follow-up
+changes only formal contracts, mapping/inventory, verification tests and this
+documentation. It does not incorporate unvalidated platform work.
+
+`formal/reconciliation.json` records all 31 mismatched implementation pins,
+their verified `a95880c` preimages, exact delta hashes and individual inspections.
+Eighteen mismatches were inherited at approved base `2f47ba8`; nineteen inputs
+also changed in the UI/data lane, with overlap. All declaration anchors were
+checked, and relocated declarations reanchored. Three UI/backend source inputs
+bring the pin set to 139. The path inventory refresh retains historical hashes
+and adds those three inputs plus operations documentation and the previously
+pinned multihost callback (formerly only verification-inventoried), for 176 paths.
+
+The official runner now checks 50 configurations across 13 families: 31 positive
+safety/conditional-liveness bounds, 17 intended invariant failures and two
+intended temporal failures. The entire matrix is rechecked, not just new models.
+Existing model invariants, budgets and negative classification are not weakened.
+
+| Addition | Source-linked relation and finite scope |
+| --- | --- |
+| Ingress observations | One designated authenticated read-only/error event may pass older same-scope pending, applying or Unknown. Separate required actions witness all three cuts. It creates reply/interaction metadata, never a task receipt or domain/runtime effect. Reconciliation still bypasses only Unknown; ordinary mutations retain their fences. |
+| UIAuthority | Two opaque controls, two actor aliases and one/two root/topic scopes; issued/expired/consumed state, route revocation, volatile invocation permission and durable Unknown. Exact current actor/scope authority is recorded at use; consumption precedes external invocation and survives the modeled crash. Observations are repeatable. |
+| GuidedInput | Two fresh code identities, one/two scopes and valid/invalid nonblank data classes; one current code per scope, replacement, expiry, explicit submission, matching/stale cancel and unrelated messages. SQL input/effect/guide cleanup is atomic. |
+
+Intentional new mutants permit observation effects, bypass callback authority,
+reuse consumed runtime controls, swallow implicit input, cancel a replacement
+from an old code, or accept expired input. Each must produce the specifically
+named invariant counterexample. New small/expanded positives require every
+declared action to execute, including replacement and stale cancellation.
+Offline consistency tests also bind inventory bytes/declarations to all pins,
+source-action anchors and case/action identities.
+
+These are **bounded implementation-owned contracts, not a Rust refinement
+proof**. Classification and actor admission are linked preconditions across
+independent contracts, not an exhaustively composed parser/runtime model.
+SQL claim/effect/reply commit atomically in source; the Ingress model's separate
+claim/commit states conservatively overapproximate some SQL crash cuts.
+Restart retention relies on SQLite's trusted durable transaction contract.
+Token entropy/collision resistance, arbitrary code text/IDs, memory correctness,
+real clock arithmetic/rollback, exact SQL snapshot joins/counts and rendering are
+executable obligations, not newly proved algorithms.
+
+Expiry/revocation model one monotonic validation episode. In particular, clock
+rollback between observation classification and reduction is not modeled;
+source-linked acceptance does not assert its impossibility. GuidedInput assumes
+authenticated scope/actor at entry. Blank/mismatched input stutters; invalid-value
+submission is nonblank data rejected by the existing command validator.
+Effects' positive receipt covers UI acknowledged projection and known
+not-modified navigation edits. Ephemeral spinner acknowledgment remains
+one-shot mocked-wire evidence, not a modeled delivery/liveness requirement.
+No genuine Telegram screenshot or live visual acceptance exists.
+
+Inherited platform deltas include Unix-only test hooks/import fixtures, native
+binary/env helpers, Windows synthetic provider/wait fixes, and Unix-only
+directory-entry fsync in the synthetic membership store. None are edited here.
+The Replication abstraction trusts durable store actions and does **not** prove
+Windows directory/rename power-loss durability. External-kill tests do not
+establish that property. Native OS CI and parent final evidence review remain
+separate gates; this attempt performs no publication.

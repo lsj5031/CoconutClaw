@@ -361,6 +361,102 @@
       "classification": "offline test-only harness regression",
       "owner_and_scope": "Nonsecret profile projection, owned gate lifecycle and original-context auth callback",
       "state_coverage_and_gap": "Executable tests, not a model; no live credentials/provider invocation"
+    },
+    {
+      "path": "formal/GuidedInput-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput-negative-expiry.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput-negative-implicit.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput-negative-stale-cancel.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Source-linked finite UI/guide abstraction; not Rust refinement",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/Ingress-observation-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/Ingress-observation-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/Ingress-observation-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority-negative-authority.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority-negative-replay.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Source-linked finite UI/guide abstraction; not Rust refinement",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/reconciliation.json",
+      "classification": "per-input source reconciliation",
+      "owner_and_scope": "Inspected pin preimages/delta hashes, inheritance and bounded contract gaps",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/test_mapping.py",
+      "classification": "verification consistency tests",
+      "owner_and_scope": "Offline inventory/pin/anchor and check-registry consistency",
+      "state_coverage_and_gap": "Supplementary consistency evidence, not official model execution or Rust refinement."
     }
   ],
   "complete_path_inventory_not_complete_implicit_machine_proof": true
