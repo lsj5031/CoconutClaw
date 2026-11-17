@@ -107,6 +107,9 @@ fn configuration_errors_redact_entire_source_chain() {
         "TELEGRAM_PARSE_MODE = \"SYNTHETIC_SENTINEL\"",
         "TELEGRAM_PARSE_FALLBACK = \"SYNTHETIC_SENTINEL\"",
         "PROVIDER_TIMEOUT_SECS = \"SYNTHETIC_SENTINEL\"",
+        "\"CODEX_MODEL \" = \"SYNTHETIC_SENTINEL\"",
+        "UNKNOWN_SETTING = \"SYNTHETIC_SENTINEL\"",
+        "SLACK_BOT_TOKEN = \"SYNTHETIC_SENTINEL\"",
     ] {
         let dir = unique_dir();
         write_config(&dir, body);
@@ -121,6 +124,32 @@ fn configuration_errors_redact_entire_source_chain() {
         }
         fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[test]
+fn quoted_config_keys_require_exact_template_membership() {
+    for key in [
+        "CODEX_MODEL ",
+        "CODEX_MODEL\t",
+        " CODEX_MODEL",
+        "CODEX_MODE",
+    ] {
+        let dir = unique_dir();
+        let body = format!("{:?} = \"synthetic-model\"\n", key);
+        write_config(&dir, &body);
+        let error = load_runtime_config_isolated(dir.clone()).unwrap_err();
+        assert!(error.to_string().starts_with("unknown setting "));
+        assert_eq!(fs::read_to_string(dir.join("config.toml")).unwrap(), body);
+        assert!(!dir.join("runtime").exists());
+        assert!(!dir.join("state.db").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    let dir = unique_dir();
+    write_config(&dir, "\"CODEX_MODEL\" = \"synthetic-model\"\n");
+    let config = load_runtime_config_isolated(dir.clone()).unwrap();
+    assert_eq!(config.codex.model.as_deref(), Some("synthetic-model"));
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

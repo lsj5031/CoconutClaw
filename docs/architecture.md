@@ -1,7 +1,12 @@
 # Retained runtime
 
-The CLI has four commands: `run`, `once`, `service`, `doctor`. One locked data
-directory owns Telegram update ordering and SQLite bookkeeping.
+The CLI has seven commands: `run`, `once`, `service`, `doctor`,
+`import-openclaw`, `schedule`, and `nodes`. One locked data directory owns
+Telegram update ordering and execution. Explicit `import-openclaw` is an offline
+memory import, not an automatic legacy projection. `schedule` edits the durable
+calendar through SQLite transactions without taking the execution lock, so it
+can be used while the core runs. `nodes` manages paired native execution nodes;
+only the coordinator polls Telegram.
 
 Telegram polling accepts configured chats and downloads image/document/video
 attachments. Ordered chat lanes execute Codex through the existing subprocess
@@ -42,6 +47,9 @@ are forcibly killed if needed. Blocking HTTP workers own only requests/response
 buffers, never SQLite/projection state, and can be interrupted by their callers.
 Provider deadlines cover stdin and output draining even after the leader exits.
 
-Historical database tables/columns do not enable scheduling, voice, Slack or
-other providers. No legacy memory import/projection is supported. Historical design documents under
+Scheduling is enabled only through explicit one-off tasks or recurring cadences,
+with timezone, DST and missed-run policies. Historical schedule rows remain
+inactive and are never implicitly imported; unknown effects are not automatically
+retried. Historical database tables/columns do not enable voice, Slack or other
+providers. No automatic legacy memory import/projection is supported. Historical design documents under
 `superpowers/` and past changelog entries are not current feature documentation.

@@ -228,7 +228,6 @@ fn load_config(overrides: &CliOverrides, initialize: bool) -> Result<RuntimeConf
         );
     }
     let config_file = load_config_file(&config_file_path)?;
-    validate_config_keys(&config_file)?;
     for key in DEFAULT_CONFIG_TOML
         .lines()
         .filter_map(|line| line.split_once('=').map(|(key, _)| key.trim()))
@@ -500,24 +499,6 @@ fn obsolete_env_key(key: &str) -> bool {
     )
 }
 
-fn validate_config_keys(config: &HashMap<String, String>) -> Result<()> {
-    for key in config.keys() {
-        if obsolete_key(key) {
-            bail!(
-                "removed setting {key}; remove it from config.toml (data is unchanged), see docs/migration-phase-0.md"
-            );
-        }
-        if !DEFAULT_CONFIG_TOML.lines().any(|line| {
-            line.trim_start()
-                .strip_prefix(key.as_str())
-                .is_some_and(|rest| rest.trim_start().starts_with('='))
-        }) {
-            bail!("unknown setting {key}; see config.toml.example and docs/migration-phase-0.md");
-        }
-    }
-    Ok(())
-}
-
 fn pick_value(key: &str, config_file: &HashMap<String, String>) -> Option<String> {
     if let Ok(value) = env::var(key) {
         return Some(value);
@@ -566,8 +547,14 @@ fn load_config_file(path: &Path) -> Result<HashMap<String, String>> {
     let defaults: toml::Table = toml::from_str(DEFAULT_CONFIG_TOML).expect("typed config template");
     let mut output = HashMap::new();
     for (key, node) in table {
-        validate_config_keys(&HashMap::from([(key.clone(), String::new())]))?;
-        let expected = &defaults[key];
+        if obsolete_key(key) {
+            bail!(
+                "removed setting {key}; remove it from config.toml (data is unchanged), see docs/migration-phase-0.md"
+            );
+        }
+        let expected = defaults.get(key).ok_or_else(|| {
+            anyhow!("unknown setting {key}; see config.toml.example and docs/migration-phase-0.md")
+        })?;
         let text = match (expected, node) {
             (toml::Value::String(_), toml::Value::String(text)) => text.clone(),
             (toml::Value::Integer(_), toml::Value::Integer(number)) => number.to_string(),

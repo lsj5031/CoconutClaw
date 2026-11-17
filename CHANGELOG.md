@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Button-first Telegram Home, scoped immutable operations snapshots, beside-run
   controls, and durable explicit-code memory/preference input using local handlers.
+- Explicit local memory import, durable one-off followups and recurring schedules,
+  and paired native execution nodes for ordinary Telegram tasks.
+
+### Changed
+- Retained runtime is Telegram polling and Codex with a single data directory.
+  Earlier release entries describe historical features, not current support.
+
+### Fixed
+- Reject quoted TOML keys with trailing whitespace as unknown settings instead
+  of panicking, without exposing configuration values in errors.
+- Reconcile workspace package metadata with the existing v0.4.1 release tag and
+  changelog. That release retained 0.3.1 in Cargo metadata; this is not a new release.
+- Document all seven current CLI commands in the architecture overview.
 
 ## [0.4.1] - 2026-05-21
 

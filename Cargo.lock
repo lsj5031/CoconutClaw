@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "coconutclaw"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "coconutclaw-config"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "chrono-tz",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "coconutclaw-provider"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "coconutclaw-config",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "coconutclaw-sync"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "blake3",
