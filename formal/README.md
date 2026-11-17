@@ -10,6 +10,11 @@ ancestry, not just current hashes. See `production-runners.md` for actual handle
 actions and native evidence gaps. Affected official configurations are rechecked
 on the final source identity; old harness receipts do not validate activation.
 
+`windows-native-reconciliation.json` adds the next exact layer over published
+114a1cf, retaining those historical records. It binds native Job Object/ACL
+sources and tests while explicitly excluding Win32 behavior from the finite
+proof claim. Windows CI execution and user fleet acceptance remain separate.
+
 Use the already provisioned official tools, offline:
 
 ```sh

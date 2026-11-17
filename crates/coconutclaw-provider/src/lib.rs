@@ -21,6 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod activity;
 #[cfg(test)]
 mod activity_tests;
+#[cfg(windows)]
+mod windows;
 use activity::{Activity, TimeoutPolicy};
 use std::sync::Mutex;
 
@@ -392,6 +394,10 @@ fn run_provider_process(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     configure_child_command(&mut cmd);
 
+    #[cfg(windows)]
+    let (mut child, job) =
+        windows::spawn(&mut cmd).with_context(|| format!("failed to contain/start {bin_name}"))?;
+    #[cfg(not(windows))]
     let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to start {bin_name}"))?;
@@ -430,6 +436,8 @@ fn run_provider_process(
         timeout,
         stdin_handle.as_ref(),
         io_stop.clone(),
+        #[cfg(windows)]
+        &job,
     );
     io_stop.store(true, Ordering::SeqCst);
     if let Some(handle) = stdin_handle {
@@ -517,6 +525,7 @@ fn run_child_process(
     timeout: TimeoutPolicy,
     stdin_handle: Option<&thread::JoinHandle<()>>,
     io_stop: Arc<AtomicBool>,
+    #[cfg(windows)] job: &windows::Job,
 ) -> Result<RunResult> {
     let stdout = child.stdout.take().context("failed to take stdout")?;
     let stderr = child.stderr.take().context("failed to take stderr")?;
@@ -551,6 +560,8 @@ fn run_child_process(
             && flag.load(Ordering::SeqCst)
         {
             cancelled = true;
+            #[cfg(windows)]
+            job.terminate()?;
             break terminate_cancelled_child(&mut child, &wait_error, &kill_error, false)?;
         }
 
@@ -563,10 +574,18 @@ fn run_child_process(
             timed_out = true;
             tracing::warn!("{reason}");
             timeout_reason = Some(reason);
+            #[cfg(windows)]
+            job.terminate()?;
             break terminate_cancelled_child(&mut child, &wait_error, &kill_error, true)?;
         }
 
         let leader_status = child.try_wait().context(wait_error.clone())?;
+        // A successful leader must not leave detached tools running. Job
+        // membership includes descendants even after the leader exits.
+        #[cfg(windows)]
+        if leader_status.is_some() {
+            job.terminate()?;
+        }
         if let Some(status) = leader_status
             && stdout_handle.is_finished()
             && stderr_handle.is_finished()
@@ -691,6 +710,8 @@ impl Drop for ActiveGroup {
     }
 }
 pub fn kill_active_process_groups() {
+    #[cfg(windows)]
+    windows::kill_active_jobs();
     #[cfg(unix)]
     for id in ACTIVE_GROUPS.lock().expect("provider groups").iter() {
         unsafe {
@@ -738,7 +759,19 @@ fn terminate_cancelled_child(
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn terminate_cancelled_child(
+    child: &mut Child,
+    wait_error: &str,
+    _kill_error: &str,
+    _force: bool,
+) -> Result<ExitStatus> {
+    // The caller already terminated the whole owned job, including when the
+    // leader has exited. Never rediscover descendants from stale PIDs.
+    child.wait().context(wait_error.to_string())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn terminate_cancelled_child(
     child: &mut Child,
     wait_error: &str,

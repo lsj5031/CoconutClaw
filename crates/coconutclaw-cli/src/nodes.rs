@@ -98,6 +98,7 @@ fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 fn local(cfg: &RuntimeConfig) -> Result<Local> {
+    validate_storage(cfg)?;
     let value: Local = read_json(&directory(cfg).join("local.json"))?;
     ensure!(
         value.card.version == 1 && value.card.revision == REVISION,
@@ -127,10 +128,44 @@ pub(crate) fn require_coordinator(cfg: &RuntimeConfig) -> Result<()> {
 }
 fn create_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = tempfile::NamedTempFile::new_in(path.parent().context("node parent absent")?)?;
+    #[cfg(windows)]
+    coconutclaw_config::windows_security::validate_private(file.path())?;
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist_noclobber(path)
         .map_err(|_| anyhow::anyhow!("node file already exists"))?;
+    Ok(())
+}
+fn validate_storage(_cfg: &RuntimeConfig) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use coconutclaw_config::windows_security::validate_private;
+        // The SQLite database is the coordinator allowlist. Its parent must
+        // be private as well: otherwise another account could replace it or
+        // introduce a journal/sidecar despite a private main-file DACL.
+        validate_private(&_cfg.data_dir)?;
+        let mut paths = vec![
+            _cfg.runtime_dir.clone(),
+            _cfg.config_file_path.clone(),
+            _cfg.runtime_dir.join("instance.lock"),
+            directory(_cfg),
+            directory(_cfg).join("device-key"),
+            directory(_cfg).join("local.json"),
+            _cfg.sqlite_db_path.clone(),
+        ];
+        for suffix in ["-wal", "-shm", "-journal", ".initialize.lock"] {
+            let mut path = _cfg.sqlite_db_path.as_os_str().to_os_string();
+            path.push(suffix);
+            paths.push(path.into());
+        }
+        for path in paths {
+            match fs::symlink_metadata(&path) {
+                Ok(_) => validate_private(&path)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
     Ok(())
 }
 fn initialize(store: &Store) -> Result<()> {
@@ -158,6 +193,7 @@ fn paired(store: &Store, id: EndpointId) -> Result<Card> {
 }
 
 pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
+    validate_storage(cfg)?;
     let store = Store::open(cfg)?;
     initialize(&store)?;
     match &args.action {
@@ -169,10 +205,6 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
             ensure!(
                 REVISION.len() == 40 && REVISION.bytes().all(|b| b.is_ascii_hexdigit()),
                 "build from a pinned source revision"
-            );
-            ensure!(
-                !cfg!(windows),
-                "native Windows enrollment blocked pending private-key ACL and owned descendant containment acceptance; no native Windows fixture access supplied"
             );
             ensure!(
                 bind.port() != 0 && !bind.ip().is_unspecified() && !bind.ip().is_multicast(),
@@ -189,6 +221,7 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
             );
             let dir = directory(cfg);
             fs::create_dir_all(&dir)?;
+            validate_storage(cfg)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -213,6 +246,7 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
                     workspace,
                 })?,
             )?;
+            validate_storage(cfg)?;
             println!("{}", serde_json::to_string(&card)?);
         }
         Command::Pair { card } => {
@@ -270,10 +304,6 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
             ensure!(
                 own.card.role == Role::Runner,
                 "only a runner starts a network listener; run starts the Telegram coordinator"
-            );
-            ensure!(
-                !cfg!(windows),
-                "native Windows activation blocked: provider descendant containment and private device-key ACL acceptance required; no Windows fixture access supplied"
             );
             transport::runtime()?.block_on(transport::serve(cfg.clone()))?;
         }
@@ -446,6 +476,7 @@ struct Runner {
 }
 impl Runner {
     fn open(cfg: RuntimeConfig) -> Result<Self> {
+        validate_storage(&cfg)?;
         let store = Store::open(&cfg)?;
         initialize(&store)?;
         let mut runner = Self {

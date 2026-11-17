@@ -7,6 +7,29 @@ use crate::{
 
 fn fixture(role: Role, seed: u8) -> (tempfile::TempDir, RuntimeConfig) {
     let root = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    {
+        let account = format!(
+            "{}\\{}",
+            std::env::var("USERDOMAIN").unwrap(),
+            std::env::var("USERNAME").unwrap()
+        );
+        assert!(
+            std::process::Command::new("icacls.exe")
+                .arg(root.path())
+                .args([
+                    "/inheritance:r",
+                    "/grant:r",
+                    &format!("{account}:(OI)(CI)F"),
+                    "*S-1-5-18:(OI)(CI)F",
+                    "*S-1-5-32-544:(OI)(CI)F"
+                ])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
     let cfg = RuntimeConfig::test_config_at(root.path().to_path_buf());
     for dir in [&cfg.runtime_dir, &cfg.tmp_dir, &cfg.instance_dir] {
         fs::create_dir_all(dir).unwrap();
@@ -45,6 +68,45 @@ fn pair(a: &RuntimeConfig, b: &RuntimeConfig) {
         )
         .unwrap();
 }
+#[cfg(windows)]
+#[test]
+fn windows_rechecks_allowlist_custody_before_peer_dispatch() {
+    let (_core, core) = fixture(Role::Coordinator, 81);
+    let (_node, node) = fixture(Role::Runner, 82);
+    pair(&node, &core);
+    let peer = local(&core).unwrap().card.id;
+    let runner = Arc::new(Mutex::new(Runner::open(node.clone()).unwrap()));
+    let handler = transport::Handler::new(runner);
+    assert!(matches!(
+        handler.dispatch(peer, Request::Ping).unwrap(),
+        Reply::Pong
+    ));
+    assert!(
+        std::process::Command::new("icacls.exe")
+            .arg(&node.sqlite_db_path)
+            .args(["/grant", "*S-1-1-0:R"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(handler.dispatch(peer, Request::Ping).is_err());
+    assert!(Runner::open(node.clone()).is_err());
+    assert!(
+        std::process::Command::new("icacls.exe")
+            .arg(&node.sqlite_db_path)
+            .args(["/remove:g", "*S-1-1-0"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(matches!(
+        handler.dispatch(peer, Request::Ping).unwrap(),
+        Reply::Pong
+    ));
+}
+
 fn request() -> TaskRequest {
     TaskRequest {
         session: SessionKey::from_id("telegram:321#7".into()),

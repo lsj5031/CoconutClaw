@@ -39,6 +39,15 @@ Never transfer node roots, `device-key`, authentication, config, sessions or
 SQLite files. The `nodes` directory is owner-only on Unix; operator custody of
 the data directory remains required.
 
+Windows uses the same CLI and native transport, with a private inheritable
+current-user/SYSTEM/Administrators DACL checked before state is read or a peer
+is admitted. This covers the device key, local workspace/card, configured
+executable selection, SQLite coordinator allowlist and journal sidecars.
+Reparse points, null DACLs, foreign trustees and unsupported ACE layouts fail
+closed. Unsafe existing state is not silently repaired or adopted. See
+[native PowerShell onboarding](windows-onboarding.md), not the POSIX templates
+below, for Windows commands. No OpenClaw runner or credential transfer is needed.
+
 ```sh
 # Coordinator:
 coconutclaw --data-dir "$CORE_DATA" nodes pair "$NODE_PUBLIC_CARD"
@@ -106,7 +115,13 @@ late completed result after cancellation remains Unknown, with signed evidence
 retained. Graceful runner termination signals owned cancellation flags, shuts
 its router, kills only the existing provider API's currently owned groups and
 joins owned provider work. Abrupt process death leaves ambiguity; restart never
-re-invokes. Native descendant containment needs parent host-side evidence.
+re-invokes. On Windows each provider starts suspended, is assigned to a
+noninheritable, unnamed kill-on-close Job Object, and only then resumes.
+Cancellation, timeout, normal leader exit, shutdown and error cleanup terminate
+the owned job, including detached descendants. Closing the runner process closes
+its last job handles, so kernel custody survives an abrupt owner death without
+a PID-tree sweep or stale-PID kill on restart. Descendant cleanup does not undo
+already completed external effects or turn Unknown into Completed.
 
 After a disconnect or coordinator/runner restart, do **not** resubmit the same
 task as a repair. Stop the coordinator's polling process, retain all state, then:
@@ -142,10 +157,14 @@ delivery, before/during/late cancellation, disconnect/reconnect, full restart,
 exact replay, unavailable node and cleanup observations. Mock tests cannot
 satisfy that gate; a finite fixture cannot satisfy ordinary Telegram routing.
 
-Native Windows remains blocked: parent reports no reachable Windows execution
-node or route. In addition to a native Rust/C-linker/locked-dependency/Codex
-fixture, private-key ACL and owned descendant cancellation/cleanup acceptance
-are required before activation. Existing provider Windows cancellation kills
-only its direct child, which is insufficient evidence for a runner tree.
-Enrollment/start refuse explicitly rather than silently claiming Windows
-production support. No Windows auth installation or copy is authorized.
+Windows production paths now implement Job Object descendant custody and
+device-key/coordinator-allowlist ACL enforcement instead of an unconditional
+platform refusal. Windows-native mocked-process tests cover cancellation,
+timeout, normal leader exit, abrupt owner death, shutdown/restart and unsafe/
+proper ACLs; CI requires their execution, not merely compilation. Existing
+durable claim/replay/restart tests also run there. The Linux development host
+does not establish Windows-native execution; the candidate must pass hosted
+Windows CI after parent publication. The user then performs native fleet
+acceptance with their existing Windows prerequisites and host-local Codex auth.
+No Windows paired host or OpenClaw installation is required to develop/test this
+source. No auth installation, export or copy is authorized by these docs.

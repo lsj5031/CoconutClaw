@@ -469,6 +469,18 @@
       "classification": "per-input integration source reconciliation",
       "owner_and_scope": "Validated main/UI parent hashes, individual source inspections and explicit bounded contract gaps",
       "state_coverage_and_gap": "No new domain action. Full existing50-case official gate and executable platform/UI tests required; no Rust refinement."
+    },
+    {
+      "path": "formal/windows-native-reconciliation.json",
+      "classification": "native Windows source provenance/operator boundary",
+      "owner_and_scope": "Exact historical delta layer / PowerShell operator checklist",
+      "state_coverage_and_gap": "Win32 job/ACL/PowerShell behavior is not proved by the finite models. Linux API signature shims are not Windows compilation or native execution. Native Windows named CI tests and separate user fleet acceptance are required. Existing host-local Codex auth is never transferred."
+    },
+    {
+      "path": "docs/windows-onboarding.md",
+      "classification": "native Windows source provenance/operator boundary",
+      "owner_and_scope": "Exact historical delta layer / PowerShell operator checklist",
+      "state_coverage_and_gap": "Win32 job/ACL/PowerShell behavior is not proved by the finite models. Linux API signature shims are not Windows compilation or native execution. Native Windows named CI tests and separate user fleet acceptance are required. Existing host-local Codex auth is never transferred."
     }
   ],
   "complete_path_inventory_not_complete_implicit_machine_proof": true

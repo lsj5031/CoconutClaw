@@ -17,12 +17,22 @@ def production_pin(path, previous):
     """Preserve historical integration evidence and check the next exact delta."""
     changes = {row["path"]: row for row in load("production-reconciliation.json")["changes"]}
     if path not in changes:
-        return previous
+        return windows_pin(path, previous)
     row = changes[path]
     if row["before"] != previous:
         raise AssertionError(f"broken production mapping ancestry: {path}")
     if not row["inspection"] or not row["affected_families"]:
         raise AssertionError(f"missing production mapping inspection: {path}")
+    return windows_pin(path, row["after"])
+
+
+def windows_pin(path, previous):
+    changes = {row["path"]: row for row in load("windows-native-reconciliation.json")["changes"]}
+    if path not in changes:
+        return previous
+    row = changes[path]
+    if row["before"] != previous:
+        raise AssertionError(f"broken Windows mapping ancestry: {path}")
     return row["after"]
 
 
@@ -91,8 +101,10 @@ class Mapping(unittest.TestCase):
         self.assertEqual(len(rows), len(reviewed))
         self.assertFalse(reviewed & unchanged)
         added = load("production-reconciliation.json")["new_inputs"]
+        windows_added = load("windows-native-reconciliation.json")["new_inputs"]
         self.assertFalse(set(added) & (reviewed | unchanged))
-        self.assertEqual(reviewed | unchanged | set(added), set(pins))
+        self.assertFalse(set(windows_added) & (reviewed | unchanged | set(added)))
+        self.assertEqual(reviewed | unchanged | set(added) | set(windows_added), set(pins))
         for row in rows:
             self.assertEqual(production_pin(row["path"], row["integrated_sha256"]), pins[row["path"]])
             self.assertEqual(row["main_sha256"], row["main_pin_sha256"])
@@ -105,15 +117,35 @@ class Mapping(unittest.TestCase):
         pins = load("implementation-hashes.json")
         audit = load("production-reconciliation.json")
         changes = {r["path"]: r for r in audit["changes"]}
-        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]), set(pins))
+        windows_added = load("windows-native-reconciliation.json")["new_inputs"]
+        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]) | set(windows_added), set(pins))
         for path, inherited in audit["inherited_pins"].items():
             if path in changes:
                 self.assertEqual(changes[path]["before"], inherited)
             else:
-                self.assertEqual(pins[path], inherited)
+                self.assertEqual(pins[path], windows_pin(path, inherited))
         self.assertEqual(len(audit["changes"]), len({r["path"] for r in audit["changes"]}))
         for row in audit["changes"]:
-            self.assertEqual(row["after"], pins[row["path"]])
+            self.assertEqual(windows_pin(row["path"], row["after"]), pins[row["path"]])
+            self.assertNotEqual(row["before"], row["after"])
+            self.assertRegex(row["delta_sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(row["inspection"])
+            self.assertTrue(row["affected_families"])
+        for path, row in audit["new_inputs"].items():
+            self.assertEqual(windows_pin(path, row["sha256"]), pins[path])
+            self.assertTrue(row["inspection"])
+            self.assertTrue(row["affected_families"])
+
+    def test_windows_native_deltas_preserve_prior_pins_and_mark_native_boundary(self):
+        pins = load("implementation-hashes.json")
+        audit = load("windows-native-reconciliation.json")
+        self.assertEqual(audit["base_revision"], "114a1cf9e768b681d0d47cdf871e1906386243e2")
+        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]), set(pins))
+        changes = {row["path"]: row for row in audit["changes"]}
+        self.assertEqual(len(changes), len(audit["changes"]))
+        for path, previous in audit["inherited_pins"].items():
+            self.assertEqual(windows_pin(path, previous), pins[path])
+        for path, row in changes.items():
             self.assertNotEqual(row["before"], row["after"])
             self.assertRegex(row["delta_sha256"], r"^[0-9a-f]{64}$")
             self.assertTrue(row["inspection"])
@@ -122,6 +154,7 @@ class Mapping(unittest.TestCase):
             self.assertEqual(row["sha256"], pins[path])
             self.assertTrue(row["inspection"])
             self.assertTrue(row["affected_families"])
+        self.assertIn("not proved", audit["native_boundary"])
 
     def test_case_inventory_and_required_actions_exist(self):
         cases = load("cases.json")

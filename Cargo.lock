@@ -566,6 +566,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -578,6 +579,7 @@ dependencies = [
  "serde_json",
  "shlex",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

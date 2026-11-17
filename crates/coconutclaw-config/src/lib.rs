@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEST_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(windows)]
+pub mod windows_security;
+
 #[derive(Debug, Clone)]
 pub struct CliOverrides {
     pub data_dir: Option<PathBuf>,

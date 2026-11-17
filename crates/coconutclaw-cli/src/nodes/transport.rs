@@ -33,6 +33,7 @@ pub(super) async fn endpoint(key: SecretKey, bind: SocketAddr) -> Result<Endpoin
         .await?)
 }
 pub(super) async fn coordinator(cfg: &RuntimeConfig) -> Result<Endpoint> {
+    validate_storage(cfg)?;
     static ENDPOINTS: OnceLock<tokio::sync::Mutex<HashMap<PathBuf, Endpoint>>> = OnceLock::new();
     let mut endpoints = ENDPOINTS.get_or_init(Default::default).lock().await;
     if let Some(endpoint) = endpoints.get(&cfg.runtime_dir) {
@@ -109,6 +110,7 @@ impl Handler {
                 .runner
                 .lock()
                 .map_err(|_| anyhow::anyhow!("runner stopped"))?;
+            validate_storage(&runner.cfg)?;
             ensure!(
                 paired(&runner.store, peer)?.role == Role::Coordinator,
                 "unpaired coordinator"
@@ -127,11 +129,12 @@ impl Handler {
         .await??;
         Ok(())
     }
-    fn dispatch(&self, peer: EndpointId, request: Request) -> Result<Reply> {
+    pub(super) fn dispatch(&self, peer: EndpointId, request: Request) -> Result<Reply> {
         let mut runner = self
             .runner
             .lock()
             .map_err(|_| anyhow::anyhow!("runner stopped"))?;
+        validate_storage(&runner.cfg)?;
         ensure!(
             paired(&runner.store, peer)?.role == Role::Coordinator,
             "unpaired coordinator"

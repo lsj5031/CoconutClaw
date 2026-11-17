@@ -9,11 +9,10 @@ installed Codex executes them, and SQLite keeps history and task results.
 Start with one computer. Adding an experimental runner is a separate procedure
 below, not a setting that silently enables networking in the normal application.
 
-Native Windows work is being handled separately by Leo. This guide does **not**
-claim native Windows runner support or provide an unverified PowerShell setup.
-Follow Leo's separately owned Windows guide when it is published with its
-[native CI gate](.github/workflows/ci.yml). The existing Windows matrix entry
-alone is not evidence that the separate runner implementation is complete.
+Native runner instructions for Windows are in the
+[PowerShell onboarding guide](docs/windows-onboarding.md). No OpenClaw runner
+is needed. Native CI tests and manual fleet acceptance are separate gates;
+the Windows matrix alone does not establish live fleet acceptance.
 
 ### 1. Prerequisites and build
 
@@ -159,9 +158,10 @@ interrupted work remains Unknown, never local fallback or automatic retry.
 
 Read [setup, admission, recovery and rollback](docs/production-nodes.md) before
 pairing. Source checks are separate from parent-owned native/live acceptance;
-no deployment or independent review is implied. Native Windows activation
-currently refuses pending actual host access, key ACL and descendant-cleanup
-acceptance. Never copy credentials or private node roots between hosts.
+no deployment or independent review is implied. Windows runners enforce private
+state ACLs and per-invocation Job Object custody; see the PowerShell guide for
+their native test and manual acceptance gates. Never copy credentials or private
+node roots between hosts.
 
 ## Historical experimental runner fixture
 

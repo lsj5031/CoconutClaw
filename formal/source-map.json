@@ -311,10 +311,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "recover",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 729,
+                "line": 760,
                 "text": "pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {"
               }
             ]
@@ -861,10 +861,10 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "run_provider_process",
-            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+            "sha256": "059fd277d7836c4dfb4ea0552605eab40413d03fe0605c460d508e2b3f935e40",
             "declarations": [
               {
-                "line": 378,
+                "line": 380,
                 "text": "fn run_provider_process("
               }
             ]
@@ -872,10 +872,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::admit",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 487,
+                "line": 518,
                 "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
               }
             ]
@@ -883,11 +883,33 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "run_workspace",
-            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+            "sha256": "059fd277d7836c4dfb4ea0552605eab40413d03fe0605c460d508e2b3f935e40",
             "declarations": [
               {
-                "line": 252,
+                "line": 254,
                 "text": "pub fn run_workspace("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/windows.rs",
+            "symbol": "windows::spawn",
+            "sha256": "33a8fe3682d1082932018498be05de9c053d53bfd65a427ef110670cfa6882e9",
+            "declarations": [
+              {
+                "line": 88,
+                "text": "pub(super) fn spawn(command: &mut Command) -> Result<(Child, Job)> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-config/src/windows_security.rs",
+            "symbol": "validate_private",
+            "sha256": "5481ac2a8f5107a756e2c1b0fe229a32f008aa3877376fa06ca962b9a6c3ff55",
+            "declarations": [
+              {
+                "line": 48,
+                "text": "pub fn validate_private(path: &Path) -> Result<()> {"
               }
             ]
           }
@@ -896,10 +918,10 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "run_child_process",
-            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+            "sha256": "059fd277d7836c4dfb4ea0552605eab40413d03fe0605c460d508e2b3f935e40",
             "declarations": [
               {
-                "line": 510,
+                "line": 518,
                 "text": "fn run_child_process("
               }
             ]
@@ -907,10 +929,10 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "read_pipe",
-            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+            "sha256": "059fd277d7836c4dfb4ea0552605eab40413d03fe0605c460d508e2b3f935e40",
             "declarations": [
               {
-                "line": 616,
+                "line": 635,
                 "text": "fn read_pipe("
               }
             ]
@@ -942,14 +964,14 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "terminate_cancelled_child",
-            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+            "sha256": "059fd277d7836c4dfb4ea0552605eab40413d03fe0605c460d508e2b3f935e40",
             "declarations": [
               {
-                "line": 703,
+                "line": 724,
                 "text": "fn terminate_cancelled_child("
               },
               {
-                "line": 703,
+                "line": 724,
                 "text": "fn terminate_cancelled_child("
               }
             ]
@@ -957,10 +979,10 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "run_child_process",
-            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+            "sha256": "059fd277d7836c4dfb4ea0552605eab40413d03fe0605c460d508e2b3f935e40",
             "declarations": [
               {
-                "line": 510,
+                "line": 518,
                 "text": "fn run_child_process("
               }
             ]
@@ -968,10 +990,10 @@
           {
             "path": "crates/coconutclaw-provider/src/lib.rs",
             "symbol": "kill_active_process_groups",
-            "sha256": "10979eff391d6d7deb30907f44f66f693d9b5e033c3ba013baf833f2e5e18f70",
+            "sha256": "059fd277d7836c4dfb4ea0552605eab40413d03fe0605c460d508e2b3f935e40",
             "declarations": [
               {
-                "line": 693,
+                "line": 712,
                 "text": "pub fn kill_active_process_groups() {"
               }
             ]
@@ -979,11 +1001,33 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes/transport.rs",
             "symbol": "serve",
-            "sha256": "79ce0ff9b5b706e6ee75cd7c5e7c0249afa9f5642a0b73c55fbeec4c5c01a009",
+            "sha256": "3afc2af03433c8a555237028110ad178255102ce5ce845d5777674c3e6cc726b",
             "declarations": [
               {
-                "line": 195,
+                "line": 198,
                 "text": "pub(super) async fn serve(cfg: RuntimeConfig) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/windows.rs",
+            "symbol": "Job::terminate",
+            "sha256": "33a8fe3682d1082932018498be05de9c053d53bfd65a427ef110670cfa6882e9",
+            "declarations": [
+              {
+                "line": 63,
+                "text": "pub(super) fn terminate(&self) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-provider/src/windows.rs",
+            "symbol": "kill_active_jobs",
+            "sha256": "33a8fe3682d1082932018498be05de9c053d53bfd65a427ef110670cfa6882e9",
+            "declarations": [
+              {
+                "line": 77,
+                "text": "pub(super) fn kill_active_jobs() {"
               }
             ]
           }
@@ -1014,10 +1058,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::open",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 448,
+                "line": 478,
                 "text": "fn open(cfg: RuntimeConfig) -> Result<Self> {"
               }
             ]
@@ -1216,10 +1260,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "execute",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 644,
+                "line": 675,
                 "text": "pub(crate) fn execute("
               }
             ]
@@ -1284,10 +1328,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::admit",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 487,
+                "line": 518,
                 "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
               }
             ]
@@ -1295,10 +1339,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::finish",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 522,
+                "line": 553,
                 "text": "fn finish(&mut self, bundle: &Bundle, mut outcome: Outcome, output: &str) -> Result<()> {"
               }
             ]
@@ -1363,10 +1407,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "accept",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 739,
+                "line": 770,
                 "text": "fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {"
               }
             ]
@@ -1409,10 +1453,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::cancel",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 568,
+                "line": 599,
                 "text": "fn cancel(&mut self, bundle: &Bundle, command: &Cancellation) -> Result<()> {"
               }
             ]
@@ -1694,10 +1738,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "selection",
-            "sha256": "f060587446fec3670db960795013a97e3563847bbeaa7d70ea2b3e4a7022a6cf",
+            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
             "declarations": [
               {
-                "line": 587,
+                "line": 618,
                 "text": "pub(crate) fn selection(store: &Store, session: &str, id: Option<&str>) -> Result<()> {"
               }
             ]
@@ -1888,5 +1932,6 @@
     ],
     "remaining_families": "Reused only on identical model/config/source owners, not re-exhausted"
   },
-  "production_mapping": "production-reconciliation.json; implementation self-mapping, independent review deferred."
+  "production_mapping": "production-reconciliation.json; implementation self-mapping, independent review deferred.",
+  "windows_native_boundary": "Win32 job/ACL/PowerShell behavior is not proved by the finite models. Linux API signature shims are not Windows compilation or native execution. Native Windows named CI tests and separate user fleet acceptance are required. Existing host-local Codex auth is never transferred."
 }
