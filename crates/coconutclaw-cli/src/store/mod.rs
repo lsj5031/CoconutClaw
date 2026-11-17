@@ -154,6 +154,21 @@ impl Store {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
+        // Schema setup includes a journal-mode transition and multiple migration
+        // transactions. Give the complete initialization one cross-process owner;
+        // SQLite's per-statement busy handler cannot serialize that sequence.
+        let mut lock_path = cfg.sqlite_db_path.as_os_str().to_os_string();
+        lock_path.push(".initialize.lock");
+        let initialization = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .context("failed to open sqlite initialization lock")?;
+        initialization
+            .lock()
+            .context("failed to lock sqlite initialization")?;
         let conn = Connection::open(&cfg.sqlite_db_path)
             .with_context(|| format!("failed to open {}", cfg.sqlite_db_path.display()))?;
         conn.execute_batch(SCHEMA_SQL)

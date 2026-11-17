@@ -92,6 +92,45 @@ fn projection_interruption_is_old_or_new_never_truncated() {
 }
 
 #[test]
+fn concurrent_first_store_open_initializes_complete_schema() {
+    use std::sync::{Arc, Barrier};
+    for _ in 0..3 {
+        let cfg = RuntimeConfig::test_config();
+        let barrier = Arc::new(Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|index| {
+                let cfg = cfg.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = Store::open(&cfg)?;
+                    store.conn.execute(
+                        "INSERT INTO kv(key,value) VALUES(?1,'initialized')",
+                        [format!("worker-{index}")],
+                    )?;
+                    anyhow::Ok(())
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        let store = Store::open(&cfg).unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM kv WHERE value='initialized'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            4
+        );
+    }
+}
+
+#[test]
 fn concurrent_task_projections_and_scoped_memory_stay_separate() {
     use std::sync::{Arc, Barrier};
     let cfg = RuntimeConfig::test_config();

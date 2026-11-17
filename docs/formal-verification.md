@@ -235,3 +235,11 @@ scrubbing and its 120-second hung-test bound are preserved, while Unix retains
 the original 45-second bound. Inspected implementation pins and unchanged action
 declaration locations are refreshed for the merged source. Affected small cases
 are rechecked, not claimed as a new full formal gate or native OS acceptance.
+
+Native run 44007997530 confirms the macOS vnode calendar wake fix and the merged
+Windows/Linux gates. It also exposed overlapping first-open schema setup.
+Store initialization now holds a database-specific OS file lock through schema,
+migration and graph/memory initialization, released before normal operations.
+The concurrent first-open regression retains separate live connections; existing
+projection concurrency assertions are unchanged. This startup ownership is an
+executable obligation, not a new model action or a proof of filesystem behavior.

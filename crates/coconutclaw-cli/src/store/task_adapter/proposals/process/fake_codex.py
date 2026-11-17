@@ -30,10 +30,13 @@ if behavior != "normal":
     args = args[1:]
 assert args[0] == "exec" and args[-1] == "-" and "--json" in args
 assert "--dangerously-bypass-approvals-and-sandbox" not in args
-assert set(os.environ) <= {
+allowed_environment = {
     "HOME", "CODEX_HOME", "LC_CTYPE", "FACTORY_AIRGAP_ENABLED",
     "COCONUTCLAW_MOCK_PROCESS_SOCKET",
 }
+assert set(os.environ) <= allowed_environment, (
+    "unexpected environment names: " + ", ".join(sorted(set(os.environ) - allowed_environment))
+)
 assert os.environ["FACTORY_AIRGAP_ENABLED"] == "1"
 root = Path(__file__).parent
 with sqlite3.connect("file:" + str(root / "work/state.db") + "?mode=ro", uri=True) as store:
