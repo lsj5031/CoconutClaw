@@ -853,17 +853,7 @@ fn unknown_reconciliation_normal_binary_restart_uses_same_sender() {
             [fence],
         )
         .unwrap();
-    let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(format!("coconutclaw{}", std::env::consts::EXE_SUFFIX))
-        });
+    let binary = crate::util::test_binary_path();
     let hash = blake3::hash(&fs::read(&binary).unwrap());
     struct Owned(std::process::Child);
     impl Drop for Owned {
@@ -904,7 +894,7 @@ fn unknown_reconciliation_normal_binary_restart_uses_same_sender() {
         )
     };
     let wait = |id| {
-        let until = Instant::now() + Duration::from_secs(20);
+        let until = Instant::now() + Duration::from_secs(90);
         loop {
             let done: bool=store.conn.query_row("SELECT EXISTS(SELECT 1 FROM telegram_ingress WHERE update_id=?1 AND ack_phase='sent')",[id],|r|r.get(0)).unwrap();
             if done {

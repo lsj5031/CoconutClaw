@@ -48,6 +48,10 @@ jobs:
         shell: python {0}
         run: |
           import json, os, pathlib, re, subprocess, sys
+          native_binary = pathlib.Path("target") / "debug" / ("coconutclaw.exe" if os.name == "nt" else "coconutclaw")
+          if not native_binary.is_file():
+              raise SystemExit(f"missing native binary: {native_binary.resolve()}")
+          os.environ["COCONUTCLAW_TEST_BINARY"] = str(native_binary.resolve())
           os.environ["COCONUTCLAW_WAITING_GRAPH_ARTIFACTS"] = str(pathlib.Path("native-graph").resolve())
           os.environ["COCONUTCLAW_RECONCILIATION_ARTIFACTS"] = str(pathlib.Path("native-reconciliation").resolve())
           os.environ["COCONUTCLAW_CONTEXT_NOTIFICATION_ARTIFACTS"] = str(pathlib.Path("native-context-notifications").resolve())

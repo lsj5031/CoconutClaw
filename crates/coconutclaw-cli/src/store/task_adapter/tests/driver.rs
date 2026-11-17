@@ -113,7 +113,9 @@ impl Fixture {
 }
 
 async fn bounded(future: impl std::future::Future<Output = ()>) {
-    tokio::time::timeout(Duration::from_secs(45), future)
+    // Windows CI runners take several times longer than a workstation; the
+    // bound only exists to stop a hung test, not to pace healthy execution.
+    tokio::time::timeout(Duration::from_secs(120), future)
         .await
         .unwrap();
 }

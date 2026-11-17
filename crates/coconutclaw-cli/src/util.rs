@@ -37,6 +37,41 @@ pub(crate) fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::pro
     cmd
 }
 
+/// Resolve the normal executable built for native lifecycle fixtures.
+/// `current_exe()` can live under `target/<profile>/deps` or a build-script
+/// output directory, so walk to the profile directory instead of assuming a
+/// fixed depth. `COCONUTCLAW_TEST_BINARY` overrides custom layouts.
+#[cfg(test)]
+pub(crate) fn test_binary_path() -> std::path::PathBuf {
+    let path = if let Some(path) = std::env::var_os("COCONUTCLAW_TEST_BINARY") {
+        path.into()
+    } else {
+        let exe = std::env::current_exe().expect("test executable path");
+        let mut dir = exe.as_path();
+        loop {
+            let Some(parent) = dir.parent() else {
+                panic!(
+                    "cannot locate target profile directory from {}",
+                    exe.display()
+                );
+            };
+            if matches!(
+                parent.file_name().and_then(|name| name.to_str()),
+                Some("debug" | "release")
+            ) {
+                break parent.join(format!("coconutclaw{}", std::env::consts::EXE_SUFFIX));
+            }
+            dir = parent;
+        }
+    };
+    assert!(
+        path.is_file(),
+        "normal binary not built at {}; run cargo build -p coconutclaw --bin coconutclaw",
+        path.display()
+    );
+    path
+}
+
 pub(crate) fn shorten_log_text(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();

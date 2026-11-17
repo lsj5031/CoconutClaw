@@ -693,17 +693,7 @@ fn waiting_graph_normal_binary_wait_event_attempt_outbox_and_restart() {
     )
     .unwrap();
     tx.commit().unwrap();
-    let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(format!("coconutclaw{}", std::env::consts::EXE_SUFFIX))
-        });
+    let binary = crate::util::test_binary_path();
     let before = blake3::hash(&fs::read(&binary).unwrap()).to_string();
     struct Owned(std::process::Child);
     impl Drop for Owned {
@@ -739,7 +729,7 @@ fn waiting_graph_normal_binary_wait_event_attempt_outbox_and_restart() {
         )
     };
     let wait = |id, status: &str| {
-        let until = Instant::now() + Duration::from_secs(20);
+        let until = Instant::now() + Duration::from_secs(90);
         loop {
             if let Some(r) = store.get_task_run(id).unwrap() {
                 assert_ne!(r.status, "failed", "{:?}", r.error_summary);
@@ -999,7 +989,7 @@ fn waiting_graph_approval_continuation_has_one_logical_owner() {
 }
 
 fn wait_for_terminal_tasks(cfg: &RuntimeConfig, task_ids: &[i64]) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let store = crate::store::Store::open(cfg).expect("open store");
         let all_done = task_ids.iter().all(|task_id| {

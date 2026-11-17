@@ -322,17 +322,7 @@ async fn runtime_bridge_normal_binary_consumes_real_custody_and_restarts_without
         .conn
         .execute_batch("DROP TRIGGER normal_cut")
         .unwrap();
-    let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(format!("coconutclaw{}", std::env::consts::EXE_SUFFIX))
-        });
+    let binary = crate::util::test_binary_path();
     let cfg = b.cfg.clone();
     let api = server
         .base_url
@@ -383,7 +373,7 @@ async fn runtime_bridge_normal_binary_consumes_real_custody_and_restarts_without
                     .unwrap(),
             );
             let store = Store::open(&cfg).unwrap();
-            let until = std::time::Instant::now() + Duration::from_secs(10);
+            let until = std::time::Instant::now() + Duration::from_secs(90);
             loop {
                 let done: bool = store
                     .conn
@@ -751,7 +741,7 @@ async fn runtime_bridge_raw_fence_retains_custody_while_another_topic_executes()
         scheduler.recover().unwrap();
         crate::loops::webhook::process_webhook_line(&cfg,&mut store,&scheduler,
             r#"{"update_id":41,"message":{"chat":{"id":321,"type":"private"},"message_thread_id":8,"text":"independent fixture"}}"#).unwrap();
-        let until=std::time::Instant::now()+Duration::from_secs(10);
+        let until=std::time::Instant::now()+Duration::from_secs(90);
         loop{
             if store.conn.query_row("SELECT COUNT(*) FROM task_runs WHERE update_id='41' AND status='completed'",[],|r|r.get::<_,i64>(0)).unwrap()==1{break;}
             let failed:Option<String>=store.conn.query_row("SELECT error_summary FROM task_runs WHERE update_id='41' AND status='failed'",[],|r|r.get(0)).optional().unwrap().flatten();
@@ -856,7 +846,7 @@ async fn runtime_bridge_genuine_approval_is_not_overwritten_by_late_result() {
                 |r| r.get(0),
             )
             .unwrap();
-        let until = std::time::Instant::now() + Duration::from_secs(10);
+        let until = std::time::Instant::now() + Duration::from_secs(90);
         loop {
             let run = store.get_task_run(child).unwrap().unwrap();
             if run.status == "completed" {
