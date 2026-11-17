@@ -23,8 +23,10 @@ and records commands, input bytes/hashes, exits, elapsed time, state counts and
 action coverage. A timeout or resource/tool error is incomplete, never a proof.
 `--cases` selects named entries for affected rechecks, not a claim of the full gate.
 
-- `implementation-hashes.json`:135 unchanged runtime/shared/test/build inputs,
-  pinned before modeling. No runtime source changed in this formal slice.
+- `implementation-hashes.json`:136 runtime/shared/test/build inputs. The original
+ 135 were pinned before modeling. The17 November test-only multihost delta
+ refreshes eight changed pins and adds the host-local auth callback; it changes
+ no normal executable/dependency/SQL behavior. See the source-map supplement.
 - `inventory.json`:171 pre-formal repository paths, including explicit excluded
   and evidence-only paths, declaration/SQL/conditional scans and individual gaps.
 - `source-map.json`:owners, independent state, source declaration/hash anchors,
@@ -35,6 +37,13 @@ action coverage. A timeout or resource/tool error is incomplete, never a proof.
   process, immutable history and three explicit cross-subsystem compositions.
 - `test_runner.py`:supplementary fail-closed classification tests. Real official
   JVM negative controls, not these unit tests, establish that the mutants fail.
+
+The multihost preparation rechecks all Process, RuntimeComposition and
+RemoteComposition configurations against refreshed pins and added direct harness
+anchors. Other model contracts/owners are unchanged, so their prior final03
+receipts are explicitly reused, not presented as a new full-matrix execution.
+Controlled native-tool gates/auth callback/OS cleanup and a shared Store with two
+runner actors are not proved by these unchanged finite abstractions.
 
 The positive gate requires a nontrivial fully exhausted finite graph, empty
 queue, successful TLC exit and all declared required actions exercised.

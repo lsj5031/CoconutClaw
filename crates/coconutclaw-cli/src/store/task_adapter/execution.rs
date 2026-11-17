@@ -4,7 +4,7 @@ use super::*;
 use coconutclaw_sync::synthetic::membership::domain::Outcome;
 use iroh::Signature;
 
-const CANCEL: &str = "CoconutClaw mock cancel v1:";
+pub(super) const CANCEL: &str = "CoconutClaw mock cancel v1:";
 
 /// Not serializable or cloneable: reopening a Store cannot restore permission
 /// to invoke a mock. A persisted start without this token recovers Unknown.
@@ -42,6 +42,49 @@ fn cancel_bytes(command: &Cancellation) -> Result<Vec<u8>> {
     let mut bytes = CANCEL.as_bytes().to_vec();
     bytes.extend(serde_json::to_vec(command)?);
     Ok(bytes)
+}
+
+pub(super) fn verify_cancellation(
+    origin: &BoundOrigin,
+    history: &History,
+    text: &str,
+    assignment: u64,
+) -> Result<bool> {
+    let text = text
+        .strip_prefix(CANCEL)
+        .context("not signed cancellation")?;
+    let signed: SignedCancellation = serde_json::from_str(text)?;
+    ensure!(
+        serde_json::to_string(&signed)? == text,
+        "noncanonical cancellation"
+    );
+    origin
+        .origin
+        .core
+        .verify(&cancel_bytes(&signed.command)?, &signed.signature)?;
+    let c = &signed.command;
+    ensure!(c.origin == origin.hash()?, "foreign cancellation origin");
+    if c.assignment != assignment {
+        return Ok(false);
+    }
+    let bytes = history
+        .export()
+        .into_iter()
+        .find(|b| SignedEvent::parse(b).is_ok_and(|s| s.event.sequence == assignment))
+        .context("cancel assignment absent")?;
+    let Action::Assign { request, .. } = SignedEvent::parse(&bytes)?.event.action else {
+        anyhow::bail!("not assignment")
+    };
+    let delegation: Delegation = serde_json::from_str(&request)?;
+    let job = history.jobs.get(&assignment).context("cancel job absent")?;
+    ensure!(
+        c.assignment_hash == blake3::hash(&bytes).to_string()
+            && c.source_run == delegation.run
+            && c.runner == job.runner
+            && c.attempt == 1,
+        "cancellation assignment mismatch"
+    );
+    Ok(true)
 }
 
 fn terminal(
@@ -255,33 +298,12 @@ impl TaskAdapter<'_> {
         let id = self.incoming_run(assignment, &bytes, &delegation)?;
         let mut selected = None;
         for record in peer.received()? {
-            let Some(text) = record.text.strip_prefix(CANCEL) else {
-                continue;
-            };
-            let signed: SignedCancellation = serde_json::from_str(text)?;
-            ensure!(
-                serde_json::to_string(&signed)? == text,
-                "noncanonical cancellation"
-            );
-            self.origin
-                .origin
-                .core
-                .verify(&cancel_bytes(&signed.command)?, &signed.signature)?;
-            let c = &signed.command;
-            ensure!(
-                c.origin == self.origin.hash()?,
-                "foreign cancellation origin"
-            );
-            if c.assignment != assignment {
+            if !record.text.starts_with(CANCEL) {
                 continue;
             }
-            ensure!(
-                c.assignment_hash == blake3::hash(&bytes).to_string()
-                    && c.source_run == delegation.run
-                    && c.runner == history.jobs[&assignment].runner
-                    && c.attempt == 1,
-                "cancellation assignment mismatch"
-            );
+            if !verify_cancellation(self.origin, &history, &record.text, assignment)? {
+                continue;
+            }
             if let Some(previous) = &selected {
                 ensure!(previous == &record.text, "conflicting cancellation");
             }

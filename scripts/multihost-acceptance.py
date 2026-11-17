@@ -58,11 +58,71 @@ def main():
     i.add_argument("--executable", type=Path, required=True)
     c = sub.add_parser("control", help="Bounded local coordinator control")
     c.add_argument("--root", type=Path, required=True)
-    c.add_argument("command", choices=["run", "replay", "status", "cancel", "stop"])
+    c.add_argument("command", choices=["check", "run", "run-cut", "run-cancel",
+                                     "replay", "replay-cancel", "status", "cancel", "stop", "detach", "probe"])
     c.add_argument("--runner-ready", type=Path)
     c.add_argument("--allow-same-host", action="store_true", help="Local regression ONLY, never a multihost claim")
+    c.add_argument("--proposal", type=Path, help="Public exact signed proposal, probe only")
+    f = sub.add_parser("fixture", help="Owned native tool gate, no provider invocation")
+    f.add_argument("--root", type=Path, required=True)
+    f.add_argument("command", choices=["status", "release"])
+    profile = sub.add_parser("profile", help="Host-local nonsecret route projection, no login or invocation")
+    for name in ["output", "executable", "python", "auth-json", "shared-config"]:
+        profile.add_argument("--" + name, type=Path, required=True)
+    profile.add_argument("--controlled", action="store_true")
     a = p.parse_args()
-    if a.action == "build":
+    if a.action == "profile":
+        import tomllib
+        from urllib.parse import urlsplit
+        for path in [a.executable, a.python, a.auth_json, a.shared_config, a.output]:
+            if not path.is_absolute():
+                raise RuntimeError("Explicit absolute host paths required")
+        source = tomllib.loads(a.shared_config.read_text())
+        name = source["model_provider"]
+        provider = source["model_providers"][name]
+        if not all(p.is_file() for p in [a.executable, a.python, a.auth_json, a.shared_config]):
+            raise RuntimeError("Existing host dependency missing, no install/fallback")
+        if provider.get("wire_api", "responses") != "responses":
+            raise RuntimeError("Only the existing responses route is supported")
+        url = urlsplit(provider["base_url"])
+        if url.username or url.password or url.query or url.fragment or url.scheme not in ("http", "https"):
+            raise RuntimeError("Credential-bearing or unsupported route URL")
+        command_auth = isinstance(provider.get("auth"), dict) and "command" in provider["auth"]
+        if command_auth:
+            command = Path(provider["auth"]["command"])
+            if not command.is_absolute() or not command.is_file():
+                raise RuntimeError("Existing configured auth command unavailable")
+            subprocess.run([str(a.python), "-I", "-c", "import tomllib"], check=True)
+        else:
+            key = json.loads(a.auth_json.read_text()).get("OPENAI_API_KEY")
+            if not isinstance(key, str) or not key:
+                raise RuntimeError("Existing API-key auth unavailable; no fallback/login")
+        dump(a.output, dict(executable=str(a.executable), python=str(a.python),
+                           auth_json=str(a.auth_json), shared_config=str(a.shared_config),
+                           provider_name=name, base_url=provider["base_url"], wire_api="responses",
+                           auth_command_in_place=command_auth, controlled_fixture=a.controlled))
+        print(json.dumps({"profile":str(a.output), "auth_command_in_place":command_auth,
+                          "controlled_fixture":a.controlled, "invocations":0}))
+    elif a.action == "fixture":
+        root_check(a.root)
+        cfg = json.loads((a.root / "role.json").read_text())
+        if cfg["role"] != "runner" or not cfg["provider"].get("controlled_fixture"):
+            raise RuntimeError("Not a controlled owned runner fixture")
+        workspace = a.root / "workspace/1"
+        started = workspace / "fixture-tool-started.json"
+        ended = workspace / "fixture-tool-ended.json"
+        record = json.loads(started.read_text()) if started.exists() else None
+        if record and record["nonce"] != cfg["run_id"]:
+            raise RuntimeError("Foreign fixture gate")
+        if a.command == "release":
+            if not record or ended.exists():
+                raise RuntimeError("Tool must be currently waiting, never relaunch it")
+            path = workspace / "fixture-release.json"
+            if not path.exists():
+                dump(path, {"nonce":cfg["run_id"]})
+        print(json.dumps({"started":record, "ended":json.loads(ended.read_text()) if ended.exists() else None,
+                          "released":(workspace / "fixture-release.json").exists()}))
+    elif a.action == "build":
         repo = Path(__file__).resolve().parents[1]
         if not a.output.is_absolute() or a.output.exists():
             raise RuntimeError("Output must be a new absolute executable path")
@@ -151,8 +211,12 @@ def main():
         message = {"command": a.command, "allow_same_host": a.allow_same_host}
         if a.runner_ready:
             message["runner_ready"] = json.loads(a.runner_ready.read_text())
-        if a.command in ("run", "replay") and not a.runner_ready:
+        if a.command in ("check", "run", "run-cut", "run-cancel", "replay", "replay-cancel") and not a.runner_ready:
             raise RuntimeError("Run/replay requires the current public runner ready file")
+        if a.command == "probe":
+            if not a.proposal or not 0 < a.proposal.stat().st_size <= 8192:
+                raise RuntimeError("Probe requires a bounded public proposal file")
+            message["bytes"] = list(a.proposal.read_bytes())
         data = json.dumps(message).encode()
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.connect(str(a.root / "control.sock"))

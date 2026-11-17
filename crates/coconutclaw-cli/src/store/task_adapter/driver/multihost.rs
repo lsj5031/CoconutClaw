@@ -6,6 +6,24 @@ use crate::store::task_adapter::proposals::process::{
 };
 
 impl RuntimeDriver {
+    pub(in crate::store::task_adapter) fn arm_remote_result_cut(&mut self) -> Result<()> {
+        ensure!(
+            self.runner.remote().is_some(),
+            "fault cut requires owned remote fixture"
+        );
+        self.cut_after_remote_result = true;
+        Ok(())
+    }
+
+    /// Close only coordinator-owned resources at the explicit durable cut.
+    /// Do not send Stop to the independently owned remote role.
+    pub(in crate::store::task_adapter) async fn detach_remote(mut self) -> Result<()> {
+        self.tasks.shutdown().await;
+        let publisher = self.publisher.shutdown().await;
+        let mirror = self.mirror.shutdown().await;
+        publisher.and(mirror)
+    }
+
     /// Same admission/claim/outcome path, with a separate remote completion
     /// stream. No callback computes the provider result or owns runner keys.
     pub(in crate::store::task_adapter) async fn admit_remote(
@@ -61,7 +79,11 @@ impl RuntimeDriver {
                     let value = match request.value["command"].as_str() {
                         Some("cancel") => match self.cancel(1).await {
                             Ok(()) => serde_json::json!({"cancel_requested":true}),
-                            Err(error) => serde_json::json!({"ok":false,"error":error.to_string()}),
+                            Err(error) => {
+                                let _=request.reply.send(serde_json::json!({"ok":false,
+                                    "error":error.to_string(),"requires_reconciliation":true,"no_retry":true}));
+                                return Err(error.context("cancellation custody unconfirmed; explicit reconciliation required"));
+                            },
                         },
                         Some("status") => serde_json::json!({
                             "running":true,"provider":self.runner.provider_evidence().await?
@@ -110,6 +132,7 @@ impl RuntimeDriver {
             &input,
             remote.hostname(),
             &bytes,
+            remote.controlled_fixture(),
         )?;
         self.source.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS acceptance_artifact(

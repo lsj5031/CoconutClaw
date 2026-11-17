@@ -218,7 +218,7 @@ Collect **selected files only**, never archive whole role roots:
   `provider-evidence.json`, `stopped*.json`, role logs;
 * runner: corresponding public ready/launch/stopped receipts and role logs,
   `fixture-input.json`, `workspace/1/fixture-output.json`,
-  `provider-1/launch.json`, `provider-1/integrity-before.json`,
+  `provider-1/launch.json`, the public `integrity` diagnostic receipt,
   `provider-1/scoped-native-events.json`;
 * actual native binary SHA256, source/archive manifests, host identities,
   command exits and before/after source/receipt hashes.
@@ -235,3 +235,240 @@ possible native tool's independently created process group. Real abrupt-death
 containment/session recovery, operational custody/admission and activation
 remain separate gates. No multihost success is claimed without distinct-host
 network, model/tool, signed artifact, Store and restart receipts.
+
+## Controlled three-host preparation, 17 November
+
+Gateway plus Mars and Mitori means **three hosts, two remote Mac hosts**, not
+three remote runner nodes. At preparation, execution awaited parent orchestration;
+the actual outcomes and subsequent repair checkpoints are recorded below.
+Old stopped roots and old Mac binaries are historical evidence, not current proof.
+The source-pinned parent handoff supplies fresh roots, manifests and commands.
+
+There is a concrete limit, not a new product routing feature: `adapter_binding`
+fixes one origin and session per Store; RuntimeDriver holds one RunnerClient;
+remote Begin admits only assignment1 and an origin with exactly that runner.
+Do **not** point two independent role pairs at the same Store or claim separate
+Stores prove a shared-core multi-runner scheduler. The bounded stage exercises
+concurrent independent original-Store routes and the following existing
+application boundaries, not the requested shared-Store/two-topic case.
+
+`profile` projects only nonsecret routing/paths from each host's existing config.
+If its selected provider uses an auth command, the isolated native callback reads
+and executes that original command in place, with its original CODEX_HOME.
+Otherwise the existing API-key wrapper route is used. No auth arguments, tokens
+or files are copied. Command-auth projection/callback requires an **already
+installed Python with tomllib**; report absence rather than install or fall back.
+Both routes use existing Terra/max/never and isolated native state.
+
+```sh
+python3 "$SCRIPT" profile --output "$HOST_PROFILE" \
+  --executable "$HOST_CODEX" --python "$EXISTING_PYTHON" \
+  --auth-json "$HOST_AUTH" --shared-config "$HOST_CONFIG" --controlled
+```
+
+Prepare/launch as above, exchanging only public ready files. `control check
+--runner-ready ...` initializes real pinned iroh transport and both Stores but
+allocates no task/invocation. At initialization/reconnect and before each runner
+record import, a public nonce exercises both scoped-data directions. The gateway initiates
+the first data connection as well as control, matching observed LAN reachability;
+this is not a relay/firewall workaround or a successful remote proof by itself.
+Require `scoped_data_roundtrip:true` from check. Stop both roles and relaunch the **same fresh**
+roots with new ready files before running. Never use allow-same-host remotely.
+
+The controlled prompt admits only six workspace files. Its one native Python
+tool publishes nonce/PID/parent/PGID/hostname/start time then waits on owned
+release/cancel events, bounded at600 seconds. No arbitrary delay is a task
+input. On each runner:
+
+```sh
+python3 "$SCRIPT" fixture --root "$RUNNER" status
+python3 "$SCRIPT" fixture --root "$RUNNER" release
+```
+
+Observe both actual tool-started records **before** either release to prove
+overlap by causal gates, not synchronized host wall clocks. Hold the first
+admitted route while releasing the other; native result files add actual
+start/finish timestamps. The initial preparation budget was two jobs plus one
+separately fresh cancellation job, never rerunning an uncertain assignment.
+
+`control run-cut --runner-ready ...` uses the ordinary RuntimeDriver acceptance
+path but returns a deliberate failed receipt with `owned_cut:true` after the
+runner's signed result, verified artifact and coordinator publication/target
+result are durable, **before** mirror transfer and original-Store acknowledgment.
+The original source remains running at this cut. It is not an external delivery
+receipt or proof of power-loss fsync behavior. Then:
+
+```sh
+python3 "$SCRIPT" control --root "$CORE" detach
+# Core has exited; runner stays alive. Relaunch ONLY that core, same executable.
+python3 "$SCRIPT" launch --root "$CORE" --executable "$ROLE"
+python3 "$SCRIPT" control --root "$CORE" replay --runner-ready "$RUNNER_READY"
+```
+
+Exact origin/input/core-data reconnect is idempotent; altered bootstrap refuses.
+Reconciliation uses durable proof, not Begin. Missing evidence retains existing
+Unknown behavior. Normal `stop` still stops the runner; detach is allowed only
+at this explicit cut. Never delete locks/sockets to manufacture restart.
+
+`control run-cancel` admits a separately fresh controlled job. After observing
+its actual tool start, `control cancel` persists cancellation through the same
+core/runner path and places a cooperative cancel event in its owned workspace.
+Require an actual cancelled receipt and actual PID/PGID disappearance; otherwise
+retain failure/Unknown and hand off, never assume cleanup from a status string.
+No parent sends signals to unrelated or merely recorded stale PIDs. Another
+Mac's held job may then complete independently. `replay-cancel` validates the
+cancelled original Store without invocation. Real cancellation/descendant
+coverage remains pending until those node-side observations are collected.
+
+Each settled/replayed route exercises three typed tampered-proposal fields at
+the actual `accept_proposal` boundary. `proposal.json` exports exact public signed
+bytes. Transfer a completed route's public proposal to another coordinator:
+
+```sh
+python3 "$SCRIPT" control --root "$OTHER_CORE" probe --proposal "$FOREIGN_PROPOSAL"
+```
+
+Require rejection plus unchanged history/tasks/invocations/**original outbox**.
+Same-route exact bytes are Duplicate, not rejection. Deterministic existing
+tests cover stale epoch/head branches; do not claim a live owner-epoch migration.
+These role fixtures do not execute an external sender: unchanged delivered/outbox
+state is not generalized external exactly-once or nonoccurrence evidence.
+
+New private integrity baselines hash auth bytes in place as well as config bytes,
+size/mtime/ctime/inode/device/mode. **Do not transfer integrity-before.json**,
+auth/config/session directories, role keys or whole roots. Collect only the
+read-only diagnostic's equality booleans/config hashes and public receipts.
+Do not compare SHA256 to BLAKE3. Old baseline receipts remain untouched.
+
+### Historical1140 gate findings and1154 remediation, 17 November
+
+Both Macs built source da9ca9f7 successfully. The old missing-cache blocker is
+resolved, not a current restriction. Three real invocations were consumed.
+Control/scoped-data preflights and independent-route native overlap succeeded,
+but A/B source completion failed schema validation; cancellation C failed its
+transport. All roles are stopped, original roots/DBs retained unchanged.
+Neither shared-original-Store concurrency nor remote acceptance is passed.
+
+Ordinary artifacts have exactly five bound fields. Controlled artifacts have
+exactly seven, additionally positive integer nanosecond start/finish timestamps
+in nondecreasing order. Both native production and receiving validators enforce
+the selected fixture schema, hash, size, nonce, sum, host and PID bindings.
+
+Signed cancellation intents are generic scoped records, NOT domain events.
+Only their exact typed prefix enters generic receipt, followed by the same
+canonical/core-signature/origin/assignment-hash/source-run/runner/attempt verifier
+used by cancellation projection. Domain-event receipt remains strict. A remote
+cancel requires that verified intent in custody. Cancellation does not add a
+domain-history event. Failed cancellation custody stops event allocation until
+explicit reconciliation; it is not permission for another provider invocation.
+
+The deterministic native fixture exercises actual control/iroh transport,
+cancelled exit130 without an output artifact, one invocation, process death,
+full role restart and exact signed cancellation replay. Missing successful
+output remains an artifact error, never fabricated completion/cancellation.
+The parent's manual cancel-file fallback was cleanup only, not cancellation
+success. Original A/B remain running and C cancel_requested.
+
+That repair required new native builds and did not authorize further real calls.
+The later owner authorization below supersedes that budget restriction.
+Read-only public artifacts can be schema-checked, but the public
+evidence bundle alone lacks the signed proposal/result and full original domain
+binding needed to prove safe original-Store replay. Retained-state recovery needs
+separate verified evidence collection/authorization; never rewrite original DBs
+or claim deterministic local repair as a fresh Mac acceptance.
+
+### Actual1224 success evidence and1233 repair checkpoint
+
+Both Macs verified and built b6293d06 source. Fresh real A/B routes succeeded:
+B was held while A finished; A's runner remained alive across coordinator-only
+restart after the signed-result-before-original-ACK cut, then replay completed
+the original task with one invocation. B completed with exact duplicate receipt,
+then full coordinator/runner restart replay preserved Completed and one invocation.
+Cross-route probes rejected with unchanged histories/outboxes/invocations. These
+successes are retained, not rerun or downgraded because cancellation C failed.
+They prove independent-route overlap, not shared-original-Store scheduling.
+
+C's signed cancellation failed at the runner's scoped-record fetch. The
+`remote runner refused: deadline has elapsed` error is the existing10-second
+per-fetch timeout, not an expired24-hour policy or a61-second tool deadline.
+Its failure response was24.145 seconds after tool start; cleanup ended the tool
+61.478 seconds after start. Parent's cancel-file fallback remains cleanup only.
+Original C remains unreconciled and must never be re-admitted.
+
+The initial data preflight did not guarantee a long-lived reverse UDP path after
+native startup/tool wait. An isolated real-iroh regression retains assignment,
+scope, authors and keys while losing the old data path. A loopback UDP gate
+models the observed gateway-initiated path requirement, with no host firewall,
+clock or configuration change. Before repair the signed cancellation import
+failed with the same deadline after10.047 seconds and eight dropped packets.
+This demonstrates the failure mechanism; it is not a historical packet capture
+or proof of which LAN device expired the path.
+
+Immediately before each sole record-import attempt, the gateway now performs
+the existing authenticated scoped-data roundtrip, gateway first. It uses the
+pinned current runner data address. No retry, policy renewal, increased timeout
+or new provider admission is added. Transport failure still requires explicit
+reconciliation. The native cancellation fixture holds a separate tool group past
+10 seconds, then checks prompt signed cancellation, no output, native/tool/
+wrapper/group death, durable Cancelled, full restart and exact duplicate replay.
+
+The own-route probe's bytes were valid. A post-restart harness readmission-
+refusal check entered the driver's mutation phase before rejecting already-
+settled work, leaving ready=false. The earlier internal duplicate ran before
+that check, explaining the apparently inconsistent receipts. Admission now
+rejects absent/started/settled assignments before clearing readiness; ambiguous
+mutation/publication failures remain fail-closed. The real launcher/validator
+regression proves own duplicate after full restart, plus foreign, tampered,
+noncanonical and validly signed stale-attempt rejection with unchanged history,
+task count, invocations and original outbox. Probe diagnostics expose the actual
+rejection cause instead of conflating readiness failures with signature rejection.
+
+The owner's12:18:46 Pacific/Auckland authorization permits further harmless
+live calls and supersedes the older three-call limit. Parent alone orchestrates
+fresh disposable acceptance; this worker initiates no remote provider calls,
+never retries originals, changes no auth/config/security, and holds commit.
+At that checkpoint, fresh native rebuilds and actual C cancellation/probe
+acceptance remained required; the completed evidence is recorded below.
+Independent review is DEFERRED NOT APPROVED. Shared-original-
+Store concurrency remains CONSTRAINED: removing the singleton Store origin/
+session binding and single RunnerClient/assignment1 fixture limitation requires
+separate route-aware admission, custody and reconciliation implementation.
+
+### Completed parent acceptance and local finalization, 17 November
+
+The parent's `live-remediation-20261117-1233/parent-live-acceptance.json`
+attributes both successful native builds to the exact231-file source manifest
+`cc8f8bbfc82374e047c906105fe889c175c2934a7d05bf4a419deb3bd168fc1b`.
+Mars binary SHA256 was
+`d4b1701365976f4e645672f4436e3f543ab2c136b0a90522787f2ff3e8c94fb1`;
+Mitori's was
+`267b627a8ff0f653474c7631976773970e99e688fe637d6efec1b54f225a3363`.
+
+Fresh C2 (`cc3h-C2-20261117-1316`) used actual iroh and one real provider
+invocation. Signed cancellation persisted Cancelled in original source run2,
+produced no output artifact, and refused re-admission. The same-host cancellation
+marker-to-tool-end interval was **0.050103794 seconds**, not a cross-host clock
+comparison. `fresh-C2-run.json` and `fresh-C2-full-replay.json` retain the exact
+same three event hashes, one invocation and Cancelled across full coordinator/
+runner restart. Own-route duplicate passed again after restart.
+
+`fresh-C2-probe-summary.json` records positive own duplicate before and after
+each foreign/binding, noncanonical and tampered-signature rejection, all with
+unchanged history/tasks/invocations/original outbox. This is not a live owner-
+epoch migration or generalized external-delivery exactly-once claim.
+
+The public Mars/gateway cleanup receipts and old-B18779 absence receipt confirm
+all owned old/new role, native, tool, wrapper PIDs/groups absent. Mars's read-only
+integrity receipt reports auth bytes/config/metadata unchanged; prior A/B
+integrity and success evidence is preserved. Original C remains unresolved,
+never re-admitted. The earlier cc8f-C detached gateway launcher died before tool
+start and remains a harness failure, not a product pass; C2 used durable tmux.
+
+This finalization changes only this acceptance document. Implementation, tests,
+launcher and formal inputs retain the accepted cc8f bytes. Existing498/0/5-
+ignored Rust, strict Clippy/fmt/build/doctest, launcher/checker and12 affected
+formal checks are reused on that identity, not rerun for a documentation edit.
+The collected acceptance authorizes the bounded local task commit, not network
+publication. Archived/read-only publication remains blocked, hosted native OS CI
+is pending, shared-original-Store concurrency remains CONSTRAINED with the
+route-aware gate above, and independent review remains DEFERRED NOT APPROVED.

@@ -10,16 +10,19 @@ from pathlib import Path
 
 profile, job = Path(sys.argv[1]), Path(sys.argv[2])
 cfg = json.loads(profile.read_text())
-auth = json.loads(Path(cfg["auth_json"]).read_text())
-key = auth.get("OPENAI_API_KEY")
-if not isinstance(key, str) or not key:
-    raise SystemExit("Existing local API-key auth unavailable; no login or fallback")
+key = None
+if not cfg.get("auth_command_in_place", False):
+    auth = json.loads(Path(cfg["auth_json"]).read_text())
+    key = auth.get("OPENAI_API_KEY")
+    if not isinstance(key, str) or not key:
+        raise SystemExit("Existing local API-key auth unavailable; no login or fallback")
 keep = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE",
         "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
 for name in list(os.environ):
     if name not in keep:
         del os.environ[name]
-os.environ["COCONUTCLAW_ACCEPTANCE_API_KEY"] = key
+if key is not None:
+    os.environ["COCONUTCLAW_ACCEPTANCE_API_KEY"] = key
 os.environ["CODEX_HOME"] = str(job / "codex-home")
 group = os.getpgrp()
 if group != os.getpid():

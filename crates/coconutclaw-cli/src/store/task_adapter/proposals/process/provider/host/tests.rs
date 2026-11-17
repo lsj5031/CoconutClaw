@@ -1,5 +1,109 @@
 use super::*;
 
+#[test]
+fn controlled_seven_field_artifact_and_ordinary_five_field_schemas() {
+    let f = Fixture::new();
+    let input: Input = serde_json::from_slice(
+        &std::fs::read(f.root.path().join("workspace/1/fixture-input.json")).unwrap(),
+    )
+    .unwrap();
+    let path = f.root.path().join("workspace/1/fixture-output.json");
+    let ordinary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut controlled = ordinary.clone();
+    controlled["started_ns"] = 1794868941409213000_i64.into();
+    controlled["finished_ns"] = 1794868969713029000_i64.into();
+    f.write_events(&[f.context.clone(), f.call.clone(), f.output.clone()]);
+    for value in [ordinary, controlled] {
+        let is_controlled = value.as_object().unwrap().len() == 7;
+        let config_path = f.root.path().join("host-provider.json");
+        let mut cfg: Config =
+            serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+        cfg.controlled_fixture = is_controlled;
+        std::fs::write(&config_path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let m: Manifest =
+            serde_json::from_str(&manifest(f.root.path(), 1, &f.evidence).unwrap()).unwrap();
+        verify_artifact(&m, 1, &input, &m.hostname, &bytes, is_controlled).unwrap();
+        assert!(verify_artifact(&m, 1, &input, &m.hostname, &bytes, !is_controlled).is_err());
+        for mutation in [
+            "extra", "missing", "negative", "string", "reverse", "overflow", "nonce", "sum",
+            "host", "pid",
+        ] {
+            let mut bad = value.clone();
+            match mutation {
+                "extra" => {
+                    bad["unknown"] = true.into();
+                }
+                "missing" => {
+                    bad.as_object_mut().unwrap().remove("tool_parent");
+                }
+                "negative" => {
+                    bad["started_ns"] = (-1).into();
+                }
+                "string" => {
+                    bad["finished_ns"] = "not-a-time".into();
+                }
+                "reverse" => {
+                    bad["started_ns"] = 1794868999999999999_i64.into();
+                    bad["finished_ns"] = 1.into();
+                }
+                "overflow" => {
+                    bad["finished_ns"] = u64::MAX.into();
+                }
+                "nonce" => {
+                    bad["nonce"] = "foreign".into();
+                }
+                "sum" => {
+                    bad["sum"] = 43.into();
+                }
+                "host" => {
+                    bad["hostname"] = "foreign".into();
+                }
+                _ => {
+                    bad["tool_pid"] = 1.into();
+                }
+            }
+            let badbytes = serde_json::to_vec(&bad).unwrap();
+            let mut binding = m.clone();
+            binding.hash = blake3::hash(&badbytes).to_string();
+            binding.size = badbytes.len();
+            assert!(
+                verify_artifact(&binding, 1, &input, &m.hostname, &badbytes, is_controlled)
+                    .is_err(),
+                "{mutation}"
+            );
+            std::fs::write(&path, &badbytes).unwrap();
+            assert!(
+                manifest(f.root.path(), 1, &f.evidence).is_err(),
+                "{mutation}"
+            );
+        }
+    }
+}
+
+#[test]
+fn integrity_detects_same_length_auth_byte_change_with_preserved_mtime() {
+    let f = Fixture::new();
+    let cfg = load(f.root.path()).unwrap();
+    let before = std::fs::metadata(&cfg.auth_json).unwrap();
+    let mut bytes = std::fs::read(&cfg.auth_json).unwrap();
+    let index = bytes.iter().position(|b| *b == b'n').unwrap();
+    bytes[index] = b'N';
+    std::fs::write(&cfg.auth_json, bytes).unwrap();
+    File::open(&cfg.auth_json)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()))
+        .unwrap();
+    let report = integrity_report(f.root.path()).unwrap();
+    assert_eq!(report["auth_size_unchanged"], true);
+    assert_eq!(report["auth_mtime_unchanged"], true);
+    assert_eq!(report["auth_bytes_unchanged"], false);
+    assert_eq!(report["unchanged"], false);
+    assert!(report.get("auth_hash").is_none());
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     evidence: Evidence,
@@ -23,6 +127,8 @@ impl Fixture {
             provider_name: "fixture".into(),
             base_url: "http://127.0.0.1:1/v1".into(),
             wire_api: "responses".into(),
+            auth_command_in_place: false,
+            controlled_fixture: false,
         };
         std::fs::write(
             root.path().join("host-provider.json"),
@@ -223,9 +329,13 @@ fn native_format_support_preserves_context_file_host_session_and_integrity_gates
         "shared-config",
         "auth-metadata",
         "oversized-artifact",
+        "missing-artifact",
     ] {
         let mut f = Fixture::new();
         match invalid {
+            "missing-artifact" => {
+                std::fs::remove_file(f.root.path().join("workspace/1/fixture-output.json")).unwrap()
+            }
             "model" => f.context["payload"]["model"] = "wrong".into(),
             "effort" => f.context["payload"]["effort"] = "wrong".into(),
             "approval" => f.context["payload"]["approval_policy"] = "wrong".into(),

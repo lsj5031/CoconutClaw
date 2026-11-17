@@ -98,6 +98,8 @@ pub(super) struct RuntimeDriver {
     stopped: VecDeque<u64>,
     sender: mpsc::Sender<Completion>,
     receiver: mpsc::Receiver<Completion>,
+    // Disposable fault cut, never compiled into the normal executable.
+    cut_after_remote_result: bool,
 }
 
 impl RuntimeDriver {
@@ -238,6 +240,7 @@ impl RuntimeDriver {
             stopped: VecDeque::new(),
             sender,
             receiver,
+            cut_after_remote_result: false,
         })
     }
 
@@ -265,13 +268,12 @@ impl RuntimeDriver {
         );
         #[cfg(unix)]
         if let Some(remote) = self.runner.remote() {
-            remote
-                .import(super::proposals::process::remote::Locator {
-                    addr: self.publisher.addr(),
-                    author: record.origin.parse()?,
-                    record: record.clone(),
-                })
-                .await?;
+            let locator = super::proposals::process::remote::Locator {
+                addr: self.publisher.addr(),
+                author: record.origin.parse()?,
+                record: record.clone(),
+            };
+            remote.import(&mut self.publisher, locator).await?;
         }
         Ok(())
     }
@@ -530,6 +532,14 @@ impl RuntimeDriver {
             !self.claims.contains_key(&assignment) && !self.running.contains(&assignment),
             "already admitted"
         );
+        ensure!(
+            self.publisher
+                .domain_history(&self.origin)?
+                .jobs
+                .get(&assignment)
+                .is_some_and(|job| !job.started && job.result.is_none()),
+            "assignment already started/settled or absent; never re-admit"
+        );
         self.ready = false;
         let target = TaskAdapter::open(&self.target, &self.origin, &self.session)?;
         let (dispatch, record) = target
@@ -658,6 +668,12 @@ impl RuntimeDriver {
                 completion.output,
             )
             .await?;
+        if self.cut_after_remote_result {
+            self.cut_after_remote_result = false;
+            anyhow::bail!(
+                "owned fault cut: signed result durable before original Store acknowledgment"
+            );
+        }
         self.transfer(&record).await?;
         TaskAdapter::open(&self.source, &self.origin, &self.session)?
             .apply_result(&mut self.publisher, completion.assignment)?;

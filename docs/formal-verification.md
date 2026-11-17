@@ -152,3 +152,36 @@ existing matrix and retained portable critical suites, never ignore them to
 produce green Windows. Publication authority is absent; dirty local bytes have
 no hosted-CI evidence. Authenticated Windows Codex remains unverified.
 No independent review, remote dispatch, live provider or user schedule is started.
+
+## 17 November controlled multihost preparation delta
+
+The preceding receipt/count/publication statements describe the16 November gate,
+not a new full-matrix or hosted-native run. The later publication attempt created
+three commits but was refused by the archived/read-only repository; no CI run
+exists for that attempted publication.
+
+Current preparation changes only the test-only role/provider/driver harness,
+launcher, tests and documentation. Eight original implementation pins are
+refreshed after inspecting these changes; a ninth input, the host-local in-place
+auth callback, is added (136 current pins). Additional direct driver/role anchors
+bind the affected remote composition; the original owners and normal executable
+remain unchanged. All Process, RuntimeComposition and RemoteComposition configs
+are rechecked with the existing official offline runner. Unaffected model
+owners/specs/configs are unchanged; their final03 results are explicitly reused.
+
+The controlled fixture's file events, native command auth, physical iroh sockets,
+coordinator detach/reconnect, before-original-ACK fault hook and OS descendants
+are executable/native-test obligations, not newly modeled protocols. Their
+abstract counterparts are reservation/claim/sign/custody/apply, cancellation and
+partition/stuttering with durable proof retained. The model does not establish
+Rust refinement, power-loss durability, external delivery exactly-once, or shared
+original-Store scheduling across two runner actors. Local regression success
+does not count as this round's pending Mars/Mitori provider acceptance.
+Independent review remains **DEFERRED NOT APPROVED**; no new commit is authorized
+before collecting the bounded real acceptance, and no push retry is part of this
+preparation.
+
+The zero-invocation preflight also exchanges an inert public nonce in both
+directions through the real scoped data transport, gateway-initiated first.
+These are not domain events or task admissions; this transport probe remains
+an executable obligation rather than an added formal application transition.

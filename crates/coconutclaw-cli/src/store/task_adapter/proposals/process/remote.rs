@@ -34,6 +34,8 @@ pub(in crate::store::task_adapter) struct Ready {
     pub arch: String,
     pub pid: u32,
     pub real_provider: bool,
+    #[serde(default)]
+    pub controlled_fixture: bool,
     pub owner: EndpointId,
     pub control: EndpointAddr,
     pub boundary: String,
@@ -63,6 +65,7 @@ enum Request {
     Import(Locator),
     Publish(Vec<u8>),
     Wait(u64),
+    TransportProbe(Option<Locator>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +97,7 @@ struct Message {
 enum Response {
     Process(Reply),
     Published(Box<Publication>),
+    TransportProbe(Locator),
     Error(String),
 }
 
@@ -155,6 +159,46 @@ fn dial(addr: &EndpointAddr, network: &AcceptanceNetwork) -> EndpointAddr {
 }
 
 impl Client {
+    async fn probe_transport(&self, publisher: &mut ScopedPeer) -> Result<()> {
+        let Response::TransportProbe(locator) = self.request(Request::TransportProbe(None)).await?
+        else {
+            anyhow::bail!("unexpected transport probe response")
+        };
+        ensure!(
+            locator.addr.id == self.data_id()
+                && locator.record.text == "acceptance-transport-runner",
+            "wrong probe data endpoint"
+        );
+        // Prime the actual scoped-data UDP path from the gateway, not the Mac.
+        // The observed LAN admits gateway-initiated UDP; control uses another endpoint.
+        publisher
+            .receive(
+                self.ready.data.clone(),
+                locator.author,
+                &locator.record.key(),
+            )
+            .await?;
+        ensure!(
+            publisher.received_artifact(&locator.record)? == self.run_id().as_bytes(),
+            "wrong transport probe bytes"
+        );
+        let record = publisher
+            .publish("acceptance-transport-core", self.run_id().as_bytes())
+            .await?;
+        let reply = self
+            .request(Request::TransportProbe(Some(Locator {
+                addr: publisher.addr(),
+                author: publisher.author().await?,
+                record,
+            })))
+            .await?;
+        ensure!(
+            matches!(reply, Response::Process(Reply::Unit)),
+            "wrong reverse probe response"
+        );
+        Ok(())
+    }
+
     pub(in crate::store::task_adapter) fn data_id(&self) -> EndpointId {
         self.ready.data.id
     }
@@ -163,6 +207,9 @@ impl Client {
     }
     pub(in crate::store::task_adapter) fn hostname(&self) -> &str {
         &self.ready.hostname
+    }
+    pub(in crate::store::task_adapter) fn controlled_fixture(&self) -> bool {
+        self.ready.controlled_fixture
     }
     async fn request(&self, request: Request) -> Result<Response> {
         let _slot = self.slots.acquire().await?;
@@ -225,7 +272,17 @@ impl Client {
         }
     }
 
-    pub(in crate::store::task_adapter) async fn import(&self, locator: Locator) -> Result<()> {
+    pub(in crate::store::task_adapter) async fn import(
+        &self,
+        publisher: &mut ScopedPeer,
+        locator: Locator,
+    ) -> Result<()> {
+        // A long native tool may outlive the gateway-initiated UDP path. Open
+        // that path immediately before asking the runner to fetch a new record.
+        // This precedes the sole import attempt; it is not a retry or lease renewal.
+        self.probe_transport(publisher)
+            .await
+            .context("pre-import scoped data roundtrip")?;
         match self.request(Request::Import(locator)).await? {
             Response::Process(Reply::Unit) => Ok(()),
             _ => anyhow::bail!("unexpected remote receipt"),
@@ -271,7 +328,6 @@ impl RemoteState {
                 core,
                 input,
             } = *bootstrap;
-            ensure!(self.state.is_none(), "remote process already initialized");
             ensure!(
                 origin.origin.owner == self.ready.owner
                     && Some(origin.origin.core) == self.config.core
@@ -287,6 +343,20 @@ impl RemoteState {
                 "remote bootstrap binding mismatch"
             );
             origin.verify(self.ready.owner, namespace(&self.config).id())?;
+            if let Some(state) = &self.state {
+                ensure!(
+                    state.runner.origin.hash()? == origin.hash()?
+                        && self.core_data == Some(core.data.id)
+                        && std::fs::read(self.config.root.join("fixture-input.json"))?
+                            == serde_json::to_vec(&input)?,
+                    "reconnect bootstrap changed original binding"
+                );
+                self.peer
+                    .as_mut()
+                    .context("runner peer absent")?
+                    .install_policy(&policy)?;
+                return Ok(Response::Process(Reply::Unit));
+            }
             self.peer
                 .as_mut()
                 .context("runner peer absent")?
@@ -325,6 +395,37 @@ impl RemoteState {
                 .domain_history(&state.runner.origin)?;
         }
         match request {
+            Request::TransportProbe(source) => {
+                let peer = self.peer.as_mut().context("runner peer absent")?;
+                if let Some(locator) = source {
+                    ensure!(
+                        Some(locator.addr.id) == self.core_data
+                            && locator.record.text == "acceptance-transport-core"
+                            && locator.author.to_string() == locator.record.origin,
+                        "wrong reverse probe source"
+                    );
+                    peer.receive(
+                        dial(&locator.addr, &self.config.network),
+                        locator.author,
+                        &locator.record.key(),
+                    )
+                    .await
+                    .context("reverse scoped transport probe")?;
+                    ensure!(
+                        peer.received_artifact(&locator.record)? == self.ready.run_id.as_bytes(),
+                        "wrong reverse probe bytes"
+                    );
+                    return Ok(Response::Process(Reply::Unit));
+                }
+                let record = peer
+                    .publish("acceptance-transport-runner", self.ready.run_id.as_bytes())
+                    .await?;
+                Ok(Response::TransportProbe(Locator {
+                    addr: peer.addr(),
+                    author: peer.author().await?,
+                    record,
+                }))
+            }
             Request::Import(locator) => {
                 ensure!(
                     Some(locator.addr.id) == self.core_data
@@ -332,13 +433,37 @@ impl RemoteState {
                     "record not from the pinned source publisher"
                 );
                 let peer = self.peer.as_mut().context("runner peer absent")?;
-                peer.receive_domain(
-                    &state.runner.origin,
-                    dial(&locator.addr, &self.config.network),
-                    locator.author,
-                    &locator.record.key(),
-                )
-                .await?;
+                if locator
+                    .record
+                    .text
+                    .starts_with(crate::store::task_adapter::execution::CANCEL)
+                {
+                    peer.receive(
+                        dial(&locator.addr, &self.config.network),
+                        locator.author,
+                        &locator.record.key(),
+                    )
+                    .await
+                    .context("signed cancellation scoped fetch")?;
+                    let history = peer.domain_history(&state.runner.origin)?;
+                    ensure!(
+                        crate::store::task_adapter::execution::verify_cancellation(
+                            &state.runner.origin,
+                            &history,
+                            &locator.record.text,
+                            1
+                        )?,
+                        "wrong cancellation assignment"
+                    );
+                } else {
+                    peer.receive_domain(
+                        &state.runner.origin,
+                        dial(&locator.addr, &self.config.network),
+                        locator.author,
+                        &locator.record.key(),
+                    )
+                    .await?;
+                }
                 ensure!(
                     peer.received()?.contains(&locator.record),
                     "remote record receipt differs"
@@ -346,6 +471,37 @@ impl RemoteState {
                 Ok(Response::Process(Reply::Unit))
             }
             Request::Process(command) => {
+                if let Command::Cancel { assignment } = &command {
+                    let peer = self.peer.as_mut().context("runner peer absent")?;
+                    let history = peer.domain_history(&state.runner.origin)?;
+                    let mut verified = false;
+                    for record in peer.received()? {
+                        if record
+                            .text
+                            .starts_with(crate::store::task_adapter::execution::CANCEL)
+                        {
+                            verified |= crate::store::task_adapter::execution::verify_cancellation(
+                                &state.runner.origin,
+                                &history,
+                                &record.text,
+                                *assignment,
+                            )?;
+                        }
+                    }
+                    ensure!(verified, "signed cancellation custody absent");
+                }
+                if let Command::Cancel { assignment } = &command
+                    && *assignment == 1
+                    && self
+                        .config
+                        .provider
+                        .as_ref()
+                        .is_some_and(|p| p.controlled_fixture)
+                {
+                    let workspace = self.config.root.join("workspace/1");
+                    ensure!(workspace.is_dir(), "controlled workspace absent");
+                    std::fs::write(workspace.join("fixture-cancel.json"), b"{}")?;
+                }
                 if let Command::Sign { history, .. } = &command {
                     ensure!(
                         *history
@@ -548,7 +704,7 @@ impl RemoteState {
         } else {
             let response = match state.handle(message.request).await {
                 Ok(reply) => reply,
-                Err(error) => Response::Error(error.to_string()),
+                Err(error) => Response::Error(format!("{error:#}")),
             };
             let successful_stop = stop && matches!(&response, Response::Process(Reply::Unit));
             let _ = reply.send(response);
@@ -753,6 +909,10 @@ async fn serve_role(config: RoleConfig) -> Result<()> {
         arch: std::env::consts::ARCH.into(),
         pid: std::process::id(),
         real_provider: config.provider.is_some(),
+        controlled_fixture: config
+            .provider
+            .as_ref()
+            .is_some_and(|p| p.controlled_fixture),
         owner,
         control: dial(&endpoint.addr(), &config.network),
         boundary: blake3::hash(
@@ -899,7 +1059,10 @@ async fn coordinator(
         .await
         .context("coordinator control closed")?;
     ensure!(
-        first.value["command"] == "run" || first.value["command"] == "replay",
+        matches!(
+            first.value["command"].as_str(),
+            Some("check" | "run" | "run-cut" | "run-cancel" | "replay" | "replay-cancel")
+        ),
         "first coordinator command must run/replay with runner_ready"
     );
     let runner: Ready = serde_json::from_value(first.value["runner_ready"].clone())?;
@@ -998,6 +1161,7 @@ async fn coordinator(
     let mut mirror = mirror;
     publisher.install_policy(&policy)?;
     mirror.install_policy(&policy)?;
+    client.probe_transport(&mut publisher).await?;
     let runner_client = RunnerClient {
         public: runner.control.id,
         origin: origin.hash()?,
@@ -1011,16 +1175,31 @@ async fn coordinator(
         (core, runner_client),
     )?;
     driver.reconcile().await?;
-    let result = run_fixture(
-        &config,
-        &ready,
-        &runner,
-        &mut driver,
-        &mut receiver,
-        first.value["command"] == "replay",
-        same_host,
-    )
-    .await;
+    let cut = first.value["command"] == "run-cut";
+    if cut {
+        driver.arm_remote_result_cut()?;
+    }
+    let result = if first.value["command"] == "check" {
+        ensure!(
+            driver.runner.stats().await?.is_empty(),
+            "preflight requires unused fixture"
+        );
+        Ok(
+            serde_json::json!({"ok":true,"transport_initialized":true,"scoped_data_roundtrip":true,"invocations":0,
+            "multihost":!same_host,"fixture_only":same_host,"core":ready,"runner":runner}),
+        )
+    } else {
+        run_fixture(
+            &config,
+            &ready,
+            &runner,
+            &mut driver,
+            &mut receiver,
+            first.value["command"].as_str().context("first command")?,
+            same_host,
+        )
+        .await
+    };
     let response = match &result {
         Ok(value) => value.clone(),
         Err(error) => {
@@ -1039,20 +1218,26 @@ async fn coordinator(
                 })
                 .collect();
             serde_json::json!({"ok":false,"error":error.to_string(),"no_retry":true,
+                "owned_cut":cut && error.to_string().starts_with("owned fault cut:"),
                 "provider_failures":failures})
         }
     };
     write_json(&config.root.join("receipt.json"), &response)?;
+    let owned_cut = response["owned_cut"] == true;
     let _ = first.reply.send(response);
     // Stay available for collection/status until explicit stop. No new task is admitted.
     let mut stopping = None;
     while let Some(request) = receiver.recv().await {
         let stop = request.value["command"] == "stop";
-        if stop {
+        let detach = request.value["command"] == "detach" && cut && owned_cut;
+        if stop || detach {
             stopping = Some(request);
             break;
         }
-        let reply = if request.value["command"] == "status" {
+        let reply = if request.value["command"] == "probe" {
+            let bytes: Vec<u8> = serde_json::from_value(request.value["bytes"].clone())?;
+            probe(&mut driver, bytes).await?
+        } else if request.value["command"] == "status" {
             serde_json::json!({"receipt":serde_json::from_slice::<serde_json::Value>(
                     &std::fs::read(config.root.join("receipt.json"))?)?})
         } else {
@@ -1060,20 +1245,27 @@ async fn coordinator(
         };
         let _ = request.reply.send(reply);
     }
-    driver.shutdown().await?;
+    let detached = stopping
+        .as_ref()
+        .is_some_and(|r| r.value["command"] == "detach");
+    if detached {
+        driver.detach_remote().await?;
+    } else {
+        driver.shutdown().await?;
+    }
     endpoint.close().await;
     server.abort();
     let _ = server.await;
     std::fs::remove_file(socket)?;
     write_json(
         &config.root.join("stopped.json"),
-        &serde_json::json!({"stopped":true,"pid":ready.pid}),
+        &serde_json::json!({"stopped":true,"pid":ready.pid,"runner_left_alive":detached}),
     )?;
     if let Some(request) = stopping {
         let _ = request.reply.send(serde_json::json!({"stopped":true}));
         let _ = request.delivered.await;
     }
-    result.map(|_| ())
+    if detached { Ok(()) } else { result.map(|_| ()) }
 }
 
 async fn run_fixture(
@@ -1082,10 +1274,12 @@ async fn run_fixture(
     remote: &Ready,
     driver: &mut super::super::super::driver::RuntimeDriver,
     control: &mut mpsc::Receiver<LocalRequest>,
-    replay: bool,
+    command: &str,
     same_host: bool,
 ) -> Result<serde_json::Value> {
     use super::super::super::driver::Step;
+    let replay = matches!(command, "replay" | "replay-cancel");
+    let cancelled = matches!(command, "run-cancel" | "replay-cancel");
     let input = provider::host::Input {
         nonce: core.run_id.clone(),
         a: 17,
@@ -1104,7 +1298,11 @@ async fn run_fixture(
             &driver.source,
             &driver.session,
             0,
-            provider::host::PROMPT,
+            if remote.controlled_fixture {
+                provider::host::CONTROLLED_PROMPT
+            } else {
+                provider::host::PROMPT
+            },
         )
     };
     let assignment = driver.queue(id).await?;
@@ -1133,8 +1331,9 @@ async fn run_fixture(
         .stored_proposal(assignment)
         .await?
         .context("runner proposal absent")?;
+    std::fs::write(config.root.join("proposal.json"), &proposal)?;
     ensure!(
-        driver.accept_proposal(proposal).await? == Step::Duplicate(assignment),
+        driver.accept_proposal(proposal.clone()).await? == Step::Duplicate(assignment),
         "duplicate not exact"
     );
     ensure!(
@@ -1164,10 +1363,14 @@ async fn run_fixture(
         .source
         .get_task_run(id)?
         .context("source task absent")?;
-    ensure!(run.status == "completed", "original Store did not complete");
+    let expected_status = if cancelled { "cancelled" } else { "completed" };
+    ensure!(
+        run.status == expected_status,
+        "original Store did not settle as expected"
+    );
     let stats = driver.runner.stats().await?;
     ensure!(
-        stats.len() == 1 && stats[0].assignment == assignment && stats[0].status == "completed",
+        stats.len() == 1 && stats[0].assignment == assignment && stats[0].status == expected_status,
         "remote invocation count/lifecycle mismatch"
     );
     let signed = driver.runner.saved().await?;
@@ -1182,14 +1385,21 @@ async fn run_fixture(
             .map(|b| serde_json::from_slice::<serde_json::Value>(b))
             .collect::<std::result::Result<Vec<_>, _>>()?,
     )?;
-    let artifact = if remote.real_provider {
+    let artifact = if remote.real_provider && !cancelled {
         let (bytes, manifest): (Vec<u8>, String) = driver.source.conn.query_row(
             "SELECT bytes,manifest FROM acceptance_artifact WHERE assignment=?1",
             [assignment],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         let manifest: provider::host::Manifest = serde_json::from_str(&manifest)?;
-        provider::host::verify_artifact(&manifest, assignment, &input, &remote.hostname, &bytes)?;
+        provider::host::verify_artifact(
+            &manifest,
+            assignment,
+            &input,
+            &remote.hostname,
+            &bytes,
+            remote.controlled_fixture,
+        )?;
         ensure!(
             manifest.runner_pid == stats[0].pid,
             "artifact invocation PID differs from durable claim"
@@ -1215,12 +1425,65 @@ async fn run_fixture(
     };
     let evidence = driver.runner.provider_evidence().await?;
     write_json(&config.root.join("provider-evidence.json"), &evidence)?;
+    let mut refused = Vec::new();
+    for field in ["origin", "source_run", "assignment_hash"] {
+        let mut tampered: SignedProposal = serde_json::from_slice(&proposal)?;
+        match field {
+            "origin" => tampered.proposal.origin = "0".repeat(64),
+            "source_run" => tampered.proposal.source_run += 1,
+            _ => tampered.proposal.assignment_hash = "0".repeat(64),
+        }
+        let check = probe(driver, serde_json::to_vec(&tampered)?).await?;
+        ensure!(check["rejected"] == true, "tampered proposal accepted");
+        refused.push(field);
+    }
     Ok(serde_json::json!({
         "ok":true,"multihost":!same_host,"fixture_only":same_host,"replay":replay,
         "core":core,"runner":remote,"assignment":assignment,"source_run":id,
         "source_status":run.status,"invocations":stats.len(),"exact_duplicate":true,
         "readmission_refused":true,"event_hashes":before.iter().map(|b|blake3::hash(b).to_string()).collect::<Vec<_>>(),
-        "artifact":artifact
+        "artifact":artifact,"tampered_fields_refused":refused,
+        "outbox_delivery_not_executed":true
+    }))
+}
+
+async fn probe(
+    driver: &mut super::super::super::driver::RuntimeDriver,
+    bytes: Vec<u8>,
+) -> Result<serde_json::Value> {
+    type PayloadSnapshot = (i64, Option<String>, i64, String);
+    let payloads = |store: &Store| -> Result<Vec<PayloadSnapshot>> {
+        Ok(store.conn.prepare(
+            "SELECT task_run_id,output,delivered,delivery_state FROM task_payloads ORDER BY task_run_id"
+        )?.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    };
+    let outbox = payloads(&driver.source)?;
+    let before = driver.publisher.domain_history(&driver.origin)?.export();
+    let tasks: i64 = driver
+        .source
+        .conn
+        .query_row("SELECT count(*) FROM task_runs", [], |r| r.get(0))?;
+    let invocations = driver.runner.stats().await?.len();
+    let result = driver.accept_proposal(bytes).await;
+    ensure!(
+        driver.publisher.domain_history(&driver.origin)?.export() == before
+            && driver
+                .source
+                .conn
+                .query_row("SELECT count(*) FROM task_runs", [], |r| r.get::<_, i64>(0))?
+                == tasks
+            && driver.runner.stats().await?.len() == invocations,
+        "probe changed admission/history/invocation state"
+    );
+    ensure!(
+        payloads(&driver.source)? == outbox,
+        "probe changed original outbox"
+    );
+    Ok(serde_json::json!({
+        "rejected":result.is_err(),"exact_duplicate":matches!(result,Ok(super::super::super::driver::Step::Duplicate(_))),
+        "error":result.err().map(|error|format!("{error:#}")),
+        "history_tasks_invocations_unchanged":true,"outbox_unchanged":true
     }))
 }
 

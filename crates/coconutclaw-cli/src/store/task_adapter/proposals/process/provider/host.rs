@@ -4,6 +4,7 @@ use super::*;
 pub(in crate::store::task_adapter) const ARTIFACT: &str =
     "CoconutClaw multihost fixture artifact v1";
 pub(in crate::store::task_adapter) const PROMPT: &str = "Authorized harmless multihost acceptance. Use an actual shell/Python tool to read fixture-input.json in this current workspace and write fixture-output.json with exactly nonce, sum=a+b, tool_pid=os.getpid(), tool_parent=os.getppid(), hostname=socket.gethostname(). Only read/write these two fixture files. No network, home/auth/config/repository access, delegation or other side effects. Execute the tool, do not merely describe it. Final answer only nonce=<nonce> sum=<sum>.";
+pub(in crate::store::task_adapter) const CONTROLLED_PROMPT: &str = "Authorized harmless controlled acceptance. Execute exactly one Python tool, no retries. Read fixture-input.json in this workspace. Write fixture-tool-started.json with nonce, tool_pid=os.getpid(), tool_parent=os.getppid(), pgid=os.getpgrp(), hostname=socket.gethostname(), started_ns=time.time_ns(). In that SAME Python process poll every 0.05s for at most 600 seconds, only in this workspace: if fixture-cancel.json exists, write fixture-tool-ended.json with nonce, tool_pid, cancelled=true, ended_ns=time.time_ns() and exit130; if fixture-release.json exists, write fixture-output.json with nonce, sum=a+b, tool_pid, tool_parent, hostname, started_ns and finished_ns=time.time_ns(), then write fixture-tool-ended.json with nonce, tool_pid, cancelled=false and ended_ns. If neither arrives before deadline, exit with failure, do not compute output. Only these six fixture files may be accessed. No network, home/auth/config/repository access, delegation or other effects. Execute, do not describe. Final answer only nonce=<nonce> sum=<sum> after success, otherwise cancelled or timed out.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,6 +17,10 @@ pub(in crate::store::task_adapter) struct Config {
     pub provider_name: String,
     pub base_url: String,
     pub wire_api: String,
+    #[serde(default)]
+    pub auth_command_in_place: bool,
+    #[serde(default)]
+    pub controlled_fixture: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,9 +90,17 @@ pub(in crate::store::task_adapter) fn validate(root: &Path) -> Result<()> {
 }
 
 fn integrity(cfg: &Config) -> Result<serde_json::Value> {
+    use std::os::unix::fs::MetadataExt;
     let auth = std::fs::metadata(&cfg.auth_json)?;
+    let shared = std::fs::metadata(&cfg.shared_config)?;
     Ok(serde_json::json!({
         "config_hash":blake3::hash(&std::fs::read(&cfg.shared_config)?).to_string(),
+        "auth_hash":blake3::hash(&std::fs::read(&cfg.auth_json)?).to_string(),
+        "config_metadata":[shared.len(),shared.ino(),shared.dev(),shared.mode() as u64],
+        "config_mtime":shared.mtime(),"config_ctime":shared.ctime(),
+        "config_mtime_nsec":shared.mtime_nsec(),"config_ctime_nsec":shared.ctime_nsec(),
+        "auth_metadata":[auth.len(),auth.ino(),auth.dev(),auth.mode() as u64],
+        "auth_ctime":auth.ctime(),"auth_ctime_nsec":auth.ctime_nsec(),
         "auth_size":auth.len(),
         "auth_modified":auth.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_nanos().to_string()
     }))
@@ -114,6 +127,15 @@ fn integrity_report(root: &Path) -> Result<serde_json::Value> {
         "config_unchanged":before["config_hash"]==after["config_hash"],
         "auth_size_unchanged":before["auth_size"]==after["auth_size"],
         "auth_mtime_unchanged":before["auth_modified"]==after["auth_modified"],
+        "auth_bytes_unchanged":before["auth_hash"]==after["auth_hash"],
+        "metadata_unchanged":before["auth_metadata"]==after["auth_metadata"]
+            && before["config_metadata"]==after["config_metadata"]
+            && before["auth_ctime"]==after["auth_ctime"]
+            && before["auth_ctime_nsec"]==after["auth_ctime_nsec"]
+            && before["config_mtime"]==after["config_mtime"]
+            && before["config_mtime_nsec"]==after["config_mtime_nsec"]
+            && before["config_ctime"]==after["config_ctime"]
+            && before["config_ctime_nsec"]==after["config_ctime_nsec"],
         "unchanged":before==after
     }))
 }
@@ -151,10 +173,29 @@ impl State {
         // Only public routing is projected. Native auth is supplied in memory
         // by the owned local wrapper from this host's existing auth file.
         let name = serde_json::to_string(&cfg.provider_name)?;
-        let routing = format!(
+        let mut routing = format!(
             "model = \"gpt-6.1-terra\"\nmodel_reasoning_effort = \"max\"\nproject_doc_max_bytes = 0\nmodel_provider = {name}\n[model_providers.{name}]\nname = {name}\nbase_url = {}\nwire_api = \"responses\"\nenv_key = \"COCONUTCLAW_ACCEPTANCE_API_KEY\"\nrequires_openai_auth = false\n[shell_environment_policy]\ninherit = \"none\"\n[shell_environment_policy.set]\nPATH = \"/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin\"\n",
             serde_json::to_string(&cfg.base_url)?
         );
+        if cfg.auth_command_in_place {
+            // The shim rereads the original selected provider in place. Neither
+            // command arguments nor returned credentials are projected here.
+            let shim = job.join("host-auth-in-place.py");
+            std::fs::write(&shim, include_str!("host_auth_in_place.py"))?;
+            routing = format!(
+                "model = \"gpt-6.1-terra\"\nmodel_reasoning_effort = \"max\"\nproject_doc_max_bytes = 0\nmodel_provider = {name}\n[model_providers.{name}]\nname = {name}\nbase_url = {}\nwire_api = \"responses\"\n[model_providers.{name}.auth]\ncommand = {}\nargs = {}\ntimeout_ms = 10000\n[shell_environment_policy]\ninherit = \"none\"\n[shell_environment_policy.set]\nPATH = \"/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin\"\n",
+                serde_json::to_string(&cfg.base_url)?,
+                serde_json::to_string(&cfg.python)?,
+                serde_json::to_string(&[
+                    "-I".to_owned(),
+                    shim.to_string_lossy().into_owned(),
+                    self.root
+                        .join("host-provider.json")
+                        .to_string_lossy()
+                        .into_owned(),
+                ])?,
+            );
+        }
         std::fs::write(home.join("config.toml"), routing)?;
         let wrapper = job.join("native-exec.py");
         std::fs::write(&wrapper, include_str!("native_exec.py"))?;
@@ -185,7 +226,12 @@ impl State {
             .context("host claim absent")?
             .prompt;
         ensure!(
-            prompt == PROMPT,
+            prompt
+                == if cfg.controlled_fixture {
+                    CONTROLLED_PROMPT
+                } else {
+                    PROMPT
+                },
             "only the owned harmless file fixture is admitted"
         );
         let flag = Arc::new(AtomicBool::new(false));
@@ -262,6 +308,7 @@ pub(super) fn manifest(root: &Path, assignment: u64, evidence: &Evidence) -> Res
     );
     let hostname = super::super::remote::hostname()?;
     ensure!(output["hostname"] == hostname, "tool ran on wrong host");
+    verify_tool_artifact(&input, &hostname, &bytes, cfg.controlled_fixture)?;
     let mut contexts = Vec::new();
     let mut calls = Vec::new();
     let mut outputs = std::collections::BTreeSet::new();
@@ -389,6 +436,7 @@ pub(in crate::store::task_adapter) fn verify_artifact(
     input: &Input,
     host: &str,
     bytes: &[u8],
+    controlled: bool,
 ) -> Result<()> {
     ensure!(
         manifest.version == 1
@@ -403,9 +451,14 @@ pub(in crate::store::task_adapter) fn verify_artifact(
             && manifest.hash == blake3::hash(bytes).to_string(),
         "artifact binding mismatch"
     );
+    verify_tool_artifact(input, host, bytes, controlled)
+}
+
+fn verify_tool_artifact(input: &Input, host: &str, bytes: &[u8], controlled: bool) -> Result<()> {
     let v: serde_json::Value = serde_json::from_slice(bytes)?;
     ensure!(
-        v.as_object().is_some_and(|o| o.len() == 5)
+        v.as_object()
+            .is_some_and(|o| o.len() == if controlled { 7 } else { 5 })
             && v["nonce"] == input.nonce
             && v["sum"] == input.a + input.b
             && v["hostname"] == host
@@ -413,6 +466,15 @@ pub(in crate::store::task_adapter) fn verify_artifact(
             && v["tool_parent"].as_u64().is_some_and(|p| p > 1),
         "invalid tool artifact"
     );
+    if controlled {
+        let start = v["started_ns"]
+            .as_i64()
+            .context("invalid start timestamp")?;
+        let finish = v["finished_ns"]
+            .as_i64()
+            .context("invalid finish timestamp")?;
+        ensure!(start > 0 && finish >= start, "invalid tool timestamp order");
+    }
     Ok(())
 }
 

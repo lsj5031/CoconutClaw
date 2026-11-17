@@ -349,6 +349,18 @@
       "classification": "stateful verification runner",
       "owner_and_scope": "Implementation-owned tooling, not deployed application",
       "state_coverage_and_gap": "parse -> pin/anchor validate -> new artifact/input snapshot -> each SANY -> each TLC -> classify/capture -> complete; failures stop nonzero; timeout kills/waits only owned JVM group; covered by four unit cases and real fail-closed gate controls, not a self-hosting formal proof"
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host_auth_in_place.py",
+      "classification": "test-only host-local native auth callback",
+      "owner_and_scope": "Read original selected provider command in place; no credential projection",
+      "state_coverage_and_gap": "136th identity pin; command-auth offline unit test, native route pending; opaque I/O in Process model"
+    },
+    {
+      "path": "scripts/test_multihost_acceptance.py",
+      "classification": "offline test-only harness regression",
+      "owner_and_scope": "Nonsecret profile projection, owned gate lifecycle and original-context auth callback",
+      "state_coverage_and_gap": "Executable tests, not a model; no live credentials/provider invocation"
     }
   ],
   "complete_path_inventory_not_complete_implicit_machine_proof": true

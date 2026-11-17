@@ -1,5 +1,5 @@
 {
-  "basis": "implementation-hashes.json pins exact pre-model runtime/test/shared-library bytes; declaration anchors below remain valid unless gate refuses stale pin",
+  "basis": "135 original pre-model implementation inputs plus one host-local callback (136 current); eight inspected test-only harness pins refreshed for controlled three-host preparation; official affected checks and executable regressions required",
   "families": {
     "Ingress": {
       "owner": "Store IMMEDIATE transaction and authenticated webhook reducer; durable raw/inbox/outbox, volatile callback work",
@@ -738,10 +738,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
             "symbol": "claim_mock",
-            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
             "declarations": [
               {
-                "line": 483,
+                "line": 505,
                 "text": "pub(super) fn claim_mock("
               }
             ]
@@ -749,10 +749,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
             "symbol": "start_mock",
-            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
             "declarations": [
               {
-                "line": 316,
+                "line": 338,
                 "text": "pub(super) async fn start_mock("
               }
             ]
@@ -858,10 +858,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
             "symbol": "restore_start",
-            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
             "declarations": [
               {
-                "line": 367,
+                "line": 389,
                 "text": "pub(super) fn restore_start("
               }
             ]
@@ -869,10 +869,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
             "symbol": "recover_result",
-            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
             "declarations": [
               {
-                "line": 602,
+                "line": 624,
                 "text": "pub(super) async fn recover_result("
               }
             ]
@@ -881,7 +881,7 @@
       },
       "guards": "Claim before spawn, consume volatile token once; restart never recreates it. Repeated semantic fingerprint does not refresh activity. Leader exit alone is not IO completion. Cancellation/timeout own process termination and eventual join decisions.",
       "atomicity": "Start claim durable before process I/O; owned OS child and callback/pipe flags volatile. The model groupOwned flag means ownership registration, NOT proof every descendant is dead after normal exit.",
-      "gaps": "One workflow/subprocess launch abstraction only; existing turn configured retries and YOLO CLI-rejection retry are outside SingleDispatchToken claim. Unix group kill vs non-Unix child kill, blocked Windows pipe threads, PID reuse, OS kill failures and descendant cleanup require native tests; no arbitrary child cleanup proof. Bounded IO join detach paths are not all refined."
+      "gaps": "One workflow/subprocess launch abstraction only; existing turn configured retries and YOLO CLI-rejection retry are outside SingleDispatchToken claim. Unix group kill vs non-Unix child kill, blocked Windows pipe threads, PID reuse, OS kill failures and descendant cleanup require native tests; no arbitrary child cleanup proof. Bounded IO join detach paths are not all refined. The new in-place host auth callback is opaque native I/O, not a modeled credential protocol; physical cleanup remains a node-side acceptance obligation."
     },
     "History": {
       "owner": "Synthetic signed immutable domain prefix, fixed owner/core/runner roles; inert memory/task projection",
@@ -1056,16 +1056,27 @@
                 "text": "fn run_task("
               }
             ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
+            "symbol": "RuntimeDriver::queue",
+            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "declarations": [
+              {
+                "line": 465,
+                "text": "pub(super) async fn queue(&mut self, run: i64) -> Result<u64> {"
+              }
+            ]
           }
         ],
         "RunnerStart/Sign/Recover": [
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
             "symbol": "claim_mock",
-            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
             "declarations": [
               {
-                "line": 483,
+                "line": 505,
                 "text": "pub(super) fn claim_mock("
               }
             ]
@@ -1073,10 +1084,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
             "symbol": "finish_claimed",
-            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
             "declarations": [
               {
-                "line": 531,
+                "line": 553,
                 "text": "pub(super) async fn finish_claimed("
               }
             ]
@@ -1084,11 +1095,33 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
             "symbol": "recover_result",
-            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
             "declarations": [
               {
-                "line": 602,
+                "line": 624,
                 "text": "pub(super) async fn recover_result("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
+            "symbol": "RuntimeDriver::reconcile",
+            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "declarations": [
+              {
+                "line": 283,
+                "text": "pub(super) async fn reconcile(&mut self) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
+            "symbol": "RemoteState::handle",
+            "sha256": "2e75736223463a8e77eaf4fa47caaa8f66b970efa4a2113c819cf0e73cd9262c",
+            "declarations": [
+              {
+                "line": 323,
+                "text": "async fn handle(&mut self, request: Request) -> Result<Response> {"
               }
             ]
           }
@@ -1126,16 +1159,38 @@
                 "text": "pub(crate) fn runtime_result_is_literal(&self, id: i64) -> Result<bool> {"
               }
             ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
+            "symbol": "RuntimeDriver::accept",
+            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "declarations": [
+              {
+                "line": 586,
+                "text": "async fn accept(&mut self, completion: Completion) -> Result<Step> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
+            "symbol": "RuntimeDriver::accept_proposal",
+            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "declarations": [
+              {
+                "line": 695,
+                "text": "pub(super) async fn accept_proposal(&mut self, bytes: Vec<u8>) -> Result<Step> {"
+              }
+            ]
           }
         ],
         "Cancel/Partition/Fence/Substitute": [
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
             "symbol": "apply_cancellation",
-            "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
             "declarations": [
               {
-                "line": 252,
+                "line": 295,
                 "text": "pub(super) fn apply_cancellation(&self, peer: &mut ScopedPeer, assignment: u64) -> Result<()> {"
               }
             ]
@@ -1150,12 +1205,23 @@
                 "text": "fn apply(&mut self, origin: &BoundOrigin, e: &Event) -> Result<()> {"
               }
             ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+            "symbol": "verify_cancellation",
+            "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
+            "declarations": [
+              {
+                "line": 47,
+                "text": "pub(super) fn verify_cancellation("
+              }
+            ]
           }
         ]
       },
       "guards": "Pre-provider reservation excludes local execution; claim is one-shot. Verified signed original assignment/run/actor/route before custody; raw receipt survives partition/restart. Original local cancellation or existing Unknown yields uncertain result, never clean success. Route substitution quarantines rather than reroutes or executes marker text.",
       "atomicity": "Reservation+original request, signed custody+result inbox, original result+outbox each have separate commits; network/signature callbacks own no mutable Store. Application epoch2 suspends, not automatic failover.",
-      "gaps": "No actual socket/crypto/native-Codex execution; dev-only admission preserved. Conflicting signed proposals, RPC frame ordering and receipt-byte guards are source-test assumptions. Already-custodied results may project after later fencing; source cancellation after an already-committed completion does not retroactively rewrite outcome."
+      "gaps": "No actual socket/crypto/native-Codex execution; dev-only admission preserved. Conflicting signed proposals, RPC frame ordering and receipt-byte guards are source-test assumptions. Already-custodied results may project after later fencing; source cancellation after an already-committed completion does not retroactively rewrite outcome. Controlled fixture file gates, before-original-ACK fault cut and coordinator-only detach/reconnect are new executable regressions, not native/Rust refinement proofs. Separate original Stores do not prove a shared-core two-runner composition. Inert nonce preflight exchanges use generic scoped artifact custody, not domain-event receipt, and are executable-test coverage only."
     },
     "WaitNoticeComposition": {
       "owner": "Logical head/dependency completion reducer -> new physical continuation; blocker/notice sender; original preference scope",
@@ -1272,5 +1338,67 @@
       "gaps": "One waiter/dependency and at most one continuation/blocker change; no arbitrary graph/cycle proof, actor aliases/route binding assumed from source checks. Approval equivalent cause handled by Tasks guard, not all approval/remote/task/schedule interleavings in one product model."
     }
   },
-  "refinement": "Hand-written over/under abstractions and contract compositions, NOT mechanically extracted Rust transition relation. All module paths classified in inventory.json; family membership is not full behavioral coverage."
+  "refinement": "Hand-written over/under abstractions and contract compositions, NOT mechanically extracted Rust transition relation. All module paths classified in inventory.json; family membership is not full behavioral coverage.",
+  "test_harness_delta": {
+    "scope": "17 November controlled three-host preparation; no product scheduler/ownership redesign",
+    "changed_pinned_paths": [
+      "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/driver/multihost.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host/tests.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/native_exec.py",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote/tests.rs",
+      "scripts/multihost-acceptance.py"
+    ],
+    "added_pinned_path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host_auth_in_place.py",
+    "affected_recheck_families": [
+      "Process",
+      "RuntimeComposition",
+      "RemoteComposition"
+    ],
+    "unaffected_reuse": "Original final03 models/configs and linked owner bodies unchanged outside these affected protocol compositions; full 38-case matrix not rerun",
+    "boundaries_not_proved": [
+      "native auth/file gates",
+      "OS PID/PGID cleanup",
+      "physical iroh delivery",
+      "coordinator power-loss durability",
+      "two runner actors sharing one original Store"
+    ],
+    "evidence": "Outside-repository three-host-acceptance-20261117-0900 source/command/hash receipts; real Mac execution pending parent",
+    "observed_lan_constraint": "Parent UDP echoes: gateway-initiated succeeded; unsolicited Mac-to-gateway timed out. Prime gateway scoped-data endpoint separately from control, then prove both actual directions before Begin; no firewall/relay change."
+  },
+  "live_remediation_20261117": {
+    "changed_pins": [
+      "crates/coconutclaw-cli/src/store/task_adapter/driver/multihost.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host/tests.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote/tests.rs"
+    ],
+    "source_changes": "Strict ordinary5/controlled7 typed artifact schemas and ordered integer timestamps; signed generic cancellation transport shares canonical/signature/binding verifier with projection; remote worker requires verified custody; cancellation creates no domain event; failure stops event allocation until explicit reconciliation",
+    "modeled_scope": "Existing abstract Cancel/claim/custody/apply/recover contracts unchanged; JSON/timestamp schemas, generic-vs-domain codec and actual OS behavior remain executable-test obligations",
+    "affected_rechecks": [
+      "Process",
+      "RemoteComposition",
+      "RuntimeComposition"
+    ],
+    "not_claimed": "No new live model calls, no original Store rewrite, no shared-Store concurrency proof"
+  },
+  "deadline_probe_remediation_20261117_1233": {
+    "changed_pins": [
+      "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
+      "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote/tests.rs"
+    ],
+    "executable_obligations": "Actual scoped deadline cold-path regression; unchanged per-fetch10s and24h lease; existing authenticated gateway-first data roundtrip immediately before sole reverse import; reject terminal readmission before mutation; real validator own duplicate post full restart, foreign/tampered/noncanonical/stale attempt negatives; actual11s-held tool/native/wrapper/groups cancellation and restart replay",
+    "unchanged_model_contract": "No policy/epoch/generation renewal or retry; record custody before cancel, exact same prefix/outcome duplicate; failed transport still explicit reconciliation/no allocation. Datagram path lifetime, timing and local readiness are executable-test obligations, not added TLA refinements.",
+    "affected_families": [
+      "Process",
+      "RuntimeComposition",
+      "RemoteComposition"
+    ],
+    "remaining_families": "Reused only on identical model/config/source owners, not re-exhausted"
+  }
 }
