@@ -11,7 +11,9 @@ below, not a setting that silently enables networking in the normal application.
 
 Native Windows work is being handled separately by Leo. This guide does **not**
 claim native Windows runner support or provide an unverified PowerShell setup.
-Use the Windows guide only after that work's native validation gate is published.
+Follow Leo's separately owned Windows guide when it is published with its
+[native CI gate](.github/workflows/ci.yml). The existing Windows matrix entry
+alone is not evidence that the separate runner implementation is complete.
 
 ### 1. Prerequisites and build
 
