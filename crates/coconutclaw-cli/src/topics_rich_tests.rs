@@ -67,7 +67,8 @@ fn ingress_metadata_separates_root_topics_and_rejects_unexpected_routes() {
         (Some(7), "telegram:321#7"),
         (Some(8), "telegram:321#8"),
     ] {
-        let mut message = json!({"chat":{"id":321,"type":"private"},"text":"hello"});
+        let mut message =
+            json!({"from":{"id":321},"chat":{"id":321,"type":"private"},"text":"hello"});
         if let Some(topic) = topic {
             message["message_thread_id"] = topic.into();
         }
@@ -101,11 +102,15 @@ fn ingress_metadata_separates_root_topics_and_rejects_unexpected_routes() {
         WebhookAction::Ignore { .. }
     ));
     assert!(matches!(
-        parse_webhook_action(&cfg, r#"{"message":{"chat":{"id":321},"text":"hello"}}"#).unwrap(),
+        parse_webhook_action(
+            &cfg,
+            r#"{"message":{"from":{"id":321},"chat":{"id":321},"text":"hello"}}"#
+        )
+        .unwrap(),
         WebhookAction::Turn(_)
     ));
     cfg.telegram_topics_enabled = Some(true);
-    let action = parse_webhook_action(&cfg, r#"{"callback_query":{"data":"cancel","message":{"chat":{"id":321},"message_thread_id":8}}}"#).unwrap();
+    let action = parse_webhook_action(&cfg, r#"{"callback_query":{"from":{"id":321},"data":"cancel","message":{"chat":{"id":321},"message_thread_id":8}}}"#).unwrap();
     assert!(
         matches!(action, WebhookAction::Cancel { session, .. } if session.id()=="telegram:321#8")
     );
@@ -149,7 +154,7 @@ fn memory_history_boundaries_and_resume_payloads_remain_topic_local() {
         &cfg,
         &mut mutable_store,
         &scheduler,
-        r#"{"update_id":90001,"message":{"chat":{"id":321},"message_thread_id":7,"text":"/fresh"}}"#,
+        r#"{"update_id":90001,"message":{"from":{"id":321},"chat":{"id":321},"message_thread_id":7,"text":"/fresh"}}"#,
     )
     .unwrap();
     assert!(

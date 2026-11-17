@@ -19,13 +19,18 @@ impl Store {
             "SELECT seq,payload FROM telegram_ingress WHERE update_id=?1 AND session_id=?2 AND state='applying'",
             params![update,session.id()], |r|Ok((r.get(0)?,r.get(1)?)))?;
         let raw: Value = serde_json::from_str(&raw)?;
-        let message = &raw["message"];
+        let message = raw
+            .get("message")
+            .unwrap_or(&raw["callback_query"]["message"]);
+        let actor = raw
+            .get("callback_query")
+            .map(|c| &c["from"])
+            .unwrap_or(&message["from"]);
         ensure!(
             SessionKey::from_telegram_message(message)? == *session
-                && message
-                    .get("from")
-                    .and_then(|v| v.get("id"))
-                    .is_none_or(|v| v.to_string().trim_matches('"') == session.root_id),
+                && actor
+                    .get("id")
+                    .is_some_and(|v| v.to_string().trim_matches('"') == session.root_id),
             "wrong conversation/topic/actor authority"
         );
         Ok(seq)

@@ -18,6 +18,7 @@ mod service;
 mod session;
 mod store;
 mod telegram;
+mod telegram_ui;
 mod turn;
 mod types;
 mod util;

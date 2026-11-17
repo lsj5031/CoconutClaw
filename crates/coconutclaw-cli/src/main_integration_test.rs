@@ -31,7 +31,8 @@ fn test_config() -> RuntimeConfig {
 fn fresh_command_returns_confirmation_output() {
     let cfg = test_config();
     let mut store = Store::open(&cfg).expect("store");
-    let update = r#"{"update_id":100,"message":{"chat":{"id":"321"},"text":"/fresh"}}"#;
+    let update =
+        r#"{"update_id":100,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"/fresh"}}"#;
 
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
@@ -52,7 +53,7 @@ fn incoming_addressed_memory_commands_execute_locally() {
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let text = "/memory@actualbotname remember synthetic addressed fact";
     let update = serde_json::json!({
-        "update_id": 711, "message": {"chat": {"id": "321"}, "text": text}
+        "update_id": 711, "message": {"from":{"id":"321"},"chat": {"id": "321"}, "text": text}
     })
     .to_string();
     let first = process_webhook_line(&cfg, &mut store, &scheduler, &update).unwrap();
@@ -76,7 +77,7 @@ fn incoming_addressed_memory_commands_execute_locally() {
         (715, "321", "/memory@ActualBotName undo"),
     ] {
         let update = serde_json::json!({
-            "update_id": id, "message": {"chat": {"id": chat}, "text": text}
+            "update_id": id, "message": {"from":{"id":chat},"chat": {"id": chat}, "text": text}
         });
         let outcome =
             process_webhook_line(&cfg, &mut store, &scheduler, &update.to_string()).unwrap();
@@ -100,7 +101,7 @@ fn incoming_addressed_memory_commands_execute_locally() {
         (719, "321", "/memory@ remember unauthorized fact"),
     ] {
         let update = serde_json::json!({
-            "update_id": id, "message": {"chat": {"id": chat}, "text": text}
+            "update_id": id, "message": {"from":{"id":chat},"chat": {"id": chat}, "text": text}
         });
         assert!(matches!(
             parse_webhook_action(&cfg, &update.to_string()).unwrap(),
@@ -156,7 +157,7 @@ fn incoming_memory_commands_are_authorized_scoped_and_replay_safe() {
     let cfg = test_config();
     let mut store = Store::open(&cfg).unwrap();
     let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let update = r#"{"update_id":701,"message":{"chat":{"id":"321"},"text":"/memory remember dispatch scoped fact"}}"#;
+    let update = r#"{"update_id":701,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"/memory remember dispatch scoped fact"}}"#;
     let first = process_webhook_line(&cfg, &mut store, &scheduler, update).unwrap();
     assert!(
         first
@@ -183,7 +184,7 @@ fn incoming_memory_commands_are_authorized_scoped_and_replay_safe() {
         &cfg,
         &mut store,
         &scheduler,
-        r#"{"update_id":703,"message":{"chat":{"id":"321"},"text":"/memory search scoped"}}"#,
+        r#"{"update_id":703,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"/memory search scoped"}}"#,
     )
     .unwrap();
     assert!(output.output.unwrap().contains("dispatch scoped fact"));
@@ -258,7 +259,7 @@ fn raw_reconstruction_matches_initial_final_content_and_effects() {
             &cfg,
             &mut store,
             &scheduler,
-            r#"{"update_id":9300,"message":{"chat":{"id":"321"},"text":"synthetic duplicate"}}"#,
+            r#"{"update_id":9300,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"synthetic duplicate"}}"#,
         )
         .unwrap();
         assert!(
@@ -425,7 +426,7 @@ fn legacy_saved_output_does_not_authorize_resending_telegram_effects() {
         .expect("insert turn");
     assert!(inserted.is_some());
 
-    let update = r#"{"update_id":42,"message":{"chat":{"id":"321"},"text":"hello again"}}"#;
+    let update = r#"{"update_id":42,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"hello again"}}"#;
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
     assert!(outcome.output.is_none());
@@ -464,7 +465,7 @@ fn telegram_duplicate_inflight_update_is_not_enqueued_twice() {
         .expect("insert active task");
     let mut store = Store::open(&cfg).expect("store reopen");
     let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let update = r#"{"update_id":4242,"message":{"chat":{"id":"321"},"text":"hello again"}}"#;
+    let update = r#"{"update_id":4242,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"hello again"}}"#;
 
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
 
@@ -494,7 +495,7 @@ fn missing_media_marker_path_does_not_fail_dispatch() {
 #[test]
 fn photo_update_parses_attachment_metadata() {
     let cfg = test_config();
-    let update = r#"{"update_id":201,"message":{"chat":{"id":"321"},"photo":[{"file_id":"a"},{"file_id":"b"}]}}"#;
+    let update = r#"{"update_id":201,"message":{"from":{"id":"321"},"chat":{"id":"321"},"photo":[{"file_id":"a"},{"file_id":"b"}]}}"#;
 
     let action = parse_webhook_action(&cfg, update).expect("parse");
     let WebhookAction::Turn(turn) = action else {
@@ -508,13 +509,14 @@ fn photo_update_parses_attachment_metadata() {
 fn cancel_command_sets_runtime_cancel_marker() {
     let cfg = test_config();
     let mut store = Store::open(&cfg).expect("store");
-    let update = r#"{"update_id":202,"message":{"chat":{"id":"321"},"text":"/cancel"}}"#;
+    let update =
+        r#"{"update_id":202,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"/cancel"}}"#;
 
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
     let output = outcome.output.unwrap_or_default();
 
-    assert!(output.contains("No active task for this chat."));
+    assert!(output.contains("No active run for this conversation/topic."));
 }
 
 #[test]
@@ -536,13 +538,19 @@ fn tasks_command_lists_active_runtime_tasks() {
         .expect("insert task run");
     let mut store = Store::open(&cfg).expect("store reopen");
     let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let update = r#"{"update_id":203,"message":{"chat":{"id":"321"},"text":"/tasks"}}"#;
+    let update =
+        r#"{"update_id":203,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"/tasks"}}"#;
 
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
     let output = outcome.output.unwrap_or_default();
 
-    assert!(output.contains("Active tasks"));
-    assert!(output.contains(&format!("#{task_id} [queued] summarize status")));
+    assert!(output.contains("logical tasks"));
+    assert!(output.contains(&format!("Task #{task_id} / run #{task_id}")));
+    assert!(output.contains("queued"));
+    assert!(
+        !output.contains("summarize status"),
+        "prompts stay out of normal operations views"
+    );
 }
 
 #[test]
@@ -578,12 +586,15 @@ fn tasks_command_hides_other_sessions() {
 
     let mut store = Store::open(&cfg).expect("store reopen");
     let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let update = r#"{"update_id":207,"message":{"chat":{"id":"321"},"text":"/tasks"}}"#;
+    let update =
+        r#"{"update_id":207,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"/tasks"}}"#;
 
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
     let output = outcome.output.unwrap_or_default();
 
-    assert!(output.contains("visible task"));
+    assert!(output.contains("Task #1 / run #1"));
+    assert!(!output.contains("Task #2 / run #2"));
+    assert!(!output.contains("visible task"));
     assert!(!output.contains("hidden task"));
     assert!(!output.contains("telegram:999"));
 }
@@ -609,8 +620,7 @@ fn telegram_update_from_unconfigured_chat_is_ignored() {
 fn telegram_update_from_secondary_configured_chat_is_accepted() {
     let mut cfg = test_config();
     cfg.telegram_chat_ids = vec!["999".to_string(), "321".to_string()];
-    let update =
-        r#"{"update_id":205,"message":{"chat":{"id":"999"},"text":"hello from another chat"}}"#;
+    let update = r#"{"update_id":205,"message":{"from":{"id":"999"},"chat":{"id":"999"},"text":"hello from another chat"}}"#;
 
     let action = parse_webhook_action(&cfg, update).expect("parse");
 
@@ -627,13 +637,14 @@ fn telegram_cancel_command_replies_to_request_chat() {
     cfg.telegram_chat_ids = vec!["999".to_string()];
     let mut store = Store::open(&cfg).expect("store");
     let scheduler = SessionScheduler::new(cfg.clone(), None);
-    let update = r#"{"update_id":206,"message":{"chat":{"id":"999"},"text":"/cancel"}}"#;
+    let update =
+        r#"{"update_id":206,"message":{"from":{"id":"999"},"chat":{"id":"999"},"text":"/cancel"}}"#;
 
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
     let output = outcome.output.unwrap_or_default();
 
     assert_eq!(outcome.chat_id.as_deref(), Some("999"));
-    assert!(output.contains("No active task for this chat."));
+    assert!(output.contains("No active run for this conversation/topic."));
 }
 
 #[test]
@@ -657,7 +668,7 @@ fn telegram_targeted_cancel_cannot_cross_sessions() {
     let mut store = Store::open(&cfg).expect("store reopen");
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let update = format!(
-        r#"{{"update_id":208,"message":{{"chat":{{"id":"321"}},"text":"/cancel {task_id}"}}}}"#
+        r#"{{"update_id":208,"message":{{"from":{{"id":"321"}},"chat":{{"id":"321"}},"text":"/cancel {task_id}"}}}}"#
     );
 
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, &update).expect("process");
@@ -667,7 +678,7 @@ fn telegram_targeted_cancel_cannot_cross_sessions() {
         .expect("get task")
         .expect("task exists");
 
-    assert!(output.contains("not active for this chat"));
+    assert!(output.contains("not active for this conversation/topic"));
     assert_eq!(task.status, "queued");
 }
 

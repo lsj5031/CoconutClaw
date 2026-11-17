@@ -76,7 +76,7 @@ fn waiting_graph_control_ack_releases_snapshot_before_parallel_admission() {
         &cfg,
         &mut store,
         &scheduler,
-        r#"{"update_id":40,"message":{"chat":{"id":321,"type":"private"},"text":"/tasks"}}"#,
+        r#"{"update_id":40,"message":{"from":{"id":321},"chat":{"id":321,"type":"private"},"text":"/tasks"}}"#,
     )
     .unwrap();
     crate::loops::webhook::deliver_telegram_acks(&cfg, &store).unwrap();

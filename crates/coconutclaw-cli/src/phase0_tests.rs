@@ -61,7 +61,7 @@ printf '%s\n' '{{"type":"thread.started","thread_id":"canonical-native"}}'
                 &cfg,
                 &mut store,
                 &scheduler,
-                r#"{"update_id":99,"message":{"chat":{"id":321},"text":"/fresh"}}"#,
+                r#"{"update_id":99,"message":{"from":{"id":321},"chat":{"id":321},"text":"/fresh"}}"#,
             )
             .unwrap();
         }
@@ -432,23 +432,23 @@ fn polling_invalid_commands_acknowledge_and_allow_other_chat_work() {
     let cases = [
         ("/approve", "Use /approve <approval id>"),
         ("/reject", "Use /reject <approval id>"),
-        ("/cancel typo", "Use /cancel [task id]"),
+        ("/cancel typo", "Use /cancel [run ID]"),
         ("/approve typo", "Use /approve <approval id>"),
         ("/reject typo", "Use /reject <approval id>"),
         ("/approve 1 extra", "Use /approve <approval id>"),
         ("/reject 1 extra", "Use /reject <approval id>"),
-        ("/cancel 1 extra", "Use /cancel [task id]"),
+        ("/cancel 1 extra", "Use /cancel [run ID]"),
         ("/approve 0", "Use /approve <approval id>"),
         ("/reject -1", "Use /reject <approval id>"),
-        ("/cancel 0", "Use /cancel [task id]"),
+        ("/cancel 0", "Use /cancel [run ID]"),
         ("/approve 9223372036854775808", "Use /approve <approval id>"),
         ("/reject 9223372036854775808", "Use /reject <approval id>"),
-        ("/cancel 9223372036854775808", "Use /cancel [task id]"),
+        ("/cancel 9223372036854775808", "Use /cancel [run ID]"),
         ("/approve 999999", "Approval request not found."),
         ("/reject 999999", "Approval request not found."),
         (
             "/cancel 999999",
-            "Task #999999 is not active for this chat.",
+            "Run #999999 is not active for this conversation/topic.",
         ),
     ];
     let mut cfg = RuntimeConfig::test_config();
@@ -475,11 +475,11 @@ printf 'TELEGRAM_REPLY: after-command-result\n' > "$out"
     let mut updates: Vec<_> = cases
         .iter()
         .enumerate()
-        .map(|(i, (text, _))| json!({"update_id":i+1,"message":{"chat":{"id":321},"text":text}}))
+        .map(|(i, (text, _))| json!({"update_id":i+1,"message":{"from":{"id":321},"chat":{"id":321},"text":text}}))
         .collect();
     for text in ["provider-fails", "after-command"] {
         updates
-            .push(json!({"update_id":updates.len()+1,"message":{"chat":{"id":654},"text":text}}));
+            .push(json!({"update_id":updates.len()+1,"message":{"from":{"id":654},"chat":{"id":654},"text":text}}));
     }
     let count = updates.len();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -647,8 +647,8 @@ printf 'TELEGRAM_REPLY: after-command-result\n' > "$out"
             return (
                 200,
                 json!({"ok":true,"result":[
-                    {"update_id":100,"message":{"chat":{"id":321},"text":"/reject 1"}},
-                    {"update_id":101,"message":{"chat":{"id":654},"text":"after-command"}}
+                    {"update_id":100,"message":{"from":{"id":321},"chat":{"id":321},"text":"/reject 1"}},
+                    {"update_id":101,"message":{"from":{"id":654},"chat":{"id":654},"text":"after-command"}}
                 ]})
                 .to_string(),
             );
@@ -725,7 +725,7 @@ fn polling_processing_failure_preserves_raw_custody_before_acknowledging_offset(
                 }
             }
             let body = if index == 0 {
-                r#"{"ok":true,"result":[{"update_id":100,"message":{"message_id":1,"chat":{"id":321},"text":"/approve 1"}}]}"#
+                r#"{"ok":true,"result":[{"update_id":100,"message":{"from":{"id":321},"message_id":1,"chat":{"id":321},"text":"/approve 1"}}]}"#
             } else {
                 stop.store(true, Ordering::SeqCst);
                 r#"{"ok":true,"result":[]}"#

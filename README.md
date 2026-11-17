@@ -32,6 +32,10 @@ not authentication or connectivity.
 ## Behavior
 
 - Telegram polling only, restricted to configured chat IDs.
+- `/start` opens button-first Home. Scoped, dated operations reports, task/run
+  controls and durable memory/preference guides execute locally, without asking
+  Codex to explain commands. See [Telegram operations](docs/telegram-operations.md)
+  for command compatibility, authority, telemetry limits and mock verification.
 - One ordered conversation lane and explicit Codex session per private topic,
   with a separate root session. Five task workers globally, with durable queues.
 - Native Rich Markdown final replies, including tables, headings and math.
@@ -54,7 +58,7 @@ not authentication or connectivity.
 - A `DELEGATE_TASK` request creates a durable task ID with a separate Codex
   session and no parent conversation history. Its labeled result is delivered
   to, and retained in the history of, the originating topic/root session.
-- `/tasks`, `/cancel [task-id]`, `/approve <approval-id>` and
+- `/tasks [run-id]`, `/cancel [run-id]`, `/approve <approval-id>` and
   `/reject <approval-id>` are scoped to the originating topic/root session.
 - `SEND_APPROVAL` pauses the request until an explicit approval. Approval is
   advisory model coordination, not a sandbox or substitute for Codex's own

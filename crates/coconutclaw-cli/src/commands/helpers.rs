@@ -42,6 +42,8 @@ fn enqueue_telegram_turn(
     let session = turn.session;
     let chat_id = session.root_id.clone();
     let thread_id = session.thread_id.clone();
+    // Private-chat admission verified the actual sender equals this root.
+    let source_user_id = Some(session.root_id.clone());
     scheduler.enqueue(crate::scheduler::TaskRequest {
         session,
         source: TaskSource::Telegram,
@@ -51,7 +53,7 @@ fn enqueue_telegram_turn(
         media: turn.media.map(crate::scheduler::TaskMedia::Telegram),
         quoted: turn.quoted,
         delivery: DeliveryTarget::Telegram { chat_id, thread_id },
-        source_user_id: None,
+        source_user_id,
         progress_message_id,
     })
 }
@@ -70,6 +72,18 @@ pub(crate) fn maybe_handle_telegram_command(
     };
 
     let session = SessionKey::telegram(chat_id);
+    if let Some(output) =
+        crate::telegram_ui::handle(cfg, store, scheduler, &session, update_id.as_deref(), text)?
+    {
+        return Ok(Some(ProcessOutcome {
+            should_ack: true,
+            update_id,
+            chat_id: Some(chat_id.to_string()),
+            output: Some(output),
+            cleanup_path: None,
+            progress_message_id: None,
+        }));
+    }
     let reply = match command {
         "/memory" => Some(store.memory_command(
             &session.id(),
@@ -86,23 +100,23 @@ pub(crate) fn maybe_handle_telegram_command(
                 Ok(false) => {}
                 Err(err) => return Err(err),
             }
-            Some("Context cleared. Fresh start!".to_string())
+            Some("Context cleared. New conversation started; memory and preferences are kept.".to_string())
         }
         "/cancel" => {
             let reply = if let Some(arg) = arg {
                 if let Some(task_id) = parse_task_id_arg(arg) {
                     if scheduler.cancel_task_for_session(task_id, Some(&session.id()))? {
-                        format!("Cancel requested for task #{task_id}.")
+                        format!("Cancel requested for run #{task_id}.")
                     } else {
-                        format!("Task #{task_id} is not active for this chat.")
+                        format!("Run #{task_id} is not active for this conversation/topic.")
                     }
                 } else {
-                    "Use /cancel [task id] with one positive integer ID, or /cancel to cancel the active task.".to_string()
+                    "Use /cancel [run ID] with one positive integer ID, or /cancel to cancel the active run.".to_string()
                 }
             } else if let Some(task_id) = scheduler.cancel_active_for_session(&session.id())? {
-                format!("Cancel requested for task #{task_id}.")
+                format!("Cancel requested for run #{task_id}.")
             } else {
-                "No active task for this chat.".to_string()
+                "No active run for this conversation/topic.".to_string()
             };
             Some(reply)
         }
@@ -129,7 +143,7 @@ pub(crate) fn maybe_handle_telegram_command(
         )?),
         "/approve" | "/reject" => {
             if let Some(id) = arg.and_then(parse_task_id_arg) {
-                scheduler.resolve_approval(
+                Some(scheduler.resolve_approval(
                     id,
                     if command == "/approve" {
                         "approve"
@@ -137,14 +151,14 @@ pub(crate) fn maybe_handle_telegram_command(
                         "reject"
                     },
                     &session.id(),
-                )?
+                )?.unwrap_or_else(|| "Approval unavailable or already resolved in this conversation/topic.".into()))
             } else {
                 Some(format!(
                     "Use {command} <approval id> with one positive integer ID."
                 ))
             }
         }
-        _ => None,
+        _ => Some("Unknown command. Use /start for Home or /help for supported operations. This command was not sent to the provider.".into()),
     };
 
     Ok(reply.map(|reply_text| ProcessOutcome {
