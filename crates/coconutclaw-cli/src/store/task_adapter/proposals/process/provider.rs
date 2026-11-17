@@ -3,6 +3,56 @@ use super::*;
 use std::sync::{atomic::AtomicBool, mpsc};
 
 const SCRIPT: &str = include_str!("fake_codex.py");
+
+#[test]
+fn fixture_environment_normalizes_only_valid_macos_metadata_and_refuses_sdk_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let mut child = OsCommand::new(Config::expected(root.path()).unwrap().executable)
+        .args(["-I", "-c", r#"
+import ast, sys
+source = ast.parse(sys.stdin.read())
+function = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == "validate_environment")
+namespace = {}
+exec(compile(ast.Module(body=[function], type_ignores=[]), "<fixture-environment>", "exec"), namespace)
+validate = namespace["validate_environment"]
+base = {"HOME": "/fixture-home", "FACTORY_AIRGAP_ENABLED": "1"}
+valid = dict(base, __CF_USER_TEXT_ENCODING="0x1f5:0x8000100:0x0")
+validate(valid, "darwin", 501)
+assert valid == base
+validate(dict(base), "linux", 501)
+def refused(environment, platform="darwin"):
+    try:
+        validate(environment, platform, 501)
+    except AssertionError:
+        return
+    raise AssertionError("unsafe fixture environment accepted")
+for value in ["0x1f6:0x0:0x0", "0x1f5:0x0", "0x1f5:bogus:0x0", "0x1f5:0x0:0x0:0x0"]:
+    refused(dict(base, __CF_USER_TEXT_ENCODING=value))
+refused(dict(base, __CF_USER_TEXT_ENCODING="0x1f5:0x0:0x0"), "linux")
+for key in ["SDKROOT", "CPATH", "LIBRARY_PATH", "MANPATH", "UNKNOWN_FIXTURE_KEY"]:
+    refused(dict(base, **{key: "fixture-only"}))
+refused(dict(base, FACTORY_AIRGAP_ENABLED="0"))
+"#])
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(SCRIPT.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 pub(in crate::store::task_adapter) mod host;
 mod real;
 

@@ -250,3 +250,8 @@ The fake-provider profile resolves the explicit interpreter with the system
 `xcrun --find python3` on macOS instead of executing `/usr/bin/python3`'s launcher.
 The Linux-only parent-death fixture imports `ctypes` only on Linux. The original
 closed environment allowlist is retained, with no ambient executable fallback.
+Run 44011947680 confirms that bypassing the SDK launcher removes all four SDK
+path variables. CoreFoundation still adds its UID/encoding/region metadata.
+The fixture validates that metadata's closed numeric form and current UID before
+removing it, then applies the original environment assertion. SDK paths and
+unknown environment names remain rejected; no provider lifecycle test is skipped.
