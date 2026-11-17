@@ -172,7 +172,7 @@ impl SessionScheduler {
 
     /// Clock-injected admission, shared by the deadline owner and behavior tests.
     /// Only the existing scheduler starts models; the calendar emits inbox work.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn wake_due(&self, now: chrono::DateTime<chrono::Utc>) -> Result<usize> {
         self.wake_due_with_store(&Store::open(&self.inner.cfg)?, now)
     }

@@ -1,4 +1,6 @@
 //! Real executable, synthetic sources only. No provider or Telegram credentials.
+//! The importer's safe traversal requires Unix directory handles.
+#![cfg(unix)]
 use rusqlite::Connection;
 use serde_json::Value;
 use std::{

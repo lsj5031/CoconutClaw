@@ -24,6 +24,8 @@ pub(super) fn create(
         params![store.to_string(), owner.to_string(), namespace.to_string()],
     )?;
     // Persist the new journal's directory entry as well as its SQLite commits.
+    // Windows cannot open a directory handle, so this durability step is Unix-only.
+    #[cfg(unix)]
     File::open(root)?.sync_all()?;
     Ok(())
 }

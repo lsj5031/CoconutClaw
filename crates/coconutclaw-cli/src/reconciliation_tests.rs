@@ -876,13 +876,11 @@ fn unknown_reconciliation_normal_binary_restart_uses_same_sender() {
     }
     let start = |round| {
         Owned(
-            std::process::Command::new(&binary)
+            crate::util::scrubbed_command(&binary)
                 .arg("--data-dir")
                 .arg(&cfg.instance_dir)
                 .arg("run")
-                .env_clear()
                 .env("HOME", &cfg.instance_dir)
-                .env("PATH", std::env::var_os("PATH").unwrap())
                 .env("FACTORY_AIRGAP_ENABLED", "1")
                 .env("TELEGRAM_BOT_TOKEN", "123:token")
                 .env("TELEGRAM_CHAT_ID", "321")

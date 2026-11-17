@@ -60,12 +60,10 @@ fn calendar_wake_normal_binary_deadline_during_fetch_and_restart() {
         });
     let hash = blake3::hash(&fs::read(&binary).unwrap());
     let command = || {
-        let mut c = std::process::Command::new(&binary);
+        let mut c = crate::util::scrubbed_command(&binary);
         c.arg("--data-dir")
             .arg(&cfg.instance_dir)
-            .env_clear()
             .env("HOME", &cfg.instance_dir)
-            .env("PATH", std::env::var_os("PATH").unwrap())
             .env("FACTORY_AIRGAP_ENABLED", "1")
             .env("TELEGRAM_BOT_TOKEN", "123:token")
             .env("TELEGRAM_CHAT_ID", "321")

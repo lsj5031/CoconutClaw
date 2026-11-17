@@ -6,6 +6,37 @@ use std::path::{Path, PathBuf};
 
 use crate::types::IncomingMedia;
 
+/// Fixture children start without inherited credentials. Windows still needs
+/// its system variables to load system libraries such as Winsock and temp paths.
+#[cfg(test)]
+pub(crate) fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    cmd.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        cmd.env("PATH", path);
+    }
+    #[cfg(windows)]
+    for key in [
+        "SystemRoot",
+        "SystemDrive",
+        "windir",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "COMSPEC",
+        "PATHEXT",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
+        }
+    }
+    cmd
+}
+
 pub(crate) fn shorten_log_text(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();

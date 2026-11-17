@@ -420,7 +420,7 @@ with (root/"calls").open("a") as file: file.write("call\n")
 done="Administrator approval granted" in prompt or "delegated child sentinel" in prompt
 pathlib.Path(out).write_text("TELEGRAM_REPLY: child result" if done else "TELEGRAM_REPLY: first\n{}")
 "#, if delegated { "DELEGATE_TASK: delegated child sentinel" } else { "SEND_APPROVAL: may I continue?" })).unwrap();
-        cfg.codex.bin = format!("/usr/bin/python3 {}", script.display());
+        cfg.codex.bin = format!("{} {}", python_bin(), script.display());
         let scheduler = SessionScheduler::new(cfg.clone(), None);
         let mut request =
             make_request(SessionKey::telegram("321#7"), "telegram", "origin sentinel");
@@ -487,6 +487,14 @@ pathlib.Path(out).write_text("TELEGRAM_REPLY: child result" if done else "TELEGR
             assert_eq!(params["chat_id"], "321");
             assert_eq!(params["message_thread_id"], "7");
         }
+    }
+}
+
+fn python_bin() -> &'static str {
+    if cfg!(windows) {
+        "python"
+    } else {
+        "/usr/bin/python3"
     }
 }
 
@@ -613,7 +621,7 @@ if n=="1":
  pathlib.Path(out).write_text("SEND_APPROVAL: Continue?" if "{mode}"=="approval" else "DELEGATE_TASK: gate-8")
 else: pathlib.Path(out).write_text("TELEGRAM_REPLY: done")
 "#)).unwrap();
-        cfg.codex.bin = format!("/usr/bin/python3 {}", script.display());
+        cfg.codex.bin = format!("{} {}", python_bin(), script.display());
         let store = Store::open(&cfg).unwrap();
         let mut ids = Vec::new();
         for n in 1..=7 {

@@ -363,13 +363,11 @@ async fn runtime_bridge_normal_binary_consumes_real_custody_and_restarts_without
                 .instance_dir
                 .join(format!("normal-bridge-{attempt}.log"));
             let mut child = Owned(
-                std::process::Command::new(&child_binary)
+                crate::util::scrubbed_command(&child_binary)
                     .arg("--data-dir")
                     .arg(&cfg.instance_dir)
                     .arg("run")
-                    .env_clear()
                     .env("HOME", &cfg.instance_dir)
-                    .env("PATH", std::env::var_os("PATH").unwrap())
                     .env("FACTORY_AIRGAP_ENABLED", "1")
                     .env("TELEGRAM_BOT_TOKEN", "123:token")
                     .env("TELEGRAM_CHAT_ID", "321")

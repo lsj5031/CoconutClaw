@@ -172,6 +172,8 @@ fn successful_flush_survives_external_immediate_sigkill() {
                     use std::os::unix::process::ExitStatusExt;
                     assert_eq!(status.signal(), Some(9));
                 }
+                #[cfg(not(unix))]
+                assert!(!status.success(), "publisher survived external kill");
             } else {
                 let output = child.wait_with_output().unwrap();
                 assert!(

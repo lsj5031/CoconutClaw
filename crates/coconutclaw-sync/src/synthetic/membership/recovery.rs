@@ -111,6 +111,8 @@ fn write_receipt(root: &Path, manifest: Option<&RecoveryManifest>) -> Result<()>
     file.write_all(&serde_json::to_vec(&manifest)?)?;
     file.sync_all()?;
     fs::rename(root.join(RECEIPT_TMP), root.join(RECEIPT))?;
+    // Windows cannot open a directory handle, so this durability step is Unix-only.
+    #[cfg(unix)]
     File::open(root)?.sync_all()?;
     Ok(())
 }
