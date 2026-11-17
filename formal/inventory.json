@@ -1,5 +1,5 @@
 {
-  "basis": "repository-baseline-hashes.json, all171 tracked/untracked non-artifact/non-target owned files before formal edits",
+  "basis": "177 current merged repository paths: UI inventory176 plus PR22 native test locator. Prior UI/historical hashes retained. Validated main1d608f5 plus UIc8b36e4; verification tooling separately inventoried.",
   "method": "Every path classified; declarations/SQL schema/conditional scan across all modules, plus concrete owner/action body inspection. This is best-effort inventory, not a claim that every implicit machine or every source line was audited. Non-modeled transitions remain explicit.",
   "paths": [
     {
@@ -15,14 +15,15 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "da323161516b1b0b7d821de1c7d945c28e10589c869f2af97a760ce8e7cf6a4d",
-      "lines": 126,
+      "sha256": "2a7fb6cdf03c3506acad3c56a996e1e77f00c25a72c3d2ae3f6889918dcdb1a4",
+      "lines": 130,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate."
+      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
+      "previous_inventory_sha256": "da323161516b1b0b7d821de1c7d945c28e10589c869f2af97a760ce8e7cf6a4d"
     },
     {
       "path": ".github/workflows/release.yml",
@@ -59,14 +60,15 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "aee62a07fffb559f54cb6470363ef8b2129bb6970d2de77f45f27602388da8a6",
-      "lines": 67,
+      "sha256": "3e92ee631075ff485e2413ec7d0b34ffbe965c9c7a79be90d5bf89e3c35d4225",
+      "lines": 73,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate."
+      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
+      "previous_inventory_sha256": "aee62a07fffb559f54cb6470363ef8b2129bb6970d2de77f45f27602388da8a6"
     },
     {
       "path": "Cargo.lock",
@@ -81,8 +83,8 @@
     },
     {
       "path": "Cargo.toml",
-      "sha256": "badd06d0eed0008c018c064b887ae68480f62a245a1bd190b2b5d6db47711205",
-      "lines": 32,
+      "sha256": "3abd2e0cada8e50c2a8db881c70c3c8110b88a9591e36a9c24ddee21c3501236",
+      "lines": 37,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
@@ -117,7 +119,8 @@
           "text": "tracing-subscriber = { version = \"0.3\", features = [\"env-filter\"] }"
         }
       ],
-      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate."
+      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
+      "previous_ui_inventory_sha256": "badd06d0eed0008c018c064b887ae68480f62a245a1bd190b2b5d6db47711205"
     },
     {
       "path": "LICENSE",
@@ -154,14 +157,16 @@
     },
     {
       "path": "README.md",
-      "sha256": "49f5bbc84aafccee79437073719b128fc83ca2be961d3dddd920dcacf2853cba",
-      "lines": 116,
+      "sha256": "acb939d627ffec4d1fb227cd0479087f381b35d2339acaa0cf091cbc396d635e",
+      "lines": 364,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate."
+      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
+      "previous_inventory_sha256": "49f5bbc84aafccee79437073719b128fc83ca2be961d3dddd920dcacf2853cba",
+      "previous_ui_inventory_sha256": "2f2400e3950a1bc230246c671be627b378281f6bdb9872674624a53e94e49d58"
     },
     {
       "path": "SOUL.md",
@@ -209,7 +214,7 @@
     },
     {
       "path": "crates/coconutclaw-cli/Cargo.toml",
-      "sha256": "c752330f4b14af6b04814493428309967d55b57200e54b74fb546fa851b026e8",
+      "sha256": "56c2192e9a910ba3e8f7e3931cc25dc4acae81a7298aa4bfae07e5a12ef80f7c",
       "lines": 36,
       "classification": "abstracted-family",
       "families": [
@@ -222,6 +227,10 @@
       "scope": "runtime or shared library",
       "declarations": [],
       "conditional_branches": [
+        {
+          "line": 26,
+          "text": "notify = { version = \"8.2.0\", features = [\"macos_kqueue\"] }"
+        },
         {
           "line": 33,
           "text": "iroh = { version = \"=1.4.1\", default-features = false, features = [\"tls-ring\", \"test-utils\"] }"
@@ -239,7 +248,8 @@
           "text": "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"time\", \"sync\", \"net\", \"io-util\"] }"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_ui_inventory_sha256": "c752330f4b14af6b04814493428309967d55b57200e54b74fb546fa851b026e8"
     },
     {
       "path": "crates/coconutclaw-cli/src/approval.rs",
@@ -373,8 +383,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/commands/helpers.rs",
-      "sha256": "e4fd547932a7ba81e61d5ba7d864de2d9cecdff93914345956225e3b4aa64dfc",
-      "lines": 167,
+      "sha256": "0d6d27fcba5a194b6526d90d5bef7734b354fc2ab357d03292b880b8df82a36c",
+      "lines": 181,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -402,16 +412,17 @@
           "text": "fn enqueue_telegram_turn("
         },
         {
-          "line": 59,
+          "line": 61,
           "text": "pub(crate) fn maybe_handle_telegram_command("
         },
         {
-          "line": 161,
+          "line": 175,
           "text": "pub(crate) fn enqueue_telegram("
         }
       ],
       "conditional_branches": [],
-      "gap": "Admission/control/startup contracts only; full parser flags, diagnostics, migration and every CLI command sequence not exhaustively refined."
+      "gap": "Admission/control/startup contracts only; full parser flags, diagnostics, migration and every CLI command sequence not exhaustively refined.",
+      "previous_inventory_sha256": "e4fd547932a7ba81e61d5ba7d864de2d9cecdff93914345956225e3b4aa64dfc"
     },
     {
       "path": "crates/coconutclaw-cli/src/commands/mod.rs",
@@ -645,8 +656,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/context_notification_tests.rs",
-      "sha256": "a70f2bfcbe1f4dfc080dea23a0672412e5025515abc901d4a009cfb64713fb2c",
-      "lines": 1058,
+      "sha256": "713e5e04e745b4cc1a5fc14d2b82df5ef61fecc85347d4041c2a0b95cb6e4615",
+      "lines": 1046,
       "classification": "evidence-only",
       "families": [
         "Context",
@@ -748,21 +759,22 @@
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 888,
+          "line": 878,
           "text": "struct Owned(std::process::Child);"
         },
         {
-          "line": 890,
+          "line": 880,
           "text": "fn drop(&mut self) {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "a70f2bfcbe1f4dfc080dea23a0672412e5025515abc901d4a009cfb64713fb2c"
     },
     {
       "path": "crates/coconutclaw-cli/src/context_tests.rs",
-      "sha256": "4d8806b3bca5f29f310a29d7d0c34cb30aaad69464576d6d2d6bff1766deadce",
-      "lines": 220,
+      "sha256": "1f9cef03ea5240bd024c86b30f4e74d1f425319ba9ec70f1203fa7c16ca7311f",
+      "lines": 259,
       "classification": "evidence-only",
       "families": [
         "Context",
@@ -793,15 +805,20 @@
         },
         {
           "line": 95,
+          "text": "fn concurrent_first_store_open_initializes_complete_schema() {"
+        },
+        {
+          "line": 134,
           "text": "fn concurrent_task_projections_and_scoped_memory_stay_separate() {"
         },
         {
-          "line": 149,
+          "line": 188,
           "text": "fn session_task_context_uses_source_turn_session_and_channel_not_shared_projection() {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_ui_inventory_sha256": "4d8806b3bca5f29f310a29d7d0c34cb30aaad69464576d6d2d6bff1766deadce"
     },
     {
       "path": "crates/coconutclaw-cli/src/delivery/mod.rs",
@@ -946,8 +963,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
-      "sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d",
-      "lines": 567,
+      "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
+      "lines": 596,
       "classification": "abstracted-family",
       "families": [
         "Effects",
@@ -977,24 +994,25 @@
           "text": "fn durable_op("
         },
         {
-          "line": 121,
+          "line": 128,
           "text": "fn deliver_text("
         },
         {
-          "line": 306,
+          "line": 330,
           "text": "fn output_effects("
         },
         {
-          "line": 341,
+          "line": 370,
           "text": "pub(crate) fn acknowledged_text("
         },
         {
-          "line": 380,
+          "line": 409,
           "text": "pub(crate) fn dispatch_task_output("
         }
       ],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "c1454cc2e1b1215ac5def05cc4427c1628b577174d36b13aa9427b2d6f06d78d"
     },
     {
       "path": "crates/coconutclaw-cli/src/loops/mod.rs",
@@ -1050,13 +1068,15 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
-      "sha256": "59a315626dc8f1df8db55fe4912bca96dd4ce4f6d0a8b39802c07c0dae09e527",
-      "lines": 654,
+      "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+      "lines": 692,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
         "Effects",
-        "RuntimeComposition"
+        "RuntimeComposition",
+        "UIAuthority",
+        "GuidedInput"
       ],
       "scope": "runtime or shared library",
       "declarations": [
@@ -1085,15 +1105,15 @@
           "text": "fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookAction> {"
         },
         {
-          "line": 380,
+          "line": 398,
           "text": "pub(crate) fn process_webhook_line("
         },
         {
-          "line": 507,
+          "line": 545,
           "text": "fn approval_command_id(cfg: &RuntimeConfig, action: &WebhookAction) -> Option<i64> {"
         },
         {
-          "line": 521,
+          "line": 559,
           "text": "fn process_webhook_action("
         }
       ],
@@ -1103,12 +1123,13 @@
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "59a315626dc8f1df8db55fe4912bca96dd4ce4f6d0a8b39802c07c0dae09e527"
     },
     {
       "path": "crates/coconutclaw-cli/src/main.rs",
-      "sha256": "7fa6e36a251f39b6334dea30d5523260868492d058e17102f03acc33582b7d73",
-      "lines": 133,
+      "sha256": "045f0b9b3f2a305550631b150741922f7b4326e40addac0b1d1b0cefdbb5d794",
+      "lines": 136,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -1181,61 +1202,75 @@
         },
         {
           "line": 21,
-          "text": "mod turn;"
-        },
-        {
-          "line": 22,
-          "text": "mod types;"
+          "text": "mod telegram_ui;"
         },
         {
           "line": 23,
+          "text": "mod test_runtime;"
+        },
+        {
+          "line": 24,
+          "text": "mod turn;"
+        },
+        {
+          "line": 25,
+          "text": "mod types;"
+        },
+        {
+          "line": 26,
           "text": "mod util;"
         },
         {
-          "line": 36,
+          "line": 39,
           "text": "struct Cli {"
         },
         {
-          "line": 44,
+          "line": 47,
           "text": "enum Commands {"
         },
         {
-          "line": 54,
+          "line": 57,
           "text": "struct DoctorArgs {"
         },
         {
-          "line": 60,
+          "line": 63,
           "text": "struct TurnArgs {"
         },
         {
-          "line": 70,
+          "line": 73,
           "text": "struct ServiceArgs {"
         },
         {
-          "line": 76,
+          "line": 79,
           "text": "enum ServiceAction {"
         },
         {
-          "line": 84,
+          "line": 87,
           "text": "fn main() -> Result<()> {"
         },
         {
-          "line": 133,
+          "line": 136,
           "text": "mod tests;"
         }
       ],
       "conditional_branches": [
         {
-          "line": 131,
+          "line": 22,
+          "text": "#[cfg(test)]"
+        },
+        {
+          "line": 134,
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Admission/control/startup contracts only; full parser flags, diagnostics, migration and every CLI command sequence not exhaustively refined."
+      "gap": "Admission/control/startup contracts only; full parser flags, diagnostics, migration and every CLI command sequence not exhaustively refined.",
+      "previous_inventory_sha256": "7fa6e36a251f39b6334dea30d5523260868492d058e17102f03acc33582b7d73",
+      "previous_ui_inventory_sha256": "29f063011774f51521da1ef9be6d4754bea51558054b781d3b561a923df65c47"
     },
     {
       "path": "crates/coconutclaw-cli/src/main_integration_test.rs",
-      "sha256": "013b7c61ab5206258146f166200889ea613e8c43c223dd9141d90373dd97a077",
-      "lines": 1559,
+      "sha256": "775649184645e805f52c23622d293b40e5b958386b29a35912a1e00bc2a5b6a7",
+      "lines": 1570,
       "classification": "evidence-only",
       "families": [
         "Ingress",
@@ -1255,272 +1290,273 @@
           "text": "fn fresh_command_returns_confirmation_output() {"
         },
         {
-          "line": 45,
+          "line": 46,
           "text": "fn incoming_addressed_memory_commands_execute_locally() {"
         },
         {
-          "line": 155,
+          "line": 156,
           "text": "fn incoming_memory_commands_are_authorized_scoped_and_replay_safe() {"
         },
         {
-          "line": 198,
+          "line": 199,
           "text": "fn raw_reconstruction_matches_initial_final_content_and_effects() {"
         },
         {
-          "line": 324,
+          "line": 325,
           "text": "fn pending_turn_side_effects_reconcile_candidates_and_tasks() {"
         },
         {
-          "line": 406,
+          "line": 407,
           "text": "fn legacy_saved_output_does_not_authorize_resending_telegram_effects() {"
         },
         {
-          "line": 449,
+          "line": 450,
           "text": "fn telegram_duplicate_inflight_update_is_not_enqueued_twice() {"
         },
         {
-          "line": 485,
+          "line": 486,
           "text": "fn missing_media_marker_path_does_not_fail_dispatch() {"
         },
         {
-          "line": 495,
+          "line": 496,
           "text": "fn photo_update_parses_attachment_metadata() {"
         },
         {
-          "line": 508,
+          "line": 509,
           "text": "fn cancel_command_sets_runtime_cancel_marker() {"
         },
         {
-          "line": 521,
+          "line": 523,
           "text": "fn tasks_command_lists_active_runtime_tasks() {"
         },
         {
-          "line": 549,
+          "line": 557,
           "text": "fn tasks_command_hides_other_sessions() {"
         },
         {
-          "line": 592,
+          "line": 603,
           "text": "fn telegram_update_from_unconfigured_chat_is_ignored() {"
         },
         {
-          "line": 609,
+          "line": 620,
           "text": "fn telegram_update_from_secondary_configured_chat_is_accepted() {"
         },
         {
-          "line": 625,
+          "line": 635,
           "text": "fn telegram_cancel_command_replies_to_request_chat() {"
         },
         {
-          "line": 640,
+          "line": 651,
           "text": "fn telegram_targeted_cancel_cannot_cross_sessions() {"
         },
         {
-          "line": 675,
+          "line": 686,
           "text": "fn store_task_and_approval_records_round_trip() {"
         },
         {
-          "line": 746,
+          "line": 757,
           "text": "fn stale_task_recovery_preserves_pending_approval() {"
         },
         {
-          "line": 799,
+          "line": 810,
           "text": "fn cancel_signal_detects_message_and_callback_query() {"
         },
         {
-          "line": 819,
+          "line": 830,
           "text": "fn progress_text_includes_elapsed_time() {"
         },
         {
-          "line": 826,
+          "line": 837,
           "text": "fn progress_text_includes_event_lines() {"
         },
         {
-          "line": 838,
+          "line": 849,
           "text": "fn parse_markers_keeps_multiline_telegram_reply() {"
         },
         {
-          "line": 848,
+          "line": 859,
           "text": "fn parse_markers_stops_multiline_reply_at_next_marker() {"
         },
         {
-          "line": 863,
+          "line": 874,
           "text": "fn recover_unstructured_reply_unescapes_json_envelope_newlines() {"
         },
         {
-          "line": 870,
+          "line": 881,
           "text": "fn parse_markers_keeps_double_escaped_newline_literal() {"
         },
         {
-          "line": 877,
+          "line": 888,
           "text": "fn recover_unstructured_reply_prefers_json_assistant_text() {"
         },
         {
-          "line": 884,
+          "line": 895,
           "text": "fn recover_unstructured_reply_uses_plain_text_when_no_json() {"
         },
         {
-          "line": 891,
+          "line": 902,
           "text": "fn recover_unstructured_reply_ignores_json_stream_without_assistant_text() {"
         },
         {
-          "line": 899,
+          "line": 910,
           "text": "fn recover_unstructured_reply_surfaces_agent_end_error() {"
         },
         {
-          "line": 910,
+          "line": 921,
           "text": "fn extract_error_summary_prefers_structured_event_error() {"
         },
         {
-          "line": 919,
+          "line": 930,
           "text": "fn should_retry_provider_failure_matches_transient_errors() {"
         },
         {
-          "line": 928,
+          "line": 939,
           "text": "fn should_retry_provider_failure_ignores_non_retryable_turn_failed_stream() {"
         },
         {
-          "line": 935,
+          "line": 946,
           "text": "fn text_params_include_parse_mode_for_markdown_v2() {"
         },
         {
-          "line": 950,
+          "line": 961,
           "text": "fn markdown_entity_error_triggers_plain_fallback() {"
         },
         {
-          "line": 958,
+          "line": 969,
           "text": "fn non_entity_error_does_not_trigger_plain_fallback() {"
         },
         {
-          "line": 964,
+          "line": 975,
           "text": "fn telegram_retry_after_seconds_reads_integer_value() {"
         },
         {
-          "line": 970,
+          "line": 981,
           "text": "fn telegram_retry_after_seconds_reads_string_value() {"
         },
         {
-          "line": 976,
+          "line": 987,
           "text": "fn render_markdown_v2_converts_commonmark_bold() {"
         },
         {
-          "line": 985,
+          "line": 996,
           "text": "fn render_markdown_v2_escapes_all_special_chars() {"
         },
         {
-          "line": 994,
+          "line": 1005,
           "text": "fn render_markdown_v2_escapes_reserved_chars() {"
         },
         {
-          "line": 1003,
+          "line": 1014,
           "text": "fn render_telegram_reply_text_escapes_progress_for_markdown_v2() {"
         },
         {
-          "line": 1013,
+          "line": 1024,
           "text": "fn render_telegram_reply_text_keeps_plain_when_parse_mode_off() {"
         },
         {
-          "line": 1021,
+          "line": 1032,
           "text": "fn long_reply_document_fallback_respects_telegram_limit() {"
         },
         {
-          "line": 1030,
+          "line": 1041,
           "text": "fn render_markdown_v2_escapes_backticks() {"
         },
         {
-          "line": 1038,
+          "line": 1049,
           "text": "fn context_requests_native_rich_markdown_when_regular_parse_mode_is_off() {"
         },
         {
-          "line": 1068,
+          "line": 1079,
           "text": "fn context_requests_native_rich_markdown_when_regular_parse_mode_is_markdown_v2() {"
         },
         {
-          "line": 1102,
+          "line": 1113,
           "text": "fn context_recent_turns_are_scoped_to_chat_and_channel() {"
         },
         {
-          "line": 1167,
+          "line": 1178,
           "text": "fn context_includes_supplemental_conversation_context() {"
         },
         {
-          "line": 1199,
+          "line": 1210,
           "text": "fn context_omits_quoted_reply_from_before_boundary() {"
         },
         {
-          "line": 1236,
+          "line": 1247,
           "text": "fn service_subcommand_is_recognized() {"
         },
         {
-          "line": 1244,
+          "line": 1255,
           "text": "fn split_short_text_returns_single_chunk() {"
         },
         {
-          "line": 1251,
+          "line": 1262,
           "text": "fn split_empty_text_returns_no_chunks() {"
         },
         {
-          "line": 1257,
+          "line": 1268,
           "text": "fn split_closes_and_reopens_code_block_at_boundary_html() {"
         },
         {
-          "line": 1307,
+          "line": 1318,
           "text": "fn split_closes_and_reopens_code_block_markdown_v2() {"
         },
         {
-          "line": 1346,
+          "line": 1357,
           "text": "fn split_plain_mode_no_format_awareness() {"
         },
         {
-          "line": 1361,
+          "line": 1372,
           "text": "fn split_protects_inline_code_from_breaking() {"
         },
         {
-          "line": 1383,
+          "line": 1394,
           "text": "fn split_format_aware_small_max_chars_no_panic() {"
         },
         {
-          "line": 1394,
+          "line": 1405,
           "text": "fn split_format_aware_moderate_max_chars_respects_limit() {"
         },
         {
-          "line": 1410,
+          "line": 1421,
           "text": "fn split_multibyte_chars_respect_max_chars() {"
         },
         {
-          "line": 1427,
+          "line": 1438,
           "text": "fn split_format_aware_terminates_with_tiny_limit() {"
         },
         {
-          "line": 1436,
+          "line": 1447,
           "text": "fn split_html_reopens_code_block_with_language_class() {"
         },
         {
-          "line": 1452,
+          "line": 1463,
           "text": "fn split_html_detects_code_block_with_class_attr() {"
         },
         {
-          "line": 1473,
+          "line": 1484,
           "text": "fn split_plain_chunks_respect_max_chars_with_indicators() {"
         },
         {
-          "line": 1492,
+          "line": 1503,
           "text": "fn split_plain_oversized_line_with_indicators() {"
         },
         {
-          "line": 1509,
+          "line": 1520,
           "text": "fn split_md_fence_not_corrupted_by_inline_backtick_protection() {"
         },
         {
-          "line": 1532,
+          "line": 1543,
           "text": "fn split_html_close_then_open_same_line() {"
         },
         {
-          "line": 1543,
+          "line": 1554,
           "text": "fn split_format_aware_all_chunks_within_limit() {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "013b7c61ab5206258146f166200889ea613e8c43c223dd9141d90373dd97a077"
     },
     {
       "path": "crates/coconutclaw-cli/src/markers.rs",
@@ -1866,8 +1902,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/memory_import_tests.rs",
-      "sha256": "b519eaadbeb062c9d6ef90a219af1cce4ae25336a92a71bac9719fcf6ef87a03",
-      "lines": 389,
+      "sha256": "14aaae84d8fbad53668d64c4fdd80dcc6319e5b449b3ba374119365c58e669f6",
+      "lines": 392,
       "classification": "evidence-only",
       "families": [
         "Context",
@@ -1877,58 +1913,64 @@
       "scope": "support/evidence",
       "declarations": [
         {
-          "line": 4,
+          "line": 5,
           "text": "fn args(root: &Path) -> ImportArgs {"
         },
         {
-          "line": 17,
+          "line": 20,
           "text": "fn count(store: &Store, table: &str) -> i64 {"
         },
         {
-          "line": 25,
+          "line": 28,
           "text": "fn candidate_import_supersession_undo_replay_and_reopen() {"
         },
         {
-          "line": 133,
+          "line": 136,
           "text": "fn candidate_updates_retire_get_but_never_prune_missing_chunks() {"
         },
         {
-          "line": 158,
+          "line": 161,
           "text": "fn import_transaction_rolls_back_origin_records_fts_and_history() {"
         },
         {
-          "line": 196,
+          "line": 199,
           "text": "fn unicode_chunk_lines_and_bounds() {"
         },
         {
-          "line": 214,
+          "line": 217,
           "text": "fn selection_authorization_symlinks_special_files_and_bounds() {"
         },
         {
-          "line": 265,
+          "line": 268,
           "text": "fn curated_limits_and_large_corpus_context_remain_bounded() {"
         },
         {
-          "line": 296,
+          "line": 299,
           "text": "fn existing_bounded_memory_upgrade_preserves_ids_receipts_undo_and_search() {"
         },
         {
-          "line": 358,
+          "line": 361,
           "text": "fn maximum_file_corpus_count_chunk_bounds_and_recursive_opt_in() {"
         }
       ],
       "conditional_branches": [
         {
-          "line": 244,
+          "line": 1,
+          "text": "#![cfg(unix)]"
+        },
+        {
+          "line": 247,
           "text": "#[cfg(unix)]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "b519eaadbeb062c9d6ef90a219af1cce4ae25336a92a71bac9719fcf6ef87a03",
+      "previous_ui_inventory_sha256": "3b9214d6bcc486c7e74932a4df85ce1fec849f03de96044341041f5fa0bf9491"
     },
     {
       "path": "crates/coconutclaw-cli/src/phase0_tests.rs",
-      "sha256": "562ce2971661638000f452842ee3159119e41a4d4eea8c7f928cabafa1dc1bff",
-      "lines": 1267,
+      "sha256": "ac48a34409773fb0d8b53c8a92fd63982ba406463aaadf014fada88e9668c893",
+      "lines": 1283,
       "classification": "evidence-only",
       "families": [
         "Ingress",
@@ -1996,31 +2038,31 @@
           "text": "fn owned_input_attachment_is_kept_until_delivery_is_acknowledged() {"
         },
         {
-          "line": 888,
+          "line": 904,
           "text": "fn codex_json_fallback_and_retired_markers_do_not_trigger_removed_features() {"
         },
         {
-          "line": 902,
+          "line": 918,
           "text": "fn save_request(store: &Store, request: &TaskRequest, update: Option<String>) -> i64 {"
         },
         {
-          "line": 927,
+          "line": 943,
           "text": "fn approval_survives_restart_is_chat_scoped_and_resumes_only_once() {"
         },
         {
-          "line": 1015,
+          "line": 1031,
           "text": "fn delegated_attempt_isolates_codex_context_and_returns_to_origin_history() {"
         },
         {
-          "line": 1126,
+          "line": 1142,
           "text": "fn recovery_finalizes_saved_result_without_agent_and_preserves_uncertain_outcome() {"
         },
         {
-          "line": 1193,
+          "line": 1209,
           "text": "fn delivery_retry_skips_acknowledged_operations_after_restart() {"
         },
         {
-          "line": 1235,
+          "line": 1251,
           "text": "fn rejected_approval_never_resumes() {"
         }
       ],
@@ -2046,16 +2088,18 @@
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 1014,
+          "line": 1030,
           "text": "#[cfg(unix)]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "562ce2971661638000f452842ee3159119e41a4d4eea8c7f928cabafa1dc1bff",
+      "previous_ui_inventory_sha256": "f798c3dd6574847a8d9eccc46711c7985eba9f0c9793c6eb82f7ae9bc3d4da9a"
     },
     {
       "path": "crates/coconutclaw-cli/src/reconciliation_tests.rs",
-      "sha256": "b240f36348dce4e2872f30367acaf9bed0bc1d98c190fc30a4bb5a8de43bddbd",
-      "lines": 983,
+      "sha256": "d87fe6e40148e8c8f733189c2148f1d82ef30f669e4e5438cc5c8de55b152920",
+      "lines": 971,
       "classification": "evidence-only",
       "families": [
         "Effects",
@@ -2133,16 +2177,17 @@
           "text": "fn unknown_reconciliation_normal_binary_restart_uses_same_sender() {"
         },
         {
-          "line": 868,
+          "line": 858,
           "text": "struct Owned(std::process::Child);"
         },
         {
-          "line": 870,
+          "line": 860,
           "text": "fn drop(&mut self) {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "b240f36348dce4e2872f30367acaf9bed0bc1d98c190fc30a4bb5a8de43bddbd"
     },
     {
       "path": "crates/coconutclaw-cli/src/recovery/mod.rs",
@@ -2190,7 +2235,7 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/scheduler.rs",
-      "sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea",
+      "sha256": "7b8ee483204fcc1c3699162249dbb4e1df8e4e7a9adf084e4392052cc75d9361",
       "lines": 1357,
       "classification": "abstracted-family",
       "families": [
@@ -2367,7 +2412,7 @@
         },
         {
           "line": 175,
-          "text": "#[cfg(test)]"
+          "text": "#[cfg(all(test, unix))]"
         },
         {
           "line": 979,
@@ -2378,12 +2423,13 @@
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "ed3ddf923c48f529b7540736f5612ae75710e9fa4bbd202b1ce430c8c48a25ea"
     },
     {
       "path": "crates/coconutclaw-cli/src/scheduler_calendar.rs",
-      "sha256": "bbf912e0452f8744b2ec7a06fc163c4ca173d1f11535cd4a7f5d4373ec5cf61c",
-      "lines": 105,
+      "sha256": "c1e2ebffd940e638661e889a91a03f35cabe6c74adc32d1883ab22e6bd971097",
+      "lines": 123,
       "classification": "abstracted-family",
       "families": [
         "Calendar",
@@ -2392,17 +2438,35 @@
       "scope": "runtime or shared library",
       "declarations": [
         {
-          "line": 8,
+          "line": 12,
           "text": "pub(crate) fn start_calendar(&self) -> Result<()> {"
         }
       ],
-      "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "conditional_branches": [
+        {
+          "line": 3,
+          "text": "#[cfg(target_os = \"macos\")]"
+        },
+        {
+          "line": 5,
+          "text": "#[cfg(not(target_os = \"macos\"))]"
+        },
+        {
+          "line": 33,
+          "text": "#[cfg(target_os = \"macos\")]"
+        },
+        {
+          "line": 69,
+          "text": "#[cfg(target_os = \"macos\")]"
+        }
+      ],
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_ui_inventory_sha256": "bbf912e0452f8744b2ec7a06fc163c4ca173d1f11535cd4a7f5d4373ec5cf61c"
     },
     {
       "path": "crates/coconutclaw-cli/src/scheduler_integration_test.rs",
-      "sha256": "83cea139fab251ad6febbc44772154b50dff55862b119162937e87a237e9dcc9",
-      "lines": 1796,
+      "sha256": "877f091861f56173bb0ece85b1c6b9d38ede3fdbf2a6d69c23248f21f374483e",
+      "lines": 1806,
       "classification": "evidence-only",
       "families": [
         "Calendar",
@@ -2507,87 +2571,87 @@
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 708,
+          "line": 698,
           "text": "struct Owned(std::process::Child);"
         },
         {
-          "line": 710,
+          "line": 700,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 872,
+          "line": 860,
           "text": "pub(crate) fn write_fake_provider_script("
         },
         {
-          "line": 907,
+          "line": 897,
           "text": "fn scheduler_test_config(provider_bin: String) -> RuntimeConfig {"
         },
         {
-          "line": 913,
+          "line": 903,
           "text": "fn make_request(session: SessionKey, channel: &str, prompt: &str) -> TaskRequest {"
         },
         {
-          "line": 944,
+          "line": 934,
           "text": "fn make_stdout_request(session: SessionKey, prompt: &str) -> TaskRequest {"
         },
         {
-          "line": 949,
+          "line": 939,
           "text": "fn waiting_graph_approval_continuation_has_one_logical_owner() {"
         },
         {
-          "line": 1001,
+          "line": 991,
           "text": "fn wait_for_terminal_tasks(cfg: &RuntimeConfig, task_ids: &[i64]) {"
         },
         {
-          "line": 1026,
+          "line": 1016,
           "text": "pub(crate) struct FakeTelegramServer {"
         },
         {
-          "line": 1035,
+          "line": 1025,
           "text": "pub(crate) fn start() -> Self {"
         },
         {
-          "line": 1044,
+          "line": 1034,
           "text": "pub(crate) fn start_with_response("
         },
         {
-          "line": 1122,
+          "line": 1132,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 1138,
+          "line": 1148,
           "text": "fn request_from_resume_payload_restores_owned_attachment() {"
         },
         {
-          "line": 1166,
+          "line": 1176,
           "text": "fn build_resume_payload_keeps_attachment_ownership() {"
         },
         {
-          "line": 1201,
+          "line": 1211,
           "text": "fn different_sessions_can_run_in_parallel() {"
         },
         {
-          "line": 1322,
+          "line": 1332,
           "text": "fn same_session_stays_fifo() {"
         },
         {
-          "line": 1407,
+          "line": 1417,
           "text": "fn lane_is_released_when_store_reopen_fails_after_task_run() {"
         },
         {
-          "line": 1530,
+          "line": 1540,
           "text": "fn telegram_chats_can_run_in_parallel() {"
         },
         {
-          "line": 1653,
+          "line": 1663,
           "text": "fn telegram_same_chat_stays_fifo() {"
         },
         {
-          "line": 1742,
+          "line": 1752,
           "text": "fn cleanup_attachment_from_resume_payload_removes_owned_file() {"
         },
         {
-          "line": 1758,
+          "line": 1768,
           "text": "fn render_active_tasks_for_session_hides_other_sessions() {"
         }
       ],
@@ -2597,24 +2661,25 @@
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 878,
+          "line": 866,
           "text": "let (path, command) = if cfg!(windows) {"
         },
         {
-          "line": 893,
+          "line": 883,
           "text": "if cfg!(windows) {"
         },
         {
-          "line": 901,
+          "line": 891,
           "text": "#[cfg(unix)]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "83cea139fab251ad6febbc44772154b50dff55862b119162937e87a237e9dcc9"
     },
     {
       "path": "crates/coconutclaw-cli/src/scheduling/calendar_native_tests.rs",
-      "sha256": "2ae6392fc9715e2e33dcb07d5ff99740cb9ff5acd90d667192832d48b8194f7b",
-      "lines": 243,
+      "sha256": "f2b0e8fce346d75d746ffbd7fd7dccc6d90371c43c2c1be7bcafd8f2f1c68ed1",
+      "lines": 231,
       "classification": "evidence-only",
       "families": [
         "Calendar",
@@ -2635,16 +2700,17 @@
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 94,
+          "line": 82,
           "text": "struct Owned(std::process::Child);"
         },
         {
-          "line": 96,
+          "line": 84,
           "text": "fn drop(&mut self) {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "2ae6392fc9715e2e33dcb07d5ff99740cb9ff5acd90d667192832d48b8194f7b"
     },
     {
       "path": "crates/coconutclaw-cli/src/scheduling/calendar_policy_tests.rs",
@@ -2973,8 +3039,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/service.rs",
-      "sha256": "5b892f6b90a07434d76a2f7ace44e00fab10545b750cf4c3d7b8490667616e14",
-      "lines": 425,
+      "sha256": "31ce87bbb082604d758a6a287e4e4a736bec3bc10c09751e893a62d6e8ed21bf",
+      "lines": 424,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -3058,79 +3124,79 @@
           "text": "fn mac_uninstall(names: &ServiceNames) -> Result<()> {"
         },
         {
-          "line": 230,
+          "line": 229,
           "text": "fn mac_bootstrap_plist(domain: &str, plist: &Path) -> Result<()> {"
         },
         {
-          "line": 241,
+          "line": 240,
           "text": "fn prefixed_program_arguments(binary: &Path, command_args: &[String]) -> Vec<String> {"
         },
         {
-          "line": 248,
+          "line": 247,
           "text": "fn render_run_plist("
         },
         {
-          "line": 267,
+          "line": 266,
           "text": "fn launchd_path() -> String {"
         },
         {
-          "line": 276,
+          "line": 275,
           "text": "fn plist_program_arguments(args: &[String]) -> String {"
         },
         {
-          "line": 286,
+          "line": 285,
           "text": "fn xml_escape(input: &str) -> String {"
         },
         {
-          "line": 301,
+          "line": 300,
           "text": "fn launchctl_domain() -> Result<String> {"
         },
         {
-          "line": 316,
+          "line": 315,
           "text": "fn linux_systemd_dir() -> Result<PathBuf> {"
         },
         {
-          "line": 323,
+          "line": 322,
           "text": "fn mac_launchagents_dir() -> Result<PathBuf> {"
         },
         {
-          "line": 327,
+          "line": 326,
           "text": "fn home_dir() -> Result<PathBuf> {"
         },
         {
-          "line": 333,
+          "line": 332,
           "text": "fn require_cmd(bin: &str) -> Result<()> {"
         },
         {
-          "line": 341,
+          "line": 340,
           "text": "fn resolve_binary_path() -> Result<PathBuf> {"
         },
         {
-          "line": 353,
+          "line": 352,
           "text": "pub(crate) fn find_on_path(bin: &str) -> Option<PathBuf> {"
         },
         {
-          "line": 370,
+          "line": 369,
           "text": "fn run_checked(command: &mut Command, summary: &str) -> Result<()> {"
         },
         {
-          "line": 380,
+          "line": 379,
           "text": "fn run_best_effort(command: &mut Command, summary: &str) -> Result<()> {"
         },
         {
-          "line": 390,
+          "line": 389,
           "text": "fn service_command_args(cfg: &RuntimeConfig, mode: &str) -> Vec<String> {"
         },
         {
-          "line": 398,
+          "line": 397,
           "text": "fn systemd_exec_line(binary: &Path, args: &[String]) -> String {"
         },
         {
-          "line": 409,
+          "line": 408,
           "text": "fn systemd_quote(raw: &str) -> String {"
         },
         {
-          "line": 425,
+          "line": 424,
           "text": "mod tests;"
         }
       ],
@@ -3148,15 +3214,16 @@
           "text": "} else if cfg!(target_os = \"windows\") {"
         },
         {
-          "line": 360,
+          "line": 359,
           "text": "if cfg!(windows) {"
         },
         {
-          "line": 423,
+          "line": 422,
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Service manager install/start/stop/uninstall and unit-file writes inventoried, NOT modeled; Linux systemd/macOS launchd external contracts, Windows explicitly unsupported."
+      "gap": "Service manager install/start/stop/uninstall and unit-file writes inventoried, NOT modeled; Linux systemd/macOS launchd external contracts, Windows explicitly unsupported.",
+      "previous_inventory_sha256": "5b892f6b90a07434d76a2f7ace44e00fab10545b750cf4c3d7b8490667616e14"
     },
     {
       "path": "crates/coconutclaw-cli/src/service_tests.rs",
@@ -3580,8 +3647,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/mod.rs",
-      "sha256": "b566f071fc152e3e6e1c45e411176a08bedd0ca5210161179fd543791dacccaf",
-      "lines": 171,
+      "sha256": "710a042013e673aa7da28ae0aaa5a4d445a482bac4d2cd7b2685ef62d2865b3c",
+      "lines": 187,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -3634,84 +3701,90 @@
         },
         {
           "line": 15,
-          "text": "pub(crate) mod task_graph;"
+          "text": "pub(crate) mod status;"
         },
         {
           "line": 16,
-          "text": "pub(crate) mod task_runs;"
+          "text": "pub(crate) mod task_graph;"
         },
         {
           "line": 17,
-          "text": "pub(crate) mod telegram_ingress;"
+          "text": "pub(crate) mod task_runs;"
         },
         {
           "line": 18,
+          "text": "pub(crate) mod telegram_ingress;"
+        },
+        {
+          "line": 19,
           "text": "pub(crate) mod turns;"
         },
         {
-          "line": 21,
+          "line": 22,
           "text": "mod task_adapter;"
         },
         {
-          "line": 23,
+          "line": 24,
           "text": "const SCHEMA_SQL: &str = include_str!(\"../../../../sql/schema.sql\");"
         },
         {
-          "line": 26,
+          "line": 27,
           "text": "pub(crate) struct TurnRecord {"
         },
         {
-          "line": 42,
+          "line": 43,
           "text": "pub(crate) struct StoredTurnOutput {"
         },
         {
-          "line": 51,
+          "line": 52,
           "text": "pub(crate) enum TaskRunStatus {"
         },
         {
-          "line": 64,
+          "line": 65,
           "text": "pub(crate) fn as_str(self) -> &'static str {"
         },
         {
-          "line": 81,
+          "line": 82,
           "text": "pub(crate) struct TaskRun {"
         },
         {
-          "line": 103,
+          "line": 104,
           "text": "pub(crate) struct ApprovalRecord {"
         },
         {
-          "line": 121,
+          "line": 122,
           "text": "pub(crate) struct InsertTaskRunParams {"
         },
         {
-          "line": 134,
+          "line": 135,
           "text": "pub(crate) struct CreateApprovalParams {"
         },
         {
-          "line": 147,
+          "line": 148,
           "text": "pub(crate) struct Store {"
         },
         {
-          "line": 152,
+          "line": 153,
           "text": "pub(crate) fn open(cfg: &RuntimeConfig) -> Result<Self> {"
         },
         {
-          "line": 171,
+          "line": 187,
           "text": "mod tests;"
         }
       ],
       "conditional_branches": [
         {
-          "line": 20,
+          "line": 21,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 169,
+          "line": 185,
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "b566f071fc152e3e6e1c45e411176a08bedd0ca5210161179fd543791dacccaf",
+      "previous_ui_inventory_sha256": "fe22ff82a2800320b0a51a5572991e2f0eb30eff6bdfa8a9d2a809cd44f1ed3f"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/notifications.rs",
@@ -3763,8 +3836,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/preferences.rs",
-      "sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3",
-      "lines": 132,
+      "sha256": "5a2a0d65513d105c9e2c8c2364d5f5c40e3aee6ff5ee8c471f8b84d6fa32dd02",
+      "lines": 137,
       "classification": "abstracted-family",
       "families": [
         "Context",
@@ -3778,24 +3851,25 @@
           "text": "pub(crate) fn incoming_control("
         },
         {
-          "line": 34,
+          "line": 39,
           "text": "pub(crate) fn preference_revision(&self, scope: &str) -> Result<i64> {"
         },
         {
-          "line": 42,
+          "line": 47,
           "text": "pub(crate) fn preferences_context(&self, scope: &str) -> Result<String> {"
         },
         {
-          "line": 59,
+          "line": 64,
           "text": "pub(crate) fn preferences_command("
         },
         {
-          "line": 109,
+          "line": 114,
           "text": "pub(crate) fn task_status_command("
         }
       ],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "002d4985b94db6167c7ed9261fb0a2001d254609cc918e0f4146ea3380556ad3"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/reconciliation.rs",
@@ -4025,8 +4099,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
-      "sha256": "5726971d21373cbc90b6cf947b478c4d8ffd066e220645983c4405615b0d8fbb",
-      "lines": 764,
+      "sha256": "ca16d11b58dccbbd726134168817e9a721d60af78a81d98d97658d044cea3a3b",
+      "lines": 778,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -4085,63 +4159,63 @@
           "text": "pub(super) struct RuntimeDriver {"
         },
         {
-          "line": 107,
+          "line": 109,
           "text": "pub(super) async fn admit_process("
         },
         {
-          "line": 209,
+          "line": 211,
           "text": "pub(super) fn new("
         },
         {
-          "line": 244,
+          "line": 247,
           "text": "fn healthy(&mut self) -> Result<()> {"
         },
         {
-          "line": 257,
+          "line": 260,
           "text": "async fn transfer(&mut self, record: &Record) -> Result<()> {"
         },
         {
-          "line": 281,
+          "line": 283,
           "text": "pub(super) async fn reconcile(&mut self) -> Result<()> {"
         },
         {
-          "line": 463,
+          "line": 465,
           "text": "pub(super) async fn queue(&mut self, run: i64) -> Result<u64> {"
         },
         {
-          "line": 506,
+          "line": 508,
           "text": "pub(super) async fn cancel(&mut self, assignment: u64) -> Result<()> {"
         },
         {
-          "line": 522,
+          "line": 524,
           "text": "pub(super) async fn admit<F, Fut>(&mut self, assignment: u64, executor: F) -> Result<()>"
         },
         {
-          "line": 576,
+          "line": 586,
           "text": "async fn accept(&mut self, completion: Completion) -> Result<Step> {"
         },
         {
-          "line": 668,
+          "line": 682,
           "text": "fn runner_is_local(&self) -> bool {"
         },
         {
-          "line": 679,
+          "line": 693,
           "text": "pub(super) async fn accept_proposal(&mut self, bytes: Vec<u8>) -> Result<Step> {"
         },
         {
-          "line": 683,
+          "line": 697,
           "text": "async fn local_outcome("
         },
         {
-          "line": 696,
+          "line": 710,
           "text": "pub(super) async fn step(&mut self) -> Result<Step> {"
         },
         {
-          "line": 739,
+          "line": 753,
           "text": "async fn settle_stopped(&mut self) -> Result<Step> {"
         },
         {
-          "line": 757,
+          "line": 771,
           "text": "pub(super) async fn shutdown(mut self) -> Result<()> {"
         }
       ],
@@ -4152,51 +4226,49 @@
         },
         {
           "line": 59,
-          "text": "#[cfg(target_os = \"linux\")]"
+          "text": "#[cfg(unix)]"
         },
         {
           "line": 64,
-          "text": "#[cfg(target_os = \"linux\")]"
-        },
-        {
-          "line": 106,
-          "text": "#[cfg(target_os = \"linux\")]"
-        },
-        {
-          "line": 266,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 586,
+          "line": 108,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 592,
+          "line": 269,
+          "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 596,
+          "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 602,
+          "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 625,
           "text": "#[cfg(not(unix))]"
         },
         {
-          "line": 594,
+          "line": 683,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 617,
-          "text": "#[cfg(not(unix))]"
-        },
-        {
-          "line": 669,
-          "text": "#[cfg(unix)]"
-        },
-        {
-          "line": 673,
+          "line": 687,
           "text": "#[cfg(not(unix))]"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "5726971d21373cbc90b6cf947b478c4d8ffd066e220645983c4405615b0d8fbb",
+      "previous_ui_inventory_sha256": "df722fd7ddf45ed491fffb13f1959d7939eaf5d0dda6f535f367c70dd78bc729"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/driver/multihost.rs",
-      "sha256": "4203e9b2600cd33f80e4176cd0c01ae5aeda759056d7dcbba2a92734c72ac9aa",
-      "lines": 133,
+      "sha256": "6e0858a564008aa234b7461bd686c942ff8d87da5621b43f6eacfd99e1841dfd",
+      "lines": 156,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -4207,25 +4279,34 @@
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
       "declarations": [
         {
-          "line": 11,
+          "line": 9,
+          "text": "pub(in crate::store::task_adapter) fn arm_remote_result_cut(&mut self) -> Result<()> {"
+        },
+        {
+          "line": 20,
+          "text": "pub(in crate::store::task_adapter) async fn detach_remote(mut self) -> Result<()> {"
+        },
+        {
+          "line": 29,
           "text": "pub(in crate::store::task_adapter) async fn admit_remote("
         },
         {
-          "line": 51,
+          "line": 69,
           "text": "pub(in crate::store::task_adapter) async fn step_remote_control("
         },
         {
-          "line": 87,
+          "line": 109,
           "text": "pub(super) async fn accept_remote_artifact("
         }
       ],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "4203e9b2600cd33f80e4176cd0c01ae5aeda759056d7dcbba2a92734c72ac9aa"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/execution.rs",
-      "sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4",
-      "lines": 767,
+      "sha256": "39aa4b9fbaf69048cc264111d1c6cc3524acaab95abeddd7b572054270563732",
+      "lines": 789,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -4237,7 +4318,7 @@
       "declarations": [
         {
           "line": 7,
-          "text": "const CANCEL: &str = \"CoconutClaw mock cancel v1:\";"
+          "text": "pub(super) const CANCEL: &str = \"CoconutClaw mock cancel v1:\";"
         },
         {
           "line": 11,
@@ -4261,87 +4342,92 @@
         },
         {
           "line": 47,
+          "text": "pub(super) fn verify_cancellation("
+        },
+        {
+          "line": 90,
           "text": "fn terminal("
         },
         {
-          "line": 76,
+          "line": 119,
           "text": "pub(super) fn assigned("
         },
         {
-          "line": 115,
+          "line": 158,
           "text": "pub(super) fn incoming_run("
         },
         {
-          "line": 142,
+          "line": 185,
           "text": "pub(super) fn source_run(&self, bytes: &[u8], delegation: &Delegation) -> Result<i64> {"
         },
         {
-          "line": 153,
+          "line": 196,
           "text": "fn validate_task(&self, id: i64, request: &TaskRequest) -> Result<()> {"
         },
         {
-          "line": 171,
+          "line": 214,
           "text": "async fn signed_next("
         },
         {
-          "line": 196,
+          "line": 239,
           "text": "pub(super) async fn request_cancel("
         },
         {
-          "line": 252,
+          "line": 295,
           "text": "pub(super) fn apply_cancellation(&self, peer: &mut ScopedPeer, assignment: u64) -> Result<()> {"
         },
         {
-          "line": 316,
+          "line": 338,
           "text": "pub(super) async fn start_mock("
         },
         {
-          "line": 344,
+          "line": 366,
           "text": "fn persist_start(&self, assignment: u64, id: i64, start: &[u8]) -> Result<()> {"
         },
         {
-          "line": 367,
+          "line": 389,
           "text": "pub(super) fn restore_start("
         },
         {
-          "line": 397,
+          "line": 419,
           "text": "pub(super) fn restore_result("
         },
         {
-          "line": 423,
+          "line": 445,
           "text": "pub(super) fn interrupted_return("
         },
         {
-          "line": 445,
+          "line": 467,
           "text": "fn save_mock_result(&self, assignment: u64, id: i64, bytes: &[u8]) -> Result<()> {"
         },
         {
-          "line": 483,
+          "line": 505,
           "text": "pub(super) fn claim_mock("
         },
         {
-          "line": 531,
+          "line": 553,
           "text": "pub(super) async fn finish_claimed("
         },
         {
-          "line": 573,
+          "line": 595,
           "text": "pub(super) async fn complete_mock<F>("
         },
         {
-          "line": 602,
+          "line": 624,
           "text": "pub(super) async fn recover_result("
         },
         {
-          "line": 651,
+          "line": 673,
           "text": "pub(super) fn apply_start(&self, peer: &mut ScopedPeer, assignment: u64) -> Result<i64> {"
         },
         {
-          "line": 697,
+          "line": 719,
           "text": "pub(super) fn apply_result(&self, peer: &mut ScopedPeer, assignment: u64) -> Result<i64> {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "8f14f1f4e35b7bbe4343849633eea53aecc90b9ca1a02c30a691b03504554df4"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals.rs",
@@ -4555,8 +4641,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process.rs",
-      "sha256": "13d3d2f74e5028fb208226d861470cba0b50770aa7289a5a5823829950744dd1",
-      "lines": 935,
+      "sha256": "89448f5d246ceb7be91942038be2b714821fae0458ebe939741f70ed02b90cec",
+      "lines": 951,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -4715,63 +4801,63 @@
           "text": "pub(in crate::store::task_adapter) async fn begin("
         },
         {
-          "line": 423,
+          "line": 439,
           "text": "pub(in crate::store::task_adapter) async fn finish(&self, assignment: u64) -> Result<Vec<u8>> {"
         },
         {
-          "line": 426,
+          "line": 442,
           "text": "pub(in crate::store::task_adapter) async fn cancel_work(&self, assignment: u64) -> Result<()> {"
         },
         {
-          "line": 430,
+          "line": 446,
           "text": "pub(in crate::store::task_adapter) async fn stats(&self) -> Result<Vec<WorkStat>> {"
         },
         {
-          "line": 436,
+          "line": 452,
           "text": "pub(in crate::store::task_adapter) async fn arm(&self, crash: Crash) -> Result<()> {"
         },
         {
-          "line": 440,
+          "line": 456,
           "text": "pub(in crate::store::task_adapter) fn kill_child(&self) -> Result<()> {"
         },
         {
-          "line": 450,
+          "line": 466,
           "text": "pub(in crate::store::task_adapter) async fn malformed(&self, kind: &str) -> Result<()> {"
         },
         {
-          "line": 490,
+          "line": 506,
           "text": "struct State {"
         },
         {
-          "line": 499,
+          "line": 515,
           "text": "fn open(root: &Path, origin: BoundOrigin, key: SecretKey, session: String) -> Result<Self> {"
         },
         {
-          "line": 526,
+          "line": 542,
           "text": "fn interrupt(&self) -> Result<()> {"
         },
         {
-          "line": 544,
+          "line": 560,
           "text": "fn stats(&self) -> Result<Vec<WorkStat>> {"
         },
         {
-          "line": 567,
+          "line": 583,
           "text": "fn begin(&mut self, assignment: u64, mode: Mode) -> Result<()> {"
         },
         {
-          "line": 664,
+          "line": 680,
           "text": "fn finish(&mut self, assignment: u64) -> Result<Vec<u8>> {"
         },
         {
-          "line": 745,
+          "line": 761,
           "text": "fn handle(&mut self, command: Command) -> Result<Reply> {"
         },
         {
-          "line": 838,
+          "line": 854,
           "text": "fn serve(socket: PathBuf) -> Result<()> {"
         },
         {
-          "line": 931,
+          "line": 947,
           "text": "fn child_process_entry() {"
         }
       ],
@@ -4785,12 +4871,13 @@
           "text": "#[cfg(not(target_os = \"linux\"))]"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_ui_inventory_sha256": "13d3d2f74e5028fb208226d861470cba0b50770aa7289a5a5823829950744dd1"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/fake_codex.py",
-      "sha256": "28e1a42d49cb12f91e79472fa172daf18cc6bea174aa449fe56bba366e3f042f",
-      "lines": 89,
+      "sha256": "aa8681be488ae8527f75bd19c10d231eb54770e42edaa8f5c804b27f3ca6af9f",
+      "lines": 112,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -4799,14 +4886,24 @@
         "History"
       ],
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
-      "declarations": [],
+      "declarations": [
+        {
+          "line": 13,
+          "text": "def validate_environment(environment, platform, uid):"
+        },
+        {
+          "line": 81,
+          "text": "def terminate(_signum, _frame):"
+        }
+      ],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_ui_inventory_sha256": "28e1a42d49cb12f91e79472fa172daf18cc6bea174aa449fe56bba366e3f042f"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider.rs",
-      "sha256": "2767fec655f482a75634b5331f5ec9d5e8e8387d0e73be9d1422c5e16503d155",
-      "lines": 467,
+      "sha256": "bffd447d86dd007bca5b9cc58b49621eec6b6557c8d64cc7a472bcf2f7e3f5c9",
+      "lines": 546,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -4821,124 +4918,142 @@
           "text": "const SCRIPT: &str = include_str!(\"fake_codex.py\");"
         },
         {
-          "line": 6,
+          "line": 8,
+          "text": "fn fixture_environment_normalizes_only_valid_macos_metadata_and_refuses_sdk_paths() {"
+        },
+        {
+          "line": 23,
+          "text": "def refused(environment, platform=\"darwin\"):"
+        },
+        {
+          "line": 56,
           "text": "pub(in crate::store::task_adapter) mod host;"
         },
         {
-          "line": 7,
+          "line": 57,
           "text": "mod real;"
         },
         {
-          "line": 11,
+          "line": 61,
           "text": "struct Config {"
         },
         {
-          "line": 19,
-          "text": "fn expected(root: &Path) -> Self {"
+          "line": 69,
+          "text": "fn expected(root: &Path) -> Result<Self> {"
         },
         {
-          "line": 28,
+          "line": 97,
           "text": "fn load(root: &Path) -> Result<Self> {"
         },
         {
-          "line": 53,
+          "line": 122,
           "text": "pub(in crate::store::task_adapter) fn provision(root: &Path) -> Result<()> {"
         },
         {
-          "line": 71,
+          "line": 140,
           "text": "pub(super) fn validate(root: &Path, mode: Mode) -> Result<()> {"
         },
         {
-          "line": 83,
+          "line": 152,
           "text": "pub(in crate::store::task_adapter) struct Evidence {"
         },
         {
-          "line": 96,
+          "line": 165,
           "text": "pub(in crate::store::task_adapter) struct Failure {"
         },
         {
-          "line": 102,
+          "line": 171,
           "text": "pub(in crate::store::task_adapter) struct Observed {"
         },
         {
-          "line": 116,
+          "line": 185,
           "text": "pub(super) struct Work {"
         },
         {
-          "line": 124,
+          "line": 193,
           "text": "fn cancel(&self) {"
         },
         {
-          "line": 129,
+          "line": 198,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 138,
+          "line": 207,
           "text": "pub(in crate::store::task_adapter) struct Notice {"
         },
         {
-          "line": 144,
+          "line": 213,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 149,
+          "line": 218,
           "text": "pub(in crate::store::task_adapter) fn bind("
         },
         {
-          "line": 161,
+          "line": 230,
           "text": "pub(in crate::store::task_adapter) async fn wait(self) -> Result<()> {"
         },
         {
-          "line": 182,
+          "line": 251,
           "text": "pub(in crate::store::task_adapter) fn provider_notice("
         },
         {
-          "line": 189,
+          "line": 258,
           "text": "pub(in crate::store::task_adapter) async fn release_provider("
         },
         {
-          "line": 197,
+          "line": 266,
           "text": "pub(in crate::store::task_adapter) async fn abandon_provider("
         },
         {
-          "line": 205,
+          "line": 274,
           "text": "pub(in crate::store::task_adapter) async fn provider_evidence(&self) -> Result<Vec<Evidence>> {"
         },
         {
-          "line": 214,
+          "line": 283,
           "text": "pub(super) fn start_provider(&mut self, assignment: u64, mode: Mode) -> Result<()> {"
         },
         {
-          "line": 323,
+          "line": 402,
           "text": "pub(super) fn evidence(&self, assignment: u64) -> Result<Evidence> {"
         },
         {
-          "line": 331,
+          "line": 410,
           "text": "fn save_evidence(&self, e: &Evidence) -> Result<()> {"
         },
         {
-          "line": 338,
+          "line": 417,
           "text": "fn failure(&self, assignment: u64, phase: &str, error: &anyhow::Error) -> Result<()> {"
         },
         {
-          "line": 367,
+          "line": 446,
           "text": "pub(super) fn provider_evidence(&self) -> Result<Vec<Evidence>> {"
         },
         {
-          "line": 390,
+          "line": 469,
           "text": "pub(super) fn release_provider(&mut self, assignment: u64) -> Result<()> {"
         },
         {
-          "line": 400,
+          "line": 479,
           "text": "pub(super) fn cancel_provider(&self, assignment: u64) {"
         },
         {
-          "line": 405,
+          "line": 484,
           "text": "pub(super) fn finish_provider(&mut self, assignment: u64) -> Result<(Outcome, String)> {"
         }
       ],
-      "conditional_branches": [],
-      "gap": "Workflow/process token and IO state abstraction only. Existing configured turn retries and YOLO textual-rejection compatibility retry are NOT proof of external nonoccurrence; no universal exactly-once external-effect claim. Unix process groups differ from non-Unix child-only kill."
+      "conditional_branches": [
+        {
+          "line": 70,
+          "text": "#[cfg(target_os = \"macos\")]"
+        },
+        {
+          "line": 87,
+          "text": "#[cfg(not(target_os = \"macos\"))]"
+        }
+      ],
+      "gap": "Workflow/process token and IO state abstraction only. Existing configured turn retries and YOLO textual-rejection compatibility retry are NOT proof of external nonoccurrence; no universal exactly-once external-effect claim. Unix process groups differ from non-Unix child-only kill.",
+      "previous_ui_inventory_sha256": "2767fec655f482a75634b5331f5ec9d5e8e8387d0e73be9d1422c5e16503d155"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/auth_in_place.py",
@@ -4958,8 +5073,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host.rs",
-      "sha256": "765addee9b7c6635a00697a9ffd9dcd8ab948430219729697a72ba227779b5cd",
-      "lines": 420,
+      "sha256": "a4f9315b325246533b00d8541d257ea9a1a68244d59d1483602ad9dffb735a0d",
+      "lines": 482,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -4978,74 +5093,83 @@
           "text": "pub(in crate::store::task_adapter) const PROMPT: &str = \"Authorized harmless multihost acceptance. Use an actual shell/Python tool to read fixture-input.json in this current workspace and write fixture-output.json with exactly nonce, sum=a+b, tool_pid=os.getpid(), tool_parent=os.getppid(), hostname=socket.gethostname(). Only read/write these two fixture files. No network, home/auth/config/repository access, delegation or other side effects. Execute the tool, do not merely describe it. Final answer only nonce=<nonce> sum=<sum>.\";"
         },
         {
-          "line": 10,
+          "line": 7,
+          "text": "pub(in crate::store::task_adapter) const CONTROLLED_PROMPT: &str = \"Authorized harmless controlled acceptance. Execute exactly one Python tool, no retries. Read fixture-input.json in this workspace. Write fixture-tool-started.json with nonce, tool_pid=os.getpid(), tool_parent=os.getppid(), pgid=os.getpgrp(), hostname=socket.gethostname(), started_ns=time.time_ns(). In that SAME Python process poll every 0.05s for at most 600 seconds, only in this workspace: if fixture-cancel.json exists, write fixture-tool-ended.json with nonce, tool_pid, cancelled=true, ended_ns=time.time_ns() and exit130; if fixture-release.json exists, write fixture-output.json with nonce, sum=a+b, tool_pid, tool_parent, hostname, started_ns and finished_ns=time.time_ns(), then write fixture-tool-ended.json with nonce, tool_pid, cancelled=false and ended_ns. If neither arrives before deadline, exit with failure, do not compute output. Only these six fixture files may be accessed. No network, home/auth/config/repository access, delegation or other effects. Execute, do not describe. Final answer only nonce=<nonce> sum=<sum> after success, otherwise cancelled or timed out.\";"
+        },
+        {
+          "line": 11,
           "text": "pub(in crate::store::task_adapter) struct Config {"
         },
         {
-          "line": 23,
+          "line": 28,
           "text": "pub(in crate::store::task_adapter) struct Input {"
         },
         {
-          "line": 31,
+          "line": 36,
           "text": "pub(in crate::store::task_adapter) struct Manifest {"
         },
         {
-          "line": 43,
+          "line": 48,
           "text": "fn load(root: &Path) -> Result<Config> {"
         },
         {
-          "line": 49,
+          "line": 54,
           "text": "fn regular(path: &Path) -> Result<Vec<u8>> {"
         },
         {
-          "line": 58,
+          "line": 63,
           "text": "pub(in crate::store::task_adapter) fn validate(root: &Path) -> Result<()> {"
         },
         {
-          "line": 87,
+          "line": 92,
           "text": "fn integrity(cfg: &Config) -> Result<serde_json::Value> {"
         },
         {
-          "line": 96,
+          "line": 109,
           "text": "fn integrity_report(root: &Path) -> Result<serde_json::Value> {"
         },
         {
-          "line": 123,
+          "line": 145,
           "text": "fn integrity_diagnostic_entry() {"
         },
         {
-          "line": 137,
+          "line": 159,
           "text": "pub(super) fn start_host(&mut self, assignment: u64) -> Result<()> {"
         },
         {
-          "line": 242,
+          "line": 288,
           "text": "pub(super) fn manifest(root: &Path, assignment: u64, evidence: &Evidence) -> Result<String> {"
         },
         {
-          "line": 268,
+          "line": 315,
           "text": "fn scan("
         },
         {
-          "line": 386,
+          "line": 433,
           "text": "pub(in crate::store::task_adapter) fn verify_artifact("
         },
         {
-          "line": 420,
+          "line": 457,
+          "text": "fn verify_tool_artifact(input: &Input, host: &str, bytes: &[u8], controlled: bool) -> Result<()> {"
+        },
+        {
+          "line": 482,
           "text": "mod tests;"
         }
       ],
       "conditional_branches": [
         {
-          "line": 419,
+          "line": 481,
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Workflow/process token and IO state abstraction only. Existing configured turn retries and YOLO textual-rejection compatibility retry are NOT proof of external nonoccurrence; no universal exactly-once external-effect claim. Unix process groups differ from non-Unix child-only kill."
+      "gap": "Workflow/process token and IO state abstraction only. Existing configured turn retries and YOLO textual-rejection compatibility retry are NOT proof of external nonoccurrence; no universal exactly-once external-effect claim. Unix process groups differ from non-Unix child-only kill.",
+      "previous_inventory_sha256": "765addee9b7c6635a00697a9ffd9dcd8ab948430219729697a72ba227779b5cd"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host/tests.rs",
-      "sha256": "1869981b626db76b9d1561418489c7d548d4f7bfbf9ad4f8d0f303daa5e5318b",
-      "lines": 339,
+      "sha256": "3b7b01fcfcfaaa80a2f3dac67d659464352ca9df2080b616101b36ec93af3fc7",
+      "lines": 449,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -5056,53 +5180,62 @@
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
       "declarations": [
         {
-          "line": 3,
+          "line": 4,
+          "text": "fn controlled_seven_field_artifact_and_ordinary_five_field_schemas() {"
+        },
+        {
+          "line": 87,
+          "text": "fn integrity_detects_same_length_auth_byte_change_with_preserved_mtime() {"
+        },
+        {
+          "line": 107,
           "text": "struct Fixture {"
         },
         {
-          "line": 12,
+          "line": 116,
           "text": "fn new() -> Self {"
         },
         {
-          "line": 91,
+          "line": 197,
           "text": "fn write_events(&self, events: &[serde_json::Value]) {"
         },
         {
-          "line": 110,
+          "line": 216,
           "text": "fn actual_native_custom_tool_call_fixture_is_accepted() {"
         },
         {
-          "line": 121,
+          "line": 227,
           "text": "fn legacy_function_execution_keeps_correlated_native_proof() {"
         },
         {
-          "line": 143,
+          "line": 249,
           "text": "fn native_execution_requires_real_call_input_and_matching_output() {"
         },
         {
-          "line": 213,
+          "line": 319,
           "text": "fn native_format_support_preserves_context_file_host_session_and_integrity_gates() {"
         },
         {
-          "line": 271,
+          "line": 381,
           "text": "fn integrity_diagnostic_uses_blake3_and_is_read_only_through_parent_cli() {"
         },
         {
-          "line": 275,
+          "line": 385,
           "text": "fn snapshot("
         },
         {
-          "line": 331,
+          "line": 441,
           "text": "fn existing_durable_provider_evidence_without_failure_still_decodes() {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "1869981b626db76b9d1561418489c7d548d4f7bfbf9ad4f8d0f303daa5e5318b"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/native_exec.py",
-      "sha256": "adc6f20cf54d0e707a4be3f001ebb2698188136d83f030c1e008821c39406744",
-      "lines": 70,
+      "sha256": "b8940d44d7c5f73cea8078684c5133bb137bd22a16d25fa107ab9d9dbf8c3533",
+      "lines": 73,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -5113,7 +5246,8 @@
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Workflow/process token and IO state abstraction only. Existing configured turn retries and YOLO textual-rejection compatibility retry are NOT proof of external nonoccurrence; no universal exactly-once external-effect claim. Unix process groups differ from non-Unix child-only kill."
+      "gap": "Workflow/process token and IO state abstraction only. Existing configured turn retries and YOLO textual-rejection compatibility retry are NOT proof of external nonoccurrence; no universal exactly-once external-effect claim. Unix process groups differ from non-Unix child-only kill.",
+      "previous_inventory_sha256": "adc6f20cf54d0e707a4be3f001ebb2698188136d83f030c1e008821c39406744"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/real.rs",
@@ -5162,8 +5296,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote.rs",
-      "sha256": "9ba8a6239766916149ff354602a851a01b22877363339463f68fc3d900e3e4a0",
-      "lines": 1264,
+      "sha256": "78f3935ded1f82a077c25af8327fb5675248e80b23513b46f4ce6184c608d4d9",
+      "lines": 1531,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -5194,202 +5328,220 @@
           "text": "pub(in crate::store::task_adapter) struct Ready {"
         },
         {
-          "line": 47,
+          "line": 49,
           "text": "struct RoleConfig {"
         },
         {
-          "line": 60,
+          "line": 62,
           "text": "enum Request {"
         },
         {
-          "line": 70,
+          "line": 73,
           "text": "struct Bootstrap {"
         },
         {
-          "line": 79,
+          "line": 82,
           "text": "struct Publication {"
         },
         {
-          "line": 86,
+          "line": 89,
           "text": "struct Message {"
         },
         {
-          "line": 94,
+          "line": 97,
           "text": "enum Response {"
         },
         {
-          "line": 100,
+          "line": 104,
           "text": "pub(in crate::store::task_adapter) struct Client {"
         },
         {
-          "line": 107,
+          "line": 111,
           "text": "fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>> {"
         },
         {
-          "line": 118,
+          "line": 122,
           "text": "fn decode<T: for<'a> Deserialize<'a> + Serialize>(bytes: &[u8]) -> Result<T> {"
         },
         {
-          "line": 130,
+          "line": 134,
           "text": "async fn endpoint(network: &AcceptanceNetwork, key: SecretKey) -> Result<Endpoint> {"
         },
         {
-          "line": 147,
+          "line": 151,
           "text": "fn dial(addr: &EndpointAddr, network: &AcceptanceNetwork) -> EndpointAddr {"
         },
         {
-          "line": 158,
+          "line": 162,
+          "text": "async fn probe_transport(&self, publisher: &mut ScopedPeer) -> Result<()> {"
+        },
+        {
+          "line": 202,
           "text": "pub(in crate::store::task_adapter) fn data_id(&self) -> EndpointId {"
         },
         {
-          "line": 161,
+          "line": 205,
           "text": "pub(in crate::store::task_adapter) fn run_id(&self) -> &str {"
         },
         {
-          "line": 164,
+          "line": 208,
           "text": "pub(in crate::store::task_adapter) fn hostname(&self) -> &str {"
         },
         {
-          "line": 167,
+          "line": 211,
+          "text": "pub(in crate::store::task_adapter) fn controlled_fixture(&self) -> bool {"
+        },
+        {
+          "line": 214,
           "text": "async fn request(&self, request: Request) -> Result<Response> {"
         },
         {
-          "line": 190,
+          "line": 237,
           "text": "pub(in crate::store::task_adapter::proposals) async fn call("
         },
         {
-          "line": 201,
+          "line": 248,
           "text": "pub(in crate::store::task_adapter) async fn wait(&self, assignment: u64) -> Result<()> {"
         },
         {
-          "line": 208,
+          "line": 255,
           "text": "async fn initialize("
         },
         {
-          "line": 228,
-          "text": "pub(in crate::store::task_adapter) async fn import(&self, locator: Locator) -> Result<()> {"
+          "line": 275,
+          "text": "pub(in crate::store::task_adapter) async fn import("
         },
         {
-          "line": 235,
+          "line": 292,
           "text": "pub(in crate::store::task_adapter) async fn publish("
         },
         {
-          "line": 247,
+          "line": 304,
           "text": "pub(in crate::store::task_adapter) fn remote(&self) -> Option<&Arc<Client>> {"
         },
         {
-          "line": 255,
+          "line": 312,
           "text": "struct RemoteState {"
         },
         {
-          "line": 266,
+          "line": 323,
           "text": "async fn handle(&mut self, request: Request) -> Result<Response> {"
         },
         {
-          "line": 456,
+          "line": 612,
           "text": "struct RpcCall {"
         },
         {
-          "line": 464,
+          "line": 620,
           "text": "struct Handler {"
         },
         {
-          "line": 471,
+          "line": 627,
           "text": "async fn serve(&self, conn: &IrohConnection) -> Result<()> {"
         },
         {
-          "line": 496,
+          "line": 652,
           "text": "async fn dispatch(&mut self, call: RpcCall) -> Result<bool> {"
         },
         {
-          "line": 564,
+          "line": 720,
           "text": "async fn accept(&self, conn: IrohConnection) -> Result<(), AcceptError> {"
         },
         {
-          "line": 576,
+          "line": 732,
           "text": "pub(in crate::store::task_adapter) fn hostname() -> Result<String> {"
         },
         {
-          "line": 582,
+          "line": 738,
           "text": "fn machine_hash() -> Result<String> {"
         },
         {
-          "line": 598,
+          "line": 754,
           "text": "fn macos_identity(success: bool, stdout: &[u8]) -> Result<String> {"
         },
         {
-          "line": 638,
+          "line": 794,
           "text": "fn namespace(config: &RoleConfig) -> NamespaceSecret {"
         },
         {
-          "line": 654,
+          "line": 810,
           "text": "fn local_key(root: &Path, name: &str) -> Result<SecretKey> {"
         },
         {
-          "line": 672,
+          "line": 828,
           "text": "fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {"
         },
         {
-          "line": 686,
+          "line": 842,
           "text": "async fn peer(config: &RoleConfig, name: &str, owner: EndpointId) -> Result<ScopedPeer> {"
         },
         {
-          "line": 697,
+          "line": 853,
           "text": "fn check_root(config: &RoleConfig) -> Result<File> {"
         },
         {
-          "line": 729,
+          "line": 885,
           "text": "async fn serve_role(config: RoleConfig) -> Result<()> {"
         },
         {
-          "line": 827,
+          "line": 987,
           "text": "pub(in crate::store::task_adapter) struct LocalRequest {"
         },
         {
-          "line": 833,
+          "line": 993,
           "text": "async fn control_server("
         },
         {
-          "line": 878,
+          "line": 1038,
           "text": "async fn coordinator("
         },
         {
-          "line": 1079,
+          "line": 1271,
           "text": "async fn run_fixture("
         },
         {
-          "line": 1229,
+          "line": 1450,
+          "text": "async fn probe("
+        },
+        {
+          "line": 1454,
+          "text": "type PayloadSnapshot = (i64, Option<String>, i64, String);"
+        },
+        {
+          "line": 1492,
           "text": "fn multihost_role_entry() {"
         },
         {
-          "line": 1253,
+          "line": 1516,
           "text": "fn announce(config: &RoleConfig, ready: &Ready) -> Result<()> {"
         },
         {
-          "line": 1264,
+          "line": 1531,
           "text": "mod tests;"
         }
       ],
       "conditional_branches": [
         {
-          "line": 583,
+          "line": 739,
           "text": "#[cfg(target_os = \"linux\")]"
         },
         {
-          "line": 585,
+          "line": 741,
           "text": "#[cfg(target_os = \"macos\")]"
         },
         {
-          "line": 593,
+          "line": 749,
           "text": "#[cfg(not(any(target_os = \"linux\", target_os = \"macos\")))]"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "9ba8a6239766916149ff354602a851a01b22877363339463f68fc3d900e3e4a0",
+      "previous_ui_inventory_sha256": "2e75736223463a8e77eaf4fa47caaa8f66b970efa4a2113c819cf0e73cd9262c"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/remote/tests.rs",
-      "sha256": "b3bac143f71ae889708a154e408986f0371808ccda32fb578f6ea647b36644c2",
-      "lines": 294,
+      "sha256": "76643e3bfb8953bdcae9fb070c420608efe0d20e89a54a20ee3a5e59f51ab467",
+      "lines": 862,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -5400,53 +5552,99 @@
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
       "declarations": [
         {
-          "line": 4,
-          "text": "fn macos_hardware_identity_uses_only_valid_unique_ioreg_uuid() {"
+          "line": 6,
+          "text": "struct ColdPath {"
         },
         {
-          "line": 48,
-          "text": "struct Role {"
+          "line": 16,
+          "text": "fn new(core: std::net::SocketAddr, runner: std::net::SocketAddr) -> Self {"
         },
         {
-          "line": 54,
+          "line": 55,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 60,
+          "line": 62,
+          "text": "fn signed_cancellation_receipt_opens_cold_reverse_data_path_before_import() {"
+        },
+        {
+          "line": 223,
+          "text": "fn actual_remote_host_control_cancellation_settles_without_output_or_reinvocation() {"
+        },
+        {
+          "line": 379,
+          "text": "fn macos_hardware_identity_uses_only_valid_unique_ioreg_uuid() {"
+        },
+        {
+          "line": 423,
+          "text": "struct Role {"
+        },
+        {
+          "line": 429,
+          "text": "fn drop(&mut self) {"
+        },
+        {
+          "line": 435,
           "text": "fn launch(mut config: RoleConfig) -> Role {"
         },
         {
-          "line": 95,
+          "line": 471,
           "text": "fn control(root: &Path, command: &str, ready: Option<&Ready>) -> serde_json::Value {"
         },
         {
-          "line": 107,
+          "line": 495,
+          "text": "fn own_probe(root: &Path) -> serde_json::Value {"
+        },
+        {
+          "line": 509,
+          "text": "fn proposal_probe(root: &Path, proposal: Vec<u8>) -> serde_json::Value {"
+        },
+        {
+          "line": 525,
           "text": "fn config(root: PathBuf, role: &str) -> RoleConfig {"
         },
         {
-          "line": 124,
+          "line": 542,
           "text": "fn portable_roles_actual_scoped_transfer_duplicate_and_full_process_restart() {"
         },
         {
-          "line": 172,
+          "line": 594,
+          "text": "fn archive_role_log(root: &Path, role: &str) {"
+        },
+        {
+          "line": 604,
+          "text": "fn coordinator_only_result_cut_reconnect_preserves_remote_and_original_store() {"
+        },
+        {
+          "line": 646,
+          "text": "fn remote_transport_preflight_allocates_no_task_or_provider() {"
+        },
+        {
+          "line": 672,
+          "text": "fn foreign_signed_route_is_rejected_at_actual_driver_boundary() {"
+        },
+        {
+          "line": 740,
           "text": "fn remote_frames_and_signed_artifact_bounds_are_exact() {"
         },
         {
-          "line": 226,
+          "line": 794,
           "text": "fn native_guardian_closes_owned_process_group_after_runner_parent_dies() {"
         }
       ],
       "conditional_branches": [
         {
-          "line": 41,
+          "line": 416,
           "text": "#[cfg(target_os = \"linux\")]"
         },
         {
-          "line": 224,
+          "line": 792,
           "text": "#[cfg(target_os = \"linux\")]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "b3bac143f71ae889708a154e408986f0371808ccda32fb578f6ea647b36644c2",
+      "previous_ui_inventory_sha256": "dfc91feae7353c4cfb9864156699b0e116b520301ffced35313062443e02e5ee"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/tests.rs",
@@ -5559,8 +5757,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/tests/driver.rs",
-      "sha256": "22564bf151abc8e9824eb7364e48f73b2ddf145a8968f5df88bed97a7e732c30",
-      "lines": 724,
+      "sha256": "93530f9a423b0a2f94b14917e097451c4a9d0e87fe7a79a5645a225e2a52b2b5",
+      "lines": 727,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -5603,70 +5801,76 @@
           "text": "async fn bounded(future: impl std::future::Future<Output = ()>) {"
         },
         {
-          "line": 121,
+          "line": 124,
           "text": "fn result(d: &RuntimeDriver, assignment: u64) -> Option<Vec<u8>> {"
         },
         {
-          "line": 132,
+          "line": 135,
           "text": "fn history(d: &mut RuntimeDriver) -> Vec<Vec<u8>> {"
         },
         {
-          "line": 144,
+          "line": 147,
           "text": "async fn waiting("
         },
         {
-          "line": 158,
+          "line": 161,
           "text": "async fn applied(d: &mut RuntimeDriver, expected: u64) {"
         },
         {
-          "line": 174,
+          "line": 177,
           "text": "async fn runtime_driver_overlapping_callbacks_use_current_head_and_bounded_admission() {"
         },
         {
-          "line": 281,
+          "line": 284,
           "text": "async fn runtime_driver_cancellation_before_and_during_work_preserves_late_unknown() {"
         },
         {
-          "line": 362,
+          "line": 365,
           "text": "async fn runtime_driver_duplicate_and_conflicting_channel_outcomes_allocate_no_extra_events() {"
         },
         {
-          "line": 405,
+          "line": 408,
           "text": "async fn runtime_driver_pending_publication_transport_and_source_commit_block_allocation() {"
         },
         {
-          "line": 463,
+          "line": 466,
           "text": "async fn runtime_driver_restart_replays_durable_result_and_orphaned_start_unknown_after_quarantine()"
         },
         {
-          "line": 518,
+          "line": 521,
           "text": "async fn runtime_driver_assignment_start_and_result_failure_boundaries_never_retry_execution() {"
         },
         {
-          "line": 579,
+          "line": 582,
           "text": "async fn runtime_driver_lost_cancel_publication_replays_intent_and_signals_live_mock() {"
         },
         {
-          "line": 618,
+          "line": 621,
           "text": "async fn runtime_driver_persisted_conflicting_signed_outcome_refuses_entire_reconciliation() {"
         },
         {
-          "line": 672,
+          "line": 675,
           "text": "async fn runtime_driver_lost_store_correlations_refuse_recovery_and_new_admission() {"
         }
       ],
       "conditional_branches": [
         {
           "line": 11,
-          "text": "#[cfg(target_os = \"linux\")]"
+          "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 118,
+          "text": "let seconds = if cfg!(windows) { 120 } else { 45 };"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "22564bf151abc8e9824eb7364e48f73b2ddf145a8968f5df88bed97a7e732c30",
+      "previous_ui_inventory_sha256": "e688aa15db8509f7c29a0a17ac148ec188527fa529d389282d43fa67862053c2"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/tests/driver/process.rs",
-      "sha256": "2cae9e9ee262d844d995216723a4023ec0ee73d30c6e31e9a74c8646b32681cf",
-      "lines": 406,
+      "sha256": "b6f234e1d545157d0b17084e12e24b16d130bd11b0729d0f8c15ae7d1df4eafe",
+      "lines": 407,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -5689,45 +5893,51 @@
           "text": "async fn new() -> (Self, RuntimeDriver) {"
         },
         {
-          "line": 14,
+          "line": 15,
           "text": "async fn new_real() -> (Self, RuntimeDriver) {"
         },
         {
-          "line": 17,
+          "line": 18,
           "text": "async fn build(real: bool) -> (Self, RuntimeDriver) {"
         },
         {
-          "line": 53,
+          "line": 54,
           "text": "async fn reopen(&self) -> RuntimeDriver {"
         },
         {
-          "line": 91,
+          "line": 92,
           "text": "fn dead(pid: u32) {"
         },
         {
-          "line": 104,
+          "line": 105,
           "text": "async fn runner_process_different_pid_roundtrip_overlaps_and_computes_in_child() {"
         },
         {
-          "line": 196,
+          "line": 197,
           "text": "async fn runner_process_crash_points_reopen_exact_journal_without_duplicate_invocation() {"
         },
         {
-          "line": 297,
+          "line": 298,
           "text": "async fn runner_process_cancellation_before_during_and_late_completion_is_conservative() {"
         },
         {
-          "line": 365,
+          "line": 366,
           "text": "async fn runner_process_framing_boundary_refusal_and_shutdown_drop_cleanup() {"
         }
       ],
-      "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "conditional_branches": [
+        {
+          "line": 14,
+          "text": "#[cfg(target_os = \"linux\")]"
+        }
+      ],
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_ui_inventory_sha256": "2cae9e9ee262d844d995216723a4023ec0ee73d30c6e31e9a74c8646b32681cf"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/tests/driver/process/provider.rs",
-      "sha256": "4b3b28858dcd10b6070e064e0f3d591dff757cfc8e82fc83bac7f6cb16435049",
-      "lines": 558,
+      "sha256": "f99b339635b132af240c220f5db3cb7d65a8b4bd3f703e4ed30574793547ae33",
+      "lines": 582,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -5738,40 +5948,58 @@
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
       "declarations": [
         {
-          "line": 7,
+          "line": 8,
           "text": "async fn real_codex_process_scoped_acceptance() {"
         },
         {
-          "line": 162,
+          "line": 164,
           "text": "fn exit_fd(pid: u32) -> std::fs::File {"
         },
         {
-          "line": 167,
+          "line": 170,
+          "text": "fn exit_fd(pid: u32) -> std::fs::File {"
+        },
+        {
+          "line": 191,
           "text": "fn exited(fd: &std::fs::File) {"
         },
         {
-          "line": 182,
+          "line": 206,
           "text": "async fn provider_process_actual_api_prompt_workspace_session_progress_and_failure() {"
         },
         {
-          "line": 290,
+          "line": 314,
           "text": "async fn provider_process_cancel_before_and_during_reaps_fake_and_descendant() {"
         },
         {
-          "line": 368,
+          "line": 392,
           "text": "async fn provider_process_crash_after_invocation_report_or_signature_never_invokes_again() {"
         },
         {
-          "line": 444,
+          "line": 468,
           "text": "async fn provider_process_explicit_config_and_output_bounds_refuse_without_fallback() {"
         },
         {
-          "line": 514,
+          "line": 538,
           "text": "async fn provider_process_manifest_refusal_keeps_safe_failure_unknown_and_no_retry() {"
         }
       ],
-      "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "conditional_branches": [
+        {
+          "line": 6,
+          "text": "#[cfg(target_os = \"linux\")]"
+        },
+        {
+          "line": 163,
+          "text": "#[cfg(target_os = \"linux\")]"
+        },
+        {
+          "line": 169,
+          "text": "#[cfg(target_os = \"macos\")]"
+        }
+      ],
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_ui_inventory_sha256": "4b3b28858dcd10b6070e064e0f3d591dff757cfc8e82fc83bac7f6cb16435049"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/tests/driver/proposals.rs",
@@ -5901,8 +6129,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_adapter/tests/runtime_bridge.rs",
-      "sha256": "a5aaf7968dc677b5e0658e8a11aade4643755e7052ec04c0b5f5b366a1bfc424",
-      "lines": 905,
+      "sha256": "aac7aa91b4b3adc1e5bd4c8b941a29f86b4dffcb85193509dcae78277cd53238",
+      "lines": 893,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -5937,68 +6165,69 @@
           "text": "async fn runtime_bridge_normal_binary_consumes_real_custody_and_restarts_without_resend() {"
         },
         {
-          "line": 346,
+          "line": 336,
           "text": "struct Owned(std::process::Child);"
         },
         {
-          "line": 348,
+          "line": 338,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 477,
+          "line": 465,
           "text": "struct Bridge {"
         },
         {
-          "line": 487,
+          "line": 475,
           "text": "async fn new(server: &FakeTelegramServer, outcome: Outcome, text: &str) -> Self {"
         },
         {
-          "line": 533,
+          "line": 521,
           "text": "fn apply(&mut self) -> Result<i64> {"
         },
         {
-          "line": 537,
+          "line": 525,
           "text": "async fn drain(&self, recover: bool) {"
         },
         {
-          "line": 552,
+          "line": 540,
           "text": "fn phase(&self) -> String {"
         },
         {
-          "line": 562,
+          "line": 550,
           "text": "async fn close(self) {"
         },
         {
-          "line": 573,
+          "line": 561,
           "text": "async fn runtime_bridge_custody_and_projection_cuts_recover_without_reexecution_or_resend() {"
         },
         {
-          "line": 627,
+          "line": 615,
           "text": "async fn runtime_bridge_literal_results_cannot_send_core_files_or_promote_markers() {"
         },
         {
-          "line": 654,
+          "line": 642,
           "text": "async fn runtime_bridge_unknown_ack_never_retries_or_releases_another_sender() {"
         },
         {
-          "line": 677,
+          "line": 665,
           "text": "async fn runtime_bridge_ack_persistence_cut_finishes_without_a_second_send() {"
         },
         {
-          "line": 701,
+          "line": 689,
           "text": "async fn runtime_bridge_cancel_and_prior_unknown_never_become_completed() {"
         },
         {
-          "line": 734,
+          "line": 722,
           "text": "async fn runtime_bridge_raw_fence_retains_custody_while_another_topic_executes() {"
         },
         {
-          "line": 790,
+          "line": 778,
           "text": "async fn runtime_bridge_genuine_approval_is_not_overwritten_by_late_result() {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "a5aaf7968dc677b5e0658e8a11aade4643755e7052ec04c0b5f5b366a1bfc424"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/task_graph.rs",
@@ -6123,13 +6352,15 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/telegram_ingress.rs",
-      "sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1",
-      "lines": 163,
+      "sha256": "5f3a55f95dc22a9f5de18e58670d47e467fb4dc81b9451e4707c172bcb18dc60",
+      "lines": 165,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
         "Effects",
-        "RuntimeComposition"
+        "RuntimeComposition",
+        "UIAuthority",
+        "GuidedInput"
       ],
       "scope": "runtime or shared library",
       "declarations": [
@@ -6142,28 +6373,29 @@
           "text": "pub(crate) fn claim_telegram(&self, seq: i64) -> Result<bool> {"
         },
         {
-          "line": 73,
+          "line": 74,
           "text": "pub(crate) fn finish_telegram(&self, seq: i64, outcome: &ProcessOutcome) -> Result<()> {"
         },
         {
-          "line": 107,
+          "line": 108,
           "text": "pub(crate) fn telegram_outcome(&self, seq: i64) -> Result<ProcessOutcome> {"
         },
         {
-          "line": 124,
+          "line": 125,
           "text": "pub(crate) fn pending_telegram(&self) -> Result<Vec<String>> {"
         },
         {
-          "line": 138,
+          "line": 140,
           "text": "pub(crate) fn blocked_telegram_sessions(&self) -> Result<std::collections::HashSet<String>> {"
         },
         {
-          "line": 146,
+          "line": 148,
           "text": "pub(crate) fn recover_telegram_claims(&self) -> Result<()> {"
         }
       ],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "bbb4fb7c46f495ca432c181a3ec536cde0c99aea68f30d731be2e8ae8f57c4d1"
     },
     {
       "path": "crates/coconutclaw-cli/src/store/tests.rs",
@@ -6274,8 +6506,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/telegram.rs",
-      "sha256": "8ca0827692bf294de76f6e15951e5fe95b3fac698a8a1c33d3d6f8ab00d88ac6",
-      "lines": 1540,
+      "sha256": "f75b24e8edfbd04257928f91e9964c60ee21fb63cfb96d8075ebe6345902bba3",
+      "lines": 1589,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -6349,179 +6581,187 @@
           "text": "pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Result<()> {"
         },
         {
-          "line": 322,
+          "line": 324,
+          "text": "pub(crate) fn telegram_send_ui("
+        },
+        {
+          "line": 350,
+          "text": "pub(crate) fn telegram_answer_ui_callback("
+        },
+        {
+          "line": 371,
           "text": "pub(crate) fn dispatch_telegram_output("
         },
         {
-          "line": 432,
+          "line": 481,
           "text": "pub(crate) fn send_progress_message(cfg: &RuntimeConfig, chat_id: &str) -> Result<Option<String>> {"
         },
         {
-          "line": 456,
+          "line": 505,
           "text": "pub(crate) fn progress_reply_markup() -> &'static str {"
         },
         {
-          "line": 460,
+          "line": 509,
           "text": "pub(crate) fn progress_status_text(elapsed_secs: u64) -> String {"
         },
         {
-          "line": 464,
+          "line": 513,
           "text": "pub(crate) fn progress_status_with_events(elapsed_secs: u64, statuses: &[String]) -> String {"
         },
         {
-          "line": 478,
+          "line": 527,
           "text": "pub(crate) fn spawn_progress_updater("
         },
         {
-          "line": 512,
+          "line": 561,
           "text": "const PHASE_LABELS: &[&str] = &["
         },
         {
-          "line": 611,
+          "line": 660,
           "text": "pub(crate) fn send_or_edit_text("
         },
         {
-          "line": 670,
+          "line": 719,
           "text": "pub(crate) fn should_send_reply_as_document(text: &str) -> bool {"
         },
         {
-          "line": 674,
+          "line": 723,
           "text": "pub(crate) fn send_markdown_reply_document("
         },
         {
-          "line": 712,
+          "line": 761,
           "text": "pub(crate) fn split_text_chunks("
         },
         {
-          "line": 738,
+          "line": 787,
           "text": "const INDICATOR_RESERVE: usize = 12;"
         },
         {
-          "line": 741,
+          "line": 790,
           "text": "fn code_fence_open_with_lang(parse_mode: TelegramParseMode, lang: &str) -> String {"
         },
         {
-          "line": 761,
+          "line": 810,
           "text": "fn fence_close_str(parse_mode: TelegramParseMode) -> &'static str {"
         },
         {
-          "line": 769,
+          "line": 818,
           "text": "fn format_indicator(parse_mode: TelegramParseMode, current: usize, total: usize) -> String {"
         },
         {
-          "line": 776,
+          "line": 825,
           "text": "fn split_format_aware(text: &str, max_chars: usize, parse_mode: TelegramParseMode) -> Vec<String> {"
         },
         {
-          "line": 845,
+          "line": 894,
           "text": "fn find_split_point_chars(region: &str, region_char_len: usize, is_md: bool) -> usize {"
         },
         {
-          "line": 904,
+          "line": 953,
           "text": "fn scan_code_block_state(text: &str, parse_mode: TelegramParseMode) -> (bool, String) {"
         },
         {
-          "line": 963,
+          "line": 1012,
           "text": "fn split_plain(text: &str, max_chars: usize) -> Vec<String> {"
         },
         {
-          "line": 1019,
+          "line": 1068,
           "text": "pub(crate) fn render_markdown_v2_reply(text: &str) -> String {"
         },
         {
-          "line": 1020,
+          "line": 1069,
           "text": "const SPECIAL: &[char] = &["
         },
         {
-          "line": 1033,
+          "line": 1082,
           "text": "pub(crate) fn render_html_reply(text: &str) -> String {"
         },
         {
-          "line": 1112,
+          "line": 1161,
           "text": "fn html_escape(text: &str) -> String {"
         },
         {
-          "line": 1118,
+          "line": 1167,
           "text": "pub(crate) fn render_telegram_reply_text(cfg: &RuntimeConfig, text: &str) -> String {"
         },
         {
-          "line": 1126,
+          "line": 1175,
           "text": "pub(crate) fn telegram_edit_message_text("
         },
         {
-          "line": 1155,
+          "line": 1204,
           "text": "pub(crate) fn telegram_delete_message("
         },
         {
-          "line": 1178,
+          "line": 1227,
           "text": "pub(crate) fn telegram_remove_keyboard("
         },
         {
-          "line": 1203,
+          "line": 1252,
           "text": "fn telegram_error_is_not_modified(err: &anyhow::Error) -> bool {"
         },
         {
-          "line": 1209,
+          "line": 1258,
           "text": "pub(crate) fn telegram_send_message("
         },
         {
-          "line": 1236,
+          "line": 1285,
           "text": "pub(crate) fn telegram_text_form_params("
         },
         {
-          "line": 1260,
+          "line": 1309,
           "text": "pub(crate) fn strip_parse_mode_param(params: &[(String, String)]) -> Vec<(String, String)> {"
         },
         {
-          "line": 1268,
+          "line": 1317,
           "text": "pub(crate) fn should_retry_plain_text(cfg: &RuntimeConfig) -> bool {"
         },
         {
-          "line": 1275,
+          "line": 1324,
           "text": "pub(crate) fn should_fallback_plain_for_error(err: &anyhow::Error) -> bool {"
         },
         {
-          "line": 1284,
+          "line": 1333,
           "text": "pub(crate) fn telegram_post_form("
         },
         {
-          "line": 1312,
+          "line": 1361,
           "text": "fn telegram_request("
         },
         {
-          "line": 1369,
+          "line": 1418,
           "text": "static RUNTIME_STOP: std::sync::Mutex<std::sync::Weak<AtomicBool>> ="
         },
         {
-          "line": 1372,
+          "line": 1421,
           "text": "pub(crate) fn set_runtime_shutdown(flag: &Arc<AtomicBool>) {"
         },
         {
-          "line": 1376,
+          "line": 1425,
           "text": "fn runtime_stopping() -> bool {"
         },
         {
-          "line": 1384,
+          "line": 1433,
           "text": "fn execute_request("
         },
         {
-          "line": 1430,
+          "line": 1479,
           "text": "pub(crate) fn telegram_retry_after_seconds(body: &str) -> Option<u64> {"
         },
         {
-          "line": 1442,
+          "line": 1491,
           "text": "pub(crate) fn telegram_send_media_file("
         },
         {
-          "line": 1479,
+          "line": 1528,
           "text": "pub(crate) fn telegram_route_params(route: &str) -> Result<Vec<(String, String)>> {"
         },
         {
-          "line": 1499,
+          "line": 1548,
           "text": "pub(crate) fn parse_telegram_response("
         },
         {
-          "line": 1540,
+          "line": 1589,
           "text": "mod tests;"
         }
       ],
@@ -6535,160 +6775,232 @@
           "text": "#[cfg(test)]"
         },
         {
-          "line": 321,
+          "line": 370,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 669,
+          "line": 718,
           "text": "#[cfg(test)]"
         },
         {
-          "line": 1538,
+          "line": 1587,
           "text": "#[cfg(test)]"
         }
       ],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "8ca0827692bf294de76f6e15951e5fe95b3fac698a8a1c33d3d6f8ab00d88ac6"
     },
     {
       "path": "crates/coconutclaw-cli/src/telegram_ingress_tests.rs",
-      "sha256": "6ce8a3a6d3588187370ab98f9d01d301ba0102db8c619a0670f6e153dd8d0b0e",
-      "lines": 843,
+      "sha256": "2d6521c1cd85d8d0e6c4bbebe046c905f24fc75910bb18a294e87709578e27d6",
+      "lines": 1854,
       "classification": "evidence-only",
       "families": [
         "Ingress",
         "Effects",
-        "RuntimeComposition"
+        "RuntimeComposition",
+        "UIAuthority",
+        "GuidedInput"
       ],
       "scope": "support/evidence",
       "declarations": [
         {
-          "line": 7,
+          "line": 8,
           "text": "fn ingress_concurrent_exact_webhook_replays_share_one_control_and_reply() {"
         },
         {
-          "line": 44,
+          "line": 45,
           "text": "fn ingress_persisted_ack_rechecks_topic_and_chat_authority_without_root_fallback() {"
         },
         {
-          "line": 75,
+          "line": 76,
           "text": "fn ingress_legacy_effect_receipt_does_not_authorize_a_new_payload_or_ack() {"
         },
         {
-          "line": 96,
+          "line": 97,
           "text": "fn fixture("
         },
         {
-          "line": 111,
+          "line": 112,
           "text": "fn update(id: u64, topic: i64, text: &str) -> String {"
         },
         {
           "line": 118,
+          "text": "fn ui_callback(id: u64, topic: i64, actor: &str, data: &str) -> String {"
+        },
+        {
+          "line": 125,
+          "text": "fn ui_message(outcome: ProcessOutcome) -> crate::telegram_ui::Message {"
+        },
+        {
+          "line": 129,
+          "text": "fn ui_button(message: &crate::telegram_ui::Message, label: &str) -> String {"
+        },
+        {
+          "line": 143,
+          "text": "fn buttons_missing_actor_is_rejected_and_stale_cancel_keeps_competing_guide() {"
+        },
+        {
+          "line": 197,
+          "text": "fn ui_seed_run(store: &Store, session: &str, status: &str) -> i64 {"
+        },
+        {
+          "line": 222,
+          "text": "fn buttons_beside_run_reject_and_cancel_keep_existing_scope_and_replay_semantics() {"
+        },
+        {
+          "line": 334,
+          "text": "fn buttons_home_reports_navigation_and_ordered_mock_capture() {"
+        },
+        {
+          "line": 576,
+          "text": "fn buttons_recheck_actor_chat_topic_invalid_expired_and_revoked_authority() {"
+        },
+        {
+          "line": 673,
+          "text": "fn buttons_fresh_replay_and_restart_add_one_boundary_without_deleting_memory() {"
+        },
+        {
+          "line": 722,
+          "text": "fn ui_begin_input("
+        },
+        {
+          "line": 755,
+          "text": "fn buttons_guided_input_survives_restart_rejects_competition_expiry_and_wrong_topic() {"
+        },
+        {
+          "line": 827,
+          "text": "fn buttons_unknown_slash_and_stale_approval_never_fall_through_to_provider() {"
+        },
+        {
+          "line": 867,
+          "text": "fn buttons_observe_unknown_and_blocked_ingress_without_releasing_mutations() {"
+        },
+        {
+          "line": 925,
+          "text": "fn buttons_persisted_schedules_show_real_policies_and_own_detail_timestamp() {"
+        },
+        {
+          "line": 984,
+          "text": "fn buttons_persisted_jobs_pagination_and_plain_text_do_not_expose_provider_bodies() {"
+        },
+        {
+          "line": 1107,
+          "text": "fn buttons_unrelated_conversation_is_not_swallowed_by_pending_input() {"
+        },
+        {
+          "line": 1129,
           "text": "fn native_fixture("
         },
         {
-          "line": 155,
+          "line": 1166,
           "text": "fn ingress_dispatch_reservation_and_raw_custody_have_one_sqlite_order() {"
         },
         {
-          "line": 204,
+          "line": 1215,
           "text": "fn ingress_acknowledged_cancel_replay_cannot_cancel_a_new_active_run() {"
         },
         {
-          "line": 263,
+          "line": 1274,
           "text": "fn ingress_normal_turn_admission_cut_recovers_one_provider_without_repeating_progress() {"
         },
         {
-          "line": 316,
+          "line": 1327,
           "text": "fn ingress_cancel_effect_cut_does_not_cancel_a_later_run_or_hold_other_topics_slots() {"
         },
         {
-          "line": 369,
+          "line": 1380,
           "text": "fn ingress_approval_topic_authority_exact_reply_and_committed_effect_crash_are_preserved() {"
         },
         {
-          "line": 459,
+          "line": 1470,
           "text": "fn count(store: &Store, table: &str) -> i64 {"
         },
         {
-          "line": 465,
+          "line": 1476,
           "text": "fn state(store: &Store, id: u64) -> (String, String) {"
         },
         {
-          "line": 475,
+          "line": 1486,
           "text": "fn wait(mut ready: impl FnMut() -> bool) {"
         },
         {
-          "line": 482,
+          "line": 1493,
           "text": "fn admit(store: &Store, id: u64, topic: i64, text: &str) -> i64 {"
         },
         {
-          "line": 494,
+          "line": 1505,
           "text": "fn ingress_exact_replay_is_canonical_conflict_refuses_and_cursor_never_regresses() {"
         },
         {
-          "line": 535,
+          "line": 1546,
           "text": "fn ingress_sql_control_and_ack_rollback_together_then_recover_once() {"
         },
         {
-          "line": 566,
+          "line": 1577,
           "text": "fn ingress_admission_failure_does_not_advance_cursor_or_apply_control() {"
         },
         {
-          "line": 587,
+          "line": 1598,
           "text": "fn ingress_pending_order_is_per_topic_not_a_global_control_barrier() {"
         },
         {
-          "line": 624,
+          "line": 1635,
           "text": "fn ingress_interrupted_runtime_claim_is_unknown_and_blocks_only_its_origin() {"
         },
         {
-          "line": 655,
+          "line": 1666,
           "text": "fn ingress_ack_unknown_never_resends_after_restart_but_control_is_known() {"
         },
         {
-          "line": 679,
+          "line": 1690,
           "text": "fn ingress_ack_crash_cuts_before_and_after_receipt_persistence_never_resend() {"
         },
         {
-          "line": 716,
+          "line": 1727,
           "text": "fn ingress_authority_refuses_other_chat_sender_bot_and_disabled_topic_without_effects() {"
         },
         {
-          "line": 759,
+          "line": 1770,
           "text": "fn ingress_unknown_legacy_checkpoint_is_preserved_not_replayed_or_dropped() {"
         },
         {
-          "line": 782,
+          "line": 1793,
           "text": "fn ingress_actual_poll_deduplicates_controls_and_acknowledges_durable_custody() {"
         }
       ],
       "conditional_branches": [
         {
-          "line": 117,
+          "line": 1106,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 154,
+          "line": 1128,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 203,
+          "line": 1165,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 262,
+          "line": 1214,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 315,
+          "line": 1273,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 368,
+          "line": 1326,
+          "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 1379,
           "text": "#[cfg(unix)]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "6ce8a3a6d3588187370ab98f9d01d301ba0102db8c619a0670f6e153dd8d0b0e"
     },
     {
       "path": "crates/coconutclaw-cli/src/telegram_tests.rs",
@@ -6768,8 +7080,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/topics_rich_tests.rs",
-      "sha256": "f00e5ca3e387282ae87afecbf6fb2b9cebd6ef8fa9348620ae751f971e45a5a6",
-      "lines": 834,
+      "sha256": "fcaf84afc55591512d5410d9a069aa8f9edad5a7e382880a2fb9292663460cf2",
+      "lines": 851,
       "classification": "evidence-only",
       "families": [
         "Ingress",
@@ -6797,77 +7109,87 @@
           "text": "fn ingress_metadata_separates_root_topics_and_rejects_unexpected_routes() {"
         },
         {
-          "line": 115,
+          "line": 120,
           "text": "fn memory_history_boundaries_and_resume_payloads_remain_topic_local() {"
         },
         {
-          "line": 182,
+          "line": 187,
           "text": "fn rich_success_preserves_gfm_math_unicode_and_topic_without_parse_mode() {"
         },
         {
-          "line": 202,
+          "line": 207,
           "text": "fn definitive_rich_format_rejection_persists_plain_fallback_but_unknown_never_duplicates() {"
         },
         {
-          "line": 246,
+          "line": 251,
           "text": "fn rich_rate_limit_waits_and_crash_send_window_does_not_resend() {"
         },
         {
-          "line": 276,
+          "line": 281,
           "text": "fn timeout_after_acceptance_holds_rich_and_acknowledged_text_is_not_replayed_for_media() {"
         },
         {
-          "line": 348,
+          "line": 353,
           "text": "fn rich_character_limit_is_checked_at_its_unicode_boundary() {"
         },
         {
-          "line": 371,
+          "line": 376,
           "text": "fn long_unicode_code_table_math_is_preserved_in_routed_document() {"
         },
         {
-          "line": 391,
+          "line": 396,
           "text": "fn rich_embedded_actions_and_files_are_literal_regular_text() {"
         },
         {
-          "line": 408,
+          "line": 413,
           "text": "fn topic_approval_and_delegated_results_resume_only_in_origin_topic() {"
         },
         {
-          "line": 493,
-          "text": "fn wait_until(mut condition: impl FnMut() -> bool) {"
+          "line": 498,
+          "text": "fn python_bin() -> &'static str {"
         },
         {
           "line": 506,
+          "text": "fn wait_until(mut condition: impl FnMut() -> bool) {"
+        },
+        {
+          "line": 519,
           "text": "fn five_actual_providers_overlap_sixth_waits_topic_fifo_cancel_and_restart_are_isolated() {"
         },
         {
-          "line": 599,
+          "line": 616,
           "text": "fn recovery_admits_five_and_approval_error_and_delegation_release_slots() {"
         },
         {
-          "line": 678,
+          "line": 695,
           "text": "fn rich_5xx_never_falls_back_even_with_a_misleading_error_body() {"
         },
         {
-          "line": 696,
+          "line": 713,
           "text": "fn regular_format_fallback_is_persisted_and_ambiguous_edits_never_send_new_messages() {"
         },
         {
-          "line": 752,
+          "line": 769,
           "text": "fn all_media_and_regular_progress_and_chunks_preserve_topic_route() {"
         },
         {
-          "line": 799,
+          "line": 816,
           "text": "fn capability_detection_and_saved_route_validation_do_not_change_external_settings() {"
         }
       ],
       "conditional_branches": [
         {
-          "line": 504,
+          "line": 499,
+          "text": "if cfg!(windows) {"
+        },
+        {
+          "line": 517,
           "text": "#[cfg(unix)]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "f00e5ca3e387282ae87afecbf6fb2b9cebd6ef8fa9348620ae751f971e45a5a6",
+      "previous_ui_inventory_sha256": "3f5cf3acd6b09c6a923a6ad428c6c6635b27e9faa0c433e8a407fae450389001"
     },
     {
       "path": "crates/coconutclaw-cli/src/turn.rs",
@@ -7100,8 +7422,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/util.rs",
-      "sha256": "905a8fcd9799d6ded56ffd36e11317f50e7d538653659cce5a3ac609d46799ba",
-      "lines": 157,
+      "sha256": "d3e2a79d2c1221d27b71d4d1cd18967fba54097889f176b8d4229f9f0012214a",
+      "lines": 197,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -7113,53 +7435,76 @@
       "scope": "runtime or shared library",
       "declarations": [
         {
-          "line": 9,
+          "line": 12,
+          "text": "pub(crate) fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {"
+        },
+        {
+          "line": 45,
+          "text": "pub(crate) fn test_binary_path() -> std::path::PathBuf {"
+        },
+        {
+          "line": 49,
           "text": "pub(crate) fn shorten_log_text(text: &str, max_chars: usize) -> String {"
         },
         {
-          "line": 23,
+          "line": 63,
           "text": "pub(crate) fn extract_incoming_media(message: &Value) -> Option<IncomingMedia> {"
         },
         {
-          "line": 83,
+          "line": 123,
           "text": "pub(crate) fn is_allowed_chat(cfg: &RuntimeConfig, chat_id: Option<&str>) -> bool {"
         },
         {
-          "line": 93,
+          "line": 133,
           "text": "fn telegram_allowed_chat_ids(cfg: &RuntimeConfig) -> Vec<&str> {"
         },
         {
-          "line": 113,
+          "line": 153,
           "text": "pub(crate) fn configured_telegram_chat_scope(cfg: &RuntimeConfig) -> String {"
         },
         {
-          "line": 122,
+          "line": 162,
           "text": "pub(crate) fn resolve_instance_path(instance_dir: &Path, raw: PathBuf) -> PathBuf {"
         },
         {
-          "line": 130,
+          "line": 170,
           "text": "pub(crate) fn iso_now(timezone: &str) -> String {"
         },
         {
-          "line": 141,
+          "line": 181,
           "text": "pub(crate) fn command_exists(bin: &str) -> bool {"
         },
         {
-          "line": 149,
+          "line": 189,
           "text": "pub(crate) fn value_to_string(value: &Value) -> String {"
         },
         {
-          "line": 155,
+          "line": 195,
           "text": "pub(crate) fn extract_update_id_from_value(value: &Value) -> Option<String> {"
         }
       ],
-      "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "conditional_branches": [
+        {
+          "line": 11,
+          "text": "#[cfg(test)]"
+        },
+        {
+          "line": 18,
+          "text": "#[cfg(windows)]"
+        },
+        {
+          "line": 44,
+          "text": "#[cfg(test)]"
+        }
+      ],
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "905a8fcd9799d6ded56ffd36e11317f50e7d538653659cce5a3ac609d46799ba",
+      "previous_ui_inventory_sha256": "bc070e0b94199e8b88294187b9be93e258b30b3c3787a7d77b204dfd0605544f"
     },
     {
       "path": "crates/coconutclaw-cli/tests/e2e_smoke.rs",
-      "sha256": "7086a164b6588e282931f81285e2c17321352cf18bb1bbd9fe69dea6cfcc791a",
-      "lines": 1020,
+      "sha256": "ef86bb674eead472583f63a55c494f8951e6dda48aceff2dd7c5a79bdacba5bc",
+      "lines": 1022,
       "classification": "evidence-only",
       "families": [
         "Ingress",
@@ -7227,34 +7572,40 @@
           "text": "fn once_timeout_bounds_early_leader_exit_and_descendant_output_drain() {"
         },
         {
-          "line": 723,
+          "line": 724,
           "text": "fn once_older_unfinished_replays_persist_inactivity_not_success() {"
         },
         {
-          "line": 785,
+          "line": 786,
           "text": "fn graceful_int_and_term_stop_provider_groups_and_preserve_queued_work_during_blocked_poll() {"
         },
         {
-          "line": 962,
+          "line": 964,
           "text": "fn once_resumes_explicit_session_and_doctor_never_executes_codex() {"
         }
       ],
       "conditional_branches": [
         {
-          "line": 716,
+          "line": 1,
+          "text": "#![cfg(unix)]"
+        },
+        {
+          "line": 717,
           "text": "#[cfg(target_os = \"linux\")]"
         },
         {
-          "line": 939,
+          "line": 941,
           "text": "#[cfg(target_os = \"linux\")]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "7086a164b6588e282931f81285e2c17321352cf18bb1bbd9fe69dea6cfcc791a",
+      "previous_ui_inventory_sha256": "05ee891f4dfd516857eededc48661129719e7ad10dc3595e7492e0c1343e51ad"
     },
     {
       "path": "crates/coconutclaw-cli/tests/openclaw_import.rs",
-      "sha256": "65cd6af0351ee9d387fb270b9646c10452c9d1f06a63a0f5c0dcbf987b3b7eb9",
-      "lines": 308,
+      "sha256": "eec8f92b99ba0a4d0d925fe1d768612da3937143052d26176d814581a1cd0af1",
+      "lines": 310,
       "classification": "evidence-only",
       "families": [
         "Ingress",
@@ -7266,54 +7617,60 @@
       "scope": "support/evidence",
       "declarations": [
         {
-          "line": 10,
+          "line": 12,
           "text": "fn cli(destination: &Path) -> Command {"
         },
         {
-          "line": 24,
+          "line": 26,
           "text": "fn import(destination: &Path, source: &Path, extra: &[&str]) -> Output {"
         },
         {
-          "line": 34,
+          "line": 36,
           "text": "fn success(output: Output) -> Value {"
         },
         {
-          "line": 43,
+          "line": 45,
           "text": "fn command(destination: &Path, chat: &str, text: &str) -> String {"
         },
         {
-          "line": 57,
+          "line": 59,
           "text": "fn preview_zero_mutations_then_apply_search_get_duplicate_correct_undo_restart() {"
         },
         {
-          "line": 117,
+          "line": 119,
           "text": "fn topic_explicit_curation_authorization_and_source_tree_unchanged() {"
         },
         {
-          "line": 164,
+          "line": 166,
           "text": "fn cli_rejects_escape_symlinks_oversize_and_never_mutates_sources() {"
         },
         {
-          "line": 202,
+          "line": 204,
           "text": "fn executable_failed_apply_is_atomic_across_restart() {"
         },
         {
-          "line": 248,
+          "line": 250,
           "text": "fn maximum_preview_output_and_imported_corpus_never_expand_bootstrap() {"
         }
       ],
       "conditional_branches": [
         {
-          "line": 186,
+          "line": 3,
+          "text": "#![cfg(unix)]"
+        },
+        {
+          "line": 188,
           "text": "#[cfg(unix)]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "65cd6af0351ee9d387fb270b9646c10452c9d1f06a63a0f5c0dcbf987b3b7eb9",
+      "previous_ui_inventory_sha256": "baec1267fa1239d81479adaa42ba4b1a6c67c776ad08ca332f22641eeacc2c74"
     },
     {
       "path": "crates/coconutclaw-cli/tests/topics_rich.rs",
-      "sha256": "f70609aff56b1b0c1adcdb3a653c38ec5a2d6740982eabb482cb4306453f2b04",
-      "lines": 1665,
+      "sha256": "a4d0e6ebd83848efffdd4bffd95a0b340caa9c8f4583fa10264cc7a50034eaaa",
+      "lines": 1735,
       "classification": "evidence-only",
       "families": [
         "Ingress",
@@ -7326,87 +7683,110 @@
       "declarations": [
         {
           "line": 17,
-          "text": "struct Runtime(Child);"
+          "text": "struct Runtime(Child, PathBuf);"
         },
         {
           "line": 19,
+          "text": "fn process_alive(pid: &str) -> bool {"
+        },
+        {
+          "line": 34,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 24,
+          "line": 50,
           "text": "fn wait(mut check: impl FnMut() -> bool) {"
         },
         {
-          "line": 31,
+          "line": 57,
           "text": "fn reply_text(entry: &Value) -> String {"
         },
         {
-          "line": 43,
+          "line": 69,
           "text": "fn stop(runtime: &mut Runtime) {"
         },
         {
-          "line": 55,
+          "line": 81,
           "text": "struct Telegram {"
         },
         {
-          "line": 64,
+          "line": 90,
+          "text": "fn configure_mock_connection(stream: &TcpStream) {"
+        },
+        {
+          "line": 100,
+          "text": "fn mock_connection_waits_for_request_after_nonblocking_accept() {"
+        },
+        {
+          "line": 131,
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 70,
+          "line": 137,
           "text": "fn start() -> Self {"
         },
         {
-          "line": 74,
+          "line": 141,
           "text": "fn start_with_retry_after(rate_method: Option<&'static str>) -> Self {"
         },
         {
-          "line": 244,
+          "line": 309,
           "text": "fn message(&self, id: u64, topic: Option<u64>, text: &str) {"
         },
         {
-          "line": 256,
+          "line": 322,
           "text": "fn spawn(dir: &Path, telegram: &Telegram, provider: &Path) -> Runtime {"
         },
         {
-          "line": 303,
+          "line": 369,
           "text": "fn polling_topics_rich_five_actual_providers_and_mode_transitions() {"
         },
         {
-          "line": 517,
+          "line": 379,
+          "text": "def alive(pid):"
+        },
+        {
+          "line": 587,
           "text": "fn polling_session_task_context_isolation_survives_restart_and_topic_mode_transitions() {"
         },
         {
-          "line": 687,
+          "line": 757,
           "text": "fn polling_native_rich_prompt_contract_is_independent_of_regular_parse_mode() {"
         },
         {
-          "line": 801,
+          "line": 871,
           "text": "fn polling_topic_approval_survives_restart_and_denies_other_topic() {"
         },
         {
-          "line": 939,
+          "line": 1009,
           "text": "fn polling_retry_after_preserves_full_interval_for_rich_and_regular_across_restart() {"
         },
         {
-          "line": 1116,
+          "line": 1186,
           "text": "fn capture_content_round_trip("
         },
         {
-          "line": 1246,
+          "line": 1316,
           "text": "fn polling_native_markdown_content_survives_provider_persistence_and_saved_replay() {"
         },
         {
-          "line": 1316,
+          "line": 1386,
           "text": "fn polling_literal_thinking_tags_survive_provider_persistence_and_saved_replay() {"
         },
         {
-          "line": 1452,
+          "line": 1522,
           "text": "fn polling_raw_turn_recovery_excludes_reasoning_effects_in_both_crash_windows() {"
         }
       ],
-      "conditional_branches": [],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "conditional_branches": [
+        {
+          "line": 1,
+          "text": "#![cfg(unix)]"
+        }
+      ],
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "f70609aff56b1b0c1adcdb3a653c38ec5a2d6740982eabb482cb4306453f2b04",
+      "previous_ui_inventory_sha256": "e598d07c83dd6e474fc180f133f756277423a30ba6c0b7cc591705ba89e7d2a9"
     },
     {
       "path": "crates/coconutclaw-config/Cargo.toml",
@@ -8131,8 +8511,8 @@
     },
     {
       "path": "crates/coconutclaw-provider/src/lib_tests.rs",
-      "sha256": "b244ec28b161f724cd00ea0e868a4be6a9afa0e70b047a21b103c90a3a121b9f",
-      "lines": 558,
+      "sha256": "4dede4e39246afdcc38d0fee52a25793ce0129a6c7eaa42cfa504dd789af3f3e",
+      "lines": 560,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -8154,99 +8534,99 @@
           "text": "fn write_test_provider_script("
         },
         {
-          "line": 97,
+          "line": 99,
           "text": "fn mock_script_launch_does_not_depend_on_executable_write_exclusion() {"
         },
         {
-          "line": 118,
+          "line": 120,
           "text": "fn parse_codex_turn_started() {"
         },
         {
-          "line": 127,
+          "line": 129,
           "text": "fn parse_codex_command_started() {"
         },
         {
-          "line": 137,
+          "line": 139,
           "text": "fn parse_codex_command_completed() {"
         },
         {
-          "line": 146,
+          "line": 148,
           "text": "fn parse_codex_file_change() {"
         },
         {
-          "line": 156,
+          "line": 158,
           "text": "fn parse_codex_agent_message() {"
         },
         {
-          "line": 165,
+          "line": 167,
           "text": "fn run_codex_sends_large_context_over_stdin() {"
         },
         {
-          "line": 205,
+          "line": 207,
           "text": "fn split_command_spec_preserves_quoted_segments() {"
         },
         {
-          "line": 218,
+          "line": 220,
           "text": "fn parse_bin_with_env_splits_env_command_and_args() {"
         },
         {
-          "line": 234,
+          "line": 236,
           "text": "fn shorten_status_text_ascii_no_truncation() {"
         },
         {
-          "line": 239,
+          "line": 241,
           "text": "fn shorten_status_text_ascii_truncation() {"
         },
         {
-          "line": 244,
+          "line": 246,
           "text": "fn shorten_status_text_exact_boundary() {"
         },
         {
-          "line": 249,
+          "line": 251,
           "text": "fn shorten_status_text_multibyte_no_truncation() {"
         },
         {
-          "line": 255,
+          "line": 257,
           "text": "fn shorten_status_text_multibyte_truncation() {"
         },
         {
-          "line": 261,
+          "line": 263,
           "text": "fn shorten_status_text_empty() {"
         },
         {
-          "line": 267,
+          "line": 269,
           "text": "fn codex_explicit_resume_image_and_native_session_are_preserved() {"
         },
         {
-          "line": 315,
+          "line": 317,
           "text": "fn configured_timeout_stops_a_mock_codex_process() {"
         },
         {
-          "line": 335,
+          "line": 337,
           "text": "fn cancellation_terminates_descendants_even_if_group_leader_exits_first() {"
         },
         {
-          "line": 365,
+          "line": 367,
           "text": "fn activity_timeout_executes_fresh_and_resume_with_or_without_progress_subscribers() {"
         },
         {
-          "line": 406,
+          "line": 408,
           "text": "fn silent_junk_heartbeat_and_stderr_providers_hit_idle_not_total_timeout() {"
         },
         {
-          "line": 439,
+          "line": 441,
           "text": "fn pending_tools_get_longer_but_finite_silence_allowance() {"
         },
         {
-          "line": 470,
+          "line": 472,
           "text": "fn total_deadline_still_stops_meaningful_activity() {"
         },
         {
-          "line": 498,
+          "line": 500,
           "text": "fn concurrent_invocations_do_not_share_activity() {"
         },
         {
-          "line": 532,
+          "line": 534,
           "text": "fn older_unfinished_replays_expire_through_provider_entry_point() {"
         }
       ],
@@ -8268,51 +8648,52 @@
           "text": "let (path, body, command) = if cfg!(windows) {"
         },
         {
-          "line": 83,
+          "line": 85,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 96,
+          "line": 98,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 266,
+          "line": 268,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 314,
+          "line": 316,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 334,
+          "line": 336,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 364,
+          "line": 366,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 405,
+          "line": 407,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 438,
+          "line": 440,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 469,
+          "line": 471,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 497,
+          "line": 499,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 531,
+          "line": 533,
           "text": "#[cfg(unix)]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "b244ec28b161f724cd00ea0e868a4be6a9afa0e70b047a21b103c90a3a121b9f"
     },
     {
       "path": "crates/coconutclaw-sync/Cargo.toml",
@@ -9422,8 +9803,8 @@
     },
     {
       "path": "crates/coconutclaw-sync/src/synthetic/membership/projection.rs",
-      "sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655",
-      "lines": 307,
+      "sha256": "dd86e7451950060e9019cbb486d973f90c498bf1f1eec4d1414295a426c52a5a",
+      "lines": 309,
       "classification": "abstracted-family",
       "families": [
         "Replication",
@@ -9448,45 +9829,51 @@
           "text": "CREATE TABLE receipt("
         },
         {
-          "line": 31,
+          "line": 33,
           "text": "pub(super) fn require_stores(root: &Path) -> Result<()> {"
         },
         {
-          "line": 47,
+          "line": 49,
           "text": "pub(super) fn open("
         },
         {
-          "line": 69,
+          "line": 71,
           "text": "pub(super) fn require_authority("
         },
         {
-          "line": 96,
+          "line": 98,
           "text": "pub(super) fn validate("
         },
         {
-          "line": 116,
+          "line": 118,
           "text": "fn matching_projection("
         },
         {
-          "line": 147,
+          "line": 149,
           "text": "fn project("
         },
         {
-          "line": 172,
+          "line": 174,
           "text": "pub(super) fn commit("
         },
         {
-          "line": 249,
+          "line": 251,
           "text": "pub fn repair_projection(&mut self) -> Result<usize> {"
         }
       ],
-      "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "conditional_branches": [
+        {
+          "line": 28,
+          "text": "#[cfg(unix)]"
+        }
+      ],
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping. Directory-entry fsync is Unix-only; Windows physical power-loss durability is explicitly not proved.",
+      "previous_inventory_sha256": "2cd1ff522bfd478f4bdcd2b0e99aa536b4d64d02535f5fd6b1a8c6e90efcc655"
     },
     {
       "path": "crates/coconutclaw-sync/src/synthetic/membership/recovery.rs",
-      "sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac",
-      "lines": 253,
+      "sha256": "19615c9fb7d470970cff0e17b33c8183e01062a771dcbe0a627ef42e6b323131",
+      "lines": 255,
       "classification": "abstracted-family",
       "families": [
         "Replication",
@@ -9531,28 +9918,34 @@
           "text": "fn write_receipt(root: &Path, manifest: Option<&RecoveryManifest>) -> Result<()> {"
         },
         {
-          "line": 118,
+          "line": 120,
           "text": "fn regular_if_present(path: &Path) -> Result<()> {"
         },
         {
-          "line": 129,
+          "line": 131,
           "text": "fn checkpoint(root: &Path) -> Result<Hash> {"
         },
         {
-          "line": 143,
+          "line": 145,
           "text": "fn visit(root: &Path, dir: &Path, files: &mut Vec<(String, Option<Hash>)>) -> Result<()> {"
         },
         {
-          "line": 191,
+          "line": 193,
           "text": "pub async fn restore("
         },
         {
-          "line": 224,
+          "line": 226,
           "text": "pub fn install_recovery_policy("
         }
       ],
-      "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "conditional_branches": [
+        {
+          "line": 115,
+          "text": "#[cfg(unix)]"
+        }
+      ],
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping. Directory-entry fsync is Unix-only; Windows physical power-loss durability is explicitly not proved.",
+      "previous_inventory_sha256": "a8ae0b3e9f4cda9fbd84db82331e3f336c923652190d03d08035a8f074530dac"
     },
     {
       "path": "crates/coconutclaw-sync/src/synthetic/membership/tests.rs",
@@ -9886,8 +10279,8 @@
     },
     {
       "path": "crates/coconutclaw-sync/tests/projection_recovery.rs",
-      "sha256": "f839351d42c10a9fe2b90c568f1dc7805a00e4923c27133a19e6a170e574091e",
-      "lines": 296,
+      "sha256": "49812f62490e4ead5ac8c6940043c7e835f9e62f115b44cb41aec804cf7ded51",
+      "lines": 298,
       "classification": "evidence-only",
       "families": [
         "Replication",
@@ -9916,14 +10309,19 @@
         {
           "line": 282,
           "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 287,
+          "text": "#[cfg(not(unix))]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "f839351d42c10a9fe2b90c568f1dc7805a00e4923c27133a19e6a170e574091e"
     },
     {
       "path": "crates/coconutclaw-sync/tests/publication_crash.rs",
-      "sha256": "857114ba53984afe692beebf8193673fe11e9b0b5fcfaea93263bc49cf1d2290",
-      "lines": 357,
+      "sha256": "50b34eb68ba0b79419febf3c217e806fbe6a26b5839c6b109fbc9a4e51cca0aa",
+      "lines": 359,
       "classification": "evidence-only",
       "families": [
         "Replication",
@@ -9948,7 +10346,7 @@
           "text": "fn successful_flush_survives_external_immediate_sigkill() {"
         },
         {
-          "line": 188,
+          "line": 190,
           "text": "async fn acknowledged_missing_metadata_repairs_and_conflicts_remain_immutable() {"
         }
       ],
@@ -9956,9 +10354,14 @@
         {
           "line": 170,
           "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 175,
+          "text": "#[cfg(not(unix))]"
         }
       ],
-      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below."
+      "gap": "Existing executable regression/fixture evidence, not an additional modeled production machine; portable vs cfg exclusions listed below.",
+      "previous_inventory_sha256": "857114ba53984afe692beebf8193673fe11e9b0b5fcfaea93263bc49cf1d2290"
     },
     {
       "path": "crates/coconutclaw-sync/tests/recovery_restart.rs",
@@ -10038,14 +10441,15 @@
     },
     {
       "path": "docs/final-verification-gates.md",
-      "sha256": "d27c0ede346aeb03d0c461626d77dbc09a9cad28ff9d540db1b2f9abab8de9d9",
-      "lines": 77,
+      "sha256": "f2e1f744daea778e04085280ab0532341176b70abaa68a6130769f53fcb99de3",
+      "lines": 82,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate."
+      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
+      "previous_inventory_sha256": "d27c0ede346aeb03d0c461626d77dbc09a9cad28ff9d540db1b2f9abab8de9d9"
     },
     {
       "path": "docs/inbox-scheduling.md",
@@ -10093,14 +10497,15 @@
     },
     {
       "path": "docs/multihost-acceptance.md",
-      "sha256": "aa89f16f9aa972dad06b3c4a9e64c65d54aa144e1109b160039326414d22fb83",
-      "lines": 237,
+      "sha256": "837a2a84ee9e73d9186b162883a8a0821ff946f043e2c4d41c0ccfc7d2dfb071",
+      "lines": 474,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate."
+      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
+      "previous_inventory_sha256": "aa89f16f9aa972dad06b3c4a9e64c65d54aa144e1109b160039326414d22fb83"
     },
     {
       "path": "docs/offline-toolchain.md",
@@ -10148,14 +10553,15 @@
     },
     {
       "path": "docs/roadmap.md",
-      "sha256": "8488c6f20720477d96e8bb82eabec6ada907282743f7dbd7825c398f95a44e8f",
-      "lines": 417,
+      "sha256": "6a3113a60e6cd85291ca74ceab61b225de550eda1c61bee219c160cfdc21a8c0",
+      "lines": 422,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate."
+      "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
+      "previous_inventory_sha256": "8488c6f20720477d96e8bb82eabec6ada907282743f7dbd7825c398f95a44e8f"
     },
     {
       "path": "docs/runtime-reconciliation.md",
@@ -10258,8 +10664,8 @@
     },
     {
       "path": "scripts/multihost-acceptance.py",
-      "sha256": "d0836caac6dd3530833e1989845553c4f778334973636773d5031c0b57e670f4",
-      "lines": 170,
+      "sha256": "8ce54ef5f4138a2331b0879e1b8b0922536bbd86ec22b8454a3d31251a590212",
+      "lines": 234,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -10268,7 +10674,8 @@
       "scope": "test-only adapter/synthetic dev acceptance, not deployed CLI",
       "declarations": [],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "d0836caac6dd3530833e1989845553c4f778334973636773d5031c0b57e670f4"
     },
     {
       "path": "sql/memory-import-migration.sql",
@@ -10361,8 +10768,8 @@
     },
     {
       "path": "sql/schema.sql",
-      "sha256": "d7f5d257bebc4f7ad73c8f30d92e23d81946fe1fd0e55be8e35ee57f7025679b",
-      "lines": 293,
+      "sha256": "d4399ef2dab8e7c64984d2cd52a05da479f6e59ee6290d4f9dfc6a5b181dbad0",
+      "lines": 311,
       "classification": "abstracted-family",
       "families": [
         "Ingress",
@@ -10372,165 +10779,472 @@
         "Context",
         "RuntimeComposition",
         "RemoteComposition",
-        "WaitNoticeComposition"
+        "WaitNoticeComposition",
+        "UIAuthority",
+        "GuidedInput"
       ],
       "scope": "runtime or shared library",
       "declarations": [
         {
+          "line": 2,
+          "text": "CREATE TABLE IF NOT EXISTS telegram_ui_observations (seq INTEGER PRIMARY KEY);"
+        },
+        {
           "line": 3,
+          "text": "CREATE TABLE IF NOT EXISTS telegram_ui_controls ("
+        },
+        {
+          "line": 12,
+          "text": "CREATE TABLE IF NOT EXISTS telegram_ui_inputs ("
+        },
+        {
+          "line": 21,
           "text": "CREATE TABLE IF NOT EXISTS runtime_remote_runs ("
         },
         {
-          "line": 11,
+          "line": 29,
           "text": "CREATE TABLE IF NOT EXISTS runtime_remote_results ("
         },
         {
-          "line": 23,
+          "line": 41,
           "text": "CREATE TABLE IF NOT EXISTS task_payloads ("
         },
         {
-          "line": 33,
+          "line": 51,
           "text": "CREATE TABLE IF NOT EXISTS kv ("
         },
         {
-          "line": 38,
+          "line": 56,
           "text": "CREATE TABLE IF NOT EXISTS turns ("
         },
         {
-          "line": 58,
+          "line": 76,
           "text": "CREATE TABLE IF NOT EXISTS tasks ("
         },
         {
-          "line": 69,
+          "line": 87,
           "text": "CREATE TABLE IF NOT EXISTS scheduled_tasks ("
         },
         {
-          "line": 84,
+          "line": 102,
           "text": "CREATE TABLE IF NOT EXISTS task_runs ("
         },
         {
-          "line": 104,
+          "line": 122,
           "text": "CREATE INDEX IF NOT EXISTS idx_task_runs_session_status ON task_runs(session_id, status, id DESC);"
         },
         {
-          "line": 105,
+          "line": 123,
           "text": "CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status, id DESC);"
         },
         {
-          "line": 107,
+          "line": 125,
           "text": "CREATE TABLE IF NOT EXISTS approvals ("
         },
         {
-          "line": 123,
+          "line": 141,
           "text": "CREATE INDEX IF NOT EXISTS idx_approvals_task_status ON approvals(task_run_id, status, id DESC);"
         },
         {
-          "line": 128,
+          "line": 146,
           "text": "CREATE TABLE IF NOT EXISTS runtime_inbox ("
         },
         {
-          "line": 136,
+          "line": 154,
           "text": "CREATE INDEX IF NOT EXISTS runtime_inbox_session ON runtime_inbox(session_id, task_run_id);"
         },
         {
-          "line": 137,
+          "line": 155,
           "text": "CREATE TABLE IF NOT EXISTS runtime_schedules ("
         },
         {
-          "line": 149,
+          "line": 167,
           "text": "CREATE TABLE IF NOT EXISTS schedule_occurrences ("
         },
         {
-          "line": 158,
+          "line": 176,
           "text": "CREATE TABLE IF NOT EXISTS runtime_schedule_runs ("
         },
         {
-          "line": 166,
+          "line": 184,
           "text": "CREATE TABLE IF NOT EXISTS telegram_ingress ("
         },
         {
-          "line": 180,
+          "line": 198,
           "text": "CREATE INDEX IF NOT EXISTS telegram_ingress_order ON telegram_ingress(session_id,state,seq);"
         },
         {
-          "line": 184,
+          "line": 202,
           "text": "CREATE TABLE IF NOT EXISTS telegram_reconciliation_controls("
         },
         {
-          "line": 187,
+          "line": 205,
           "text": "CREATE TABLE IF NOT EXISTS runtime_reconciliation_offers("
         },
         {
-          "line": 196,
+          "line": 214,
           "text": "CREATE TABLE IF NOT EXISTS runtime_reconciliation_audit("
         },
         {
-          "line": 202,
+          "line": 220,
           "text": "CREATE TRIGGER IF NOT EXISTS reconciliation_offer_immutable_update BEFORE UPDATE ON runtime_reconciliation_offers"
         },
         {
-          "line": 204,
+          "line": 222,
           "text": "CREATE TRIGGER IF NOT EXISTS reconciliation_offer_immutable_delete BEFORE DELETE ON runtime_reconciliation_offers"
         },
         {
-          "line": 206,
+          "line": 224,
           "text": "CREATE TRIGGER IF NOT EXISTS reconciliation_audit_immutable_update BEFORE UPDATE ON runtime_reconciliation_audit"
         },
         {
-          "line": 208,
+          "line": 226,
           "text": "CREATE TRIGGER IF NOT EXISTS reconciliation_audit_immutable_delete BEFORE DELETE ON runtime_reconciliation_audit"
         },
         {
-          "line": 212,
+          "line": 230,
           "text": "CREATE TABLE IF NOT EXISTS runtime_tasks("
         },
         {
-          "line": 220,
+          "line": 238,
           "text": "CREATE TABLE IF NOT EXISTS runtime_attempts("
         },
         {
-          "line": 229,
+          "line": 247,
           "text": "CREATE TABLE IF NOT EXISTS runtime_waits("
         },
         {
-          "line": 243,
+          "line": 261,
           "text": "CREATE INDEX IF NOT EXISTS runtime_waits_ready ON runtime_waits(kind,state,run_id);"
         },
         {
-          "line": 247,
+          "line": 265,
           "text": "CREATE TABLE IF NOT EXISTS runtime_preferences("
         },
         {
-          "line": 256,
+          "line": 274,
           "text": "CREATE INDEX IF NOT EXISTS runtime_preferences_scope ON runtime_preferences(session_id,name,id);"
         },
         {
-          "line": 257,
+          "line": 275,
           "text": "CREATE TRIGGER IF NOT EXISTS preference_immutable_update BEFORE UPDATE ON runtime_preferences"
         },
         {
-          "line": 259,
+          "line": 277,
           "text": "CREATE TRIGGER IF NOT EXISTS preference_immutable_delete BEFORE DELETE ON runtime_preferences"
         },
         {
-          "line": 263,
+          "line": 281,
           "text": "CREATE TABLE IF NOT EXISTS runtime_task_blockers("
         },
         {
-          "line": 268,
+          "line": 286,
           "text": "CREATE TABLE IF NOT EXISTS runtime_notifications("
         },
         {
-          "line": 285,
+          "line": 303,
           "text": "CREATE TRIGGER IF NOT EXISTS notification_immutable_update BEFORE UPDATE ON runtime_notifications"
         },
         {
-          "line": 292,
+          "line": 310,
           "text": "CREATE TRIGGER IF NOT EXISTS notification_immutable_delete BEFORE DELETE ON runtime_notifications"
         }
       ],
       "conditional_branches": [],
-      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping."
+      "gap": "Abstract transition kernel, not Rust/SQLite/OS refinement proof; see family action mapping.",
+      "previous_inventory_sha256": "d7f5d257bebc4f7ad73c8f30d92e23d81946fe1fd0e55be8e35ee57f7025679b"
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
+      "sha256": "6457d0fad63318268f86dfbe50febd1ba1a3e67cfe83dc3abaad136a59bf31b8",
+      "lines": 537,
+      "classification": "abstracted-family",
+      "families": [
+        "Ingress",
+        "UIAuthority",
+        "GuidedInput",
+        "Effects"
+      ],
+      "scope": "runtime or shared library",
+      "declarations": [
+        {
+          "line": 9,
+          "text": "pub(crate) const PREFIX: &str = \"COCONUT_UI_V1:\";"
+        },
+        {
+          "line": 11,
+          "text": "const BUTTON_LIFETIME: i64 = 24 * 60 * 60;"
+        },
+        {
+          "line": 12,
+          "text": "const INPUT_LIFETIME: i64 = 15 * 60;"
+        },
+        {
+          "line": 15,
+          "text": "pub(crate) struct Message {"
+        },
+        {
+          "line": 22,
+          "text": "fn epoch() -> i64 {"
+        },
+        {
+          "line": 26,
+          "text": "fn token(store: &Store) -> Result<String> {"
+        },
+        {
+          "line": 32,
+          "text": "fn button("
+        },
+        {
+          "line": 56,
+          "text": "fn controls("
+        },
+        {
+          "line": 86,
+          "text": "fn encoded("
+        },
+        {
+          "line": 111,
+          "text": "pub(crate) fn decode(output: &str) -> Option<Message> {"
+        },
+        {
+          "line": 124,
+          "text": "pub(crate) fn runtime_control(store: &Store, session: &SessionKey, text: &str) -> Result<bool> {"
+        },
+        {
+          "line": 139,
+          "text": "pub(crate) fn observation_control("
+        },
+        {
+          "line": 181,
+          "text": "fn callback_message(store: &Store, update: Option<&str>, token: &str) -> Result<Option<String>> {"
+        },
+        {
+          "line": 207,
+          "text": "const HELP: &str = \"Use Home to inspect this conversation/topic. Reports are dated snapshots, not live dashboards. New snapshot sends a new report.\\n\\nTasks are logical work; runs are attempts. Cancel requests cancellation, not proof it stopped. Approve/Reject apply only to pending requests.\\n\\nCommands: /start, /help, /fresh (new context, keeps memory), /tasks [run ID], /cancel [run ID], /memory, /preferences, /notifications, /schedules, /approve ID, /reject ID, /reconcile.\\n\\n/reconcile only acknowledges proven delivery recovery. It is never a generic retry. Unknown effects are not retried automatically.\\n\\nMemory and preference input uses an explicit /input code so unrelated conversation messages remain ordinary messages. /input cancel abandons it; a new input replaces the previous one. Inputs expire after 15 minutes.\";"
+        },
+        {
+          "line": 210,
+          "text": "pub(crate) fn handle("
+        },
+        {
+          "line": 449,
+          "text": "fn callback_id(store: &Store, update: Option<&str>) -> Result<Option<String>> {"
+        },
+        {
+          "line": 463,
+          "text": "fn render_snapshot("
+        }
+      ],
+      "conditional_branches": [],
+      "gap": "Finite authority/guide contracts, not token entropy, full parser, arbitrary memory operations, clock rollback or rendering proof."
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/store/status.rs",
+      "sha256": "8147a0b1d8807dbadc7d3d4a5746933f37b645a5de3702939d1cfc8fc2e856e5",
+      "lines": 344,
+      "classification": "abstracted-family",
+      "families": [
+        "UIAuthority",
+        "Ingress"
+      ],
+      "scope": "runtime or shared library",
+      "declarations": [
+        {
+          "line": 8,
+          "text": "const LIST_LIMIT: i64 = 50;"
+        },
+        {
+          "line": 11,
+          "text": "pub(crate) struct StatusSnapshot {"
+        },
+        {
+          "line": 24,
+          "text": "pub(crate) struct StatusTask {"
+        },
+        {
+          "line": 42,
+          "text": "pub(crate) struct StatusSchedule {"
+        },
+        {
+          "line": 54,
+          "text": "pub(crate) struct ScheduleTiming {"
+        },
+        {
+          "line": 63,
+          "text": "pub(crate) struct TransportObservation {"
+        },
+        {
+          "line": 70,
+          "text": "fn timestamp(raw: Option<String>) -> Option<String> {"
+        },
+        {
+          "line": 76,
+          "text": "fn run_status(raw: &str) -> &'static str {"
+        },
+        {
+          "line": 91,
+          "text": "fn timing(raw: &str) -> Option<ScheduleTiming> {"
+        },
+        {
+          "line": 128,
+          "text": "const TASK_OWNER: &str = \"t.session_id=?1 AND r.session_id=t.session_id"
+        },
+        {
+          "line": 135,
+          "text": "pub(crate) fn status_snapshot("
+        },
+        {
+          "line": 208,
+          "text": "fn status_tasks(&self, scope: &str) -> Result<Vec<StatusTask>> {"
+        },
+        {
+          "line": 289,
+          "text": "fn status_schedules(&self, scope: &str) -> Result<Vec<StatusSchedule>> {"
+        },
+        {
+          "line": 344,
+          "text": "mod tests;"
+        }
+      ],
+      "conditional_branches": [
+        {
+          "line": 342,
+          "text": "#[cfg(test)]"
+        }
+      ],
+      "gap": "Bounded scoped read-only observations; exact SQL joins/counts/time formatting and absence of health telemetry are executable evidence, not modeled arithmetic."
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/store/status_tests.rs",
+      "sha256": "f4afebb66614cb8b03d5de830024a6b95294d9abaa682602dacf8bd4cd2205ef",
+      "lines": 529,
+      "classification": "evidence-only",
+      "families": [
+        "UIAuthority",
+        "Ingress"
+      ],
+      "scope": "support/evidence",
+      "declarations": [
+        {
+          "line": 5,
+          "text": "const NOW: &str = \"2026-11-17T12:00:00Z\";"
+        },
+        {
+          "line": 6,
+          "text": "const SECRET: &str = \"<secret>&private prompt, credential and internal JSON\";"
+        },
+        {
+          "line": 8,
+          "text": "fn fixture() -> (tempfile::TempDir, RuntimeConfig, Store) {"
+        },
+        {
+          "line": 15,
+          "text": "fn run(store: &Store, session: &SessionKey) -> i64 {"
+        },
+        {
+          "line": 31,
+          "text": "fn ingress(store: &Store, session: &SessionKey, id: i64, state: &str) {"
+        },
+        {
+          "line": 43,
+          "text": "fn empty_snapshot_is_scoped_unknown_health_not_inferred_from_config() {"
+        },
+        {
+          "line": 66,
+          "text": "fn exact_chat_topic_platform_scope_and_inconsistent_graph_are_fenced() {"
+        },
+        {
+          "line": 101,
+          "text": "fn persisted_progress_wait_cancellation_and_unknown_are_safe_observations() {"
+        },
+        {
+          "line": 144,
+          "text": "fn continuation_is_one_task_two_runs_and_pending_approval_is_scope_bound() {"
+        },
+        {
+          "line": 202,
+          "text": "fn durable_transport_custody_not_network_health_and_malformed_data_is_explicit() {"
+        },
+        {
+          "line": 238,
+          "text": "fn actual_inbox_and_calendar_persist_across_reopen_without_snapshot_effects() {"
+        },
+        {
+          "line": 324,
+          "text": "fn oversized_lists_have_totals_active_priority_and_safe_unknown_fields() {"
+        },
+        {
+          "line": 370,
+          "text": "fn snapshot_reuses_existing_custody_transaction_without_committing_it() {"
+        },
+        {
+          "line": 382,
+          "text": "fn schedule_blockers_match_existing_admission_fence_without_granting_retries() {"
+        },
+        {
+          "line": 449,
+          "text": "fn terminal_unknown_delivery_stays_ahead_of_large_completed_history() {"
+        },
+        {
+          "line": 478,
+          "text": "fn schedule_timing_is_validated_and_explicit_not_raw_json() {"
+        }
+      ],
+      "conditional_branches": [],
+      "gap": "Backend snapshot executable evidence, not additional production state."
+    },
+    {
+      "path": "docs/telegram-operations.md",
+      "sha256": "6f908f69917f1273907fc5d6916f5142340625447ecfb4b5ad8fc61d243a652d",
+      "lines": 87,
+      "classification": "excluded-nonruntime",
+      "families": [],
+      "scope": "support/evidence",
+      "declarations": [],
+      "conditional_branches": [],
+      "gap": "Product operations documentation; mocked capture evidence, not live acceptance."
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/store/task_adapter/proposals/process/provider/host_auth_in_place.py",
+      "sha256": "5ebb41e4c9e3862d7f0f6594c0e8ea9313d5d3f11d419ad246e7f4fcb92164b0",
+      "lines": 20,
+      "classification": "evidence-only",
+      "families": [
+        "Process",
+        "RemoteComposition"
+      ],
+      "scope": "test-only multihost harness",
+      "declarations": [],
+      "conditional_branches": [],
+      "gap": "Previously pinned multihost host-local auth callback, already verification-inventoried. Native auth/config/credential effects are not executed by formal gate and are not modeled. Source unchanged."
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/test_runtime.rs",
+      "sha256": "b2282e843d806a4867c68e5c96ee15db12ddcdf91cb3b77cc003cfac53163fd7",
+      "lines": 55,
+      "classification": "evidence-only",
+      "families": [
+        "Process",
+        "RuntimeComposition"
+      ],
+      "scope": "test-only native executable locator",
+      "declarations": [
+        {
+          "line": 5,
+          "text": "pub(crate) fn binary() -> PathBuf {"
+        },
+        {
+          "line": 13,
+          "text": "fn locate(test: &Path, selected: Option<&Path>) -> Option<PathBuf> {"
+        },
+        {
+          "line": 25,
+          "text": "fn normal_runtime_lookup_supports_cargo_artifact_layouts_and_explicit_override() {"
+        }
+      ],
+      "conditional_branches": [],
+      "gap": "Unchanged validated PR22 locator/regression for explicit override and old/deep Cargo layouts. No production state transition or provider invocation."
     }
   ],
   "counts": {
@@ -10545,5 +11259,6 @@
     "external Java/chrono/SQLite/iroh/OS/service/provider/Telegram implementations (assumed contracts, not verified here)",
     "production/private stores, credentials, real services, and authenticated native provider tasks (not inspected/executed)"
   ],
-  "verification_additions": "formal/*.tla, *.cfg, cases.json, source-map.json, implementation-hashes.json, inventory.json, test_runner.py and scripts/check-formal.py inventoried separately by final verification input manifest, not deployed runtime"
+  "verification_additions": "formal/*.tla, *.cfg, cases.json, source-map.json, implementation-hashes.json, inventory.json, test_runner.py and scripts/check-formal.py inventoried separately by final verification input manifest, not deployed runtime",
+  "reconciliation": "Historical UI inspection in reconciliation.json; each merged pin/source delta inspected in integration-reconciliation.json. Physical startup/watchers/sockets/Python details remain native evidence, not Rust refinement."
 }

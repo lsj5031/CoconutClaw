@@ -1,3 +1,21 @@
+-- Opaque Telegram controls are scoped capabilities, never provider instructions.
+CREATE TABLE IF NOT EXISTS telegram_ui_observations (seq INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS telegram_ui_controls (
+    token TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    navigation_only INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS telegram_ui_inputs (
+    session_id TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    token TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+);
 -- Remote ingress remains gated by the existing verified transport adapter.
 -- These are exact source-run bindings/custody, never new notification tasks.
 CREATE TABLE IF NOT EXISTS runtime_remote_runs (

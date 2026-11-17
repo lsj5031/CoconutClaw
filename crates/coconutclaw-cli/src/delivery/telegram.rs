@@ -85,6 +85,13 @@ fn durable_op(
     match send() {
         Ok(()) => {
             state.mark_telegram_op(op);
+            if matches!(task_id, crate::delivery::DeliveryKey::Telegram(_)) && op == "telegram:text"
+            {
+                // UI uses one text operation, not a rich/chunk plan. Preserve
+                // its positive receipt rather than a misleading sending phase.
+                state.operations.get_mut(op).expect("saved operation")["phase"] =
+                    "acknowledged".into();
+            }
             persist_delivery_state(store, task_id, state)?;
             Ok(true)
         }
@@ -127,6 +134,23 @@ fn deliver_text(
     chat_id: &str,
     reply: &str,
 ) -> Result<bool> {
+    if matches!(request.task_id, crate::delivery::DeliveryKey::Telegram(_))
+        && let Some(message) = crate::telegram_ui::decode(reply)
+    {
+        let sent = durable_op(store, request.task_id, state, "telegram:text", || {
+            crate::telegram::telegram_send_ui(client, cfg, chat_id, &message)
+        })?;
+        if sent
+            && !state.has_telegram_op("telegram:callback-attempted")
+            && let Some(id) = message.callback_id.as_deref()
+        {
+            // Attempt only, not proof. An expired spinner never gates the report.
+            state.mark_telegram_op("telegram:callback-attempted");
+            persist_delivery_state(store, request.task_id, state)?;
+            let _ = crate::telegram::telegram_answer_ui_callback(client, cfg, id);
+        }
+        return Ok(sent);
+    }
     if state.has_telegram_op("telegram:text") {
         return Ok(true);
     }
@@ -308,6 +332,11 @@ fn output_effects(
     key: crate::delivery::DeliveryKey,
     output: &str,
 ) -> Result<Vec<crate::markers::Effect>> {
+    if matches!(key, crate::delivery::DeliveryKey::Telegram(_))
+        && crate::telegram_ui::decode(output).is_some()
+    {
+        return Ok(vec![crate::markers::Effect::TelegramReply(output.into())]);
+    }
     let literal = match key {
         crate::delivery::DeliveryKey::Task(id) => store.runtime_result_is_literal(id)?,
         crate::delivery::DeliveryKey::Telegram(_)

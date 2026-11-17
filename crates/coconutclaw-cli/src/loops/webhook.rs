@@ -186,7 +186,7 @@ fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookActi
             .get("data")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if data.eq_ignore_ascii_case("cancel") {
+        {
             let chat_id = callback_query
                 .get("message")
                 .and_then(|node| node.get("chat"))
@@ -197,7 +197,7 @@ fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookActi
                     .get("from")
                     .and_then(|v| v.get("id"))
                     .map(value_to_string)
-                    .is_some_and(|actor| Some(actor.as_str()) != chat_id.as_deref())
+                    .is_none_or(|actor| Some(actor.as_str()) != chat_id.as_deref())
                 {
                     return Ok(WebhookAction::Ignore {
                         update_id,
@@ -216,7 +216,29 @@ fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookActi
                 if session.thread_id.is_some() && cfg.telegram_topics_enabled == Some(false) {
                     return Ok(WebhookAction::Ignore { update_id, reason: "topic route received with topic mode OFF; enable in BotFather, history preserved".into() });
                 }
-                return Ok(WebhookAction::Cancel { update_id, session });
+                if data.eq_ignore_ascii_case("cancel") {
+                    return Ok(WebhookAction::Cancel { update_id, session });
+                }
+                let input = TurnInput {
+                    input_type: InputType::Text,
+                    user_text: format!("/button {}", data.strip_prefix("ui:").unwrap_or("invalid")),
+                    attachment_type: None,
+                    attachment_path: None,
+                    attachment_owned: false,
+                    supplemental_context: None,
+                    channel: "telegram".into(),
+                };
+                return Ok(WebhookAction::Turn(Box::new(WebhookTurn {
+                    update_id,
+                    session,
+                    input,
+                    media: None,
+                    quoted: QuotedMessage {
+                        reply_from: None,
+                        reply_text: None,
+                        reply_ts: None,
+                    },
+                })));
             }
             let actual_chat = chat_id.unwrap_or_else(|| "<missing>".to_string());
             return Ok(WebhookAction::Ignore {
@@ -226,10 +248,6 @@ fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookActi
                 ),
             });
         }
-        return Ok(WebhookAction::Ignore {
-            update_id,
-            reason: "callback_query_ignored".into(),
-        });
     }
 
     let Some(message) = value.get("message") else {
@@ -260,7 +278,7 @@ fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookActi
         .get("from")
         .and_then(|v| v.get("id"))
         .map(value_to_string)
-        .is_some_and(|actor| actor != chat_id)
+        .is_none_or(|actor| actor != chat_id)
     {
         return Ok(WebhookAction::Ignore {
             update_id,
@@ -389,6 +407,21 @@ pub(crate) fn process_webhook_line(
             .and_then(|t| crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref()))
             == Some("/reconcile"));
     let custody = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+    let observation = if let WebhookAction::Turn(turn) = &action {
+        let mut parts = turn.input.user_text.splitn(2, char::is_whitespace);
+        let command = parts
+            .next()
+            .and_then(|t| crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref()))
+            .unwrap_or("");
+        crate::telegram_ui::observation_control(
+            store,
+            &turn.session,
+            command,
+            parts.next().unwrap_or("").trim(),
+        )?
+    } else {
+        false
+    };
     let seq = store.admit_telegram(&id, &payload, session.as_deref(), &iso_now(&cfg.timezone))?;
     if reconciliation {
         store.conn.execute(
@@ -396,26 +429,32 @@ pub(crate) fn process_webhook_line(
             [seq],
         )?;
     }
+    if observation {
+        store.conn.execute(
+            "INSERT OR IGNORE INTO telegram_ui_observations VALUES(?1)",
+            [seq],
+        )?;
+    }
     custody.commit()?;
     let sql_only = match &action {
         WebhookAction::Ignore { .. } | WebhookAction::Fresh { .. } => true,
-        WebhookAction::Turn(turn) => turn
-            .input
-            .user_text
-            .split_whitespace()
-            .next()
-            .and_then(|t| crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref()))
-            .is_some_and(|c| {
-                matches!(
-                    c,
-                    "/memory"
-                        | "/fresh"
-                        | "/schedules"
-                        | "/reconcile"
-                        | "/preferences"
-                        | "/notifications"
-                ) || (c == "/tasks" && turn.input.user_text.split_whitespace().nth(1).is_some())
-            }),
+        WebhookAction::Turn(turn) => {
+            turn.input
+                .user_text
+                .split_whitespace()
+                .next()
+                .and_then(|t| {
+                    crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref())
+                })
+                .is_some_and(|c| {
+                    c.starts_with('/') && !matches!(c, "/cancel" | "/approve" | "/reject")
+                })
+                && !crate::telegram_ui::runtime_control(
+                    store,
+                    &turn.session,
+                    &turn.input.user_text,
+                )?
+        }
         _ => false,
     };
     if sql_only {
@@ -430,7 +469,7 @@ pub(crate) fn process_webhook_line(
         let normal_turn = matches!(&action,WebhookAction::Turn(turn)
             if !turn.input.user_text.split_whitespace().next()
                 .and_then(|t|crate::telegram::command_token(t,cfg.telegram_bot_username.as_deref()))
-                .is_some_and(|c|matches!(c,"/cancel"|"/approve"|"/reject"|"/tasks")));
+                    .is_some_and(|c|c.starts_with('/')));
         let result = (|| {
             let mut progress = None;
             if let WebhookAction::Turn(turn) = &action {
@@ -442,8 +481,7 @@ pub(crate) fn process_webhook_line(
                     .and_then(|t| {
                         crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref())
                     });
-                let control = command
-                    .is_some_and(|c| matches!(c, "/cancel" | "/approve" | "/reject" | "/tasks"));
+                let control = command.is_some_and(|c| c.starts_with('/'));
                 if !control
                     && !scheduler.has_task_for_update_id(&id)?
                     && !store.turn_exists_for_update_id(&id)?
@@ -553,9 +591,9 @@ fn process_webhook_action(
             let chat_id = session.telegram_route_id();
             let session_id = session.id();
             let reply = if let Some(task_id) = scheduler.cancel_active_for_session(&session_id)? {
-                format!("Cancel requested for task #{task_id}.")
+                format!("Cancel requested for run #{task_id}.")
             } else {
-                "No active task for this chat.".to_string()
+                "No active run for this conversation/topic.".to_string()
             };
             Ok(ProcessOutcome {
                 should_ack: true,
@@ -581,7 +619,7 @@ fn process_webhook_action(
                 update_id,
                 chat_id: Some(chat_id),
                 output: Some(
-                    render_output("Context cleared. Fresh start!", &[])
+                    render_output("Context cleared. New conversation started; memory and preferences are kept.", &[])
                         .trim_end()
                         .to_string(),
                 ),

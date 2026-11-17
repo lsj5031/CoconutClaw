@@ -6,7 +6,8 @@
     "constants": {
       "N": 2,
       "Sessions": 1,
-      "Unsafe": false
+      "Unsafe": false,
+      "Observation": false
     },
     "invariants": [
       "TypeOK",
@@ -34,7 +35,8 @@
     "constants": {
       "N": 3,
       "Sessions": 2,
-      "Unsafe": false
+      "Unsafe": false,
+      "Observation": false
     },
     "invariants": [
       "TypeOK",
@@ -62,7 +64,8 @@
     "constants": {
       "N": 2,
       "Sessions": 1,
-      "Unsafe": true
+      "Unsafe": true,
+      "Observation": false
     },
     "invariants": [
       "NoAmbiguousRetry"
@@ -951,5 +954,304 @@
     "liveness": true,
     "required_actions": [],
     "bounds_note": "Fair clock/reducer, coalesce, no edits/pause/cancel, fetch held blocked forever; negative mutation couples admission to fetch return"
+  },
+  {
+    "id": "Ingress-observation-small",
+    "module": "Ingress",
+    "config": "Ingress-observation-small.cfg",
+    "constants": {
+      "N": 2,
+      "Sessions": 1,
+      "Unsafe": false,
+      "Observation": true
+    },
+    "invariants": [
+      "TypeOK",
+      "FrozenIdentity",
+      "CustodyCursor",
+      "AtomicControl",
+      "NoAmbiguousRetry",
+      "ObservationReadOnly"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim.",
+    "required_actions": [
+      "Admit",
+      "Claim",
+      "Commit",
+      "TaskReceipt",
+      "AmbiguousEffect",
+      "Recover",
+      "ObserveClaim",
+      "ObservePastPending",
+      "ObservePastApplying",
+      "ObservePastUnknown",
+      "ObserveCommit"
+    ]
+  },
+  {
+    "id": "Ingress-observation-expanded",
+    "module": "Ingress",
+    "config": "Ingress-observation-expanded.cfg",
+    "constants": {
+      "N": 3,
+      "Sessions": 1,
+      "Unsafe": false,
+      "Observation": true
+    },
+    "invariants": [
+      "TypeOK",
+      "FrozenIdentity",
+      "CustodyCursor",
+      "AtomicControl",
+      "NoAmbiguousRetry",
+      "ObservationReadOnly"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim.",
+    "required_actions": [
+      "Admit",
+      "Claim",
+      "Commit",
+      "TaskReceipt",
+      "AmbiguousEffect",
+      "Recover",
+      "ObserveClaim",
+      "ObservePastPending",
+      "ObservePastApplying",
+      "ObservePastUnknown",
+      "ObserveCommit"
+    ]
+  },
+  {
+    "id": "Ingress-observation-negative",
+    "module": "Ingress",
+    "config": "Ingress-observation-negative.cfg",
+    "constants": {
+      "N": 2,
+      "Sessions": 1,
+      "Unsafe": true,
+      "Observation": true
+    },
+    "invariants": [
+      "ObservationReadOnly"
+    ],
+    "violation": "ObservationReadOnly",
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim."
+  },
+  {
+    "id": "UIAuthority-small",
+    "module": "UIAuthority",
+    "config": "UIAuthority-small.cfg",
+    "constants": {
+      "B": 2,
+      "Scopes": 1,
+      "Observe": [
+        1
+      ],
+      "Unsafe": 0
+    },
+    "invariants": [
+      "TypeOK",
+      "AuthorityAtUse",
+      "SingleUse",
+      "ObservationNoRuntime",
+      "ConsumedBeforeEffect"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim.",
+    "required_actions": [
+      "Issue",
+      "Expire",
+      "Revoke",
+      "Read",
+      "Consume",
+      "Invoke",
+      "Crash"
+    ]
+  },
+  {
+    "id": "UIAuthority-expanded",
+    "module": "UIAuthority",
+    "config": "UIAuthority-expanded.cfg",
+    "constants": {
+      "B": 2,
+      "Scopes": 2,
+      "Observe": [
+        1
+      ],
+      "Unsafe": 0
+    },
+    "invariants": [
+      "TypeOK",
+      "AuthorityAtUse",
+      "SingleUse",
+      "ObservationNoRuntime",
+      "ConsumedBeforeEffect"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim.",
+    "required_actions": [
+      "Issue",
+      "Expire",
+      "Revoke",
+      "Read",
+      "Consume",
+      "Invoke",
+      "Crash"
+    ]
+  },
+  {
+    "id": "UIAuthority-negative-authority",
+    "module": "UIAuthority",
+    "config": "UIAuthority-negative-authority.cfg",
+    "constants": {
+      "B": 2,
+      "Scopes": 2,
+      "Observe": [
+        1
+      ],
+      "Unsafe": 1
+    },
+    "invariants": [
+      "AuthorityAtUse"
+    ],
+    "violation": "AuthorityAtUse",
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim."
+  },
+  {
+    "id": "UIAuthority-negative-replay",
+    "module": "UIAuthority",
+    "config": "UIAuthority-negative-replay.cfg",
+    "constants": {
+      "B": 2,
+      "Scopes": 1,
+      "Observe": [
+        1
+      ],
+      "Unsafe": 2
+    },
+    "invariants": [
+      "SingleUse"
+    ],
+    "violation": "SingleUse",
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim."
+  },
+  {
+    "id": "GuidedInput-small",
+    "module": "GuidedInput",
+    "config": "GuidedInput-small.cfg",
+    "constants": {
+      "Codes": 2,
+      "Scopes": 1,
+      "Unsafe": 0
+    },
+    "invariants": [
+      "TypeOK",
+      "ScopedCurrent",
+      "ExplicitInput",
+      "NoExpiredUse",
+      "SingleApplication",
+      "CancelBoundToCode"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim.",
+    "required_actions": [
+      "Start",
+      "Replace",
+      "Expire",
+      "Submit",
+      "ExpiredInput",
+      "Cancel",
+      "StaleCancel",
+      "Ordinary"
+    ]
+  },
+  {
+    "id": "GuidedInput-expanded",
+    "module": "GuidedInput",
+    "config": "GuidedInput-expanded.cfg",
+    "constants": {
+      "Codes": 2,
+      "Scopes": 2,
+      "Unsafe": 0
+    },
+    "invariants": [
+      "TypeOK",
+      "ScopedCurrent",
+      "ExplicitInput",
+      "NoExpiredUse",
+      "SingleApplication",
+      "CancelBoundToCode"
+    ],
+    "violation": null,
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim.",
+    "required_actions": [
+      "Start",
+      "Replace",
+      "Expire",
+      "Submit",
+      "ExpiredInput",
+      "Cancel",
+      "StaleCancel",
+      "Ordinary"
+    ]
+  },
+  {
+    "id": "GuidedInput-negative-implicit",
+    "module": "GuidedInput",
+    "config": "GuidedInput-negative-implicit.cfg",
+    "constants": {
+      "Codes": 2,
+      "Scopes": 1,
+      "Unsafe": 1
+    },
+    "invariants": [
+      "ExplicitInput"
+    ],
+    "violation": "ExplicitInput",
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim."
+  },
+  {
+    "id": "GuidedInput-negative-stale-cancel",
+    "module": "GuidedInput",
+    "config": "GuidedInput-negative-stale-cancel.cfg",
+    "constants": {
+      "Codes": 2,
+      "Scopes": 1,
+      "Unsafe": 2
+    },
+    "invariants": [
+      "CancelBoundToCode"
+    ],
+    "violation": "CancelBoundToCode",
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim."
+  },
+  {
+    "id": "GuidedInput-negative-expiry",
+    "module": "GuidedInput",
+    "config": "GuidedInput-negative-expiry.cfg",
+    "constants": {
+      "Codes": 2,
+      "Scopes": 1,
+      "Unsafe": 3
+    },
+    "invariants": [
+      "NoExpiredUse"
+    ],
+    "violation": "NoExpiredUse",
+    "liveness": false,
+    "bounds_note": "Finite aliases only; no state/depth constraints. Stuttering and terminal/Unknown waits allowed; no Rust refinement or general liveness claim."
   }
 ]

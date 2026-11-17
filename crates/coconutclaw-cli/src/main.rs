@@ -18,6 +18,7 @@ mod service;
 mod session;
 mod store;
 mod telegram;
+mod telegram_ui;
 #[cfg(test)]
 mod test_runtime;
 mod turn;

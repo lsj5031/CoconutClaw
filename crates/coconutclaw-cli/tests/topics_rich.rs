@@ -227,7 +227,7 @@ impl Telegram {
                         // authorized intake, not the idle one-second sleep.
                         thread::sleep(Duration::from_millis(10));
                         intake_id = intake_id.max(offset);
-                        let update = json!({"update_id":intake_id,"message":{"chat":{"id":321951227,"type":"private"},"message_thread_id":8,"text":"/tasks"}});
+                        let update = json!({"update_id":intake_id,"message":{"from":{"id":321951227},"chat":{"id":321951227,"type":"private"},"message_thread_id":8,"text":"/tasks"}});
                         intake_id += 1;
                         json!([update])
                     } else {
@@ -307,7 +307,8 @@ impl Telegram {
         }
     }
     fn message(&self, id: u64, topic: Option<u64>, text: &str) {
-        let mut message = json!({"chat":{"id":321951227,"type":"private"},"text":text});
+        let mut message =
+            json!({"from":{"id":321951227},"chat":{"id":321951227,"type":"private"},"text":text});
         if let Some(topic) = topic {
             message["message_thread_id"] = topic.into();
         }
@@ -430,11 +431,11 @@ print(json.dumps({"type":"thread.started","thread_id":"native-"+n}))
     wait(|| {
         telegram.transcript.lock().unwrap().iter().any(|entry| {
             entry["params"]["message_thread_id"] == "3"
-                && reply_text(entry).contains("not active for this chat")
+                && reply_text(entry).contains("not active for this conversation/topic")
         })
     });
     assert!((1..=5).all(alive));
-    telegram.updates.lock().unwrap().push(json!({"update_id":9,"callback_query":{"data":"cancel","message":{"chat":{"id":321951227,"type":"private"},"message_thread_id":2}}}));
+    telegram.updates.lock().unwrap().push(json!({"update_id":9,"callback_query":{"from":{"id":321951227},"data":"cancel","message":{"chat":{"id":321951227,"type":"private"},"message_thread_id":2}}}));
     wait(|| dir.join("started-6").exists());
     assert!(!alive(2));
     assert!([1, 3, 4, 5, 6].into_iter().all(alive));
@@ -1645,7 +1646,7 @@ pathlib.Path(args[args.index("--output-last-message")+1]).write_bytes((root/"pro
             wait(|| {
                 telegram.transcript.lock().unwrap().iter().any(|entry| {
                     entry["params"]["message_thread_id"] == "8"
-                        && reply_text(entry) == "No active tasks."
+                        && reply_text(entry).contains("No tasks in this conversation/topic.")
                 })
             });
             stop(&mut repeated_runtime);

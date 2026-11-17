@@ -11,7 +11,7 @@ python3 /home/leo/Code/personal/CoconutClaw/scripts/check-formal.py \
   --java /home/leo/.local/share/mise/installs/java/temurin-21.0.13+9.0.LTS/bin/java \
   --jar /home/leo/.local/share/tlaplus/v1.7.4/tla2tools.jar
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-  -s /home/leo/Code/personal/CoconutClaw/formal -p test_runner.py
+  -s /home/leo/Code/personal/CoconutClaw/formal -p 'test_*.py'
 ```
 
 The artifact directory must be new. No installation, provider, Telegram, database
@@ -23,30 +23,42 @@ and records commands, input bytes/hashes, exits, elapsed time, state counts and
 action coverage. A timeout or resource/tool error is incomplete, never a proof.
 `--cases` selects named entries for affected rechecks, not a claim of the full gate.
 
-- `implementation-hashes.json`:137 runtime/shared/test/build inputs. The original
- 135 were pinned before modeling. The17 November test-only multihost delta
- refreshes eight changed pins and adds the host-local auth callback; it changes
- no normal executable/dependency/SQL behavior. See the source-map supplement.
- The macOS/Linux CI follow-up adds a test-only native-binary locator pin and
- refreshes inspected test/build pins. Its test-profile arithmetic optimization
- changes neither signature validation nor model actions; no deadline is relaxed.
-- `inventory.json`:171 pre-formal repository paths, including explicit excluded
+- `implementation-hashes.json`:140 runtime/shared/test/build inputs. The original
+ 135 and multihost callback are joined by the UI reducer and two backend snapshot
+ files, plus PR22's test-only native-binary locator. The test-profile arithmetic
+ optimization changes neither signature validation nor model actions; no
+ deadline is relaxed. `reconciliation.json` records the earlier UI inspection;
+ `integration-reconciliation.json` records each inspected integration delta.
+ The former records each of 31 inherited/UI pin
+ deltas and its original committed preimage, not a blind hash refresh.
+- `inventory.json`:177 repository paths (171 historical, four UI additions,
+ the multihost callback and PR22 locator),
+ including explicit excluded
   and evidence-only paths, declaration/SQL/conditional scans and individual gaps.
 - `source-map.json`:owners, independent state, source declaration/hash anchors,
   guards, atomicity, durable/volatile cuts and per-family refinement gaps.
-- `cases.json` and38 `.cfg` files:small/expanded safety,11 named invariant mutants,
+- `cases.json` and50 `.cfg` files:small/expanded safety,17 named invariant mutants,
   three conditional-liveness positives and two temporal mutants.
-- Eleven `.tla` files:ingress, tasks, effects, calendar, context, replication,
-  process, immutable history and three explicit cross-subsystem compositions.
+- Thirteen `.tla` files:ingress, tasks, effects, calendar, context, replication,
+  process, immutable history, callback authority, guided input and three explicit
+  cross-subsystem compositions.
 - `test_runner.py`:supplementary fail-closed classification tests. Real official
   JVM negative controls, not these unit tests, establish that the mutants fail.
+- `test_mapping.py`: current inventory/pin/declaration consistency, per-input
+  reconciliation records, configuration identities and required-action presence.
 
-The multihost preparation rechecks all Process, RuntimeComposition and
+The earlier multihost preparation rechecked all Process, RuntimeComposition and
 RemoteComposition configurations against refreshed pins and added direct harness
 anchors. Other model contracts/owners are unchanged, so their prior final03
 receipts are explicitly reused, not presented as a new full-matrix execution.
 Controlled native-tool gates/auth callback/OS cleanup and a shared Store with two
 runner actors are not proved by these unchanged finite abstractions.
+The UI reconciliation instead rechecks the **complete 50-case matrix**, including
+all inherited families. New observation actions require actual coverage past
+older pending, applying and Unknown events. UIAuthority checks finite actor/scope
+authority and consumed-before-effect replay cuts; GuidedInput checks explicit
+current-code input, replacement, expiry and stale cancellation. These independent
+contracts are not one full parser/SQLite/runtime Cartesian product.
 
 The positive gate requires a nontrivial fully exhausted finite graph, empty
 queue, successful TLC exit and all declared required actions exercised.

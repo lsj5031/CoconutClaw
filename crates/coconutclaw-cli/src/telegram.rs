@@ -296,6 +296,8 @@ pub(crate) fn fetch_updates(
 pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Result<()> {
     let base = telegram_api_base(cfg)?;
     let commands = serde_json::json!([
+        {"command": "start", "description": "Open Home"},
+        {"command": "help", "description": "Operations help"},
         {"command": "fresh", "description": "Start a fresh conversation"},
         {"command": "cancel", "description": "Cancel the current task"},
         {"command": "tasks", "description": "List active tasks"},
@@ -304,6 +306,8 @@ pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Res
         {"command": "notifications", "description": "Inspect scoped task notification decisions and delivery"},
         {"command": "approve", "description": "Approve a request by id"},
         {"command": "reject", "description": "Reject a request by id"},
+        {"command": "schedules", "description": "Scheduled tasks and next runs"},
+        {"command": "reconcile", "description": "Narrow acknowledgment recovery, not retry"},
     ]);
     let params = vec![("commands".to_string(), commands.to_string())];
     telegram_post_form(
@@ -314,6 +318,51 @@ pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Res
         "setMyCommands",
     )?;
     Ok(())
+}
+
+/// One durable outbox attempt; no hidden retries or format fallbacks.
+pub(crate) fn telegram_send_ui(
+    client: &Client,
+    cfg: &RuntimeConfig,
+    route: &str,
+    message: &crate::telegram_ui::Message,
+) -> Result<()> {
+    let base = telegram_api_base(cfg)?;
+    let mut params = telegram_route_params(route)?;
+    params.push(("text".into(), message.text.clone()));
+    params.push(("reply_markup".into(), message.keyboard.to_string()));
+    let method = if let Some(id) = &message.edit {
+        params.push(("message_id".into(), id.clone()));
+        "editMessageText"
+    } else {
+        "sendMessage"
+    };
+    let mut once = cfg.clone();
+    once.telegram_api_retry_attempts = 0;
+    match telegram_post_form(client, &once, &format!("{base}/{method}"), &params, method) {
+        Ok(_) => Ok(()),
+        Err(e) if message.edit.is_some() && telegram_error_is_not_modified(&e) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Ephemeral spinner acknowledgment. Never retries an expired callback.
+pub(crate) fn telegram_answer_ui_callback(
+    client: &Client,
+    cfg: &RuntimeConfig,
+    id: &str,
+) -> Result<()> {
+    let base = telegram_api_base(cfg)?;
+    let mut once = cfg.clone();
+    once.telegram_api_retry_attempts = 0;
+    telegram_post_form(
+        client,
+        &once,
+        &format!("{base}/answerCallbackQuery"),
+        &[("callback_query_id".into(), id.into())],
+        "answerCallbackQuery",
+    )
+    .map(|_| ())
 }
 
 // Legacy wire-format/media compatibility test helper only. Runtime input and

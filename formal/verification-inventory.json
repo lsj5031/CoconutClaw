@@ -363,10 +363,112 @@
       "state_coverage_and_gap": "Executable tests, not a model; no live credentials/provider invocation"
     },
     {
+      "path": "formal/GuidedInput-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput-negative-expiry.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput-negative-implicit.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput-negative-stale-cancel.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/GuidedInput.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Source-linked finite UI/guide abstraction; not Rust refinement",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/Ingress-observation-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/Ingress-observation-negative.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/Ingress-observation-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority-expanded.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority-negative-authority.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority-negative-replay.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority-small.cfg",
+      "classification": "bounded check configuration",
+      "owner_and_scope": "Official TLC finite constants/invariants; named intentional negative modes",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/UIAuthority.tla",
+      "classification": "executable transition contract",
+      "owner_and_scope": "Source-linked finite UI/guide abstraction; not Rust refinement",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/reconciliation.json",
+      "classification": "per-input source reconciliation",
+      "owner_and_scope": "Inspected pin preimages/delta hashes, inheritance and bounded contract gaps",
+      "state_coverage_and_gap": "Bound by official runner input manifest; see source-map.json and reconciliation.json."
+    },
+    {
+      "path": "formal/test_mapping.py",
+      "classification": "verification consistency tests",
+      "owner_and_scope": "Offline inventory/pin/anchor and check-registry consistency",
+      "state_coverage_and_gap": "Supplementary consistency evidence, not official model execution or Rust refinement."
+    },
+    {
       "path": "crates/coconutclaw-cli/src/test_runtime.rs",
       "classification": "test-only native runtime locator",
       "owner_and_scope": "Filesystem lookup for existing separate-process lifecycle tests; no normal executable activation",
       "state_coverage_and_gap": "Old/deep Cargo layouts and fail-closed explicit override; no modeled application transition or changed action owner"
+    },
+    {
+      "path": "formal/integration-reconciliation.json",
+      "classification": "per-input integration source reconciliation",
+      "owner_and_scope": "Validated main/UI parent hashes, individual source inspections and explicit bounded contract gaps",
+      "state_coverage_and_gap": "No new domain action. Full existing50-case official gate and executable platform/UI tests required; no Rust refinement."
     }
   ],
   "complete_path_inventory_not_complete_implicit_machine_proof": true

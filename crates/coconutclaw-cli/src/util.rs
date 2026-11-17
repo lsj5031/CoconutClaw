@@ -172,10 +172,10 @@ pub(crate) fn iso_now(timezone: &str) -> String {
     if let Ok(tz) = timezone.parse::<Tz>() {
         return now
             .with_timezone(&tz)
-            .format("%Y-%m-%dT%H:%M:%S%z")
+            .format("%Y-%m-%dT%H:%M:%S%:z")
             .to_string();
     }
-    now.format("%Y-%m-%dT%H:%M:%S%z").to_string()
+    now.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
 pub(crate) fn command_exists(bin: &str) -> bool {

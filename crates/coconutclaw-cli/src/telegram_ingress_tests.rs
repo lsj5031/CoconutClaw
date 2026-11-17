@@ -2,6 +2,7 @@ use super::*;
 use crate::loops::webhook::{
     drain_telegram_ingress, process_webhook_line, restore_inflight_update,
 };
+use crate::{ProcessOutcome, iso_now};
 
 #[test]
 fn ingress_concurrent_exact_webhook_replays_share_one_control_and_reply() {
@@ -112,6 +113,1016 @@ fn update(id: u64, topic: i64, text: &str) -> String {
     json!({"update_id":id,"message":{"chat":{"id":"321","type":"private"},
         "from":{"id":"321"},"message_thread_id":topic,"text":text}})
     .to_string()
+}
+
+fn ui_callback(id: u64, topic: i64, actor: &str, data: &str) -> String {
+    json!({"update_id":id,"callback_query":{"id":format!("mock-{id}"),"from":{"id":actor},
+        "data":data,"message":{"message_id":100,"chat":{"id":"321","type":"private"},
+        "from":{"id":"999","is_bot":true},"message_thread_id":topic}}})
+    .to_string()
+}
+
+fn ui_message(outcome: ProcessOutcome) -> crate::telegram_ui::Message {
+    crate::telegram_ui::decode(outcome.output.as_deref().expect("direct output")).expect("UI plan")
+}
+
+fn ui_button(message: &crate::telegram_ui::Message, label: &str) -> String {
+    message.keyboard["inline_keyboard"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|r| r.as_array().unwrap())
+        .find(|b| b["text"] == label)
+        .unwrap_or_else(|| panic!("missing {label}: {:?}", message.keyboard))["callback_data"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn buttons_missing_actor_is_rejected_and_stale_cancel_keeps_competing_guide() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    for raw in [
+        json!({"update_id":1,"message":{"chat":{"id":321},"text":"/start"}}),
+        json!({"update_id":2,"callback_query":{"data":"cancel","message":{"chat":{"id":321}}}}),
+    ] {
+        assert!(
+            process_webhook_line(&cfg, &mut store, &scheduler, &raw.to_string())
+                .unwrap()
+                .output
+                .is_none()
+        );
+    }
+    let memory = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(3, 7, "/memory")).unwrap(),
+    );
+    let guide = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(4, 7, "321", &ui_button(&memory, "Remember")),
+        )
+        .unwrap(),
+    );
+    let stale_cancel = ui_button(&guide, "Cancel input");
+    let current = ui_begin_input(&cfg, &mut store, &scheduler, 5, "preferences");
+    let response = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(7, 7, "321", &stale_cancel),
+        )
+        .unwrap(),
+    );
+    assert!(response.text.contains("replaced"));
+    assert_eq!(count(&store, "telegram_ui_inputs"), 1);
+    let response = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &update(8, 7, &format!("/input {current} tone concise")),
+        )
+        .unwrap(),
+    );
+    assert!(response.text.contains("saved"));
+    assert_eq!(store.preference_revision("telegram:321#7").unwrap(), 1);
+    assert_eq!(count(&store, "task_runs"), 0);
+    scheduler.shutdown().unwrap();
+}
+
+fn ui_seed_run(store: &Store, session: &str, status: &str) -> i64 {
+    let id = store
+        .insert_task_run(crate::store::InsertTaskRunParams {
+            session_id: session.into(),
+            channel: "telegram".into(),
+            source_chat_id: Some("321".into()),
+            source_user_id: Some("321".into()),
+            update_id: None,
+            prompt: "PRIVATE_UI_FIXTURE_PROMPT".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            progress_message_id: None,
+            scheduled_task_id: None,
+        })
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE task_runs SET status=?2 WHERE id=?1",
+            rusqlite::params![id, status],
+        )
+        .unwrap();
+    id
+}
+
+#[test]
+fn buttons_beside_run_reject_and_cancel_keep_existing_scope_and_replay_semantics() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    let run = ui_seed_run(&store, "telegram:321#7", "awaiting_approval");
+    let mut request = make_request(
+        SessionKey::telegram("321#7"),
+        "telegram",
+        "PRIVATE_APPROVAL_PROMPT",
+    );
+    request.source_user_id = Some("321".into());
+    request.delivery = DeliveryTarget::Telegram {
+        chat_id: "321".into(),
+        thread_id: Some("7".into()),
+    };
+    let approval = store
+        .create_approval(crate::store::CreateApprovalParams {
+            task_run_id: run,
+            session_id: "telegram:321#7".into(),
+            channel: "telegram".into(),
+            source_user_id: Some("321".into()),
+            channel_id: Some("321".into()),
+            thread_ts: Some("7".into()),
+            prompt_text: "PRIVATE_APPROVAL_PROMPT".into(),
+            request_message_ts: None,
+            resume_payload: crate::approval::build_resume_payload(&request, &request.input)
+                .unwrap(),
+            created_at: iso_now(&cfg.timezone),
+        })
+        .unwrap();
+    let report = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(1, 7, "/tasks")).unwrap(),
+    );
+    assert!(!report.text.contains("PRIVATE_"));
+    let reject = ui_button(&report, &format!("Reject #{approval}"));
+    assert!(
+        ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &ui_callback(2, 8, "321", &reject)
+            )
+            .unwrap()
+        )
+        .text
+        .contains("invalid")
+    );
+    assert_eq!(
+        store
+            .get_pending_approval(approval)
+            .unwrap()
+            .unwrap()
+            .status,
+        "pending"
+    );
+    let raw = ui_callback(3, 7, "321", &reject);
+    assert!(
+        ui_message(process_webhook_line(&cfg, &mut store, &scheduler, &raw).unwrap())
+            .text
+            .contains("rejected")
+    );
+    process_webhook_line(&cfg, &mut store, &scheduler, &raw).unwrap();
+    assert!(
+        ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &ui_callback(4, 7, "321", &reject)
+            )
+            .unwrap()
+        )
+        .text
+        .contains("used")
+    );
+    assert_eq!(
+        store
+            .get_pending_approval(approval)
+            .unwrap()
+            .unwrap()
+            .status,
+        "rejected"
+    );
+    assert_eq!(count(&store, "runtime_inbox"), 1);
+    let waiting = ui_seed_run(&store, "telegram:321#7", "waiting_event");
+    let tasks = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(5, 7, "/tasks")).unwrap(),
+    );
+    let cancel = ui_button(&tasks, &format!("Cancel run #{waiting}"));
+    let cancelled = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(6, 7, "321", &cancel),
+        )
+        .unwrap(),
+    );
+    assert!(cancelled.text.contains("Cancel requested"));
+    assert_eq!(
+        store.get_task_run(waiting).unwrap().unwrap().status,
+        "cancelled"
+    );
+    assert_eq!(
+        count(&store, "task_runs"),
+        2,
+        "no control explanation was delegated"
+    );
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn buttons_home_reports_navigation_and_ordered_mock_capture() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    for status in ["running", "queued", "waiting_event", "failed"] {
+        let id = ui_seed_run(&store, "telegram:321#7", status);
+        store
+            .update_task_run_progress(id, "PRIVATE_UI_FIXTURE_PROGRESS")
+            .unwrap();
+    }
+    let mut request = make_request(
+        SessionKey::telegram("321#7"),
+        "telegram",
+        "PRIVATE_SCHEDULE_PROMPT",
+    );
+    request.delegated = true;
+    request.delivery = DeliveryTarget::Telegram {
+        chat_id: "321".into(),
+        thread_id: Some("7".into()),
+    };
+    let timing = crate::scheduling::Timing::parse(None, Some("09:30"), "Europe/London").unwrap();
+    store
+        .create_schedule("capture-schedule", &request, &timing, chrono::Utc::now())
+        .unwrap();
+    let home = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(1, 7, "/start")).unwrap(),
+    );
+    assert_eq!(
+        home.keyboard["inline_keyboard"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_array().unwrap().len())
+            .sum::<usize>(),
+        8
+    );
+    let mut steps = vec![json!({"step":1,"view":"Home","text":home.text,"keyboard":home.keyboard})];
+    scheduler.retry_deliveries().unwrap();
+    let mut id = 2;
+    for label in [
+        "Status",
+        "Tasks",
+        "Nodes",
+        "Scheduled tasks",
+        "Memory",
+        "Preferences",
+        "Help",
+    ] {
+        let data = ui_button(&home, label);
+        let view = ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &ui_callback(id, 7, "321", &data),
+            )
+            .unwrap(),
+        );
+        assert_eq!(view.edit.is_some(), label == "Help");
+        assert!(!view.text.contains("provider_raw"));
+        assert!(!view.text.contains("PRIVATE_"));
+        if label == "Tasks" {
+            for row in view.keyboard["inline_keyboard"].as_array().unwrap() {
+                let labels = row
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|b| b["text"].as_str().unwrap())
+                    .collect::<Vec<_>>();
+                if let Some(id) = labels.first().and_then(|s| s.strip_prefix("Run details #")) {
+                    assert!(
+                        labels
+                            .iter()
+                            .filter(|s| s.starts_with("Cancel run #"))
+                            .all(|s| s.ends_with(&format!("#{id}")))
+                    );
+                }
+            }
+        }
+        if label == "Status" {
+            assert!(
+                view.text.contains("0 unknown"),
+                "acknowledged UI is not uncertain"
+            );
+            assert!(!view.text.contains("Last received: unavailable"));
+        }
+        if label != "Help" {
+            assert!(view.text.contains("Snapshot at"));
+            let refresh = ui_button(&view, "New snapshot");
+            id += 1;
+            let next = ui_message(
+                process_webhook_line(
+                    &cfg,
+                    &mut store,
+                    &scheduler,
+                    &ui_callback(id, 7, "321", &refresh),
+                )
+                .unwrap(),
+            );
+            assert!(next.edit.is_none(), "report must not edit original");
+            id += 1;
+            let from_report = ui_message(
+                process_webhook_line(
+                    &cfg,
+                    &mut store,
+                    &scheduler,
+                    &ui_callback(id, 7, "321", &ui_button(&view, "Home")),
+                )
+                .unwrap(),
+            );
+            assert!(
+                from_report.edit.is_none(),
+                "Home must not overwrite a dated report"
+            );
+        }
+        steps.push(
+            json!({"step":steps.len()+1,"view":label,"text":view.text,"keyboard":view.keyboard}),
+        );
+        scheduler.retry_deliveries().unwrap();
+        id += 1;
+    }
+    let back = ui_button(&home, "Help");
+    let nav = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(id, 7, "321", &back),
+        )
+        .unwrap(),
+    );
+    assert_eq!(nav.edit.as_deref(), Some("100"));
+    scheduler.retry_deliveries().unwrap();
+    for (kind, label, sample) in [
+        ("memory", "Remember", "synthetic remembered UI fixture"),
+        ("preferences", "Set preference", "tone concise"),
+    ] {
+        id += 1;
+        let menu = ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &update(id, 7, &format!("/{kind}")),
+            )
+            .unwrap(),
+        );
+        id += 1;
+        let guide = ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &ui_callback(id, 7, "321", &ui_button(&menu, label)),
+            )
+            .unwrap(),
+        );
+        let code = guide
+            .text
+            .split("/input ")
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap();
+        steps.push(json!({"step":steps.len()+1,"view":format!("{kind} guide"),"text":guide.text,"keyboard":guide.keyboard}));
+        scheduler.retry_deliveries().unwrap();
+        id += 1;
+        let result = ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &update(id, 7, &format!("/input {code} {sample}")),
+            )
+            .unwrap(),
+        );
+        steps.push(json!({"step":steps.len()+1,"view":format!("{kind} result"),"text":result.text,"keyboard":result.keyboard}));
+        scheduler.retry_deliveries().unwrap();
+    }
+    for (command, label) in [
+        ("/tasks", "Run details #1"),
+        ("/schedules", "Schedule details #1"),
+    ] {
+        id += 1;
+        let menu = ui_message(
+            process_webhook_line(&cfg, &mut store, &scheduler, &update(id, 7, command)).unwrap(),
+        );
+        id += 1;
+        let detail = ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &ui_callback(id, 7, "321", &ui_button(&menu, label)),
+            )
+            .unwrap(),
+        );
+        assert!(detail.edit.is_none());
+        steps.push(json!({"step":steps.len()+1,"view":label,"text":detail.text,"keyboard":detail.keyboard}));
+        scheduler.retry_deliveries().unwrap();
+        id += 1;
+        let refresh = ui_button(&detail, "New snapshot");
+        let refreshed = ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &ui_callback(id, 7, "321", &refresh),
+            )
+            .unwrap(),
+        );
+        assert!(
+            refreshed.edit.is_none(),
+            "detail refresh must send a new dated report"
+        );
+        assert!(refreshed.text.contains("Snapshot at"));
+        steps.push(json!({"step":steps.len()+1,"view":format!("{label} new snapshot"),"text":refreshed.text,"keyboard":refreshed.keyboard}));
+        scheduler.retry_deliveries().unwrap();
+    }
+    let requests=server.full_requests.lock().unwrap().iter().map(|raw|{
+        let body=raw.split("\r\n\r\n").nth(1).unwrap_or("");
+        let url=reqwest::Url::parse(&format!("http://mock.invalid/?{body}")).unwrap();
+        let fields=url.query_pairs().map(|(k,v)|(k.into_owned(),v.into_owned())).collect::<std::collections::BTreeMap<_,_>>();
+        assert!(!fields.contains_key("parse_mode"),"UI sends plain text, no HTML interpretation");
+        json!({"method":raw.split_whitespace().nth(1).unwrap_or("").rsplit('/').next().unwrap_or(""),"fields":fields})
+    }).collect::<Vec<_>>();
+    assert!(requests.iter().any(|r| r["method"] == "editMessageText"));
+    assert!(requests.iter().any(|r| r["method"] == "sendMessage"));
+    assert!(
+        requests
+            .iter()
+            .any(|r| r["method"] == "answerCallbackQuery")
+    );
+    if let Some(dir) = std::env::var_os("COCONUTCLAW_UI_ARTIFACTS") {
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(PathBuf::from(&dir).join("ordered-ui.json"),serde_json::to_string_pretty(&json!({"source":"production ingress and durable outbox through local Telegram mock","live_visual_acceptance":false,"views":steps,"requests":requests})).unwrap()).unwrap();
+    }
+    assert_eq!(count(&store, "task_runs"), 4);
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn buttons_recheck_actor_chat_topic_invalid_expired_and_revoked_authority() {
+    let server = FakeTelegramServer::start();
+    let (_root, mut cfg, mut store, scheduler) = fixture(&server);
+    let home = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(1, 7, "/start")).unwrap(),
+    );
+    let data = ui_button(&home, "New conversation");
+    assert!(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(2, 7, "999", &data)
+        )
+        .unwrap()
+        .output
+        .is_none()
+    );
+    let wrong = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(3, 8, "321", &data),
+        )
+        .unwrap(),
+    );
+    assert!(wrong.text.contains("invalid"));
+    let mut other: serde_json::Value =
+        serde_json::from_str(&ui_callback(4, 7, "321", &data)).unwrap();
+    other["callback_query"]["message"]["chat"]["id"] = json!("999");
+    assert!(
+        process_webhook_line(&cfg, &mut store, &scheduler, &other.to_string())
+            .unwrap()
+            .output
+            .is_none()
+    );
+    for (id, data) in [(5, "ui:../../invalid"), (6, "ui:"), (7, "unknown")] {
+        let view = ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &ui_callback(id, 7, "321", data),
+            )
+            .unwrap(),
+        );
+        assert!(view.text.contains("invalid"));
+    }
+    store
+        .conn
+        .execute("UPDATE telegram_ui_controls SET expires_at=0", [])
+        .unwrap();
+    assert!(
+        ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &ui_callback(8, 7, "321", &data)
+            )
+            .unwrap()
+        )
+        .text
+        .contains("expired")
+    );
+    cfg.telegram_topics_enabled = Some(false);
+    assert!(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(9, 7, "321", &data)
+        )
+        .unwrap()
+        .output
+        .is_none()
+    );
+    cfg.telegram_chat_ids = vec!["999".into()];
+    cfg.telegram_chat_id = Some("999".into());
+    assert!(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(10, 7, "321", &data)
+        )
+        .unwrap()
+        .output
+        .is_none()
+    );
+    assert_eq!(count(&store, "task_runs"), 0);
+    assert_eq!(count(&store, "turns"), 0);
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn buttons_fresh_replay_and_restart_add_one_boundary_without_deleting_memory() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    process_webhook_line(
+        &cfg,
+        &mut store,
+        &scheduler,
+        &update(1, 7, "/memory remember durable fixture"),
+    )
+    .unwrap();
+    let home = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(2, 7, "/start")).unwrap(),
+    );
+    let data = ui_button(&home, "New conversation");
+    let raw = ui_callback(3, 7, "321", &data);
+    let first = process_webhook_line(&cfg, &mut store, &scheduler, &raw)
+        .unwrap()
+        .output;
+    scheduler.shutdown().unwrap();
+    let next = SessionScheduler::new(cfg.clone(), None);
+    restore_inflight_update(&cfg, &mut store, &next, None).unwrap();
+    assert_eq!(
+        first,
+        process_webhook_line(&cfg, &mut store, &next, &raw)
+            .unwrap()
+            .output
+    );
+    assert!(
+        ui_message(
+            process_webhook_line(&cfg, &mut store, &next, &ui_callback(4, 7, "321", &data))
+                .unwrap()
+        )
+        .text
+        .contains("used")
+    );
+    assert_eq!(store.memory_revision("telegram:321#7").unwrap(), 1);
+    let boundaries: i64 = store
+        .conn
+        .query_row(
+            "SELECT count(*) FROM turns WHERE status='boundary'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(boundaries, 1);
+    assert_eq!(count(&store, "task_runs"), 0);
+    next.shutdown().unwrap();
+}
+
+fn ui_begin_input(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    scheduler: &SessionScheduler,
+    id: u64,
+    kind: &str,
+) -> String {
+    let menu = ui_message(
+        process_webhook_line(cfg, store, scheduler, &update(id, 7, &format!("/{kind}"))).unwrap(),
+    );
+    let data = ui_button(
+        &menu,
+        if kind == "memory" {
+            "Remember"
+        } else {
+            "Set preference"
+        },
+    );
+    let guide = ui_message(
+        process_webhook_line(cfg, store, scheduler, &ui_callback(id + 1, 7, "321", &data)).unwrap(),
+    );
+    guide
+        .text
+        .split("/input ")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn buttons_guided_input_survives_restart_rejects_competition_expiry_and_wrong_topic() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    let old = ui_begin_input(&cfg, &mut store, &scheduler, 1, "memory");
+    let current = ui_begin_input(&cfg, &mut store, &scheduler, 3, "preferences");
+    let mismatch = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &update(5, 7, &format!("/input {old} not saved")),
+        )
+        .unwrap(),
+    );
+    assert!(mismatch.text.contains("No matching"));
+    assert!(
+        ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &scheduler,
+                &update(6, 8, &format!("/input {current} tone concise"))
+            )
+            .unwrap()
+        )
+        .text
+        .contains("No matching")
+    );
+    scheduler.shutdown().unwrap();
+    let next = SessionScheduler::new(cfg.clone(), None);
+    restore_inflight_update(&cfg, &mut store, &next, None).unwrap();
+    let raw = update(7, 7, &format!("/input {current} tone <b>& concise"));
+    assert!(
+        ui_message(process_webhook_line(&cfg, &mut store, &next, &raw).unwrap())
+            .text
+            .contains("saved")
+    );
+    process_webhook_line(&cfg, &mut store, &next, &raw).unwrap();
+    assert_eq!(store.preference_revision("telegram:321#7").unwrap(), 1);
+    let code = ui_begin_input(&cfg, &mut store, &next, 8, "memory");
+    store
+        .conn
+        .execute("UPDATE telegram_ui_inputs SET expires_at=0", [])
+        .unwrap();
+    assert!(
+        ui_message(
+            process_webhook_line(
+                &cfg,
+                &mut store,
+                &next,
+                &update(10, 7, &format!("/input {code} not saved"))
+            )
+            .unwrap()
+        )
+        .text
+        .contains("expired")
+    );
+    ui_begin_input(&cfg, &mut store, &next, 11, "memory");
+    assert!(
+        ui_message(
+            process_webhook_line(&cfg, &mut store, &next, &update(13, 7, "/input cancel")).unwrap()
+        )
+        .text
+        .contains("cancelled")
+    );
+    assert_eq!(count(&store, "telegram_ui_inputs"), 0);
+    assert_eq!(count(&store, "task_runs"), 0);
+    assert_eq!(store.memory_revision("telegram:321#7").unwrap(), 0);
+    next.shutdown().unwrap();
+}
+
+#[test]
+fn buttons_unknown_slash_and_stale_approval_never_fall_through_to_provider() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    for (id, text) in [
+        "/unknown",
+        "/button bad",
+        "/input bad text",
+        "/approve 9999",
+        "/reject invalid",
+        "/help",
+        "/start",
+        "/status",
+        "/nodes",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let outcome = process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &update(id as u64 + 1, 7, text),
+        )
+        .unwrap();
+        assert!(outcome.output.is_some(), "{text}");
+    }
+    assert_eq!(count(&store, "task_runs"), 0);
+    let sending: i64 = store
+        .conn
+        .query_row(
+            "SELECT count(*) FROM telegram_ingress WHERE progress_state!='none'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sending, 0);
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn buttons_observe_unknown_and_blocked_ingress_without_releasing_mutations() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    for id in [1, 2] {
+        let raw = update(id, 7, "retained ordinary request");
+        let canonical = serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap()
+            .to_string();
+        store
+            .admit_telegram(
+                &id.to_string(),
+                &canonical,
+                Some("telegram:321#7"),
+                &iso_now(&cfg.timezone),
+            )
+            .unwrap();
+    }
+    store
+        .conn
+        .execute(
+            "UPDATE telegram_ingress SET state='unknown',ack_phase='unknown' WHERE update_id='1'",
+            [],
+        )
+        .unwrap();
+    let report = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(3, 7, "/status")).unwrap(),
+    );
+    assert!(report.text.contains("1 unknown"));
+    let home = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(4, 7, "/start")).unwrap(),
+    );
+    let task_report = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(5, 7, "321", &ui_button(&home, "Tasks")),
+        )
+        .unwrap(),
+    );
+    assert!(task_report.text.contains("No tasks"));
+    let fresh = process_webhook_line(
+        &cfg,
+        &mut store,
+        &scheduler,
+        &ui_callback(6, 7, "321", &ui_button(&home, "New conversation")),
+    )
+    .unwrap();
+    assert!(fresh.output.is_none());
+    assert_eq!(count(&store, "turns"), 0);
+    assert_eq!(state(&store, 1), ("unknown".into(), "unknown".into()));
+    assert_eq!(state(&store, 2).0, "pending");
+    assert_eq!(state(&store, 6).0, "pending");
+    assert_eq!(count(&store, "task_runs"), 0);
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn buttons_persisted_schedules_show_real_policies_and_own_detail_timestamp() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    let mut request = make_request(
+        SessionKey::telegram("321#7"),
+        "telegram",
+        "PRIVATE_SCHEDULE_PROMPT",
+    );
+    request.delegated = true;
+    request.delivery = DeliveryTarget::Telegram {
+        chat_id: "321".into(),
+        thread_id: Some("7".into()),
+    };
+    let timing = crate::scheduling::Timing::parse_rule(
+        None,
+        Some("09:30"),
+        None,
+        None,
+        "Europe/London",
+        crate::scheduling::Policies {
+            fold: crate::scheduling::Fold::Second,
+            gap: crate::scheduling::Gap::NextValid,
+            missed: crate::scheduling::Missed::Skip,
+        },
+    )
+    .unwrap();
+    let id = store
+        .create_schedule("mock-ui", &request, &timing, chrono::Utc::now())
+        .unwrap();
+    let report = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(1, 7, "/schedules")).unwrap(),
+    );
+    assert!(report.text.contains("1 total"));
+    assert!(!report.text.contains("PRIVATE_SCHEDULE"));
+    let data = ui_button(&report, &format!("Schedule details #{id}"));
+    let detail = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(2, 7, "321", &data),
+        )
+        .unwrap(),
+    );
+    assert!(detail.text.contains("Europe/London"));
+    assert!(detail.text.contains("second"));
+    assert!(detail.text.contains("next-valid"));
+    assert!(detail.text.contains("missed: skip"));
+    assert!(detail.text.contains("Snapshot at"));
+    assert!(detail.edit.is_none());
+    let other = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(3, 8, "/schedules")).unwrap(),
+    );
+    assert!(other.text.contains("0 total"));
+    assert_eq!(count(&store, "task_runs"), 0);
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn buttons_persisted_jobs_pagination_and_plain_text_do_not_expose_provider_bodies() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    for n in 0..55 {
+        let id = store
+            .insert_task_run(crate::store::InsertTaskRunParams {
+                session_id: "telegram:321#7".into(),
+                channel: "telegram".into(),
+                source_chat_id: Some("321".into()),
+                source_user_id: Some("321".into()),
+                update_id: None,
+                prompt: format!("PRIVATE_PROMPT_{n}"),
+                created_at: iso_now(&cfg.timezone),
+                progress_message_id: None,
+                scheduled_task_id: None,
+            })
+            .unwrap();
+        store
+            .update_task_run_progress(id, "PRIVATE_PROGRESS <b>&")
+            .unwrap();
+        store
+            .finish_task_run(
+                id,
+                crate::store::TaskRunStatus::Failed,
+                &iso_now(&cfg.timezone),
+                Some("PRIVATE_ERROR"),
+                None,
+            )
+            .unwrap();
+    }
+    let first = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(1, 7, "/tasks")).unwrap(),
+    );
+    assert!(first.text.contains("55 logical tasks, 55 runs"));
+    assert!(first.text.contains("50 available in bounded snapshot"));
+    assert!(first.text.contains("10 on this page"));
+    assert!(first.text.contains("recorded (detail unavailable)"));
+    assert!(!first.text.contains("PRIVATE_"));
+    assert!(first.text.encode_utf16().count() <= 4096);
+    let next = ui_button(&first, "Next page");
+    let second = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(2, 7, "321", &next),
+        )
+        .unwrap(),
+    );
+    assert!(second.text.contains("Page 2"));
+    assert!(second.edit.is_none());
+    let detail = first.keyboard["inline_keyboard"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|r| r.as_array().unwrap())
+        .find(|b| {
+            b["text"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("Run details #")
+        })
+        .unwrap()["callback_data"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let report = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &ui_callback(3, 7, "321", &detail),
+        )
+        .unwrap(),
+    );
+    assert!(report.text.contains("Started:"));
+    assert!(!report.text.contains("Created: unavailable"));
+    assert!(report.text.contains("Snapshot at"));
+    assert!(report.edit.is_none());
+    let old = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(4, 7, "/tasks 1")).unwrap(),
+    );
+    assert!(old.text.contains("requested run #1"));
+    assert!(!old.text.contains("PRIVATE_"));
+    let wrong = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(5, 8, "/tasks 1")).unwrap(),
+    );
+    assert!(!wrong.text.contains("Task #1 /"));
+    // Max-sized preferences exercise the transport limit and literal HTML handling.
+    for n in 0..8 {
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &update(
+                10 + n,
+                7,
+                &format!("/preferences set k{n} <b>&{}", "x".repeat(506)),
+            ),
+        )
+        .unwrap();
+    }
+    let prefs = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(20, 7, "/preferences")).unwrap(),
+    );
+    assert!(prefs.text.contains("<b>&"));
+    assert!(prefs.text.contains("truncated"));
+    assert!(prefs.text.encode_utf16().count() <= 4096);
+    scheduler.retry_deliveries().unwrap();
+    let requests = server.full_requests.lock().unwrap();
+    let ui_requests = requests
+        .iter()
+        .filter(|r| r.contains("reply_markup"))
+        .collect::<Vec<_>>();
+    assert!(!ui_requests.is_empty());
+    assert!(ui_requests.iter().all(|r| !r.contains("parse_mode")));
+    drop(requests);
+    assert_eq!(count(&store, "task_runs"), 55);
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn buttons_unrelated_conversation_is_not_swallowed_by_pending_input() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler, calls) = native_fixture(
+        &server,
+        r#"printf 'TELEGRAM_REPLY: ordinary mock response\n' > "$out""#,
+    );
+    ui_begin_input(&cfg, &mut store, &scheduler, 1, "memory");
+    process_webhook_line(
+        &cfg,
+        &mut store,
+        &scheduler,
+        &update(3, 7, "ordinary unrelated message"),
+    )
+    .unwrap();
+    wait_for_terminal_tasks(&cfg, &[1]);
+    assert_eq!(fs::read_to_string(calls).unwrap().lines().count(), 1);
+    assert_eq!(count(&store, "telegram_ui_inputs"), 1);
+    assert_eq!(store.memory_revision("telegram:321#7").unwrap(), 0);
+    scheduler.shutdown().unwrap();
 }
 
 #[cfg(unix)]

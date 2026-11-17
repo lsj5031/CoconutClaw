@@ -62,10 +62,11 @@ impl Store {
     pub(crate) fn claim_telegram(&self, seq: i64) -> Result<bool> {
         Ok(self.conn.execute(
             "UPDATE telegram_ingress AS e SET state='applying' WHERE seq=?1 AND state='pending'
-             AND NOT EXISTS(SELECT 1 FROM telegram_ingress older WHERE older.session_id=e.session_id
+             AND (EXISTS(SELECT 1 FROM telegram_ui_observations o WHERE o.seq=e.seq)
+             OR NOT EXISTS(SELECT 1 FROM telegram_ingress older WHERE older.session_id=e.session_id
                  AND older.seq<e.seq AND (older.state IN ('pending','applying')
                    OR (older.state='unknown' AND NOT EXISTS(
-                     SELECT 1 FROM telegram_reconciliation_controls c WHERE c.seq=e.seq))))",
+                     SELECT 1 FROM telegram_reconciliation_controls c WHERE c.seq=e.seq)))))",
             [seq],
         )? == 1)
     }
@@ -123,11 +124,12 @@ impl Store {
 
     pub(crate) fn pending_telegram(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.payload FROM telegram_ingress e WHERE e.state='pending' AND NOT EXISTS(
+            "SELECT e.payload FROM telegram_ingress e WHERE e.state='pending' AND (
+               EXISTS(SELECT 1 FROM telegram_ui_observations o WHERE o.seq=e.seq) OR NOT EXISTS(
                SELECT 1 FROM telegram_ingress older WHERE older.session_id=e.session_id
                  AND older.seq<e.seq AND (older.state IN ('pending','applying')
                    OR (older.state='unknown' AND NOT EXISTS(
-                     SELECT 1 FROM telegram_reconciliation_controls c WHERE c.seq=e.seq))))
+                     SELECT 1 FROM telegram_reconciliation_controls c WHERE c.seq=e.seq)))))
              ORDER BY e.seq LIMIT 32",
         )?;
         Ok(stmt

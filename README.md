@@ -124,9 +124,11 @@ These are local presence/format checks, **not** authentication or network tests;
 inspect the JSON even when doctor exits successfully.
 
 Keep the terminal running and send your bot `Hello, reply with a short greeting`.
-That is a real Codex request and may incur provider charges. Try `/tasks` to
-inspect tasks; `/cancel <task-id>` cancels a task in the same chat/topic. `/fresh`
-starts a new conversation context without deleting history. Stop with Ctrl+C,
+That is a real Codex request and may incur provider charges. Open `/start` for
+Home and its local operations buttons; these controls do not invoke Codex.
+Reports are dated snapshots. `/tasks` inspects logical tasks and physical runs;
+`/cancel <run-id>` requests cancellation in the same chat/topic. `/fresh`
+starts a new conversation context without deleting memory or history. Stop with Ctrl+C,
 then restart the same `run` command with the **same data directory**. Do not
 start two runtimes against the same directory or reset state to bypass an
 outcome-unknown task.
@@ -261,6 +263,10 @@ relay, with no default relay, discovery or firewall changes.
 ## Behavior
 
 - Telegram polling only, restricted to configured chat IDs.
+- `/start` opens button-first Home. Scoped, dated operations reports, task/run
+  controls and durable memory/preference guides execute locally, without asking
+  Codex to explain commands. See [Telegram operations](docs/telegram-operations.md)
+  for command compatibility, authority, telemetry limits and mock verification.
 - One ordered conversation lane and explicit Codex session per private topic,
   with a separate root session. Five task workers globally, with durable queues.
 - Native Rich Markdown final replies, including tables, headings and math.
@@ -283,7 +289,7 @@ relay, with no default relay, discovery or firewall changes.
 - A `DELEGATE_TASK` request creates a durable task ID with a separate Codex
   session and no parent conversation history. Its labeled result is delivered
   to, and retained in the history of, the originating topic/root session.
-- `/tasks`, `/cancel [task-id]`, `/approve <approval-id>` and
+- `/tasks [run-id]`, `/cancel [run-id]`, `/approve <approval-id>` and
   `/reject <approval-id>` are scoped to the originating topic/root session.
 - `SEND_APPROVAL` pauses the request until an explicit approval. Approval is
   advisory model coordination, not a sandbox or substitute for Codex's own

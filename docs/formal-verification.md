@@ -260,3 +260,107 @@ process/provider cases. Executable import fixtures also need physical temporary
 roots; their source traversal/symlink refusal remains unchanged. The subsequent
 Unix topic integration fixture now checks owned PIDs with `kill(pid, 0)` rather
 than Linux `/proc`, retaining both overlap and cleanup assertions.
+
+## 17 November button-first UI source reconciliation
+
+This supersedes the old source counts/reuse statements for the local UI lane,
+not the historical receipts, platform acceptance or publication restrictions.
+Runtime remains exactly UI commit `3d67b70` with backend `94db7c7`; this follow-up
+changes only formal contracts, mapping/inventory, verification tests and this
+documentation. It does not incorporate unvalidated platform work.
+
+`formal/reconciliation.json` records all 31 mismatched implementation pins,
+their verified `a95880c` preimages, exact delta hashes and individual inspections.
+Eighteen mismatches were inherited at approved base `2f47ba8`; nineteen inputs
+also changed in the UI/data lane, with overlap. All declaration anchors were
+checked, and relocated declarations reanchored. Three UI/backend source inputs
+bring the pin set to 139. The path inventory refresh retains historical hashes
+and adds those three inputs plus operations documentation and the previously
+pinned multihost callback (formerly only verification-inventoried), for 176 paths.
+
+The official runner now checks 50 configurations across 13 families: 31 positive
+safety/conditional-liveness bounds, 17 intended invariant failures and two
+intended temporal failures. The entire matrix is rechecked, not just new models.
+Existing model invariants, budgets and negative classification are not weakened.
+
+| Addition | Source-linked relation and finite scope |
+| --- | --- |
+| Ingress observations | One designated authenticated read-only/error event may pass older same-scope pending, applying or Unknown. Separate required actions witness all three cuts. It creates reply/interaction metadata, never a task receipt or domain/runtime effect. Reconciliation still bypasses only Unknown; ordinary mutations retain their fences. |
+| UIAuthority | Two opaque controls, two actor aliases and one/two root/topic scopes; issued/expired/consumed state, route revocation, volatile invocation permission and durable Unknown. Exact current actor/scope authority is recorded at use; consumption precedes external invocation and survives the modeled crash. Observations are repeatable. |
+| GuidedInput | Two fresh code identities, one/two scopes and valid/invalid nonblank data classes; one current code per scope, replacement, expiry, explicit submission, matching/stale cancel and unrelated messages. SQL input/effect/guide cleanup is atomic. |
+
+Intentional new mutants permit observation effects, bypass callback authority,
+reuse consumed runtime controls, swallow implicit input, cancel a replacement
+from an old code, or accept expired input. Each must produce the specifically
+named invariant counterexample. New small/expanded positives require every
+declared action to execute, including replacement and stale cancellation.
+Offline consistency tests also bind inventory bytes/declarations to all pins,
+source-action anchors and case/action identities.
+
+These are **bounded implementation-owned contracts, not a Rust refinement
+proof**. Classification and actor admission are linked preconditions across
+independent contracts, not an exhaustively composed parser/runtime model.
+SQL claim/effect/reply commit atomically in source; the Ingress model's separate
+claim/commit states conservatively overapproximate some SQL crash cuts.
+Restart retention relies on SQLite's trusted durable transaction contract.
+Token entropy/collision resistance, arbitrary code text/IDs, memory correctness,
+real clock arithmetic/rollback, exact SQL snapshot joins/counts and rendering are
+executable obligations, not newly proved algorithms.
+
+Expiry/revocation model one monotonic validation episode. In particular, clock
+rollback between observation classification and reduction is not modeled;
+source-linked acceptance does not assert its impossibility. GuidedInput assumes
+authenticated scope/actor at entry. Blank/mismatched input stutters; invalid-value
+submission is nonblank data rejected by the existing command validator.
+Effects' positive receipt covers UI acknowledged projection and known
+not-modified navigation edits. Ephemeral spinner acknowledgment remains
+one-shot mocked-wire evidence, not a modeled delivery/liveness requirement.
+No genuine Telegram screenshot or live visual acceptance exists.
+
+Inherited platform deltas include Unix-only test hooks/import fixtures, native
+binary/env helpers, Windows synthetic provider/wait fixes, and Unix-only
+directory-entry fsync in the synthetic membership store. None are edited here.
+The Replication abstraction trusts durable store actions and does **not** prove
+Windows directory/rename power-loss durability. External-kill tests do not
+establish that property. Native OS CI and parent final evidence review remain
+separate gates; this attempt performs no publication.
+
+## 17 November integration onto validated main
+
+The sections above are historical lane receipts. The current local integration
+normally merges UI `c8b36e4` (including backend `94db7c7`) into main
+`1d608f523eaed18926e882a1a12ed44efd5dee24`, after PR22's native OS gate.
+That main gate does not establish hosted acceptance of the newly integrated UI.
+The beginner README and all platform fixes are retained; no live operation,
+deployment or publication is part of the local integration check.
+
+`formal/integration-reconciliation.json` individually records 23 source-pin
+deltas from the UI parent, both parent hashes, merged hashes and inspected
+semantics. The validated main pins have no inherited mismatch. The union has
+140 implementation inputs, including PR22's test-only binary locator; the
+repository inventory has 177 paths. Historical UI reconciliation records remain
+unchanged and mapping tests verify the hash chain through the integration.
+All main action anchors are retained and declarations reanchored where needed.
+
+All 13 models, 50 configurations, required-action lists and expected
+counterexamples are byte-identical to reviewed UI `c8b36e4`. The complete official
+runner and all required Rust/Python checks are rerun against the merged source,
+not reused as if the old lane checks validated a new revision.
+
+PR22 preserves Unix process coverage, Windows environment/layout handling and
+120-second fixture bound, Unix's 45-second bound, signed arithmetic optimized
+only in the test profile, canonical temp paths, portable owned-PID exit checks,
+blocking accepted mock sockets, Ready read acknowledgment, explicit macOS Python
+resolution and closed environment validation. Calendar kqueue vnode watches
+implement the same observed-wakeup abstraction. Database-specific first-open
+schema/migration ownership is established with an OS file lock, released before
+normal operations. These physical mechanisms are native executable obligations,
+not new modeled domain transitions or Rust/OS refinement proofs.
+
+The UI's direct callback authority, observation-only bypass, immutable reports,
+guided explicit-code input, compatibility and Unknown/no-blind-retry boundaries
+remain unchanged. All earlier finite bounds and residual assumptions still
+apply, including monotonic validation episodes and excluded wall-clock rollback.
+Ordered production-handler/wire captures remain **mocked**, not genuine Telegram
+screenshots. Independent review remains deferred and parent final integrated
+diff/evidence review is required before any later authorized publication.

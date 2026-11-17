@@ -740,7 +740,7 @@ async fn runtime_bridge_raw_fence_retains_custody_while_another_topic_executes()
         let scheduler=SessionScheduler::new(cfg.clone(),None);
         scheduler.recover().unwrap();
         crate::loops::webhook::process_webhook_line(&cfg,&mut store,&scheduler,
-            r#"{"update_id":41,"message":{"chat":{"id":321,"type":"private"},"message_thread_id":8,"text":"independent fixture"}}"#).unwrap();
+            r#"{"update_id":41,"message":{"from":{"id":321},"chat":{"id":321,"type":"private"},"message_thread_id":8,"text":"independent fixture"}}"#).unwrap();
         let until=std::time::Instant::now()+Duration::from_secs(90);
         loop{
             if store.conn.query_row("SELECT COUNT(*) FROM task_runs WHERE update_id='41' AND status='completed'",[],|r|r.get::<_,i64>(0)).unwrap()==1{break;}

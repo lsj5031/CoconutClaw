@@ -102,7 +102,7 @@ printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","comman
                 if text.lines().next().unwrap().contains("offset=2") {
                     "[]"
                 } else {
-                    r#"[{"update_id":1,"message":{"chat":{"id":321},"text":"hello"}}]"#
+                    r#"[{"update_id":1,"message":{"from":{"id":321},"chat":{"id":321},"text":"hello"}}]"#
                 }
             } else if text.contains("/setMyCommands ") {
                 "true"
@@ -859,7 +859,7 @@ wait
                         break;
                     }
                     got_update = true;
-                    r#"[{"update_id":1,"message":{"chat":{"id":321},"text":"active"}},{"update_id":2,"message":{"chat":{"id":321},"text":"queued"}}]"#
+                    r#"[{"update_id":1,"message":{"from":{"id":321},"chat":{"id":321},"text":"active"}},{"update_id":2,"message":{"from":{"id":321},"chat":{"id":321},"text":"queued"}}]"#
                 } else if request.contains("setMyCommands") {
                     "true"
                 } else if request.contains("/getMe ") {
