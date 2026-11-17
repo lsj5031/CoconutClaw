@@ -11,6 +11,7 @@ impl ProcessFixture {
     async fn new() -> (Self, RuntimeDriver) {
         Self::build(false).await
     }
+    #[cfg(target_os = "linux")]
     async fn new_real() -> (Self, RuntimeDriver) {
         Self::build(true).await
     }

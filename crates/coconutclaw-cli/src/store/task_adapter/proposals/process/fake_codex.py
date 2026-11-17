@@ -10,8 +10,11 @@ import sys
 import sqlite3
 from pathlib import Path
 
-libc = ctypes.CDLL(None)
-libc.prctl(1, signal.SIGTERM, 0, 0, 0)  # Parent death also closes this fixture.
+if sys.platform == "linux":
+    libc = ctypes.CDLL(None)
+    libc.prctl(1, signal.SIGTERM, 0, 0, 0)
+# On every Unix host, runner death closes the control socket (and a terminated
+# leader closes its descendant's stdin). The EOF paths below still reap children.
 
 if sys.argv[1] == "--descendant":
     print("ready", flush=True)

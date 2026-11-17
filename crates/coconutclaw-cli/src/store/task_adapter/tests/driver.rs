@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::oneshot;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod process;
 mod proposals;
 

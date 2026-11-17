@@ -1060,7 +1060,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::queue",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "bf7826373acd905ff20cd2fb4959e95f74d669a4d2b73d276e98eeea8a2dfd76",
             "declarations": [
               {
                 "line": 465,
@@ -1106,7 +1106,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::reconcile",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "bf7826373acd905ff20cd2fb4959e95f74d669a4d2b73d276e98eeea8a2dfd76",
             "declarations": [
               {
                 "line": 283,
@@ -1163,7 +1163,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::accept",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "bf7826373acd905ff20cd2fb4959e95f74d669a4d2b73d276e98eeea8a2dfd76",
             "declarations": [
               {
                 "line": 586,
@@ -1174,7 +1174,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/task_adapter/driver.rs",
             "symbol": "RuntimeDriver::accept_proposal",
-            "sha256": "dc657ba67d6ca1678365caaebafce40b65378327e87650b08bc06f18681c7014",
+            "sha256": "bf7826373acd905ff20cd2fb4959e95f74d669a4d2b73d276e98eeea8a2dfd76",
             "declarations": [
               {
                 "line": 695,

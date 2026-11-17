@@ -3,6 +3,7 @@ use crate::store::task_adapter::proposals::process::provider::provision;
 use std::os::fd::{AsRawFd, FromRawFd};
 
 #[tokio::test]
+#[cfg(target_os = "linux")]
 #[ignore = "requires explicit owner-authorized real Codex/auth acceptance"]
 async fn real_codex_process_scoped_acceptance() {
     assert_eq!(
@@ -159,10 +160,33 @@ target.write_text(json.dumps(dict(session=str(session),contexts=contexts,tool_ca
     );
 }
 
+#[cfg(target_os = "linux")]
 fn exit_fd(pid: u32) -> std::fs::File {
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
     assert!(fd >= 0, "owned fixture must be live at acknowledgment");
     unsafe { std::fs::File::from_raw_fd(fd) }
+}
+#[cfg(target_os = "macos")]
+fn exit_fd(pid: u32) -> std::fs::File {
+    let fd = unsafe { libc::kqueue() };
+    assert!(fd >= 0, "create owned fixture exit observer");
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    // Register while the acknowledged provider is blocked. Unlike polling a PID
+    // after release, the kernel event remains tied to this process's exit.
+    let event = libc::kevent {
+        ident: pid as libc::uintptr_t,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    assert_eq!(
+        unsafe { libc::kevent(fd, &event, 1, std::ptr::null_mut(), 0, std::ptr::null()) },
+        0,
+        "owned fixture must be live at acknowledgment"
+    );
+    file
 }
 fn exited(fd: &std::fs::File) {
     let mut event = libc::pollfd {

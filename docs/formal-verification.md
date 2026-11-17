@@ -202,3 +202,13 @@ case inventory and action/declaration mappings remain unchanged. Their existing
 finite-model results are qualified for reuse, not claimed as a new full formal
 execution or native macOS/Windows result. The source-map checker and executable
 regressions remain required. Independent review is still deferred, not approved.
+
+PR #22's native macOS lint exposed a Linux-only gate around the Unix process
+suite and its local orchestration helpers. The suite now also runs on macOS,
+including signed replay, crash cuts, cancellation, provider and descendant
+cleanup. Exit assertions use Linux pidfds or macOS kqueue process events.
+The fake provider retains Linux parent-death signaling and uses its existing
+control-socket/descendant-stdin EOF cleanup on macOS. The Linux-specific,
+owner-authorized real-Codex acceptance remains opt-in and Linux-only. This
+test-harness follow-up refreshes five inspected pins without changing model
+actions or normal executable behavior; Linux results are not macOS evidence.
