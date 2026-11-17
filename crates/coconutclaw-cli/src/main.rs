@@ -18,6 +18,8 @@ mod service;
 mod session;
 mod store;
 mod telegram;
+#[cfg(test)]
+mod test_runtime;
 mod turn;
 mod types;
 mod util;

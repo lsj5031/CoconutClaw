@@ -1,5 +1,5 @@
 {
-  "basis": "135 original pre-model implementation inputs plus one host-local callback (136 current); eight inspected test-only harness pins refreshed for controlled three-host preparation; official affected checks and executable regressions required",
+  "basis": "135 original pre-model implementation inputs plus host-local callback and test-only native runtime locator (137 current); macOS/Linux CI refreshes inspected test/build pins, without model action or runtime owner changes",
   "families": {
     "Ingress": {
       "owner": "Store IMMEDIATE transaction and authenticated webhook reducer; durable raw/inbox/outbox, volatile callback work",

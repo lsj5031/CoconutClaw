@@ -47,17 +47,7 @@ fn calendar_wake_normal_binary_deadline_during_fetch_and_restart() {
         }
     }
     let _evidence = Evidence(cfg.instance_dir.clone());
-    let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(format!("coconutclaw{}", std::env::consts::EXE_SUFFIX))
-        });
+    let binary = crate::test_runtime::binary();
     let hash = blake3::hash(&fs::read(&binary).unwrap());
     let command = || {
         let mut c = std::process::Command::new(&binary);

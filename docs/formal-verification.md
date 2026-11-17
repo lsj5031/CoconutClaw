@@ -185,3 +185,20 @@ The zero-invocation preflight also exchanges an inert public nonce in both
 directions through the real scoped data transport, gateway-initiated first.
 These are not domain events or task admissions; this transport probe remains
 an executable obligation rather than an added formal application transition.
+
+## macOS/Linux CI follow-up, 17 November
+
+The native-test runtime locator no longer assumes Cargo's test-artifact directory
+depth. Five existing real-process lifecycle tests share it; a regression checks
+both directory layouts and fail-closed explicit selection. The macOS lint fix
+asserts valid descendant PIDs before the existing Linux-specific zombie checks.
+Only the test profile optimizes the unchanged `curve25519-dalek` dependency,
+whose unoptimized arithmetic dominated the measured 45-second fixture deadlines.
+No signature check, timeout, domain action, runtime owner, SQL or protocol changes.
+
+These inspected test/build changes refresh eight existing pins and add the
+test-only locator (137 current inputs). All eleven model files, 38 configurations,
+case inventory and action/declaration mappings remain unchanged. Their existing
+finite-model results are qualified for reuse, not claimed as a new full formal
+execution or native macOS/Windows result. The source-map checker and executable
+regressions remain required. Independent review is still deferred, not approved.

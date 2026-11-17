@@ -322,17 +322,7 @@ async fn runtime_bridge_normal_binary_consumes_real_custody_and_restarts_without
         .conn
         .execute_batch("DROP TRIGGER normal_cut")
         .unwrap();
-    let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(format!("coconutclaw{}", std::env::consts::EXE_SUFFIX))
-        });
+    let binary = crate::test_runtime::binary();
     let cfg = b.cfg.clone();
     let api = server
         .base_url

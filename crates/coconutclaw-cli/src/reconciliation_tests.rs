@@ -853,17 +853,7 @@ fn unknown_reconciliation_normal_binary_restart_uses_same_sender() {
             [fence],
         )
         .unwrap();
-    let binary = std::env::var_os("COCONUTCLAW_TEST_BINARY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(format!("coconutclaw{}", std::env::consts::EXE_SUFFIX))
-        });
+    let binary = crate::test_runtime::binary();
     let hash = blake3::hash(&fs::read(&binary).unwrap());
     struct Owned(std::process::Child);
     impl Drop for Owned {
