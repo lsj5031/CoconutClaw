@@ -853,6 +853,7 @@ pub(crate) fn execute(
     store.conn.execute("UPDATE paired_nodes SET last_contact=CASE WHEN ?2 THEN ?3 ELSE last_contact END,last_error=?4 WHERE id=?1",
         params![node,result.is_ok(),crate::iso_now(&cfg.timezone),if result.is_err(){Some("unavailable; outcome unknown; use nodes reconcile")}else{None}])?;
     if result.is_err() {
+        let tx = store.conn.unchecked_transaction()?;
         store.finish_task_run(
             run,
             TaskRunStatus::Failed,
@@ -861,6 +862,7 @@ pub(crate) fn execute(
             None,
         )?;
         store.conn.execute("UPDATE task_payloads SET output='Remote outcome unconfirmed (Unknown). The exchange with the assigned node was not confirmed. Open Tasks and Nodes, then check stored evidence locally with coconutclaw nodes reconcile RUN_ID before repeating the work. Nothing was retried or moved to this computer.' WHERE task_run_id=?1 AND output IS NULL",[run])?;
+        tx.commit()?;
     }
     // Once reserved, failure is durable ambiguity, not the local provider-error
     // path (which would create a competing result inbox and delivery).

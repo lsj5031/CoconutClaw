@@ -818,6 +818,43 @@ fn ordinary_production_adapter_over_native_iroh_has_one_invocation_per_assignmen
 }
 
 #[test]
+fn offline_node_output_write_failure_does_not_publish_terminal_status() {
+    let (_core_dir, core) = fixture(Role::Coordinator, 93);
+    let (_runner_dir, runner) = fixture(Role::Runner, 94);
+    pair(&core, &runner);
+    let store = Store::open(&core).unwrap();
+    let request = request();
+    selection(
+        &store,
+        &request.session.id(),
+        Some(&local(&runner).unwrap().card.id.to_string()),
+    )
+    .unwrap();
+    let run = admit(&store, &request);
+    store.update_task_run_started(run, "fixture").unwrap();
+    store
+        .conn
+        .execute_batch(
+            "CREATE TEMP TRIGGER reject_output BEFORE UPDATE OF output ON task_payloads
+             BEGIN SELECT RAISE(ABORT, 'fixture output write failed'); END",
+        )
+        .unwrap();
+    let error = execute(
+        &core,
+        &store,
+        run,
+        &request,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("fixture output write failed"));
+    assert_eq!(
+        store.get_task_run(run).unwrap().unwrap().status,
+        "waiting_remote"
+    );
+}
+
+#[test]
 fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {
     let (_a, mut core) = fixture(Role::Coordinator, 91);
     let (_b, cfg) = fixture(Role::Runner, 92);
