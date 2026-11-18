@@ -74,7 +74,7 @@ impl Store {
                 "#{id} [{state}, source {source}] {}\n",
                 serde_json::to_string(&content)?
             ),
-            None => "Current memory ID not found in this chat.".into(),
+            None => "Memory not found in this conversation. Open Memory for current IDs.".into(),
         })
     }
 
@@ -107,7 +107,7 @@ impl Store {
 
     pub(crate) fn recall_memory(&self, scope: &str, query: &str) -> Result<String> {
         if query.len() > 512 {
-            return Ok("Memory query exceeds 512 bytes.".into());
+            return Ok("Search text exceeds 512 bytes. Try a shorter phrase.".into());
         }
         // Literal tokens only. Quotes, operators, column names and punctuation
         // cannot become FTS syntax. Bound both tokenizer input and term count.
@@ -167,7 +167,7 @@ impl Store {
             output.push_str(&line);
         }
         Ok(if output.is_empty() {
-            "No memory records for this chat.".into()
+            "No memories saved in this conversation. Use Remember to add one.".into()
         } else {
             output
         })
@@ -250,7 +250,7 @@ impl Store {
         let remember = (action == "remember").then_some(rest);
         if remember.is_some_and(|s| s.is_empty() || s.len() > 512 || !valid_content(s)) {
             return Ok(
-                "Remember requires 1..512 bytes of text, without control characters.".into(),
+                "Memory text must be 1–512 bytes, without control characters. Try shorter text with /memory remember text.".into(),
             );
         }
         let (id_text, content) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
@@ -270,7 +270,10 @@ impl Store {
         if action == "correct"
             && (content.is_empty() || content.len() > MAX_CONTENT || !valid_content(content))
         {
-            return Ok("Correction must contain 1..2048 bytes.".into());
+            return Ok(
+                "Replacement text must be 1–2048 bytes. Use /memory correct ID replacement text."
+                    .into(),
+            );
         }
         let mut curated = false;
         let (old, new, undo_of) = if action == "remember" {
@@ -310,7 +313,9 @@ impl Store {
                 )
                 .optional()?;
             let Some((active, was_curated)) = active else {
-                return Ok("Memory ID not found in this chat.".into());
+                return Ok(
+                    "Memory not found in this conversation. Open Memory for current IDs.".into(),
+                );
             };
             if action == "promote" {
                 if active {
@@ -319,11 +324,11 @@ impl Store {
                 (None, Some(id), None)
             } else {
                 if !active {
-                    return Ok("Only an active memory can be corrected.".into());
+                    return Ok("Only an active memory can be corrected. Promote the candidate first, then use Correct.".into());
                 }
                 curated = was_curated;
                 if curated && content.len() > 512 {
-                    return Ok("Curated correction exceeds 512 bytes.".into());
+                    return Ok("This memory's replacement exceeds 512 bytes. Use shorter text with /memory correct ID text.".into());
                 }
                 (Some(id), None, None)
             }
@@ -361,12 +366,16 @@ impl Store {
             "INSERT INTO memory_history(scope,source_turn,kind,old_record,new_record,undo_of) VALUES(?1,?2,?3,?4,?5,?6)",
             params![scope,source_turn,action,old,new,undo_of],
         )?;
-        Ok(format!(
-            "Memory {action} applied (history #{}, active {}).",
-            self.conn.last_insert_rowid(),
-            new.map(|id| format!("#{id}"))
-                .unwrap_or_else(|| "none".into())
-        ))
+        let active = new
+            .map(|id| format!("#{id}"))
+            .unwrap_or_else(|| "none".into());
+        let change = self.conn.last_insert_rowid();
+        Ok(match action {
+            "remember" => format!("Saved memory {active}. Change #{change}."),
+            "promote" => format!("Memory {active} is now active. Change #{change}."),
+            "correct" => format!("Updated memory {active}. Change #{change}."),
+            _ => format!("Last memory change undone. Active memory: {active}. Change #{change}."),
+        })
     }
 }
 

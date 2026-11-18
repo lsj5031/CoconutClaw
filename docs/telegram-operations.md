@@ -9,6 +9,17 @@ report; opening a detail produces its own timestamp. Only Home and Help, which
 contain no observations, may edit a navigation message. Telegram receives UI
 text without a parse mode, so user text is literal, not executable HTML/Markdown.
 Long views are bounded and explicitly disclose truncation.
+Report headers and recorded event times use the configured timezone, with the
+zone name and UTC offset shown to distinguish repeated daylight-saving times.
+Each report has one snapshot header; refreshing never makes an old report live.
+
+Nodes use the verified enrolled role and a short stable ID suffix. Current
+admission cards contain no hostname or friendly-name field, so the UI must not
+invent one from an address or the coordinator's host. Full IDs remain internal
+to authentication, routes and callback actions. The report distinguishes the
+destination of **new text tasks** from existing assignments. “Last reached” is
+a saved successful contact, not current online status. Failed probe times were
+not recorded by the existing protocol and are explicitly unavailable.
 
 ## Scope and authority
 
@@ -26,13 +37,18 @@ effects, or authorize retries; mutating controls retain the existing lane fence.
 There is no existing global operator authority, so all reports are scoped to the
 conversation/topic. Configuration is not evidence of runner health. Runtime and
 node liveness are unavailable: there is no production heartbeat registry; the
-remote test harness is not production connectivity. Transport counts and last
+Nodes report instead shows saved contact checks, not continuous monitoring.
+Transport counts and last
 received time are persisted custody observations, not network/poller health or
 a freshness guarantee. Progress means only that progress was recorded, never an
 invented percentage. Raw prompts, provider progress/errors, resume payloads,
 delivery plans and internal SQL JSON are not part of the status snapshot API.
 New runtime timestamps use RFC3339 offsets. Older compact-offset or malformed
 timestamps may appear unavailable; existing persisted bytes are not rewritten.
+Unknown is displayed as an **unconfirmed outcome**, never as a failed operation
+or permission to retry. The next step is to inspect Tasks, the conversation and
+local run evidence before repeating work. Unconfirmed delivery similarly asks
+the user to check the conversation before sending again.
 
 Tasks are logical work; runs are physical attempts. Beside-run cancellation and
 pending approval controls preserve existing runtime ownership/approval semantics.

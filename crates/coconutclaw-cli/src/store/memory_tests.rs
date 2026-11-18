@@ -73,7 +73,7 @@ fn proposal_promotion_scope_correction_undo_replay_and_reopen() {
     );
     let text = format!("/memory promote {id}");
     let receipt = command(&mut store, "telegram:321", &text, "promote");
-    assert!(receipt.contains("applied"));
+    assert!(receipt.contains("is now active"));
     assert!(
         store
             .recall_memory("telegram:321", "orchard")
@@ -109,7 +109,7 @@ fn proposal_promotion_scope_correction_undo_replay_and_reopen() {
         1
     );
     let correction = format!("/memory correct   {id}   orchard apples are crimson");
-    assert!(command(&mut store, "telegram:321", &correction, "correct").contains("applied"));
+    assert!(command(&mut store, "telegram:321", &correction, "correct").contains("Updated memory"));
     assert!(
         !store
             .recall_memory("telegram:321", "green")
@@ -144,7 +144,7 @@ fn proposal_promotion_scope_correction_undo_replay_and_reopen() {
             .contains("crimson")
     );
     let undone = command(&mut store, "telegram:321", "/memory undo", "undo");
-    assert!(undone.contains("applied"));
+    assert!(undone.contains("undone"));
     assert_eq!(
         command(&mut store, "telegram:321", "/memory undo", "undo"),
         undone
@@ -272,7 +272,7 @@ fn failed_transition_rolls_back_source_record_history_index_and_receipt() {
             "/memory correct 1 rollback replacement",
             "retry"
         )
-        .contains("applied")
+        .contains("Updated memory")
     );
     assert!(
         store

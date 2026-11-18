@@ -39,7 +39,7 @@ fn fresh_command_returns_confirmation_output() {
     let output = outcome.output.unwrap_or_default();
 
     assert!(output.contains("TELEGRAM_REPLY:"));
-    assert!(output.contains("Context cleared"));
+    assert!(output.contains("Earlier messages are no longer included"));
 }
 
 #[test]
@@ -57,13 +57,7 @@ fn incoming_addressed_memory_commands_execute_locally() {
     })
     .to_string();
     let first = process_webhook_line(&cfg, &mut store, &scheduler, &update).unwrap();
-    assert!(
-        first
-            .output
-            .as_deref()
-            .unwrap()
-            .contains("remember applied")
-    );
+    assert!(first.output.as_deref().unwrap().contains("Saved memory"));
     let replay = process_webhook_line(&cfg, &mut store, &scheduler, &update).unwrap();
     assert_eq!(first.output, replay.output);
     for (id, chat, text) in [
@@ -159,13 +153,7 @@ fn incoming_memory_commands_are_authorized_scoped_and_replay_safe() {
     let scheduler = SessionScheduler::new(cfg.clone(), None);
     let update = r#"{"update_id":701,"message":{"from":{"id":"321"},"chat":{"id":"321"},"text":"/memory remember dispatch scoped fact"}}"#;
     let first = process_webhook_line(&cfg, &mut store, &scheduler, update).unwrap();
-    assert!(
-        first
-            .output
-            .as_deref()
-            .unwrap()
-            .contains("remember applied")
-    );
+    assert!(first.output.as_deref().unwrap().contains("Saved memory"));
     let replay = process_webhook_line(&cfg, &mut store, &scheduler, update).unwrap();
     assert_eq!(replay.output, first.output);
     assert_eq!(store.memory_revision("telegram:321").unwrap(), 1);
@@ -546,7 +534,7 @@ fn tasks_command_lists_active_runtime_tasks() {
     let outcome = process_webhook_line(&cfg, &mut store, &scheduler, update).expect("process");
     let output = outcome.output.unwrap_or_default();
 
-    assert!(output.contains("logical tasks"));
+    assert!(output.contains("tasks, "));
     assert!(output.contains(&format!("Task #{task_id} / run #{task_id}")));
     assert!(output.contains("queued"));
     assert!(
@@ -831,7 +819,7 @@ fn cancel_signal_detects_message_and_callback_query() {
 #[test]
 fn progress_text_includes_elapsed_time() {
     let text = progress_status_text(12);
-    assert!(text.contains("Thinking"));
+    assert!(text.contains("Working on your request"));
     assert!(text.contains("12s"));
 }
 
@@ -1018,8 +1006,8 @@ fn render_telegram_reply_text_escapes_progress_for_markdown_v2() {
         .telegram_parse_mode(TelegramParseMode::MarkdownV2)
         .build();
     let rendered = render_telegram_reply_text(&cfg, &progress_status_text(3));
-    assert!(rendered.contains("Thinking\\.\\.\\."));
-    assert!(rendered.contains("stop\\."));
+    assert!(rendered.contains("Working on your request…"));
+    assert!(rendered.contains("confirmation\\."));
 }
 
 #[test]

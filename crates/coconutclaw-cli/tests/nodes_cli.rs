@@ -113,7 +113,7 @@ fn public_pair_flow_preserves_private_keys_and_runner_refuses_polling() {
     assert!(
         String::from_utf8(status.stdout)
             .unwrap()
-            .contains("Last contact: never")
+            .contains("Last reached: not recorded")
     );
     let before = cli(&runner, &["nodes", "card"]);
     assert!(before.status.success());

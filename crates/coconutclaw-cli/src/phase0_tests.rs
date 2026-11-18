@@ -404,6 +404,10 @@ fn cancelled_saved_turn_suppresses_media_in_recovery_and_legacy_replay() {
         .unwrap()
         .unwrap();
     assert!(!legacy.contains("SEND_DOCUMENT"), "{legacy}");
+    assert!(
+        legacy.contains("Cancelled."),
+        "retain the saved reply, not new wording"
+    );
     let scheduler = SessionScheduler::new(cfg, None);
     scheduler.recover().unwrap();
     let output: String = store

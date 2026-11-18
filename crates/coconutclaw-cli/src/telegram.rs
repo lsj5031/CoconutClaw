@@ -297,17 +297,17 @@ pub(crate) fn register_bot_commands(client: &Client, cfg: &RuntimeConfig) -> Res
     let base = telegram_api_base(cfg)?;
     let commands = serde_json::json!([
         {"command": "start", "description": "Open Home"},
-        {"command": "help", "description": "Operations help"},
+        {"command": "help", "description": "Help with tasks and settings"},
         {"command": "fresh", "description": "Start a fresh conversation"},
-        {"command": "cancel", "description": "Cancel the current task"},
-        {"command": "tasks", "description": "List active tasks"},
+        {"command": "cancel", "description": "Request cancellation of the current task"},
+        {"command": "tasks", "description": "View tasks and run details"},
         {"command": "memory", "description": "Remember, search, get, promote, correct or undo chat memory"},
         {"command": "preferences", "description": "List, set or unset your conversation instructions/preferences"},
-        {"command": "notifications", "description": "Inspect scoped task notification decisions and delivery"},
+        {"command": "notifications", "description": "View task notifications and delivery receipts"},
         {"command": "approve", "description": "Approve a request by id"},
         {"command": "reject", "description": "Reject a request by id"},
         {"command": "schedules", "description": "Scheduled tasks and next runs"},
-        {"command": "reconcile", "description": "Narrow acknowledgment recovery, not retry"},
+        {"command": "reconcile", "description": "Check a delivery receipt without sending again"},
     ]);
     let params = vec![("commands".to_string(), commands.to_string())];
     telegram_post_form(
@@ -483,7 +483,7 @@ pub(crate) fn send_progress_message(cfg: &RuntimeConfig, chat_id: &str) -> Resul
     let base = telegram_api_base(cfg)?;
     let reply_markup = progress_reply_markup();
     let mut params = telegram_route_params(chat_id)?;
-    params.push(("text".into(), "Thinking...".into()));
+    params.push(("text".into(), "Working on your request…".into()));
     params.push(("reply_markup".into(), reply_markup.into()));
     let response = telegram_request(&client, cfg, "progress message", || {
         Ok(client
@@ -507,7 +507,9 @@ pub(crate) fn progress_reply_markup() -> &'static str {
 }
 
 pub(crate) fn progress_status_text(elapsed_secs: u64) -> String {
-    format!("Thinking...\nElapsed: {elapsed_secs}s\nTap Cancel to stop.")
+    format!(
+        "Working on your request…\nElapsed: {elapsed_secs}s\nCancel requests a stop; check Tasks for confirmation."
+    )
 }
 
 pub(crate) fn progress_status_with_events(elapsed_secs: u64, statuses: &[String]) -> String {

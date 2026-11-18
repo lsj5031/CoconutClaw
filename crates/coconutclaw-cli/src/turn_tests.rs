@@ -26,7 +26,7 @@ fn empty_input_channel_falls_back_to_source_channel() {
 fn resolve_turn_result_marks_cancelled() {
     let result = resolve_turn_result("TELEGRAM_REPLY: hi", "telegram", true, true);
     assert_eq!(result.status, TurnStatus::Cancelled);
-    assert_eq!(result.telegram_reply, "❌ Cancelled.");
+    assert_eq!(result.telegram_reply, crate::wording::CANCELLATION);
     assert!(result.effects.is_empty());
 }
 
@@ -55,8 +55,10 @@ fn resolve_turn_result_marks_agent_error_when_unrecoverable() {
     assert!(
         result
             .telegram_reply
-            .contains("Agent execution failed locally")
+            .contains("The task ended with an error")
     );
+    assert!(!result.telegram_reply.contains(r#"{"type":"system""#));
+    assert!(result.telegram_reply.contains("local logs"));
 }
 
 #[test]
@@ -79,7 +81,7 @@ fn resolve_turn_result_empty_raw_output() {
     assert_eq!(result.status, TurnStatus::ParseFallback);
     assert_eq!(
         result.telegram_reply,
-        "I could not parse structured markers from the model output."
+        "No reply text was returned. Check Tasks and local logs before repeating the request."
     );
 }
 
@@ -206,7 +208,7 @@ fn resolve_turn_result_agent_error_blank_output() {
     assert!(
         result
             .telegram_reply
-            .contains("Agent execution failed locally. Please check local logs and retry.")
+            .contains("Check Tasks and local logs before repeating the request.")
     );
 }
 
@@ -219,7 +221,7 @@ fn resolve_turn_result_recovers_plain_text_from_failed_provider() {
     assert!(
         !result
             .telegram_reply
-            .contains("Agent execution failed locally")
+            .contains("The task ended with an error")
     );
 }
 
@@ -232,7 +234,7 @@ fn resolve_turn_result_recovers_plain_text_on_provider_failure() {
     assert!(
         !result
             .telegram_reply
-            .contains("Agent execution failed locally")
+            .contains("The task ended with an error")
     );
 }
 

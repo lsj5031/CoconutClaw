@@ -26,6 +26,7 @@ mod test_runtime;
 mod turn;
 mod types;
 mod util;
+mod wording;
 
 pub(crate) use types::*;
 
@@ -37,7 +38,11 @@ pub(crate) use util::{command_exists, iso_now, resolve_instance_path, shorten_lo
 use crate::store::Store;
 
 #[derive(Parser, Debug)]
-#[command(name = "coconutclaw", version, about = "CoconutClaw Rust CLI")]
+#[command(
+    name = "coconutclaw",
+    version,
+    about = "Run CoconutClaw and manage local tasks"
+)]
 struct Cli {
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
@@ -47,12 +52,19 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Process one request, then exit.
     Once(TurnArgs),
+    /// Listen for Telegram requests and scheduled tasks.
     Run(TurnArgs),
+    /// Check local setup without contacting Telegram or Codex.
     Doctor(DoctorArgs),
+    /// Manage the background service for this user.
     Service(ServiceArgs),
+    /// Import explicitly selected local OpenClaw files.
     ImportOpenclaw(memory_import::ImportArgs),
+    /// Create and manage scheduled tasks.
     Schedule(commands::schedule::ScheduleArgs),
+    /// Pair execution nodes, inspect saved checks and recover run evidence.
     Nodes(nodes::Args),
 }
 

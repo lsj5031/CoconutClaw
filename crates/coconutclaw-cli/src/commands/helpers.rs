@@ -100,13 +100,15 @@ pub(crate) fn maybe_handle_telegram_command(
                 Ok(false) => {}
                 Err(err) => return Err(err),
             }
-            Some("Context cleared. New conversation started; memory and preferences are kept.".to_string())
+            Some("New conversation started. Earlier messages are no longer included; memory and preferences are kept.".to_string())
         }
         "/cancel" => {
             let reply = if let Some(arg) = arg {
                 if let Some(task_id) = parse_task_id_arg(arg) {
                     if scheduler.cancel_task_for_session(task_id, Some(&session.id()))? {
-                        format!("Cancel requested for run #{task_id}.")
+                        format!(
+                            "Cancel requested for run #{task_id}, not yet confirmed. Open Tasks to check its status."
+                        )
                     } else {
                         format!("Run #{task_id} is not active for this conversation/topic.")
                     }
@@ -114,7 +116,9 @@ pub(crate) fn maybe_handle_telegram_command(
                     "Use /cancel [run ID] with one positive integer ID, or /cancel to cancel the active run.".to_string()
                 }
             } else if let Some(task_id) = scheduler.cancel_active_for_session(&session.id())? {
-                format!("Cancel requested for run #{task_id}.")
+                format!(
+                    "Cancel requested for run #{task_id}, not yet confirmed. Open Tasks to check its status."
+                )
             } else {
                 "No active run for this conversation/topic.".to_string()
             };
@@ -143,22 +147,29 @@ pub(crate) fn maybe_handle_telegram_command(
         )?),
         "/approve" | "/reject" => {
             if let Some(id) = arg.and_then(parse_task_id_arg) {
-                Some(scheduler.resolve_approval(
-                    id,
-                    if command == "/approve" {
-                        "approve"
-                    } else {
-                        "reject"
-                    },
-                    &session.id(),
-                )?.unwrap_or_else(|| "Approval unavailable or already resolved in this conversation/topic.".into()))
+                Some(
+                    scheduler
+                        .resolve_approval(
+                            id,
+                            if command == "/approve" {
+                                "approve"
+                            } else {
+                                "reject"
+                            },
+                            &session.id(),
+                        )?
+                        .unwrap_or_else(|| {
+                            "Approval unavailable or already resolved in this conversation/topic."
+                                .into()
+                        }),
+                )
             } else {
                 Some(format!(
                     "Use {command} <approval id> with one positive integer ID."
                 ))
             }
         }
-        _ => Some("Unknown command. Use /start for Home or /help for supported operations. This command was not sent to the provider.".into()),
+        _ => Some("Command not recognized. Open /start or /help. No task was started.".into()),
     };
 
     Ok(reply.map(|reply_text| ProcessOutcome {

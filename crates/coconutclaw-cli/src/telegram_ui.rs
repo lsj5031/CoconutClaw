@@ -39,7 +39,7 @@ fn button(
     let id = token(store)?;
     let label = match (label, action.split_once(':')) {
         ("Use remote", Some(("node-select", id))) => {
-            format!("Use remote {}", &id[..id.len().min(8)])
+            format!("Use {}", crate::nodes::display_name(store, id)?)
         }
         (
             "Run details" | "Schedule details" | "Cancel run" | "Approve" | "Reject",
@@ -102,8 +102,7 @@ fn encoded(
         bounded.push(ch);
     }
     if bounded.len() < text.len() {
-        bounded
-            .push_str("\n\nView truncated to fit Telegram. Use scoped detail commands for more.");
+        bounded.push_str("\n\nMessage shortened to fit Telegram. Some text is not shown.");
     }
     Ok(format!(
         "{PREFIX}{}",
@@ -207,7 +206,7 @@ fn callback_message(store: &Store, update: Option<&str>, token: &str) -> Result<
         }))
 }
 
-const HELP: &str = "Use Home to inspect this conversation/topic. Reports are dated snapshots, not live dashboards. New snapshot sends a new report.\n\nTasks are logical work; runs are attempts. Cancel requests cancellation, not proof it stopped. Approve/Reject apply only to pending requests.\n\nCommands: /start, /help, /fresh (new context, keeps memory), /tasks [run ID], /cancel [run ID], /memory, /preferences, /notifications, /schedules, /approve ID, /reject ID, /reconcile.\n\n/reconcile only acknowledges proven delivery recovery. It is never a generic retry. Unknown effects are not retried automatically.\n\nMemory and preference input uses an explicit /input code so unrelated conversation messages remain ordinary messages. /input cancel abandons it; a new input replaces the previous one. Inputs expire after 15 minutes.";
+const HELP: &str = "Home shows tasks and settings for this conversation. Reports are saved snapshots, not live updates. New snapshot sends a fresh report without changing the old one.\n\nA task is a piece of work; a run is one attempt. Cancel requests a stop, it does not confirm one. Approve or Reject answers a pending approval request.\n\nCommands: /start, /help, /status, /nodes, /fresh (new context, keeps memory), /tasks [run ID], /cancel [run ID], /memory, /preferences, /notifications, /schedules, /approve ID, /reject ID, /reconcile.\n\nUnknown means the outcome is unconfirmed, not that nothing happened. Check Tasks and the conversation before doing the work again. There is no automatic retry. Recovery help explains how to check a delivery receipt.\n\nMemory and preference guides ask you to send /input with a code. Other messages stay ordinary conversation. /input cancel closes the guide. Guides expire after 15 minutes; starting a new guide replaces the old one.";
 
 /// `None` means ordinary conversation, never an unrecognized slash command.
 pub(crate) fn handle(
@@ -283,6 +282,7 @@ pub(crate) fn handle(
         action = "home".into();
     }
     let observed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let displayed_at = crate::wording::time(Some(&observed_at), &cfg.timezone);
     let mut edit = None;
     let navigation_only = matches!(action.as_str(), "home" | "help") && notice.is_none();
     let mut actions: Vec<(&str, String)> = Vec::new();
@@ -319,7 +319,7 @@ pub(crate) fn handle(
             _ => ("Set preference", "lowercase-key preference text"),
         };
         format!(
-            "{} input\nSend /input {code} {format}\n\nOnly that explicit code is accepted in this conversation/topic. Expires in 15 minutes. Starting another input replaces this one. Unrelated messages continue normally.",
+            "{}\nSend /input {code} {format}\n\nExpires in 15 minutes. Other messages stay ordinary conversation. A new guide replaces this one; Cancel input closes it.",
             title
         )
     } else if let Some(code) = action.strip_prefix("input-cancel:") {
@@ -361,7 +361,14 @@ pub(crate) fn handle(
         if let Some(transaction) = transaction {
             transaction.commit()?;
         }
-        "Execution node selected for new tasks in this conversation/topic. Existing assignments are unchanged. Remote tasks accept text only and use that node's permitted workspace; unavailable nodes never fall back to local execution.".into()
+        format!(
+            "New text tasks go to: {}.\nExisting tasks keep their assigned node. Remote tasks use that node's permitted workspace and do not switch to this computer if it is unreachable.",
+            if node == "local" {
+                "this computer (local)".into()
+            } else {
+                crate::nodes::display_name(store, node)?
+            }
+        )
     } else if action == "fresh" {
         store.insert_boundary_turn(
             &crate::iso_now(&cfg.timezone),
@@ -373,7 +380,7 @@ pub(crate) fn handle(
             "UPDATE telegram_ui_controls SET consumed=1 WHERE token=?1",
             [arg],
         )?;
-        "New conversation started. Context boundary added; memory and preferences are kept.".into()
+        "New conversation started. Earlier messages are no longer included; memory and preferences are kept.".into()
     } else if let Some((operation, id)) = action
         .split_once(':')
         .filter(|(op, _)| matches!(*op, "cancel" | "approve" | "reject"))
@@ -387,7 +394,9 @@ pub(crate) fn handle(
         )?;
         if operation == "cancel" {
             if scheduler.cancel_task_for_session(id, Some(&session.id()))? {
-                format!("Cancel requested for run #{id}. This is not confirmation it has stopped.")
+                format!(
+                    "Cancel requested for run #{id}, not yet confirmed. Open Tasks to check its status."
+                )
             } else {
                 format!("Run #{id} is no longer cancellable in this conversation/topic.")
             }
@@ -406,15 +415,15 @@ pub(crate) fn handle(
                     ("Status","status"),("Tasks","tasks"),("Nodes","nodes"),("Scheduled tasks","schedules"),
                     ("Memory","memory"),("Preferences","preferences"),("Help","help"),("New conversation","fresh"),
                 ].map(|(a,b)|(a,b.to_string())));
-                notice.map(|text|format!("Input result at {observed_at}\n\n{text}")).unwrap_or_else(||"Home\nChoose an operation for this conversation/topic.".into())
+                notice.map(|text|format!("Input result at {displayed_at}\n\n{text}")).unwrap_or_else(||"Home\nChoose what to view or change in this conversation.".into())
             }
             "help" => { edit=callback_message(store,update,arg)?; actions.push(("Recovery help","recovery-help".into())); HELP.into() }
-            "recovery-help" => "Acknowledgment recovery\n/reconcile task RUN_ID or /reconcile ack INGRESS_ID inspects existing durable proof and, only when sufficient, offers an exact-state token. Apply the returned command to acknowledge that text operation only.\n\nThis is not a retry. Provider/control/progress Unknown cannot be overridden. Stale/conflicting evidence is refused; no resend is authorized.".into(),
+            "recovery-help" => "Check a delivery receipt\nIf a reply may have arrived but its receipt is unconfirmed, inspect the conversation first.\n\nUse /reconcile task RUN_ID for a task reply, or /reconcile ack INGRESS_ID for a command reply. If stored receipts prove delivery, you will receive a confirmation command. Copy it exactly to record that receipt.\n\nThis never runs work or sends a reply again. It cannot confirm an uncertain task outcome, command effect, or progress message. If the evidence has changed or is insufficient, the outcome stays unconfirmed. Keep the run or operation ID for local diagnosis.".into(),
             "memory" => {
                 report=true;
                 actions.push(("Remember","guide:memory".into()));
                 actions.extend([("Search","guide:memory-search"),("Get memory","guide:memory-get"),("Promote","guide:memory-promote"),("Correct","guide:memory-correct"),("Undo last memory change","memory-undo")].map(|(label,action)|(label,action.into())));
-                format!("Memory\n{}\nMore operations: /memory search text, /memory get ID, /memory list before-ID, /memory promote ID, /memory correct ID text, /memory undo.",store.memory_command(&session.id(),"/memory list",update,&crate::iso_now(&cfg.timezone))?)
+                format!("Memory\n{}\nActive memories can be recalled. Candidates are not used until promoted. Use Promote to activate a candidate, or Correct to replace an active memory.\nOlder entries: /memory list before-ID.",store.memory_command(&session.id(),"/memory list",update,&crate::iso_now(&cfg.timezone))?)
             }
             "preferences" => {
                 report=true;
@@ -430,15 +439,15 @@ pub(crate) fn handle(
                 if let Ok(rows)=serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
                     let lines=rows.iter().map(|r|format!("Notification #{}: task #{} / run #{}\nReason: {}\nDelivery: {}{}",
                         r["id"],r["task_id"],r["run_id"],r["reason"].as_str().unwrap_or("unavailable"),
-                        r["delivery"]["state"].as_str().unwrap_or("unavailable"),
-                        if r["delivery"]["uncertain"]==true {" (unknown; no automatic retry)"}else if r["delivery"]["acknowledged"]==true {" (acknowledged)"}else{""})).collect::<Vec<_>>();
-                    format!("Notifications (up to 8)\n{}",if lines.is_empty(){"No notification evidence in this conversation/topic.".into()}else{lines.join("\n\n")})
+                        crate::wording::delivery(r["delivery"]["state"].as_str().unwrap_or("unavailable")),
+                        if r["delivery"]["uncertain"]==true {" (no automatic retry)"}else if r["delivery"]["acknowledged"]==true {" (receipt recorded)"}else{""})).collect::<Vec<_>>();
+                    format!("Notifications (up to 8)\n{}",if lines.is_empty(){"No task notifications recorded in this conversation.".into()}else{lines.join("\n\n")})
                 } else {raw}
             }
             "invalid" => "This button is invalid, expired, used, or belongs to another conversation/topic. Open /start for current controls.".into(),
             _ => {
                 report=true;
-                render_snapshot(&observed_at,store,session,update,&action,&mut actions)?
+                render_snapshot(cfg,&observed_at,store,session,update,&action,&mut actions)?
             }
         }
     };
@@ -449,10 +458,7 @@ pub(crate) fn handle(
         actions.push(("Home", "home".into()));
     }
     let text = if report {
-        format!(
-            "Snapshot at {}\nConversation/topic scope only\n\n{body}",
-            observed_at
-        )
+        format!("Snapshot at {displayed_at}\nThis conversation only\n\n{body}")
     } else {
         body
     };
@@ -479,6 +485,7 @@ fn callback_id(store: &Store, update: Option<&str>) -> Result<Option<String>> {
 }
 
 fn render_snapshot(
+    cfg: &RuntimeConfig,
     observed_at: &str,
     store: &Store,
     session: &SessionKey,
@@ -487,23 +494,26 @@ fn render_snapshot(
     actions: &mut Vec<(&'static str, String)>,
 ) -> Result<String> {
     let snapshot = store.status_snapshot(session, observed_at)?;
-    let mut lines = vec![format!("Observed at {}", snapshot.observed_at)];
+    let mut lines = Vec::new();
     match action {
         "status" => {
-            lines.push(format!("Runtime health: {}\nTransport: {} pending, {} applying, {} unknown.\nLast received: {}\n{} tasks, {} runs; {} schedules.\nThese are persisted observations, not polling/network health. Global operator telemetry unavailable.",snapshot.runtime_health,snapshot.transport.pending,snapshot.transport.applying,snapshot.transport.unknown,snapshot.transport.latest_received_at.as_deref().unwrap_or("unavailable"),snapshot.task_count,snapshot.run_count,snapshot.schedule_count));
+            lines.push(format!("Status\n{} tasks, {} runs; {} schedules.\nMessages: {} waiting, {} processing, {} unconfirmed.\nLast received: {}\nBased on saved records, not a connection check.",snapshot.task_count,snapshot.run_count,snapshot.schedule_count,snapshot.transport.pending,snapshot.transport.applying,snapshot.transport.unknown,crate::wording::time(snapshot.transport.latest_received_at.as_deref(), &cfg.timezone)));
+            if snapshot.transport.unknown > 0 {
+                lines.push("Unconfirmed means a message or its reply may already have taken effect. Check Tasks and the conversation before repeating it; no automatic retry.".into());
+            }
             let attention = snapshot.tasks.iter().filter(|t| t.attention).count();
-            lines.push(format!("Attention: {attention} among {} tasks in the bounded snapshot. Open Tasks and Scheduled tasks for details. Transport counts include this request being inspected.",snapshot.tasks.len()));
+            lines.push(format!("Need attention: {attention} of {} tasks shown. Open Tasks or Scheduled tasks for details. Message counts include this request.",snapshot.tasks.len()));
             actions.extend([
                 ("Tasks", "tasks".into()),
                 ("Scheduled tasks", "schedules".into()),
             ]);
         }
         "nodes" => {
-            lines.push(format!(
-                "Current node health: {} (no continuous heartbeat).",
-                snapshot.node_health
-            ));
-            lines.push(crate::nodes::status(store, Some(&session.id()))?);
+            lines.push(crate::nodes::status(
+                store,
+                Some(&session.id()),
+                &cfg.timezone,
+            )?);
             actions.push(("Use local", "node-select:local".into()));
             for node in crate::nodes::choices(store)? {
                 actions.push(("Use remote", format!("node-select:{node}")));
@@ -515,17 +525,20 @@ fn render_snapshot(
                 .and_then(|p| p.parse::<usize>().ok())
                 .unwrap_or(0)
                 .min(50);
-            lines.push(format!("Scheduled tasks: {} total; {} available in bounded snapshot, {} on this page. Next due is a persisted cursor, not a promise of execution. Historical schedules are inactive and not imported.",snapshot.schedule_count,snapshot.schedules.len(),snapshot.schedules.len().saturating_sub(offset).min(10)));
+            lines.push(format!("Scheduled tasks: {} total; {} shown on this page.\nNext due is the planned time, not confirmation the task ran.",snapshot.schedule_count,snapshot.schedules.len().saturating_sub(offset).min(10)));
+            if snapshot.schedules.is_empty() {
+                lines.push("No scheduled tasks in this conversation.".into());
+            }
             for s in snapshot.schedules.iter().skip(offset).take(10) {
                 lines.push(format!(
                     "#{}: {} | next {} | latest run {}: {}{}",
                     s.id,
                     s.state,
-                    s.next_due.as_deref().unwrap_or("unavailable"),
+                    crate::wording::time(s.next_due.as_deref(), &cfg.timezone),
                     s.latest_run_id
                         .map(|id| id.to_string())
                         .unwrap_or_else(|| "none".into()),
-                    s.latest_status.unwrap_or("unavailable"),
+                    crate::wording::run_state(s.latest_status.unwrap_or("unavailable")),
                     if s.blocked {
                         " | attention: blocked"
                     } else {
@@ -547,7 +560,7 @@ fn render_snapshot(
                 "Page {}. At most 50 schedules in each snapshot.",
                 offset / 10 + 1
             ));
-            lines.push("Create/change schedules with the existing local schedule CLI; this view never invents jobs or retries Unknown effects.".into());
+            lines.push("Create or change scheduled tasks locally with coconutclaw schedule. Unconfirmed outcomes are not retried automatically.".into());
         }
         a if a.starts_with("schedule:") => {
             let id = a
@@ -555,28 +568,28 @@ fn render_snapshot(
                 .and_then(|s| s.parse::<i64>().ok());
             if let Some(s) = snapshot.schedules.iter().find(|s| Some(s.id) == id) {
                 lines.push(format!(
-                    "Schedule #{} revision {}: {}\nNext due: {}\nBlocked: {}\nLatest run: {} ({})",
+                    "Schedule #{} (version {}): {}\nNext due: {}\nNeeds attention: {}\nLatest run: {} ({})",
                     s.id,
                     s.revision,
                     s.state,
-                    s.next_due.as_deref().unwrap_or("unavailable"),
-                    s.blocked,
+                    crate::wording::time(s.next_due.as_deref(), &cfg.timezone),
+                    if s.blocked { "yes, inspect the latest run before changing it" } else { "no blocker recorded" },
                     s.latest_run_id
                         .map(|id| id.to_string())
                         .unwrap_or_else(|| "none".into()),
-                    s.latest_status.unwrap_or("unavailable")
+                    crate::wording::run_state(s.latest_status.unwrap_or("unavailable"))
                 ));
                 if let Some(t) = &s.timing {
                     lines.push(format!(
-                        "{}\nTimezone: {}; DST fold: {}; gap: {}; missed: {}",
-                        t.cadence, t.timezone, t.fold, t.gap, t.missed
+                        "{}\nTimezone: {}\nWhen clocks repeat: use the {} occurrence.\nWhen clocks skip a time: {}.\nMissed runs: {}.",
+                        t.cadence, t.timezone, t.fold, if t.gap == "next-valid" { "use the next valid time" } else { "skip that occurrence" }, if t.missed == "skip" { "skip" } else { "combine into one run" }
                     ));
                 } else {
                     lines.push("Timing unavailable.".into());
                 }
             } else {
                 lines.push(
-                    "Schedule unavailable in this conversation/topic or outside bounded snapshot."
+                    "Schedule not shown. Open Scheduled tasks to check the latest list in this conversation."
                         .into(),
                 );
             }
@@ -590,7 +603,7 @@ fn render_snapshot(
                 .min(50);
             actions.push(("Notifications", "notifications:".into()));
             lines.push(format!(
-                "Tasks: {} logical tasks, {} runs. {} available in bounded snapshot.",
+                "Tasks: {} tasks, {} runs. Showing up to {} tasks.",
                 snapshot.task_count,
                 snapshot.run_count,
                 snapshot.tasks.len()
@@ -613,15 +626,15 @@ fn render_snapshot(
                     t.task_id,
                     t.run_id,
                     t.attempt,
-                    t.status,
+                    crate::wording::run_state(if t.outcome_unknown { "unknown" } else { t.status }),
                     if t.progress_recorded {
-                        "recorded (detail unavailable)"
+                        "update recorded"
                     } else {
-                        "unavailable"
+                        "no update recorded"
                     },
-                    t.delivery,
+                    crate::wording::delivery(t.delivery),
                     if t.outcome_unknown {
-                        " Outcome unknown; do not retry automatically."
+                        " Unknown: Check the conversation and run evidence before doing this work again. No automatic retry."
                     } else {
                         ""
                     },
@@ -632,15 +645,26 @@ fn render_snapshot(
                     }
                 ));
                 if let Some(wait) = t.wait_kind {
-                    lines.push(format!("Waiting: {wait}"));
+                    lines.push(format!(
+                        "Waiting for: {}",
+                        match wait {
+                            "approval" => "your approval",
+                            "dependency" => "another task",
+                            _ => "an unconfirmed event, inspect run evidence",
+                        }
+                    ));
                 }
                 if id.is_some() {
                     lines.push(format!(
                         "Created: {}\nStarted: {}\nFinished: {}\nCancellation requested: {}",
-                        t.created_at.as_deref().unwrap_or("unavailable"),
-                        t.started_at.as_deref().unwrap_or("unavailable"),
-                        t.finished_at.as_deref().unwrap_or("unavailable"),
-                        t.cancel_requested
+                        crate::wording::time(t.created_at.as_deref(), &cfg.timezone),
+                        crate::wording::time(t.started_at.as_deref(), &cfg.timezone),
+                        crate::wording::time(t.finished_at.as_deref(), &cfg.timezone),
+                        if t.cancel_requested {
+                            "yes, this alone does not confirm a stop"
+                        } else {
+                            "no"
+                        }
                     ));
                 }
                 if id.is_none() {
@@ -668,7 +692,16 @@ fn render_snapshot(
             if let Some(id) = id.filter(|id| !snapshot.tasks.iter().any(|t| t.run_id == *id)) {
                 let raw = store.task_status_command(session, &id.to_string(), update)?;
                 if let Ok(row) = serde_json::from_str::<serde_json::Value>(&raw) {
-                    lines.push(format!("Task #{} / requested run #{}: {}\nCurrent run: {}. Attempt: {}. Waiting: {}\nHistorical attempt; current-run actions are available from Tasks.",row["task_id"],id,row["status"].as_str().unwrap_or("unknown"),row["current_run"],row["attempt"],row["wait_kind"].as_str().unwrap_or("none/unavailable")));
+                    let uncertain = store.get_task_run(id)?.is_some_and(|run| {
+                        run.error_summary.as_deref().is_some_and(|e| e.contains("outcome unknown"))
+                    }) || store.conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM runtime_remote_results WHERE task_run_id=?1 AND (uncertain=1 OR state='unknown'))",
+                        [id], |r| r.get::<_, bool>(0),
+                    )?;
+                    lines.push(format!("Task #{} / requested run #{}: {}\nCurrent run: {}. Attempt: {}.\nThis run is outside the current list; open Tasks for current-run actions.",row["task_id"],id,crate::wording::run_state(if uncertain { "unknown" } else { row["status"].as_str().unwrap_or("unknown") }),row["current_run"],row["attempt"]));
+                    if uncertain {
+                        lines.push("Check the conversation and local run evidence before doing this work again. No automatic retry.".into());
+                    }
                 } else {
                     lines.push(raw);
                 }

@@ -957,7 +957,8 @@ print('{"type":"thread.started","thread_id":"approval-native"}')
         .filter(|entry| {
             entry["method"] == "sendRichMessage"
                 && (reply_text(entry) == "You are not authorized to approve this request."
-                    || reply_text(entry).starts_with("Approval recorded. Resuming as task #"))
+                    || reply_text(entry)
+                        .starts_with("Approval recorded. Continuation queued as run #"))
         })
         .collect::<Vec<_>>();
     assert_eq!(controls.len(), 2);

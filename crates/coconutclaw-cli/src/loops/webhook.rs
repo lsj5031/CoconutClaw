@@ -591,7 +591,9 @@ fn process_webhook_action(
             let chat_id = session.telegram_route_id();
             let session_id = session.id();
             let reply = if let Some(task_id) = scheduler.cancel_active_for_session(&session_id)? {
-                format!("Cancel requested for run #{task_id}.")
+                format!(
+                    "Cancel requested for run #{task_id}, not yet confirmed. Open Tasks to check its status."
+                )
             } else {
                 "No active run for this conversation/topic.".to_string()
             };
@@ -619,7 +621,7 @@ fn process_webhook_action(
                 update_id,
                 chat_id: Some(chat_id),
                 output: Some(
-                    render_output("Context cleared. New conversation started; memory and preferences are kept.", &[])
+                    render_output("New conversation started. Earlier messages are no longer included; memory and preferences are kept.", &[])
                         .trim_end()
                         .to_string(),
                 ),

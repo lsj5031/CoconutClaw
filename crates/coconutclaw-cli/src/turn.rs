@@ -386,7 +386,7 @@ pub(crate) fn resolve_turn_result(
     if cancelled {
         return TurnResult {
             effects: vec![],
-            telegram_reply: "❌ Cancelled.".to_string(),
+            telegram_reply: crate::wording::CANCELLATION.to_string(),
             status: TurnStatus::Cancelled,
             channel,
         };
@@ -433,7 +433,7 @@ pub(crate) fn resolve_turn_result(
         return TurnResult {
             effects,
             telegram_reply: if cleaned.is_empty() {
-                "I could not parse structured markers from the model output.".to_string()
+                "No reply text was returned. Check Tasks and local logs before repeating the request.".to_string()
             } else {
                 cleaned.clone()
             },
@@ -468,16 +468,12 @@ pub(crate) fn resolve_turn_result(
     }
 
     let err_line = extract_error_summary(raw_output)
-        .or_else(|| {
-            raw_output
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .map(|line| line.to_string())
-        })
-        .unwrap_or_else(|| "Please check local logs and retry.".to_string());
+        .unwrap_or_else(|| "No readable error summary was returned.".to_string());
     TurnResult {
         effects,
-        telegram_reply: format!("Agent execution failed locally. {err_line}"),
+        telegram_reply: format!(
+            "The task ended with an error. {err_line} Check Tasks and local logs before repeating the request."
+        ),
         status: TurnStatus::AgentError,
         channel,
     }

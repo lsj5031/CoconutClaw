@@ -171,7 +171,7 @@ impl Store {
                 self.conn
                     .execute_batch("ROLLBACK TO reconcile; RELEASE reconcile")?;
                 Ok(format!(
-                    "Reconciliation refused: {error}. No retry authorized."
+                    "Could not confirm this delivery receipt: {error}.\nCheck the conversation and inspect the current receipt again with /reconcile task RUN_ID or /reconcile ack INGRESS_ID. Unconfirmed outcomes stay Unknown. No retry authorized."
                 ))
             }
         }
@@ -226,7 +226,7 @@ impl Store {
                 .optional()?;
             if applied.is_some() {
                 return Ok(
-                    "Already reconciled. Original audit retained; no operation repeated.".into(),
+                    "Already reconciled. The delivery receipt is recorded; nothing was sent or run again.".into(),
                 );
             }
             let evidence = self.reconciliation_evidence(session, target)?;
@@ -253,7 +253,7 @@ impl Store {
                 "INSERT INTO runtime_reconciliation_audit VALUES(?1,?2,'durable-text-ack',?3)",
                 params![token, cause, now],
             )?;
-            Ok("Reconciled durable text acknowledgment only. Provider/control/progress outcomes unchanged; no resend or retry authorized.".into())
+            Ok("Reconciled: text delivery receipt recorded. Task, command and progress outcomes are unchanged. Nothing was sent or run again.".into())
         } else {
             let evidence = self.reconciliation_evidence(session, target)?;
             let token: String =
@@ -272,7 +272,7 @@ impl Store {
                 ],
             )?;
             Ok(format!(
-                "Durable acknowledgment of this exact text operation retained.\nApply: /reconcile {kind} {id} token={token}\nProvider/control/progress Unknown and unproven nonoccurrence remain unchanged."
+                "Durable acknowledgment found: this text already has a delivery receipt.\nRecord it with: /reconcile {kind} {id} token={token}\nThis only records delivery. It does not confirm uncertain task, command or progress outcomes, and does not send or run anything again."
             ))
         }
     }

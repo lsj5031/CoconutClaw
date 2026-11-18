@@ -393,7 +393,7 @@ fn context_notifications_context_authority_and_fact_progress_separation() {
     );
     assert!(
         command(&cfg, &mut store, &scheduler, 3, 7, &format!("/tasks {run}"))
-            .contains("Waiting: dependency")
+            .contains("Waiting for: another task")
     );
     assert!(
         command(&cfg, &mut store, &scheduler, 4, 8, &format!("/tasks {run}")).contains("not found")
@@ -411,7 +411,7 @@ fn context_notifications_context_authority_and_fact_progress_separation() {
     );
     assert!(
         command(&cfg, &mut store, &scheduler, 6, 8, "/notifications")
-            .contains("No notification evidence in this conversation/topic.")
+            .contains("No task notifications recorded in this conversation.")
     );
     let isolated = crate::context::build_context_scoped(
         &cfg,

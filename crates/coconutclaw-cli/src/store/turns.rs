@@ -186,7 +186,14 @@ impl Store {
         let telegram_reply: String = row.get(1)?;
         let status: String = row.get(2)?;
         if status == "cancelled" {
-            return Ok(Some(crate::markers::render_output("❌ Cancelled.", &[])));
+            return Ok(Some(crate::markers::render_output(
+                if telegram_reply.trim().is_empty() {
+                    crate::wording::CANCELLATION
+                } else {
+                    &telegram_reply
+                },
+                &[],
+            )));
         }
         let markers = parse_markers(&provider_raw);
         let mut effects = markers.to_effects();

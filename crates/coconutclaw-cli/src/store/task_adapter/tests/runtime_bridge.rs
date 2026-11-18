@@ -836,7 +836,7 @@ async fn runtime_bridge_genuine_approval_is_not_overwritten_by_late_result() {
                 .resolve_approval(approval, "approve", &actor)
                 .unwrap()
                 .unwrap()
-                .contains("Resuming as task #")
+                .contains("Continuation queued as run #")
         );
         let child: i64 = store
             .conn

@@ -219,6 +219,83 @@ fn ui_seed_run(store: &Store, session: &str, status: &str) -> i64 {
 }
 
 #[test]
+fn buttons_render_uncertainty_separately_from_failure_and_cancellation() {
+    let server = FakeTelegramServer::start();
+    let (_root, mut cfg, mut store, scheduler) = fixture(&server);
+    cfg.timezone = "Asia/Shanghai".into();
+    let uncertain = ui_seed_run(&store, "telegram:321#7", "failed");
+    let failed = ui_seed_run(&store, "telegram:321#7", "failed");
+    let cancel = ui_seed_run(&store, "telegram:321#7", "cancel_requested");
+    store.conn.execute(
+        "UPDATE task_runs SET error_summary='remote outcome unknown',created_at='2026-11-17T01:02:03Z' WHERE id=?1",
+        [uncertain],
+    ).unwrap();
+    store.conn.execute(
+        "INSERT INTO task_payloads(task_run_id,request,delivery_state) VALUES(?1,'{}','broken json')",
+        [uncertain],
+    ).unwrap();
+    let report = ui_message(
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(1, 7, "/tasks")).unwrap(),
+    );
+    assert!(report.text.contains(&format!(
+        "run #{uncertain} (attempt 1): outcome unconfirmed"
+    )));
+    assert!(
+        report
+            .text
+            .contains(&format!("run #{failed} (attempt 1): failed"))
+    );
+    assert!(report.text.contains(&format!(
+        "run #{cancel} (attempt 1): cancellation requested, not confirmed"
+    )));
+    assert!(
+        report
+            .text
+            .contains("Check the conversation and run evidence")
+    );
+    assert!(report.text.contains("No automatic retry"));
+    assert!(
+        report
+            .text
+            .contains("Delivery: unconfirmed, check the conversation before sending again")
+    );
+    assert!(
+        !report.text.contains("remote outcome unknown"),
+        "raw error stays private"
+    );
+    let detail = ui_message(
+        process_webhook_line(
+            &cfg,
+            &mut store,
+            &scheduler,
+            &update(2, 7, &format!("/tasks {uncertain}")),
+        )
+        .unwrap(),
+    );
+    assert!(
+        detail
+            .text
+            .contains("Created: 17 Nov 2026 09:02 +08:00 (Asia/Shanghai)")
+    );
+    assert!(detail.text.contains("Started: not recorded"));
+    assert!(detail.text.contains("Finished: not recorded"));
+    assert_eq!(detail.text.matches("Snapshot at").count(), 1);
+    assert_eq!(
+        store.get_task_run(uncertain).unwrap().unwrap().status,
+        "failed"
+    );
+    if let Some(dir) = std::env::var_os("COCONUTCLAW_UI_ARTIFACTS") {
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            PathBuf::from(&dir).join("uncertainty-rendered.txt"),
+            format!("TASKS\n{}\n\nDETAIL\n{}", report.text, detail.text),
+        )
+        .unwrap();
+    }
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
 fn buttons_beside_run_reject_and_cancel_keep_existing_scope_and_replay_semantics() {
     let server = FakeTelegramServer::start();
     let (_root, cfg, mut store, scheduler) = fixture(&server);
@@ -411,7 +488,7 @@ fn buttons_home_reports_navigation_and_ordered_mock_capture() {
         }
         if label == "Status" {
             assert!(
-                view.text.contains("0 unknown"),
+                view.text.contains("0 unconfirmed"),
                 "acknowledged UI is not uncertain"
             );
             assert!(!view.text.contains("Last received: unavailable"));
@@ -891,7 +968,7 @@ fn buttons_observe_unknown_and_blocked_ingress_without_releasing_mutations() {
     let report = ui_message(
         process_webhook_line(&cfg, &mut store, &scheduler, &update(3, 7, "/status")).unwrap(),
     );
-    assert!(report.text.contains("1 unknown"));
+    assert!(report.text.contains("1 unconfirmed"));
     let home = ui_message(
         process_webhook_line(&cfg, &mut store, &scheduler, &update(4, 7, "/start")).unwrap(),
     );
@@ -968,8 +1045,8 @@ fn buttons_persisted_schedules_show_real_policies_and_own_detail_timestamp() {
     );
     assert!(detail.text.contains("Europe/London"));
     assert!(detail.text.contains("second"));
-    assert!(detail.text.contains("next-valid"));
-    assert!(detail.text.contains("missed: skip"));
+    assert!(detail.text.contains("use the next valid time"));
+    assert!(detail.text.contains("Missed runs: skip"));
     assert!(detail.text.contains("Snapshot at"));
     assert!(detail.edit.is_none());
     let other = ui_message(
@@ -1014,10 +1091,10 @@ fn buttons_persisted_jobs_pagination_and_plain_text_do_not_expose_provider_bodie
     let first = ui_message(
         process_webhook_line(&cfg, &mut store, &scheduler, &update(1, 7, "/tasks")).unwrap(),
     );
-    assert!(first.text.contains("55 logical tasks, 55 runs"));
-    assert!(first.text.contains("50 available in bounded snapshot"));
+    assert!(first.text.contains("55 tasks, 55 runs"));
+    assert!(first.text.contains("Showing up to 50 tasks"));
     assert!(first.text.contains("10 on this page"));
-    assert!(first.text.contains("recorded (detail unavailable)"));
+    assert!(first.text.contains("update recorded"));
     assert!(!first.text.contains("PRIVATE_"));
     assert!(first.text.encode_utf16().count() <= 4096);
     let next = ui_button(&first, "Next page");
@@ -1060,10 +1137,19 @@ fn buttons_persisted_jobs_pagination_and_plain_text_do_not_expose_provider_bodie
     assert!(!report.text.contains("Created: unavailable"));
     assert!(report.text.contains("Snapshot at"));
     assert!(report.edit.is_none());
+    store
+        .conn
+        .execute(
+            "UPDATE task_runs SET error_summary='outcome unknown' WHERE id=1",
+            [],
+        )
+        .unwrap();
     let old = ui_message(
         process_webhook_line(&cfg, &mut store, &scheduler, &update(4, 7, "/tasks 1")).unwrap(),
     );
     assert!(old.text.contains("requested run #1"));
+    assert!(old.text.contains("outcome unconfirmed"));
+    assert!(old.text.contains("No automatic retry"));
     assert!(!old.text.contains("PRIVATE_"));
     let wrong = ui_message(
         process_webhook_line(&cfg, &mut store, &scheduler, &update(5, 8, "/tasks 1")).unwrap(),
@@ -1087,7 +1173,7 @@ fn buttons_persisted_jobs_pagination_and_plain_text_do_not_expose_provider_bodie
         process_webhook_line(&cfg, &mut store, &scheduler, &update(20, 7, "/preferences")).unwrap(),
     );
     assert!(prefs.text.contains("<b>&"));
-    assert!(prefs.text.contains("truncated"));
+    assert!(prefs.text.contains("Some text is not shown"));
     assert!(prefs.text.encode_utf16().count() <= 4096);
     scheduler.retry_deliveries().unwrap();
     let requests = server.full_requests.lock().unwrap();

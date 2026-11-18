@@ -375,7 +375,9 @@ impl SessionScheduler {
         let store = Store::connect(&self.inner.cfg)?;
         let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
         let Some(approval) = store.get_pending_approval(approval_id)? else {
-            return Ok(Some("Approval request not found.".to_string()));
+            return Ok(Some(
+                "Approval request not found. Open Tasks for current requests.".to_string(),
+            ));
         };
         if approval.status != "pending" {
             return Ok(Some(format!(
@@ -400,7 +402,7 @@ impl SessionScheduler {
             || !store.is_current_attempt(run.id)?
         {
             return Ok(Some(
-                "Approval source is no longer waiting; inspect current state.".into(),
+                "This run is no longer waiting for approval. Open Tasks to check its current status.".into(),
             ));
         }
         match action {
@@ -429,7 +431,7 @@ impl SessionScheduler {
                 tx.commit()?;
                 self.queue_existing(resume_id, request);
                 Ok(Some(format!(
-                    "Approval recorded. Resuming as task #{resume_id}."
+                    "Approval recorded. Continuation queued as run #{resume_id}."
                 )))
             }
             "reject" => {
@@ -755,7 +757,7 @@ impl SessionScheduler {
             }));
         }
         let mut output = if status == crate::TurnStatus::Cancelled {
-            crate::markers::render_output("❌ Cancelled.", &[])
+            crate::markers::render_output(crate::wording::CANCELLATION, &[])
         } else {
             raw.to_string()
         };
@@ -926,7 +928,7 @@ impl SessionScheduler {
         }
         let output = crate::markers::render_output(
             &format!(
-                "Task #{id} could not complete. Inspect local state before retrying; execution may have an unknown outcome."
+                "Run #{id}: outcome unconfirmed (Unknown). Check Tasks and the conversation, then inspect local run evidence before doing this work again. No automatic retry."
             ),
             &[],
         );
@@ -1080,7 +1082,7 @@ impl SessionScheduler {
             [id],
             |r| r.get(0),
         )?;
-        let cancellation_output = crate::markers::render_output("❌ Cancelled.", &[]);
+        let cancellation_output = crate::markers::render_output(crate::wording::CANCELLATION, &[]);
         let was_wait: bool = store.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_waits WHERE run_id=?1)",
             [id],
@@ -1341,7 +1343,7 @@ fn render_active_task_lines(tasks: Vec<crate::store::TaskRun>, include_session_i
         let mut line = format!(
             "#{} [{}] {}",
             task.id,
-            task.status,
+            crate::wording::run_state(&task.status),
             shorten_log_text(task.prompt.trim(), 80)
         );
         if include_session_id && !task.session_id.trim().is_empty() {

@@ -14,7 +14,7 @@ use crate::{
 
 #[derive(Args, Debug)]
 pub(crate) struct ScheduleArgs {
-    /// Canonical origin: local:name or telegram:private-chat-id#topic-id.
+    /// Conversation ID: local:name or telegram:private-chat-id#topic-id.
     #[arg(long)]
     session: String,
     #[command(subcommand)]
@@ -23,7 +23,7 @@ pub(crate) struct ScheduleArgs {
 
 #[derive(Subcommand, Debug)]
 enum Action {
-    /// Explicit durable job. Reusing a key cannot create a second schedule.
+    /// Create a scheduled task. Reusing a key does not create a second schedule.
     Create {
         #[arg(long)]
         key: String,
@@ -36,17 +36,14 @@ enum Action {
         #[command(flatten)]
         job: Job,
     },
+    /// Show schedules and timing rules as JSON.
     List,
-    Pause {
-        id: i64,
-    },
-    Resume {
-        id: i64,
-    },
+    /// Pause future runs without stopping already accepted tasks.
+    Pause { id: i64 },
+    /// Resume future runs using the saved missed-run policy.
+    Resume { id: i64 },
     /// Cancel future occurrences; cancel accepted tasks separately.
-    Cancel {
-        id: i64,
-    },
+    Cancel { id: i64 },
 }
 
 #[derive(Args, Debug)]
@@ -65,12 +62,16 @@ struct Job {
     /// Weekly local HH:MM.
     #[arg(long, requires = "weekly")]
     time: Option<String>,
+    /// When clocks repeat a time, choose the first or second occurrence.
     #[arg(long, value_enum, default_value = "first")]
     fold: Fold,
+    /// When clocks skip a time, skip it or use the next valid time.
     #[arg(long, value_enum, default_value = "skip")]
     gap: Gap,
+    /// Skip missed runs or combine them into one run (coalesce).
     #[arg(long, value_enum, default_value = "coalesce")]
     missed: Missed,
+    /// Timezone name, for example Europe/London.
     #[arg(long)]
     timezone: String,
 }

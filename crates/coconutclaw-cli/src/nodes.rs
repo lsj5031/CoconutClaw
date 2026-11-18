@@ -38,32 +38,33 @@ pub(crate) struct Args {
 }
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Create a host-local identity and public admission card.
+    /// Create this computer's node identity and public pairing card.
     Enroll {
         #[arg(long)]
         role: Role,
+        /// This computer's reachable IP address and fixed UDP port.
         #[arg(long)]
         bind: SocketAddr,
+        /// Permitted working directory, required only for a runner.
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
-    /// Pin an independently verified public card. Never transfer private roots.
-    Pair {
-        card: PathBuf,
-    },
+    /// Trust a public pairing card after verifying it independently.
+    Pair { card: PathBuf },
+    /// Show this node's public pairing card as JSON.
     Card,
+    /// Accept tasks from paired coordinators on this runner.
     Start,
+    /// Show saved node checks, not current online status.
     Status {
+        /// Check reachability now and save the result.
         #[arg(long)]
         probe: bool,
     },
-    /// Read durable remote evidence only; never re-invoke an interrupted task.
-    Reconcile {
-        run: i64,
-    },
-    Cancel {
-        run: i64,
-    },
+    /// Check stored run evidence without running the task again.
+    Reconcile { run: i64 },
+    /// Request cancellation of a remote run, not confirmation it stopped.
+    Cancel { run: i64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize)]
@@ -280,7 +281,7 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
                 serde_json::to_string(&paired(&store, peer.id)?)? == json,
                 "pairing conflict; existing admission preserved"
             );
-            println!("Paired {}", peer.id);
+            println!("Paired {}", display_name(&store, &peer.id.to_string())?);
         }
         Command::Card => println!("{}", serde_json::to_string(&local(cfg)?.card)?),
         Command::Status { probe } => {
@@ -297,7 +298,7 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
                     Ok::<_,anyhow::Error>(())
                 })?;
             }
-            println!("{}", status(&store, None)?);
+            println!("{}", status(&store, None, &cfg.timezone)?);
         }
         Command::Start => {
             let own = local(cfg)?;
@@ -309,7 +310,9 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
         }
         Command::Reconcile { run } => {
             transport::runtime()?.block_on(reconcile(cfg, &store, *run))?;
-            println!("Evidence reconciled without execution");
+            println!(
+                "Stored evidence checked. No task was run again. Use nodes status to review the outcome."
+            );
         }
         Command::Cancel { run } => {
             let _instance = cfg.acquire_instance_lock()?;
@@ -337,7 +340,9 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
                 .await?;
                 Ok::<_, anyhow::Error>(())
             })?;
-            println!("Cancellation intent received; inspect status for outcome");
+            println!(
+                "Cancellation requested, not yet confirmed. Use nodes status to check the outcome."
+            );
         }
     }
     Ok(())
@@ -635,19 +640,50 @@ pub(crate) fn choices(store: &Store) -> Result<Vec<String>> {
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?)
 }
-pub(crate) fn status(store: &Store, session: Option<&str>) -> Result<String> {
+/// Cards currently contain a verified role, not a hostname or friendly name.
+/// Never infer host identity from an IP address or the coordinator's machine.
+pub(crate) fn display_name(store: &Store, id: &str) -> Result<String> {
     initialize(store)?;
-    let mut lines = vec!["Nodes: contact is an observation, not a liveness guarantee.".into()];
+    let card = id.parse().ok().and_then(|id| paired(store, id).ok());
+    let role = match card.map(|card| card.role) {
+        Some(Role::Runner) => "Runner",
+        Some(Role::Coordinator) => "Coordinator",
+        None => "Node",
+    };
+    let suffix = id.chars().rev().take(8).collect::<String>();
+    Ok(format!(
+        "{role} · {}",
+        suffix.chars().rev().collect::<String>()
+    ))
+}
+
+pub(crate) fn status(store: &Store, session: Option<&str>, timezone: &str) -> Result<String> {
+    initialize(store)?;
+    let mut lines = vec!["Nodes".into()];
     let rows: Vec<(String, Option<String>, Option<String>)> = store
         .conn
         .prepare("SELECT id,last_contact,last_error FROM paired_nodes ORDER BY id LIMIT 32")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    if rows.is_empty() {
+        lines.push("No remote nodes paired.".into());
+    }
     for (id, contact, error) in rows {
+        let check = match error.as_deref() {
+            Some("reachable at observation") => "Reachable when last checked.",
+            Some("unavailable at observation") => {
+                "Not reachable at the last check (check time not recorded)."
+            }
+            Some(_) => {
+                "Last exchange did not confirm an outcome. Inspect the run before trying again."
+            }
+            None if contact.is_some() => "Reached during the last recorded exchange.",
+            None => "Not checked yet.",
+        };
         lines.push(format!(
-            "{id}\nLast contact: {}; {}",
-            contact.as_deref().unwrap_or("never"),
-            error.as_deref().unwrap_or("availability not probed")
+            "{}\n{check}\nLast reached: {}",
+            display_name(store, &id)?,
+            crate::wording::time(contact.as_deref(), timezone)
         ));
     }
     if let Some(session) = session {
@@ -660,16 +696,26 @@ pub(crate) fn status(store: &Store, session: Option<&str>) -> Result<String> {
             )
             .optional()?;
         lines.push(format!(
-            "Next text task: {}",
-            selected.as_deref().unwrap_or("local")
+            "New text tasks go to: {}",
+            selected
+                .as_deref()
+                .map(|id| display_name(store, id))
+                .transpose()?
+                .unwrap_or_else(|| "this computer (local)".into())
         ));
-        let assignments:Vec<(i64,String,String)>=store.conn.prepare("SELECT n.run,n.node,t.status FROM node_routes n JOIN task_runs t ON t.id=n.run WHERE t.session_id=?1 ORDER BY n.run DESC LIMIT 8")?
+        let assignments:Vec<(i64,String,String)>=store.conn.prepare("SELECT n.run,n.node,CASE WHEN instr(COALESCE(t.error_summary,''),'outcome unknown')>0 THEN 'unknown' ELSE t.status END FROM node_routes n JOIN task_runs t ON t.id=n.run WHERE t.session_id=?1 ORDER BY n.run DESC LIMIT 8")?
             .query_map([session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
         for (id, node, state) in assignments {
-            lines.push(format!("Run #{id}: {node} / {state}"));
+            lines.push(format!(
+                "Run #{id}: {} / {}",
+                display_name(store, &node)?,
+                crate::wording::run_state(&state)
+            ));
         }
+        lines.push("Existing tasks keep their assigned node. Remote nodes accept text tasks only; if unreachable, tasks do not switch to this computer.".into());
     }
-    Ok(lines.join("\n"))
+    lines.push("Saved checks, not live availability. For a new check, run coconutclaw nodes status --probe locally.".into());
+    Ok(lines.join("\n\n"))
 }
 
 pub(crate) fn execute(
@@ -751,7 +797,7 @@ pub(crate) fn execute(
             Some("remote outcome unknown; no automatic retry"),
             None,
         )?;
-        store.conn.execute("UPDATE task_payloads SET output='Remote outcome unknown. The assigned node is unavailable or refused the exchange. No local fallback or automatic retry was performed. Inspect Nodes and the run details; the operator can retrieve durable evidence with nodes reconcile.' WHERE task_run_id=?1 AND output IS NULL",[run])?;
+        store.conn.execute("UPDATE task_payloads SET output='Remote outcome unconfirmed (Unknown). The exchange with the assigned node was not confirmed. Open Tasks and Nodes, then check stored evidence locally with coconutclaw nodes reconcile RUN_ID before repeating the work. Nothing was retried or moved to this computer.' WHERE task_run_id=?1 AND output IS NULL",[run])?;
     }
     // Once reserved, failure is durable ambiguity, not the local provider-error
     // path (which would create a competing result inbox and delivery).

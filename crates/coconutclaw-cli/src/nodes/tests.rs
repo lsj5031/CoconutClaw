@@ -259,12 +259,12 @@ fn node_selection_is_frozen_per_ordinary_admission_and_session_scoped() {
         .unwrap();
     assert_eq!(count, 0);
     assert!(
-        status(&store, Some("telegram:other"))
+        status(&store, Some("telegram:other"), "UTC")
             .unwrap()
-            .contains("Next text task: local")
+            .contains("New text tasks go to: this computer (local)")
     );
     assert!(
-        status(&store, Some(&r.session.id()))
+        status(&store, Some(&r.session.id()), "UTC")
             .unwrap()
             .contains(&format!("Run #{run}"))
     );
@@ -283,13 +283,14 @@ fn nodes_buttons_use_authenticated_session_tokens_and_do_not_reroute_old_tasks()
             .unwrap()
             .unwrap();
     let page = crate::telegram_ui::decode(&page).unwrap();
-    assert!(page.text.contains("Last contact: never"));
+    assert!(page.text.contains("Not checked yet"));
+    assert!(page.text.contains("Last reached: not recorded"));
     let callback = page.keyboard["inline_keyboard"]
         .as_array()
         .unwrap()
         .iter()
         .flat_map(|row| row.as_array().unwrap())
-        .find(|button| button["text"].as_str().unwrap().starts_with("Use remote"))
+        .find(|button| button["text"].as_str().unwrap().starts_with("Use Runner"))
         .unwrap()["callback_data"]
         .as_str()
         .unwrap()
@@ -337,6 +338,83 @@ fn nodes_buttons_use_authenticated_session_tokens_and_do_not_reroute_old_tasks()
         .unwrap();
     assert_eq!(routes, vec![after]);
     assert_ne!(before, after);
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn node_reports_name_verified_roles_without_claiming_live_health() {
+    let (_a, mut core) = fixture(Role::Coordinator, 91);
+    let (_b, runner) = fixture(Role::Runner, 92);
+    core.timezone = "Asia/Shanghai".into();
+    pair(&core, &runner);
+    let store = Store::open(&core).unwrap();
+    let id = local(&runner).unwrap().card.id.to_string();
+    let name = display_name(&store, &id).unwrap();
+    assert!(name.starts_with("Runner"));
+    assert!(name.ends_with(&id[id.len() - 8..]));
+    assert!(!name.contains(&id));
+    let unenrolled = SecretKey::from([93; 32]).public().to_string();
+    let fallback = display_name(&store, &unenrolled).unwrap();
+    assert!(fallback.starts_with("Node"));
+    assert!(fallback.ends_with(&unenrolled[unenrolled.len() - 8..]));
+    selection(&store, "telegram:321#7", Some(&id)).unwrap();
+    store.conn.execute(
+        "UPDATE paired_nodes SET last_contact='2026-11-17T01:02:03Z',last_error='reachable at observation' WHERE id=?1",
+        [&id],
+    ).unwrap();
+    let scheduler = crate::scheduler::SessionScheduler::new(core.clone(), None);
+    let page = crate::telegram_ui::handle(
+        &core,
+        &store,
+        &scheduler,
+        &request().session,
+        None,
+        "/nodes",
+    )
+    .unwrap()
+    .unwrap();
+    let page = crate::telegram_ui::decode(&page).unwrap();
+    assert_eq!(page.text.matches("Snapshot at").count(), 1);
+    assert!(!page.text.contains("Observed at"));
+    assert!(
+        page.text
+            .contains("17 Nov 2026 09:02 +08:00 (Asia/Shanghai)")
+    );
+    assert!(page.text.contains("Reachable when last checked"));
+    assert!(page.text.contains(&format!("New text tasks go to: {name}")));
+    for forbidden in [
+        &id,
+        "health unavailable",
+        "heartbeat",
+        "contact is an observation",
+        "Next text task",
+    ] {
+        assert!(!page.text.contains(forbidden), "{forbidden}: {}", page.text);
+    }
+    store
+        .conn
+        .execute(
+            "UPDATE paired_nodes SET last_error='unavailable at observation' WHERE id=?1",
+            [&id],
+        )
+        .unwrap();
+    let failed = status(&store, Some("telegram:321#7"), &core.timezone).unwrap();
+    assert!(failed.contains("Not reachable at the last check"));
+    assert!(failed.contains("check time not recorded"));
+    assert!(failed.contains("Last reached: 17 Nov 2026 09:02"));
+    assert!(failed.contains(&format!("New text tasks go to: {name}")));
+    assert!(failed.contains("do not switch to this computer"));
+    store
+        .conn
+        .execute("UPDATE paired_nodes SET last_error=NULL", [])
+        .unwrap();
+    let exchange = status(&store, None, "UTC").unwrap();
+    assert!(exchange.contains("Reached during the last recorded exchange"));
+    assert!(!exchange.contains("Not checked yet"));
+    if let Some(dir) = std::env::var_os("COCONUTCLAW_UI_ARTIFACTS") {
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(PathBuf::from(&dir).join("nodes-rendered.txt"), format!("PAIRED / LAST REACHED\n{}\n\nLATER FAILED CHECK\n{failed}\n\nCONTACT WITHOUT PROBE\n{exchange}", page.text)).unwrap();
+    }
     scheduler.shutdown().unwrap();
 }
 
@@ -598,10 +676,13 @@ fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {
     assert_eq!(task.status, "failed");
     assert!(task.error_summary.unwrap().contains("outcome unknown"));
     assert!(
-        status(&store, Some(&request.session.id()))
+        status(&store, Some(&request.session.id()), "UTC")
             .unwrap()
-            .contains("unavailable")
+            .contains("did not confirm an outcome")
     );
+    let report = status(&store, Some(&request.session.id()), "UTC").unwrap();
+    assert!(report.contains("outcome unconfirmed"));
+    assert!(!report.contains(" / failed"));
     let assignments: i64 = store
         .conn
         .query_row(

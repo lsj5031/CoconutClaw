@@ -126,7 +126,7 @@ printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","comman
                 r#"{"message_id":42}"#
             };
             seen.lock().unwrap().push(text.clone());
-            let placeholder_failed = text.contains("/sendMessage ") && text.contains("Thinking");
+            let placeholder_failed = text.contains("/sendMessage ") && text.contains("Working");
             let body = if placeholder_failed {
                 r#"{"ok":false,"description":"placeholder rejected"}"#.into()
             } else {
@@ -333,7 +333,7 @@ fn actual_once_memory_proposal_promote_search_get_correct_undo_and_direct_rememb
     assert!(memory_once(dir, &provider, "321", "/memory get 1").contains("orchard cultivar green"));
     assert!(!memory_once(dir, &provider, "321", "/memory search orchard").contains("cultivar"));
     assert!(memory_once(dir, &provider, "654", "/memory promote 1").contains("not found"));
-    assert!(memory_once(dir, &provider, "321", "/memory promote 1").contains("applied"));
+    assert!(memory_once(dir, &provider, "321", "/memory promote 1").contains("is now active"));
     assert!(
         memory_once(dir, &provider, "321", "/memory search orchard").contains("cultivar green")
     );
@@ -345,7 +345,7 @@ fn actual_once_memory_proposal_promote_search_get_correct_undo_and_direct_rememb
             "321",
             "/memory correct 1 orchard cultivar crimson"
         )
-        .contains("applied")
+        .contains("Updated memory")
     );
     for addressed in [
         "/memory@ProbeBot remember synthetic addressed fact",
@@ -356,7 +356,7 @@ fn actual_once_memory_proposal_promote_search_get_correct_undo_and_direct_rememb
     assert!(!memory_once(dir, &provider, "321", "/memory search green").contains("cultivar green"));
     assert!(memory_once(dir, &provider, "321", "/memory get 1").contains("not found"));
     assert!(memory_once(dir, &provider, "321", "/memory get 2").contains("crimson"));
-    assert!(memory_once(dir, &provider, "321", "/memory undo").contains("applied"));
+    assert!(memory_once(dir, &provider, "321", "/memory undo").contains("undone"));
     assert!(memory_once(dir, &provider, "321", "/memory search green").contains("cultivar green"));
     assert!(
         !memory_once(dir, &provider, "321", "/memory search crimson").contains("cultivar crimson")
@@ -368,7 +368,7 @@ fn actual_once_memory_proposal_promote_search_get_correct_undo_and_direct_rememb
             "321",
             "/memory remember prefer concise responses"
         )
-        .contains("applied")
+        .contains("Saved memory")
     );
     assert_eq!(
         fs::read_to_string(dir.join("memory-calls")).unwrap(),
