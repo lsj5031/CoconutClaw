@@ -290,7 +290,13 @@ fn windows_private_pair_start_probe_and_restart_use_native_transport() {
         reader.join().unwrap();
         let probe = cli(&core, &["nodes", "status", "--probe"]);
         assert!(probe.status.success());
-        assert!(String::from_utf8_lossy(&probe.stdout).contains("reachable at observation"));
+        let status = String::from_utf8_lossy(&probe.stdout);
+        assert!(
+            status
+                .lines()
+                .any(|line| line == "Reachable when last checked."),
+            "expected a successful probe, got:\n{status}"
+        );
         // Owned drops/kills/reaps this exact listener before the next restart.
     }
 }
