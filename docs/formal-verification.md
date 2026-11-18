@@ -364,3 +364,36 @@ apply, including monotonic validation episodes and excluded wall-clock rollback.
 Ordered production-handler/wire captures remain **mocked**, not genuine Telegram
 screenshots. Independent review remains deferred and parent final integrated
 diff/evidence review is required before any later authorized publication.
+
+## 18 November five-lane review-fix integration
+
+`formal/review-fixes-reconciliation.json` records the next exact delta from
+`2e8eb2d`, preserving every earlier reconciliation layer. Each changed pin has
+its preimage, integrated hash, diff hash, inspection and executable obligation.
+New media, retention, startup, doctor, wording and regression inputs are
+classified explicitly. Action owners and declarations are rechecked against
+the integrated source, not replaced with a new arbitrary baseline.
+
+The thirteen models and fifty finite configurations, invariants, required
+actions, fairness assumptions and expected counterexamples remain unchanged.
+Their full official gate is rerun for this integration. This checks the existing
+abstract custody, authority, transaction, receipt and Unknown contracts, not a
+Rust refinement proof. In particular, whole-output byte/count limits, outbox
+canonicalization and opened-handle checks, operational retention, SQLite
+bootstrap versus plain connect, read-only doctor, timezone rendering and
+callback parser normalization are executable regression obligations. They are
+not newly proved algorithms. The existing finite bounds and environmental
+assumptions above still apply; no budget or invariant is weakened.
+
+Routing restores a missing topic only from an authorized control's saved origin.
+The observed root selection plus later topic task explains the missing route,
+but the unavailable original update/control payload prevents establishing why
+that selection was root-scoped. Synthetic missing-topic acceptance does not
+establish the production root cause. Root controls and historical root selections
+are never guessed into topics. Source/mock acceptance is not live acceptance.
+
+Native Windows opened-handle media protection still needs the exact-head hosted
+Windows gate. macOS tests do not establish Win32 behavior, live Telegram/provider
+acceptance or fleet readiness. Parent independent review and hosted
+Linux/macOS/Windows CI remain separate gates before publication. This local
+integration performs no push, deployment or live operation.

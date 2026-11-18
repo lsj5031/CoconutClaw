@@ -15,6 +15,13 @@ on the final source identity; old harness receipts do not validate activation.
 sources and tests while explicitly excluding Win32 behavior from the finite
 proof claim. Windows CI execution and user fleet acceptance remain separate.
 
+The five-lane review-fix integration adds `review-fixes-reconciliation.json`
+over `2e8eb2d`, with individually inspected deltas and explicit executable gaps.
+Historical ancestry is retained. The existing thirteen models and fifty cases
+are unchanged and rerun, not widened into claims about media validation,
+retention, parser/rendering behavior or native Windows file handles. See the
+18 November section of the formal verification document.
+
 Use the already provisioned official tools, offline:
 
 ```sh

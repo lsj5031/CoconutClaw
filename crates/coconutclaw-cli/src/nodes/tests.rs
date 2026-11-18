@@ -167,7 +167,7 @@ fn ingress_select_remote(
         .unwrap()
         .iter()
         .flat_map(|row| row.as_array().unwrap())
-        .find(|button| button["text"].as_str().unwrap().starts_with("Use remote"))
+        .find(|button| button["text"].as_str().unwrap().starts_with("Use Runner"))
         .unwrap()["callback_data"]
         .as_str()
         .unwrap()
@@ -856,7 +856,8 @@ fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(output.contains("No local fallback or automatic retry"));
+    assert!(output.contains("outcome unconfirmed (Unknown)"));
+    assert!(output.contains("Nothing was retried or moved to this computer"));
     assert!(output.contains("nodes reconcile"));
     assert!(!core.instance_dir.join("local-invocations").exists());
     assert!(!cfg.instance_dir.join("invocations").exists());

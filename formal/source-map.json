@@ -1,5 +1,5 @@
 {
-  "basis": "140 inspected merged implementation inputs: validated main 1d608f5 plus UI c8b36e4. Historical UI review in reconciliation.json; each integration pin delta inspected in integration-reconciliation.json. Full 50-case official gate, not Rust refinement.",
+  "basis": "Integrated review fixes over 2e8eb2d; exact inspected deltas in review-fixes-reconciliation.json. Unchanged finite models are abstract contracts, not proof of new executable policies or Rust refinement.",
   "families": {
     "Ingress": {
       "owner": "Store IMMEDIATE transaction and authenticated webhook reducer; durable raw/inbox/outbox, volatile callback work",
@@ -118,10 +118,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "observation_control",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 142,
+                "line": 141,
                 "text": "pub(crate) fn observation_control("
               }
             ]
@@ -129,10 +129,10 @@
           {
             "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
             "symbol": "process_webhook_line",
-            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "sha256": "9d8e93922c3eb0354b87b5a45859134e474800a33e35f7946aaf7b6b9293b6b3",
             "declarations": [
               {
-                "line": 398,
+                "line": 437,
                 "text": "pub(crate) fn process_webhook_line("
               }
             ]
@@ -173,7 +173,7 @@
           {
             "path": "sql/schema.sql",
             "symbol": "telegram_ui_observations",
-            "sha256": "d4399ef2dab8e7c64984d2cd52a05da479f6e59ee6290d4f9dfc6a5b181dbad0",
+            "sha256": "2997b682373476397cc578481ac8d74976ace1937ca4ce1e88ef743652a04c49",
             "declarations": [
               {
                 "line": 2,
@@ -195,10 +195,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "dispatch_ready",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 974,
+                "line": 981,
                 "text": "fn dispatch_ready(&self) {"
               }
             ]
@@ -206,10 +206,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "spawn_task",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 466,
+                "line": 469,
                 "text": "fn spawn_task(&self, task_id: i64, request: TaskRequest) {"
               }
             ]
@@ -217,10 +217,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "run_task",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 559,
+                "line": 562,
                 "text": "fn run_task("
               }
             ]
@@ -230,10 +230,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_result",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 727,
+                "line": 731,
                 "text": "fn persist_result("
               }
             ]
@@ -241,10 +241,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_failure",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 904,
+                "line": 911,
                 "text": "fn persist_failure("
               }
             ]
@@ -265,10 +265,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 217,
+                "line": 218,
                 "text": "pub(crate) fn cancel_task_for_session("
               }
             ]
@@ -300,10 +300,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "resolve_approval",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 359,
+                "line": 360,
                 "text": "pub(crate) fn resolve_approval("
               }
             ]
@@ -311,10 +311,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "recover",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 760,
+                "line": 806,
                 "text": "pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {"
               }
             ]
@@ -333,7 +333,7 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "durable_op",
-            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
+            "sha256": "45a04552bb2cea97e5d7c6cfad602fd0f6226a54e957e7f0d899bfc1cf210005",
             "declarations": [
               {
                 "line": 62,
@@ -344,7 +344,7 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "deliver_text",
-            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
+            "sha256": "45a04552bb2cea97e5d7c6cfad602fd0f6226a54e957e7f0d899bfc1cf210005",
             "declarations": [
               {
                 "line": 128,
@@ -355,7 +355,7 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "deliver_text",
-            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
+            "sha256": "45a04552bb2cea97e5d7c6cfad602fd0f6226a54e957e7f0d899bfc1cf210005",
             "declarations": [
               {
                 "line": 128,
@@ -366,7 +366,7 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram.rs",
             "symbol": "telegram_send_ui",
-            "sha256": "f75b24e8edfbd04257928f91e9964c60ee21fb63cfb96d8075ebe6345902bba3",
+            "sha256": "763a4e4fc0f432bc3e58b6ab395862b404e774ea518ac5db8978f90b66c273fa",
             "declarations": [
               {
                 "line": 324,
@@ -379,7 +379,7 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "acknowledged_text",
-            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
+            "sha256": "45a04552bb2cea97e5d7c6cfad602fd0f6226a54e957e7f0d899bfc1cf210005",
             "declarations": [
               {
                 "line": 370,
@@ -390,10 +390,10 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/mod.rs",
             "symbol": "persist_delivery_state",
-            "sha256": "019fd8d6739bb3cfa146d59cb4dafaa3bab0887d1c227ac1172027c0be3893df",
+            "sha256": "9382e4bcffbc615cadc12adb72976f453b0e0ae52cae34a42143bf579be2a136",
             "declarations": [
               {
-                "line": 141,
+                "line": 142,
                 "text": "pub(crate) fn persist_delivery_state("
               }
             ]
@@ -403,7 +403,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/reconciliation.rs",
             "symbol": "reconciliation_evidence",
-            "sha256": "0c29b1a582280fa8b3c022efe04329712f604cf5f1abf8fbc46a650b797e833e",
+            "sha256": "3f88b359748749afea7232fcc8a48a5c093824d34fafebabd3d02be58b2cf12c",
             "declarations": [
               {
                 "line": 53,
@@ -414,7 +414,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/reconciliation.rs",
             "symbol": "reconciliation_command",
-            "sha256": "0c29b1a582280fa8b3c022efe04329712f604cf5f1abf8fbc46a650b797e833e",
+            "sha256": "3f88b359748749afea7232fcc8a48a5c093824d34fafebabd3d02be58b2cf12c",
             "declarations": [
               {
                 "line": 153,
@@ -425,7 +425,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/reconciliation.rs",
             "symbol": "reconciliation_control",
-            "sha256": "0c29b1a582280fa8b3c022efe04329712f604cf5f1abf8fbc46a650b797e833e",
+            "sha256": "3f88b359748749afea7232fcc8a48a5c093824d34fafebabd3d02be58b2cf12c",
             "declarations": [
               {
                 "line": 180,
@@ -528,7 +528,7 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler_calendar.rs",
             "symbol": "start_calendar",
-            "sha256": "c1e2ebffd940e638661e889a91a03f35cabe6c74adc32d1883ab22e6bd971097",
+            "sha256": "56f06d525c10742b41460b9cd018562dc75b0856d4a95b3823e97c81318c20d1",
             "declarations": [
               {
                 "line": 12,
@@ -552,10 +552,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "wake_due_with_store",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 180,
+                "line": 181,
                 "text": "fn wake_due_with_store("
               }
             ]
@@ -609,7 +609,7 @@
           {
             "path": "crates/coconutclaw-cli/src/store/memory.rs",
             "symbol": "memory_command",
-            "sha256": "6af7a12d6695dfadc36956fb8fc62a26d3bf01a4bc9bf44c03c01e0a8b6da9ae",
+            "sha256": "e4bc6a9f97ac0b1314c0329618041620b784ec1c39fb404e1dd6b42535f20a5e",
             "declarations": [
               {
                 "line": 179,
@@ -620,10 +620,10 @@
           {
             "path": "crates/coconutclaw-cli/src/turn.rs",
             "symbol": "process_turn_with_status",
-            "sha256": "5b9ace9879ba426e130d592bf7ea2351280fd89c62244f3e04e874243b6f6915",
+            "sha256": "e3b98cdb7d790c06ecf3da5c8616ff5213c686cb820c2a6e62fe8773ec69628e",
             "declarations": [
               {
-                "line": 69,
+                "line": 70,
                 "text": "pub(crate) fn process_turn_with_status("
               }
             ]
@@ -631,7 +631,7 @@
           {
             "path": "crates/coconutclaw-cli/src/context.rs",
             "symbol": "build_context_scoped",
-            "sha256": "4b252a8139fa50c9677a57fab75c7da3a261d9f92859d77738eff38bed446a00",
+            "sha256": "c0eb676885356fce9fcac7d1bf290da56f1c1d748125536c8a727f63e851f116",
             "declarations": [
               {
                 "line": 33,
@@ -679,10 +679,10 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/mod.rs",
             "symbol": "deliver_notifications",
-            "sha256": "019fd8d6739bb3cfa146d59cb4dafaa3bab0887d1c227ac1172027c0be3893df",
+            "sha256": "9382e4bcffbc615cadc12adb72976f453b0e0ae52cae34a42143bf579be2a136",
             "declarations": [
               {
-                "line": 174,
+                "line": 175,
                 "text": "pub(crate) fn deliver_notifications(cfg: &RuntimeConfig, store: &Store) -> Result<()> {"
               }
             ]
@@ -872,10 +872,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::admit",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 518,
+                "line": 523,
                 "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
               }
             ]
@@ -1058,10 +1058,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::open",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 478,
+                "line": 483,
                 "text": "fn open(cfg: RuntimeConfig) -> Result<Self> {"
               }
             ]
@@ -1148,10 +1148,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "dispatch_ready",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 974,
+                "line": 981,
                 "text": "fn dispatch_ready(&self) {"
               }
             ]
@@ -1159,10 +1159,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "persist_result",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 727,
+                "line": 731,
                 "text": "fn persist_result("
               }
             ]
@@ -1170,10 +1170,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "recover",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 1167,
+                "line": 1174,
                 "text": "pub(crate) fn recover(&self) -> Result<()> {"
               }
             ]
@@ -1181,10 +1181,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 217,
+                "line": 218,
                 "text": "pub(crate) fn cancel_task_for_session("
               }
             ]
@@ -1194,7 +1194,7 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "deliver_text",
-            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
+            "sha256": "45a04552bb2cea97e5d7c6cfad602fd0f6226a54e957e7f0d899bfc1cf210005",
             "declarations": [
               {
                 "line": 128,
@@ -1205,7 +1205,7 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/telegram.rs",
             "symbol": "acknowledged_text",
-            "sha256": "0978ec93bea7f9d9048bf431cc759cbbff673d958da141249ef16383c2c7d0bf",
+            "sha256": "45a04552bb2cea97e5d7c6cfad602fd0f6226a54e957e7f0d899bfc1cf210005",
             "declarations": [
               {
                 "line": 370,
@@ -1238,10 +1238,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "run_task",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 559,
+                "line": 562,
                 "text": "fn run_task("
               }
             ]
@@ -1260,10 +1260,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "execute",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 675,
+                "line": 721,
                 "text": "pub(crate) fn execute("
               }
             ]
@@ -1328,10 +1328,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::admit",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 518,
+                "line": 523,
                 "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
               }
             ]
@@ -1339,10 +1339,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::finish",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 553,
+                "line": 558,
                 "text": "fn finish(&mut self, bundle: &Bundle, mut outcome: Outcome, output: &str) -> Result<()> {"
               }
             ]
@@ -1407,10 +1407,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "accept",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 770,
+                "line": 816,
                 "text": "fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {"
               }
             ]
@@ -1453,10 +1453,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::cancel",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 599,
+                "line": 604,
                 "text": "fn cancel(&mut self, bundle: &Bundle, command: &Cancellation) -> Result<()> {"
               }
             ]
@@ -1497,10 +1497,10 @@
           {
             "path": "crates/coconutclaw-cli/src/scheduler.rs",
             "symbol": "cancel_task_for_session",
-            "sha256": "5e2792c3baf07dd703097faecbf307916d72380ef0f9bb51b7f4bd1bf565e91f",
+            "sha256": "22f797bde8c6356213e67b8763d33b615bce4c2de99792e9b9aa47533fc5f561",
             "declarations": [
               {
-                "line": 217,
+                "line": 218,
                 "text": "pub(crate) fn cancel_task_for_session("
               }
             ]
@@ -1543,10 +1543,10 @@
           {
             "path": "crates/coconutclaw-cli/src/delivery/mod.rs",
             "symbol": "deliver_notifications",
-            "sha256": "019fd8d6739bb3cfa146d59cb4dafaa3bab0887d1c227ac1172027c0be3893df",
+            "sha256": "9382e4bcffbc615cadc12adb72976f453b0e0ae52cae34a42143bf579be2a136",
             "declarations": [
               {
-                "line": 174,
+                "line": 175,
                 "text": "pub(crate) fn deliver_notifications(cfg: &RuntimeConfig, store: &Store) -> Result<()> {"
               }
             ]
@@ -1567,10 +1567,10 @@
           {
             "path": "crates/coconutclaw-cli/src/turn.rs",
             "symbol": "process_turn_with_status",
-            "sha256": "5b9ace9879ba426e130d592bf7ea2351280fd89c62244f3e04e874243b6f6915",
+            "sha256": "e3b98cdb7d790c06ecf3da5c8616ff5213c686cb820c2a6e62fe8773ec69628e",
             "declarations": [
               {
-                "line": 69,
+                "line": 70,
                 "text": "pub(crate) fn process_turn_with_status("
               }
             ]
@@ -1589,7 +1589,7 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "button",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
                 "line": 32,
@@ -1600,7 +1600,7 @@
           {
             "path": "sql/schema.sql",
             "symbol": "telegram_ui_controls",
-            "sha256": "d4399ef2dab8e7c64984d2cd52a05da479f6e59ee6290d4f9dfc6a5b181dbad0",
+            "sha256": "2997b682373476397cc578481ac8d74976ace1937ca4ce1e88ef743652a04c49",
             "declarations": [
               {
                 "line": 3,
@@ -1613,10 +1613,10 @@
           {
             "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
             "symbol": "parse_webhook_value",
-            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "sha256": "9d8e93922c3eb0354b87b5a45859134e474800a33e35f7946aaf7b6b9293b6b3",
             "declarations": [
               {
-                "line": 180,
+                "line": 213,
                 "text": "fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookAction> {"
               }
             ]
@@ -1624,10 +1624,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "runtime_control",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 127,
+                "line": 126,
                 "text": "pub(crate) fn runtime_control(store: &Store, session: &SessionKey, text: &str) -> Result<bool> {"
               }
             ]
@@ -1635,10 +1635,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 213,
+                "line": 212,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1670,7 +1670,7 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "epoch",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
                 "line": 22,
@@ -1681,10 +1681,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 213,
+                "line": 212,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1692,10 +1692,10 @@
           {
             "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
             "symbol": "parse_webhook_value",
-            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "sha256": "9d8e93922c3eb0354b87b5a45859134e474800a33e35f7946aaf7b6b9293b6b3",
             "declarations": [
               {
-                "line": 180,
+                "line": 213,
                 "text": "fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookAction> {"
               }
             ]
@@ -1705,10 +1705,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 213,
+                "line": 212,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1716,10 +1716,10 @@
           {
             "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
             "symbol": "process_webhook_line",
-            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "sha256": "9d8e93922c3eb0354b87b5a45859134e474800a33e35f7946aaf7b6b9293b6b3",
             "declarations": [
               {
-                "line": 398,
+                "line": 437,
                 "text": "pub(crate) fn process_webhook_line("
               }
             ]
@@ -1738,10 +1738,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "selection",
-            "sha256": "81255409de7c985e728b7bccb1add71c85431365cf54c00111bc557e719dce35",
+            "sha256": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
             "declarations": [
               {
-                "line": 618,
+                "line": 623,
                 "text": "pub(crate) fn selection(store: &Store, session: &str, id: Option<&str>) -> Result<()> {"
               }
             ]
@@ -1760,10 +1760,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 213,
+                "line": 212,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1771,7 +1771,7 @@
           {
             "path": "sql/schema.sql",
             "symbol": "telegram_ui_inputs",
-            "sha256": "d4399ef2dab8e7c64984d2cd52a05da479f6e59ee6290d4f9dfc6a5b181dbad0",
+            "sha256": "2997b682373476397cc578481ac8d74976ace1937ca4ce1e88ef743652a04c49",
             "declarations": [
               {
                 "line": 12,
@@ -1784,10 +1784,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 213,
+                "line": 212,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1819,10 +1819,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 213,
+                "line": 212,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1832,10 +1832,10 @@
           {
             "path": "crates/coconutclaw-cli/src/telegram_ui.rs",
             "symbol": "handle",
-            "sha256": "7ffad15d63d668b15c71516467bfc3bf71e4edf731eccba005ecce6672f627d0",
+            "sha256": "31e2241ed0c4bded74eb54978ed0cf85f3eabb0f16e99c222b64163d085c6fa3",
             "declarations": [
               {
-                "line": 213,
+                "line": 212,
                 "text": "pub(crate) fn handle("
               }
             ]
@@ -1843,7 +1843,7 @@
           {
             "path": "crates/coconutclaw-cli/src/commands/helpers.rs",
             "symbol": "maybe_handle_telegram_command",
-            "sha256": "0d6d27fcba5a194b6526d90d5bef7734b354fc2ab357d03292b880b8df82a36c",
+            "sha256": "47a56beed039f452180a041bcccb72cb41b8f8b3809e1583412654f825143a6e",
             "declarations": [
               {
                 "line": 61,
@@ -1854,10 +1854,10 @@
           {
             "path": "crates/coconutclaw-cli/src/loops/webhook.rs",
             "symbol": "process_webhook_action",
-            "sha256": "0b995c9e7fdae6b102cbb9f5721841c6fb8f8d94b1a23ce87f466e6fd5fdc806",
+            "sha256": "9d8e93922c3eb0354b87b5a45859134e474800a33e35f7946aaf7b6b9293b6b3",
             "declarations": [
               {
-                "line": 559,
+                "line": 598,
                 "text": "fn process_webhook_action("
               }
             ]

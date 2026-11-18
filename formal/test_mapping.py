@@ -29,10 +29,21 @@ def production_pin(path, previous):
 def windows_pin(path, previous):
     changes = {row["path"]: row for row in load("windows-native-reconciliation.json")["changes"]}
     if path not in changes:
-        return previous
+        return review_pin(path, previous)
     row = changes[path]
     if row["before"] != previous:
         raise AssertionError(f"broken Windows mapping ancestry: {path}")
+    return review_pin(path, row["after"])
+
+
+def review_pin(path, previous):
+    audit = load("review-fixes-reconciliation.json")
+    changes = {row["path"]: row for row in audit["changes"]}
+    if path not in changes:
+        return previous
+    row = changes[path]
+    if row["before"] != previous:
+        raise AssertionError(f"broken review-fixes mapping ancestry: {path}")
     return row["after"]
 
 
@@ -102,9 +113,10 @@ class Mapping(unittest.TestCase):
         self.assertFalse(reviewed & unchanged)
         added = load("production-reconciliation.json")["new_inputs"]
         windows_added = load("windows-native-reconciliation.json")["new_inputs"]
+        review_added = load("review-fixes-reconciliation.json")["new_inputs"]
         self.assertFalse(set(added) & (reviewed | unchanged))
         self.assertFalse(set(windows_added) & (reviewed | unchanged | set(added)))
-        self.assertEqual(reviewed | unchanged | set(added) | set(windows_added), set(pins))
+        self.assertEqual(reviewed | unchanged | set(added) | set(windows_added) | set(review_added), set(pins))
         for row in rows:
             self.assertEqual(production_pin(row["path"], row["integrated_sha256"]), pins[row["path"]])
             self.assertEqual(row["main_sha256"], row["main_pin_sha256"])
@@ -118,7 +130,8 @@ class Mapping(unittest.TestCase):
         audit = load("production-reconciliation.json")
         changes = {r["path"]: r for r in audit["changes"]}
         windows_added = load("windows-native-reconciliation.json")["new_inputs"]
-        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]) | set(windows_added), set(pins))
+        review_added = load("review-fixes-reconciliation.json")["new_inputs"]
+        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]) | set(windows_added) | set(review_added), set(pins))
         for path, inherited in audit["inherited_pins"].items():
             if path in changes:
                 self.assertEqual(changes[path]["before"], inherited)
@@ -140,7 +153,8 @@ class Mapping(unittest.TestCase):
         pins = load("implementation-hashes.json")
         audit = load("windows-native-reconciliation.json")
         self.assertEqual(audit["base_revision"], "114a1cf9e768b681d0d47cdf871e1906386243e2")
-        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]), set(pins))
+        review_added = load("review-fixes-reconciliation.json")["new_inputs"]
+        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]) | set(review_added), set(pins))
         changes = {row["path"]: row for row in audit["changes"]}
         self.assertEqual(len(changes), len(audit["changes"]))
         for path, previous in audit["inherited_pins"].items():
@@ -151,10 +165,30 @@ class Mapping(unittest.TestCase):
             self.assertTrue(row["inspection"])
             self.assertTrue(row["affected_families"])
         for path, row in audit["new_inputs"].items():
-            self.assertEqual(row["sha256"], pins[path])
+            self.assertEqual(review_pin(path, row["sha256"]), pins[path])
             self.assertTrue(row["inspection"])
             self.assertTrue(row["affected_families"])
         self.assertIn("not proved", audit["native_boundary"])
+
+    def test_review_fixes_preserve_ancestry_and_explicit_executable_gaps(self):
+        pins = load("implementation-hashes.json")
+        audit = load("review-fixes-reconciliation.json")
+        self.assertEqual(audit["base_revision"], "2e8eb2defafd62b89496660d5553a2dbf0c413ee")
+        self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]), set(pins))
+        self.assertEqual(len(audit["changes"]), len({r["path"] for r in audit["changes"]}))
+        for path, previous in audit["inherited_pins"].items():
+            self.assertEqual(review_pin(path, previous), pins[path])
+        for row in audit["changes"]:
+            self.assertNotEqual(row["before"], row["after"])
+            self.assertRegex(row["delta_sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(row["inspection"])
+            self.assertTrue(row["affected_families"])
+            self.assertTrue(row["executable_obligation"])
+        for path, row in audit["new_inputs"].items():
+            self.assertNotIn(path, audit["inherited_pins"])
+            self.assertEqual(row["sha256"], pins[path])
+            self.assertTrue(row["inspection"])
+            self.assertTrue(row["executable_obligation"])
 
     def test_case_inventory_and_required_actions_exist(self):
         cases = load("cases.json")
