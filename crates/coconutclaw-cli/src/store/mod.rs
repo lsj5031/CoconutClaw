@@ -42,6 +42,7 @@ pub(crate) struct TurnRecord {
 
 #[derive(Debug, Clone)]
 pub(crate) struct StoredTurnOutput {
+    pub(crate) admitted_output: Option<String>,
     pub(crate) id: i64,
     pub(crate) ts: String,
     pub(crate) provider_raw: String,

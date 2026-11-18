@@ -296,6 +296,35 @@ fn effect_boundaries_saved_cancelled_reply_is_literal_through_sender_and_falls_b
     }
 }
 
+#[test]
+fn effect_boundaries_old_cancellation_plan_stays_frozen_on_retry() {
+    let server = FakeTelegramServer::start();
+    let mut cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    cfg.telegram_api_base = Some(server.base_url.trim_end_matches("/bot123:token").into());
+    let (store, id) = super::topics_rich::save_output(&cfg, "TELEGRAM_REPLY: Saved notice", None);
+    store
+        .conn
+        .execute("UPDATE task_runs SET status='cancelled' WHERE id=?1", [id])
+        .unwrap();
+    for phase in ["sending", "unknown"] {
+        let receipt = serde_json::json!({"completed_ops":[],"operations":{},
+            "text_plan":{"kind":"rich","markdown":"Saved notice","phase":phase,"attempts":1}});
+        store
+            .conn
+            .execute(
+                "UPDATE task_payloads SET delivery_state=?2 WHERE task_run_id=?1",
+                rusqlite::params![id, receipt.to_string()],
+            )
+            .unwrap();
+        let scheduler = SessionScheduler::new(cfg.clone(), None);
+        scheduler.recover().unwrap();
+        scheduler.retry_deliveries().unwrap();
+        scheduler.shutdown().unwrap();
+        assert_eq!(super::topics_rich::state(&store, id), receipt);
+        assert!(server.requests.lock().unwrap().is_empty());
+    }
+}
+
 fn output(store: &Store, id: i64) -> String {
     store
         .conn
@@ -305,6 +334,162 @@ fn output(store: &Store, id: i64) -> String {
             |r| r.get(0),
         )
         .unwrap()
+}
+
+#[test]
+fn effect_boundaries_saved_admission_not_display_controls_recovery() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let mut store = Store::open(&cfg).unwrap();
+    let reply = "Output rejected: sample heading\nTASK_APPEND: example field";
+    let legacy = crate::markers::render_output(reply, &[]);
+    for (key, admission, expected) in [
+        ("legacy", None, vec![]),
+        ("literal", Some(vec![]), vec![]),
+        (
+            "admitted",
+            Some(vec![Effect::TaskAppend("recorded item".into())]),
+            vec![Effect::TaskAppend("recorded item".into())],
+        ),
+    ] {
+        let saved = admission.map(|effects| {
+            serde_json::to_string(&crate::markers::CompiledOutput::new(reply, &effects)).unwrap()
+        });
+        store.conn.execute(
+            "INSERT INTO turns(ts,chat_id,input_type,status,channel,provider_raw,telegram_reply,admitted_output,update_id)
+             VALUES('now','telegram:321','text','parse_recovered','telegram',?1,?2,?3,?4)",
+            rusqlite::params![legacy, reply, saved, key],
+        ).unwrap();
+        let output = store.rendered_output_for_update_id(key).unwrap().unwrap();
+        let compiled = crate::markers::CompiledOutput::from_output(&output);
+        assert!(!compiled.rejected);
+        assert_eq!(
+            compiled.effects,
+            crate::markers::CompiledOutput::new(reply, &expected).effects
+        );
+    }
+    assert_eq!(
+        crate::recovery::reconcile_pending_turn_side_effects(&cfg, &mut store).unwrap(),
+        3
+    );
+    assert_eq!(
+        crate::recovery::reconcile_pending_turn_side_effects(&cfg, &mut store).unwrap(),
+        0
+    );
+    assert_eq!(
+        store.managed_pending_task_entries_from_db().unwrap(),
+        ["recorded item"]
+    );
+}
+
+#[test]
+fn effect_boundaries_cancellation_reconstruction_preserves_receipts() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let old = "TELEGRAM_REPLY: Original notice";
+    let (store, id) = super::topics_rich::save_output(&cfg, old, None);
+    let mut sink = make_request(SessionKey::telegram("321"), "telegram", "receipt check");
+    sink.delivery = DeliveryTarget::Stdout;
+    store
+        .conn
+        .execute("UPDATE task_runs SET status='cancelled' WHERE id=?1", [id])
+        .unwrap();
+    store.conn.execute(
+        "INSERT INTO turns(ts,chat_id,input_type,status,provider_raw,telegram_reply,task_run_id)
+         VALUES('now','telegram:321','text','cancelled','','Saved history heading',?1)", [id]).unwrap();
+    for phase in ["unknown", "sending", "acknowledged"] {
+        let completed = if phase == "acknowledged" {
+            vec!["telegram:text"]
+        } else {
+            vec![]
+        };
+        let receipt = serde_json::json!({"completed_ops":completed,"operations":{},
+            "text_plan":{"kind":"rich","markdown":"Original notice","phase":phase,"attempts":1}});
+        store
+            .conn
+            .execute(
+                "UPDATE task_payloads SET delivery_state=?2 WHERE task_run_id=?1",
+                rusqlite::params![id, receipt.to_string()],
+            )
+            .unwrap();
+        let scheduler = SessionScheduler::new(cfg.clone(), None);
+        scheduler.deliver(&store, id, &sink, old).unwrap();
+        scheduler.deliver(&store, id, &sink, old).unwrap();
+        scheduler.shutdown().unwrap();
+        assert!(
+            !store
+                .conn
+                .query_row(
+                    "SELECT delivered FROM task_payloads WHERE task_run_id=?1",
+                    [id],
+                    |row| row.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
+        assert_eq!(super::topics_rich::state(&store, id), receipt);
+        assert_eq!(output(&store, id), old);
+    }
+    store
+        .conn
+        .execute(
+            "UPDATE task_payloads SET delivery_state=?2 WHERE task_run_id=?1",
+            rusqlite::params![id,serde_json::json!({"completed_ops":[],"operations":{},
+                "text_plan":{"kind":"rich","markdown":"Original notice","phase":"ready","attempts":0}}).to_string()],
+        )
+        .unwrap();
+    let scheduler = SessionScheduler::new(cfg, None);
+    scheduler.deliver(&store, id, &sink, old).unwrap();
+    scheduler.deliver(&store, id, &sink, old).unwrap();
+    scheduler.shutdown().unwrap();
+    assert!(
+        store
+            .conn
+            .query_row(
+                "SELECT delivered FROM task_payloads WHERE task_run_id=?1",
+                [id],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        crate::markers::CompiledOutput::from_output(&output(&store, id)).reply(),
+        "Saved history heading"
+    );
+}
+
+#[test]
+fn effect_boundaries_missing_cancellation_output_does_not_replace_receipt() {
+    let cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let store = Store::open(&cfg).unwrap();
+    let (id, _) = graph_admit(&store, "local:receipt", "cancelled");
+    let receipt = serde_json::json!({"completed_ops":[], "operations":{},
+        "text_plan":{"kind":"rich","markdown":"Previous notice","phase":"unknown","attempts":1}});
+    store
+        .conn
+        .execute(
+            "UPDATE task_payloads SET delivery_state=?2 WHERE task_run_id=?1",
+            rusqlite::params![id, receipt.to_string()],
+        )
+        .unwrap();
+    store
+        .conn
+        .execute("UPDATE task_runs SET status='running' WHERE id=?1", [id])
+        .unwrap();
+    store.conn.execute("INSERT INTO turns(ts,chat_id,input_type,status,provider_raw,telegram_reply,task_run_id)
+        VALUES('now','local:receipt','text','cancelled','','Saved notice',?1)", [id]).unwrap();
+    let scheduler = SessionScheduler::new(cfg, None);
+    scheduler.recover().unwrap();
+    scheduler.retry_deliveries().unwrap();
+    scheduler.shutdown().unwrap();
+    assert!(
+        store
+            .conn
+            .query_row(
+                "SELECT output IS NULL AND delivered=0 FROM task_payloads WHERE task_run_id=?1",
+                [id],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap()
+    );
+    assert_eq!(super::topics_rich::state(&store, id), receipt);
 }
 
 #[test]
@@ -591,7 +776,7 @@ fn effect_boundaries_pending_recovery_rejects_entire_legacy_batch_durably() {
 fn effect_boundaries_real_turn_accepts_exact_memory_and_task_limits() {
     let mut cfg = scheduler_test_config("NEVER-EXECUTE".into());
     let fixture = cfg.tmp_dir.join("accepted.txt");
-    let raw = "TELEGRAM_REPLY: accepted\n".to_string()
+    let raw = "TELEGRAM_REPLY: Output rejected: example heading\n".to_string()
         + &(0..8)
             .map(|i| format!("MEMORY_APPEND: candidate {i} {}\n", "m".repeat(2036)))
             .collect::<String>()
@@ -601,7 +786,7 @@ fn effect_boundaries_real_turn_accepts_exact_memory_and_task_limits() {
                 format!("TASK_APPEND: {prefix}{}\n", "t".repeat(2048 - prefix.len()))
             })
             .collect::<String>();
-    fs::write(&fixture, raw).unwrap();
+    fs::write(&fixture, &raw).unwrap();
     let script = cfg.tmp_dir.join("accepted.sh");
     fs::write(&script, format!("cat >/dev/null\nwhile [ \"$#\" -gt 0 ]; do\nif [ \"$1\" = '--output-last-message' ]; then shift; out=$1; fi\nshift\ndone\ncp '{}' \"$out\"\n", fixture.display())).unwrap();
     cfg.codex.bin = format!("sh '{}'", script.display());
@@ -616,7 +801,12 @@ fn effect_boundaries_real_turn_accepts_exact_memory_and_task_limits() {
     wait_for_terminal_tasks(&cfg, &[id]);
     scheduler.shutdown().unwrap();
     let store = Store::open(&cfg).unwrap();
-    assert!(!output(&store, id).contains("rejected"));
+    let turn = store.turn_output_for_task_run(id).unwrap().unwrap();
+    assert_eq!(turn.provider_raw, raw);
+    let admitted = turn.compiled(&turn.telegram_reply).unwrap();
+    assert!(!admitted.rejected);
+    assert_eq!(admitted.effects.len(), 25);
+    assert_eq!(admitted.encode(), output(&store, id));
     assert_eq!(
         store.managed_pending_task_entries_from_db().unwrap().len(),
         16

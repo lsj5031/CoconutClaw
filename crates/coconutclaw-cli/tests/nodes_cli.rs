@@ -154,6 +154,54 @@ fn private(path: &Path) {
 
 #[cfg(windows)]
 #[test]
+fn windows_node_preflight_precedes_layout_and_sqlite_creation() {
+    let root = tempfile::tempdir().unwrap();
+    private(root.path());
+    let data = root.path().join("data");
+    let db_dir = root.path().join("custom");
+    fs::create_dir(&data).unwrap();
+    fs::create_dir(&db_dir).unwrap();
+    let config = data.join("config.toml");
+    let db = db_dir.join("allowlist.sqlite");
+    fs::write(&config, "SQLITE_DB_PATH = '../custom/allowlist.sqlite'\n").unwrap();
+    for path in [&db_dir, &config] {
+        if path == &config {
+            fs::write(&config, "invalid TOML").unwrap();
+        }
+        assert!(
+            Command::new("icacls.exe")
+                .arg(path)
+                .args(["/grant", "*S-1-1-0:R"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let output = cli(&data, &["nodes", "status"]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unsafe node ACL"));
+        assert_eq!(fs::read_dir(&data).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&db_dir).unwrap().count(), 0);
+        assert!(
+            Command::new("icacls.exe")
+                .arg(path)
+                .args(["/remove:g", "*S-1-1-0"])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    fs::write(&config, "SQLITE_DB_PATH = '../custom/allowlist.sqlite'\n").unwrap();
+    fs::remove_dir(&db_dir).unwrap();
+    assert!(!cli(&data, &["nodes", "status"]).status.success());
+    assert!(!db_dir.exists());
+    assert_eq!(fs::read_dir(&data).unwrap().count(), 1);
+    fs::create_dir(&db_dir).unwrap();
+    assert!(cli(&data, &["nodes", "status"]).status.success());
+    assert!(db.is_file());
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_private_pair_start_probe_and_restart_use_native_transport() {
     use std::{
         io::{BufRead, BufReader},

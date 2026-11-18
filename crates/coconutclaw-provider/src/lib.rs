@@ -8,7 +8,9 @@ use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(not(windows))]
+use std::process::{Child, Stdio};
+use std::process::{Command, ExitStatus};
 use std::sync::mpsc::Sender;
 use std::sync::{
     Arc,
@@ -17,6 +19,8 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(windows)]
+use windows::Child;
 
 mod activity;
 #[cfg(test)]
@@ -386,19 +390,20 @@ fn run_provider_process(
     bin_name: &str,
     timeout: TimeoutPolicy,
 ) -> Result<RunResult> {
-    if stdin_text.is_some() {
-        cmd.stdin(Stdio::piped());
-    } else {
-        cmd.stdin(Stdio::null());
-    }
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     configure_child_command(&mut cmd);
 
     #[cfg(windows)]
-    let (mut child, job) =
-        windows::spawn(&mut cmd).with_context(|| format!("failed to contain/start {bin_name}"))?;
+    let (mut child, job) = windows::spawn(&cmd, stdin_text.is_some())
+        .with_context(|| format!("failed to contain/start {bin_name}"))?;
     #[cfg(not(windows))]
     let mut child = cmd
+        .stdin(if stdin_text.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to start {bin_name}"))?;
     let _group = ActiveGroup::register(child.id());

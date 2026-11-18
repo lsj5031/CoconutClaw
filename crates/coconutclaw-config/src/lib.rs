@@ -190,15 +190,27 @@ impl RuntimeConfig {
 }
 
 pub fn load_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
-    load_config(overrides, true)
+    load_config(overrides, true, |_| Ok(()))
 }
 
 /// Validate configuration without creating layout, templates, locks or databases.
 pub fn preview_runtime_config(overrides: &CliOverrides) -> Result<RuntimeConfig> {
-    load_config(overrides, false)
+    load_config(overrides, false, |_| Ok(()))
 }
 
-fn load_config(overrides: &CliOverrides, initialize: bool) -> Result<RuntimeConfig> {
+#[cfg(windows)]
+pub fn preview_checked_config(
+    overrides: &CliOverrides,
+    inspect: impl FnOnce(&Path) -> Result<()>,
+) -> Result<RuntimeConfig> {
+    load_config(overrides, false, inspect)
+}
+
+fn load_config(
+    overrides: &CliOverrides,
+    initialize: bool,
+    inspect: impl FnOnce(&Path) -> Result<()>,
+) -> Result<RuntimeConfig> {
     let cwd = env::current_dir().context("failed to read current directory")?;
     let root_dir = find_project_root(&cwd);
 
@@ -220,6 +232,7 @@ fn load_config(overrides: &CliOverrides, initialize: bool) -> Result<RuntimeConf
     validate_path("COCONUTCLAW_DATA_DIR", &instance_dir, true)?;
     let data_dir = instance_dir.clone();
 
+    inspect(&instance_dir)?;
     let config_file_path = instance_dir.join("config.toml");
     let legacy_env_file_path = instance_dir.join(".env");
     if !config_file_path.exists() && legacy_env_file_path.exists() {

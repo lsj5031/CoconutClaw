@@ -50,12 +50,22 @@ def review_pin(path, previous):
 
 def remediation_pin(path, previous):
     changes = {row["path"]: row for row in load("review-remediation-reconciliation.json")["changes"]}
-    if path not in changes:
+    if path in changes:
+        row = changes[path]
+        if row["before"] != previous:
+            raise AssertionError(f"broken remediation mapping ancestry: {path}")
+        previous = row["after"]
+    repair = load("restart-reconciliation.json")["changes"].get(path)
+    if repair is not None:
+        if repair["before"] != previous:
+            raise AssertionError(f"broken restart mapping ancestry: {path}")
+        previous = repair["after"]
+    custody = load("windows-custody-reconciliation.json")["changes"].get(path)
+    if custody is None:
         return previous
-    row = changes[path]
-    if row["before"] != previous:
-        raise AssertionError(f"broken remediation mapping ancestry: {path}")
-    return row["after"]
+    if custody["before"] != previous:
+        raise AssertionError(f"broken Windows custody mapping ancestry: {path}")
+    return custody["after"]
 
 
 class Mapping(unittest.TestCase):
@@ -116,7 +126,22 @@ class Mapping(unittest.TestCase):
         self.assertEqual(set(audit["inherited_pins"]), set(pins))
         rows = {row["path"]: row for row in audit["changes"]}
         self.assertEqual(len(rows), len(audit["changes"]))
-        self.assertEqual(set(rows), {path for path, pin in audit["inherited_pins"].items() if pin != pins[path]})
+        custody = load("windows-custody-reconciliation.json")
+        prior = pins.copy()
+        for path, row in custody["changes"].items():
+            self.assertEqual(pins[path], row["after"])
+            self.assertNotEqual(row["before"], row["after"])
+            self.assertTrue(row["inspection"])
+            prior[path] = row["before"]
+        restart = load("restart-reconciliation.json")
+        self.assertEqual(restart["base_revision"], "e14238b9faf38a14c46489b993b1dad8fbbfce37")
+        self.assertEqual(custody["base_revision"], restart["base_revision"])
+        for path, repair in restart["changes"].items():
+            self.assertNotEqual(repair["before"], repair["after"])
+            self.assertEqual(prior[path], repair["after"])
+            self.assertTrue(repair["inspection"])
+        self.assertEqual(set(rows), {path for path, pin in audit["inherited_pins"].items()
+                                    if pin != restart["changes"].get(path, {}).get("before", prior[path])})
         for path, before in audit["inherited_pins"].items():
             self.assertEqual(remediation_pin(path, before), pins[path])
         for row in rows.values():

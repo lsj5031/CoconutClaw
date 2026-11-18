@@ -1,9 +1,12 @@
 //! Fail-closed custody checks for native node state, not an ACL repair tool.
 use anyhow::{Context, Result, ensure};
 use std::{
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     mem::{size_of, zeroed},
-    os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+    os::windows::{
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
+    },
     path::Path,
     ptr::{addr_of, null_mut},
 };
@@ -27,6 +30,34 @@ use windows_sys::Win32::{
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
+
+pub fn present(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn private_directory(path: &Path, allow_missing: bool) -> Result<()> {
+    ensure!(path.is_absolute(), "node directory must be absolute");
+    let mut nearest = None;
+    for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) => {
+                ensure!(
+                    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+                    "node directory reparse points are not admitted"
+                );
+                ensure!(metadata.is_dir(), "node path is not a directory");
+                nearest = Some(ancestor);
+            }
+            Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    validate_private(nearest.context("node directory has no existing parent")?)
+}
 
 struct Token(HANDLE);
 impl Drop for Token {

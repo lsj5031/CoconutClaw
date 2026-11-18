@@ -81,6 +81,8 @@ pub(crate) enum Effect {
 /// and trusted runtime decorations must not become new model effects/budgets.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct CompiledOutput {
+    #[serde(default)]
+    pub(crate) rejected: bool,
     pub(crate) effects: Vec<Effect>,
     pub(crate) prefix: String,
     pub(crate) suffix: String,
@@ -98,6 +100,7 @@ impl CompiledOutput {
                 .cloned(),
         );
         Self {
+            rejected: false,
             effects: body,
             prefix: String::new(),
             suffix: String::new(),
@@ -109,21 +112,30 @@ impl CompiledOutput {
             return serde_json::from_str(json)
                 .unwrap_or_else(|_| Self::new(&rejection("invalid saved output"), &[]));
         }
+        let markers = parse_markers(output);
         Self {
-            effects: parse_markers(output).to_effects(),
+            rejected: markers.rejected,
+            effects: markers.to_effects(),
             prefix: String::new(),
             suffix: String::new(),
         }
     }
 
-    pub(crate) fn from_saved_turn(raw: &str, reply: &str) -> Self {
+    pub(crate) fn from_legacy_turn(raw: &str, reply: &str) -> Self {
+        // Older writers sometimes stored a rendered display instead of provider
+        // evidence. This legacy encoding can withhold authority, never grant it.
+        if raw.starts_with("TELEGRAM_REPLY: Output rejected:") {
+            return Self::new(reply, &[]);
+        }
         let markers = parse_markers(raw);
-        let reply = markers
-            .telegram_reply
-            .as_deref()
-            .filter(|s| s.starts_with("Output rejected:"))
-            .unwrap_or(reply);
-        Self::new(reply, &markers.to_effects())
+        let reply = if markers.rejected || reply.trim().is_empty() {
+            markers.reply().map(String::as_str).unwrap_or(reply)
+        } else {
+            reply
+        };
+        let mut output = Self::new(reply, &markers.to_effects());
+        output.rejected = markers.rejected;
+        output
     }
 
     pub(crate) fn reply(&self) -> &str {
@@ -152,7 +164,7 @@ impl CompiledOutput {
         let effects = self.delivery_effects();
         let rendered = render_effects(&effects);
         // Keep the existing marker representation when it is lossless.
-        if parse_markers(&rendered).to_effects() == effects {
+        if !self.rejected && parse_markers(&rendered).to_effects() == effects {
             rendered
         } else {
             format!(
@@ -227,6 +239,7 @@ pub(crate) fn render_effects(effects: &[Effect]) -> String {
 
 #[derive(Debug, Default)]
 pub(crate) struct ParsedMarkers {
+    pub(crate) rejected: bool,
     pub(crate) telegram_reply: Option<String>,
     pub(crate) send_photo: Vec<String>,
     pub(crate) send_document: Vec<String>,
@@ -335,6 +348,7 @@ pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
 
 fn rejected_markers(reason: &str) -> ParsedMarkers {
     ParsedMarkers {
+        rejected: true,
         telegram_reply: Some(rejection(reason)),
         ..Default::default()
     }

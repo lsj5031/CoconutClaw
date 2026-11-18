@@ -5,7 +5,7 @@ use coconutclaw_config::{RuntimeConfig, TelegramParseFallback, TelegramParseMode
 use reqwest::blocking::Client;
 
 use crate::delivery::{DeliveryState, TaskDispatch, persist_delivery_state};
-use crate::markers::parse_markers;
+use crate::markers::CompiledOutput;
 use crate::store::Store;
 use crate::telegram::{
     TELEGRAM_TEXT_CHAR_LIMIT, render_telegram_reply_text, send_markdown_reply_document,
@@ -331,11 +331,11 @@ fn output_effects(
     store: &Store,
     key: crate::delivery::DeliveryKey,
     output: &str,
-) -> Result<Vec<crate::markers::Effect>> {
+) -> Result<CompiledOutput> {
     if matches!(key, crate::delivery::DeliveryKey::Telegram(_))
         && crate::telegram_ui::decode(output).is_some()
     {
-        return Ok(vec![crate::markers::Effect::TelegramReply(output.into())]);
+        return Ok(CompiledOutput::new(output, &[]));
     }
     let literal = match key {
         crate::delivery::DeliveryKey::Task(id) => store.runtime_result_is_literal(id)?,
@@ -359,9 +359,9 @@ fn output_effects(
         } else {
             output.into()
         };
-        vec![crate::markers::Effect::TelegramReply(text)]
+        CompiledOutput::new(&text, &[])
     } else {
-        crate::markers::CompiledOutput::from_output(output).delivery_effects()
+        CompiledOutput::from_output(output)
     })
 }
 
@@ -377,7 +377,7 @@ pub(crate) fn acknowledged_text(
         state.has_telegram_op("telegram:text"),
         "Unknown retained: no durable text acknowledgment; timeout or operator assertion cannot prove nonoccurrence"
     );
-    let effects = output_effects(store, key, output)?;
+    let effects = output_effects(store, key, output)?.delivery_effects();
     let [crate::markers::Effect::TelegramReply(reply)] = effects.as_slice() else {
         anyhow::bail!(
             "Unknown retained: this finite reconciliation supports one rich text operation only"
@@ -419,36 +419,58 @@ pub(crate) fn dispatch_task_output(
     let cfg = &single_attempt;
     let chat_id = chat_id.map(str::trim).filter(|value| !value.is_empty());
     let policy_key = "telegram:output-policy";
-    let mut effects = if let Some(output) = state
+    let output = if let Some(output) = state
         .operations
         .get(policy_key)
         .and_then(|policy| policy["rejected_output"].as_str())
     {
-        parse_markers(output).to_effects()
+        let mut saved = CompiledOutput::new(
+            output
+                .strip_prefix("TELEGRAM_REPLY: ")
+                .unwrap_or(output)
+                .trim_end(),
+            &[],
+        );
+        saved.rejected = true;
+        saved
     } else {
         output_effects(store, request.task_id, request.output)?
     };
     // Literal remote evidence is text, never reinterpret it as marker protocol.
     // For ordinary outputs, validate the complete batch before the first send.
-    if effects
+    let output = if output
+        .effects
         .iter()
         .any(|e| !matches!(e, crate::markers::Effect::TelegramReply(_)))
     {
-        let admitted = super::media::admitted_output(cfg, request.output, false);
-        effects = crate::markers::CompiledOutput::from_output(&admitted).delivery_effects();
-    }
-    let rejected = matches!(effects.as_slice(), [crate::markers::Effect::TelegramReply(reply)] if reply.starts_with("Output rejected:"));
+        super::media::admit_compiled(cfg, output, false)
+    } else {
+        output
+    };
+    let rejected = output.rejected;
+    let effects = output.delivery_effects();
     if rejected && !state.operations.contains_key(policy_key) {
+        let partial = state.text_plan.is_some()
+            || !state.completed_ops.is_empty()
+            || !state.operations.is_empty();
         state.operations.insert(
             policy_key.into(),
-            serde_json::json!({"phase":"rejected","rejected_output":crate::markers::render_effects(&effects)}),
+            serde_json::json!({"phase":"rejected","partial":partial,"rejected_output":crate::markers::render_effects(&effects)}),
         );
         persist_delivery_state(store, request.task_id, state)?;
     }
     if rejected
+        && state.operations[policy_key]["partial"].is_null()
+        && !state.operations.contains_key("telegram:output-rejection")
         && (state.text_plan.is_some()
             || !state.completed_ops.is_empty()
             || state.operations.keys().any(|key| key != policy_key))
+    {
+        return Ok(false);
+    }
+    if rejected
+        && (state.operations[policy_key]["partial"] == true
+            || state.operations.contains_key("telegram:output-rejection"))
     {
         // A file can leave the outbox between an acknowledged text send and
         // a later media retry. Do not silently reuse that text receipt for a

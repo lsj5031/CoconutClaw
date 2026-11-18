@@ -127,6 +127,24 @@ impl DeliveryState {
         }
     }
 }
+
+pub(crate) fn unstarted_delivery(raw: &str) -> Result<Option<String>> {
+    let mut value: Value = serde_json::from_str(raw)?;
+    let empty = json!({"completed_ops":[],"operations":{},"text_plan":null});
+    if value == json!([]) || value == empty {
+        return Ok(Some(raw.into()));
+    }
+    let plan = &value["text_plan"];
+    if let Some(markdown) = plan["markdown"].as_str()
+        && *plan == json!({"kind":"rich","markdown":markdown,"phase":"ready","attempts":0})
+    {
+        value["text_plan"] = Value::Null;
+        if value == empty {
+            return Ok(Some(value.to_string()));
+        }
+    }
+    Ok(None)
+}
 #[derive(Clone, Copy)]
 pub(crate) struct TaskDispatch<'a> {
     pub(crate) task_id: DeliveryKey,

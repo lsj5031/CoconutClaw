@@ -115,8 +115,9 @@ late completed result after cancellation remains Unknown, with signed evidence
 retained. Graceful runner termination signals owned cancellation flags, shuts
 its router, kills only the existing provider API's currently owned groups and
 joins owned provider work. Abrupt process death leaves ambiguity; restart never
-re-invokes. On Windows each provider starts suspended, is assigned to a
-noninheritable, unnamed kill-on-close Job Object, and only then resumes.
+re-invokes. On Windows the native provider executable is created inside its
+noninheritable, unnamed kill-on-close Job Object. A failed creation-time
+assignment does not start a provider.
 Cancellation, timeout, normal leader exit, shutdown and error cleanup terminate
 the owned job, including detached descendants. Closing the runner process closes
 its last job handles, so kernel custody survives an abrupt owner death without

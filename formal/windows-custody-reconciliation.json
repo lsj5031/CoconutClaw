@@ -1,0 +1,61 @@
+{
+  "base_revision": "e14238b9faf38a14c46489b993b1dad8fbbfce37",
+  "scope": "Process and RemoteComposition native Windows prerequisites only. Model, assumptions, fairness and checked bounds unchanged. Creation-time job membership, NTFS custody and admission order require exact-head native executable evidence; not proved by the finite models.",
+  "changes": {
+    "crates/coconutclaw-cli/src/main.rs": {
+      "before": "84a7bc05772afdff0890da3a4c5257dfdca85ab3bd2a774ac4eef1742353a877",
+      "after": "5d98acd30067989af3054692b7b3e6681e95aa074b2c77de807b79c8ae581583",
+      "inspection": "Windows CLI dispatch uses inspected configuration before initializing a node layout. Other platforms keep the existing loader."
+    },
+    "crates/coconutclaw-config/src/lib.rs": {
+      "before": "17a634b93aa52165ef2124a37e7f6c5418b70af9e47c47df0cd63db151493b2b",
+      "after": "049730c5f595a15be59f282c668994cc911cfb2b4b9b52e1008d4be8eb2d309a",
+      "inspection": "Read-only inspection of the selected directory precedes config file parsing and layout initialization."
+    },
+    "crates/coconutclaw-config/src/lib_tests.rs": {
+      "before": "3e464a25e977c8eca97ebb61a18e6af52c3f62c3f2443bed2462cac13d942ad2",
+      "after": "7d6443bade1e8c29f7bc42177b4d871a2e3384fb40f1c8f29886f32eea3ffa21",
+      "inspection": "A refused inspection precedes parsing malformed TOML and leaves only the original file."
+    },
+    "crates/coconutclaw-provider/Cargo.toml": {
+      "before": "d537b8048199e39b58b862ad7315a2643b2cb84b7bf75015e5304d711e4e2f30",
+      "after": "2b54d79780734f14aa9d6a3db9f8153b98fc87ddb2a8cb6b8f40f40a57cc91a4",
+      "inspection": "Remove obsolete ToolHelp binding; no new dependency or lockfile change."
+    },
+    "crates/coconutclaw-provider/src/lib.rs": {
+      "before": "059fd277d7836c4dfb4ea0552605eab40413d03fe0605c460d508e2b3f935e40",
+      "after": "7a60e41df3beffdbc0b6eb7cc2e6153a59ccc21cde2d69f14a37e0ccc284a034",
+      "inspection": "Use the creation-time Windows launch path; retain stdin/stdout/stderr and existing timeout, result and cancellation logic."
+    },
+    "crates/coconutclaw-cli/src/nodes.rs": {
+      "before": "eca90f830880bcf6c259121c83b2d4f03420b9d22dbe8f36628c9332f3fb4f7b",
+      "after": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+      "inspection": "Inspect config before parse, check resolved database parent and existing layout inputs before creation, require private output directory at dispatch."
+    },
+    "crates/coconutclaw-cli/src/nodes/tests.rs": {
+      "before": "08b38c3f3dcce4aef17f78b2f29cb79007725f13fb77226d9f9af1ac96861057",
+      "after": "4689c61b67444e6caa8df6739d4c76b7de80c08bb20b95d9773f3bd85522cbf1",
+      "inspection": "Live dispatcher refuses missing, reparse and broad-ACL output directories and resumes only with private custody restored."
+    },
+    "crates/coconutclaw-cli/tests/nodes_cli.rs": {
+      "before": "e8c3903e94fd534aad97521b029885ab4b8cfb12391159fd9686705ecf27b0c4",
+      "after": "495b10425f1aecaa7f0235723c93c8bf26bd3c7dd19636a15ff52f570bb8f073",
+      "inspection": "Real node CLI refuses unsafe or missing custom SQLite parent and untrusted malformed config before creating layout; private custom parent control succeeds."
+    },
+    "crates/coconutclaw-provider/src/windows.rs": {
+      "before": "33a8fe3682d1082932018498be05de9c053d53bfd65a427ef110670cfa6882e9",
+      "after": "8922a88f91d95d9453160b97f855650522a49b9a052c425af17748245e128703",
+      "inspection": "CreateProcessW with required job-list and stdio handle-list attributes; no fallback spawn or suspended unowned process."
+    },
+    "crates/coconutclaw-provider/src/windows/tests.rs": {
+      "before": "e8d82c596729de158e763b98114ffbc42e039c5775f91fa9775159fb23b62162",
+      "after": "d7f3dd58c365622fad8454ae59de4be2edeee535b4a83d10ac6996f75d91c831",
+      "inspection": "Existing descendant and abrupt owner death tests use the native launcher; query membership against its specific job handle."
+    },
+    "crates/coconutclaw-config/src/windows_security.rs": {
+      "before": "5481ac2a8f5107a756e2c1b0fe229a32f008aa3877376fa06ca962b9a6c3ff55",
+      "after": "6fe7be87edd7b632bd4d82a45423533615217a0475a388265dc1b81d8c8cb6c6",
+      "inspection": "Require private directory DACL and reject reparse components before traversing them. Only planned layout paths may be missing."
+    }
+  }
+}

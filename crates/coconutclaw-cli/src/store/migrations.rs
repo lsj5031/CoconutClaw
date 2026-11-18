@@ -205,6 +205,17 @@ impl Store {
             }
             self.kv_set("schema_version", "11")?;
         }
+        if current < 12 {
+            match self
+                .conn
+                .execute("ALTER TABLE turns ADD COLUMN admitted_output TEXT", [])
+            {
+                Ok(_) => {}
+                Err(error) if error.to_string().contains("duplicate column") => {}
+                Err(error) => return Err(error.into()),
+            }
+            self.kv_set("schema_version", "12")?;
+        }
 
         Ok(())
     }

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use coconutclaw_config::{CliOverrides, load_runtime_config};
+use coconutclaw_config::CliOverrides;
 use std::path::PathBuf;
 
 mod approval;
@@ -121,7 +121,10 @@ fn main() -> Result<()> {
         let cfg = coconutclaw_config::preview_runtime_config(&overrides)?;
         return memory_import::run(&cfg, args);
     }
-    let cfg = load_runtime_config(&overrides)?;
+    #[cfg(not(windows))]
+    let cfg = coconutclaw_config::load_runtime_config(&overrides)?;
+    #[cfg(windows)]
+    let cfg = nodes::load_checked(&overrides, &cli.command)?;
     let command = cli.command;
     if let Commands::Nodes(args) = &command {
         return nodes::run(&cfg, args);

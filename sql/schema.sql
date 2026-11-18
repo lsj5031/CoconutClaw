@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS turns (
   user_text TEXT,
   asr_text TEXT,
   provider_raw TEXT NOT NULL,
+  admitted_output TEXT,
   telegram_reply TEXT,
   voice_reply TEXT,
   status TEXT NOT NULL,

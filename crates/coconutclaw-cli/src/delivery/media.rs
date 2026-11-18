@@ -134,7 +134,9 @@ pub(crate) fn admit_compiled(
             })
         });
     if let Some(reason) = reason {
-        CompiledOutput::new(&rejection(reason), &[])
+        let mut rejected = CompiledOutput::new(&rejection(reason), &[]);
+        rejected.rejected = true;
+        rejected
     } else {
         output
     }

@@ -96,8 +96,11 @@ Invoke-Node nodes status
 
 Use the same Windows account and a local ACL-capable filesystem. The program
 rejects reparse points, null/foreign/unsupported ACEs and noninheritable private
-directory ACLs. It checks identity files, executable configuration, the actual
-`state.db` pairing allowlist and existing SQLite sidecars before use/admission.
+directory ACLs. Node commands inspect `config.toml` before using its settings
+or creating layout. If `SQLITE_DB_PATH` points outside the default directory,
+prepare its parent as a private directory first. The pairing database, its
+parent, existing sidecars and the `tmp` output directory are checked before
+runner admission.
 It also validates temporary key-file custody **before** writing key bytes.
 Never make a root public to fix an error. Never repair/adopt potentially exposed
 existing identity state by blindly resetting its ACL, deleting its key or

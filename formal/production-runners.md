@@ -32,8 +32,9 @@ run on final formatted bytes. Old receipts are not evidence for the new handlers
 
 `windows-native-reconciliation.json` layers exact deltas over published
 114a1cf, without rewriting production/integration historical receipts. Process
-Spawn maps to `provider::windows::spawn`: no provider instruction runs until a
-suspended child is assigned to its unnamed, noninheritable kill-on-close job.
+Spawn maps to `provider::windows::spawn`: the job-list process creation
+attribute admits the child directly into its unnamed, noninheritable
+kill-on-close job. No suspended, unowned child is created.
 Cancel/shutdown maps to job termination; kernel last-handle closure covers
 abrupt owner death. Recovery still signs Unknown and cannot regain an invocation
 capability, independently of whether external effects already occurred.

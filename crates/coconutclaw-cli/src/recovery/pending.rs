@@ -1,4 +1,4 @@
-use crate::{context::append_memory_and_tasks, markers::CompiledOutput, store::Store};
+use crate::{context::append_memory_and_tasks, store::Store};
 use anyhow::Result;
 use coconutclaw_config::RuntimeConfig;
 
@@ -16,12 +16,9 @@ pub(crate) fn reconcile_pending_turn_side_effects(
         )?;
         let admitted = crate::delivery::media::admit_compiled(
             cfg,
-            CompiledOutput::from_saved_turn(&turn.provider_raw, &turn.telegram_reply),
+            turn.compiled(&turn.telegram_reply)?,
             delegated,
         );
-        let reply = Some(admitted.reply())
-            .filter(|reply| reply.starts_with("Output rejected:"))
-            .unwrap_or(&turn.telegram_reply);
         append_memory_and_tasks(
             cfg,
             store,
@@ -31,13 +28,14 @@ pub(crate) fn reconcile_pending_turn_side_effects(
             None,
             None,
         )?;
-        if reply.starts_with("Output rejected:") {
+        if admitted.rejected {
             store.conn.execute(
-                "UPDATE turns SET provider_raw=?2 WHERE id=?1",
-                rusqlite::params![turn.id, admitted.encode()],
+                "UPDATE turns SET provider_raw=?2, admitted_output=?3, telegram_reply=?4, side_effects_applied=1 WHERE id=?1",
+                rusqlite::params![turn.id, admitted.encode(), serde_json::to_string(&admitted)?, admitted.reply()],
             )?;
+        } else {
+            store.update_turn_reply_and_side_effects_by_id(turn.id, &turn.telegram_reply)?;
         }
-        store.update_turn_reply_and_side_effects_by_id(turn.id, reply)?;
     }
     Ok(turns.len())
 }

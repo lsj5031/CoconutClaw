@@ -282,19 +282,13 @@ pub(crate) fn process_turn_with_status(
     let cancelled = cancel_flag.load(Ordering::SeqCst) || exit_code == 130;
     let turn_result =
         resolve_turn_result(&raw_output, &context_channel, provider_success, cancelled);
-    let admitted = crate::delivery::media::admit_compiled(
-        cfg,
-        crate::markers::CompiledOutput::new(&turn_result.telegram_reply, &turn_result.effects),
-        delegated,
-    );
+    let mut compiled =
+        crate::markers::CompiledOutput::new(&turn_result.telegram_reply, &turn_result.effects);
+    compiled.rejected = turn_result.rejected;
+    let admitted = crate::delivery::media::admit_compiled(cfg, compiled, delegated);
     let telegram_reply = admitted.reply().to_string();
     let output = admitted.encode();
-    let effects = admitted.effects;
-    // Retain normal provider evidence, but never persist oversized/rejected
-    // effects that recovery could later resurrect.
-    let raw_output = if raw_output.len() > crate::markers::MAX_OUTPUT_BYTES
-        || telegram_reply.starts_with("Output rejected:")
-    {
+    let raw_output = if raw_output.len() > crate::markers::MAX_OUTPUT_BYTES || admitted.rejected {
         render_output(&telegram_reply, &[])
     } else {
         raw_output
@@ -308,20 +302,23 @@ pub(crate) fn process_turn_with_status(
         "turn completed"
     );
 
-    let inserted_turn_id = store.insert_turn(&TurnRecord {
-        ts: ts.clone(),
-        chat_id: origin_session.unwrap_or(&chat_id).to_string(),
-        input_type: input.input_type.to_string(),
-        user_text: input.user_text,
-        provider_raw: raw_output,
-        telegram_reply: telegram_reply.clone(),
-        status: status.to_string(),
-        update_id: update_id.clone(),
-        duration_ms: Some(duration_ms),
-        channel: context_channel.clone(),
-        task_run_id,
-        side_effects_applied: false,
-    })?;
+    let inserted_turn_id = store.insert_turn_with_admission(
+        &TurnRecord {
+            ts: ts.clone(),
+            chat_id: origin_session.unwrap_or(&chat_id).to_string(),
+            input_type: input.input_type.to_string(),
+            user_text: input.user_text,
+            provider_raw: raw_output,
+            telegram_reply: telegram_reply.clone(),
+            status: status.to_string(),
+            update_id: update_id.clone(),
+            duration_ms: Some(duration_ms),
+            channel: context_channel.clone(),
+            task_run_id,
+            side_effects_applied: false,
+        },
+        Some(&admitted),
+    )?;
 
     if let Some(inserted_turn_id) = inserted_turn_id
         && status != TurnStatus::Cancelled
@@ -331,7 +328,7 @@ pub(crate) fn process_turn_with_status(
             store,
             &ts,
             Some(inserted_turn_id),
-            &effects,
+            &admitted.effects,
             origin_session,
             delivery_target_json,
         )?;
@@ -384,6 +381,7 @@ pub(crate) fn resolve_turn_result(
 
     if cancelled {
         return TurnResult {
+            rejected: false,
             effects: vec![],
             telegram_reply: crate::wording::CANCELLATION.to_string(),
             status: TurnStatus::Cancelled,
@@ -393,6 +391,7 @@ pub(crate) fn resolve_turn_result(
 
     if raw_output.len() > crate::markers::MAX_OUTPUT_BYTES {
         return TurnResult {
+            rejected: true,
             effects: vec![],
             telegram_reply: crate::markers::rejection("output byte limit exceeded"),
             status: TurnStatus::ParseFallback,
@@ -407,6 +406,7 @@ pub(crate) fn resolve_turn_result(
     let effects = markers.to_effects();
     if !telegram_reply.trim().is_empty() {
         return TurnResult {
+            rejected: markers.rejected,
             effects,
             telegram_reply,
             status: if provider_success {
@@ -421,6 +421,7 @@ pub(crate) fn resolve_turn_result(
     if provider_success {
         if let Some(recovered) = recover_unstructured_reply(&cleaned) {
             return TurnResult {
+                rejected: false,
                 effects,
                 telegram_reply: recovered,
                 status: TurnStatus::ParseRecovered,
@@ -430,6 +431,7 @@ pub(crate) fn resolve_turn_result(
         // If it's just raw text without markers, and no specific unstructured JSON format
         // was found, return the text directly instead of an error message.
         return TurnResult {
+            rejected: false,
             effects,
             telegram_reply: if cleaned.is_empty() {
                 "No reply text was returned. Check Tasks and local logs before repeating the request.".to_string()
@@ -447,6 +449,7 @@ pub(crate) fn resolve_turn_result(
 
     if let Some(recovered) = extract_assistant_text_from_json_stream(&cleaned) {
         return TurnResult {
+            rejected: false,
             effects,
             telegram_reply: recovered,
             status: TurnStatus::AgentErrorRecovered,
@@ -459,6 +462,7 @@ pub(crate) fn resolve_turn_result(
     // prefix — a partial response is more useful than "Agent execution failed locally."
     if let Some(recovered) = recover_unstructured_reply(&cleaned) {
         return TurnResult {
+            rejected: false,
             effects,
             telegram_reply: recovered,
             status: TurnStatus::AgentErrorRecovered,
@@ -469,6 +473,7 @@ pub(crate) fn resolve_turn_result(
     let err_line = extract_error_summary(raw_output)
         .unwrap_or_else(|| "No readable error summary was returned.".to_string());
     TurnResult {
+        rejected: false,
         effects,
         telegram_reply: format!(
             "The task ended with an error. {err_line} Check Tasks and local logs before repeating the request."

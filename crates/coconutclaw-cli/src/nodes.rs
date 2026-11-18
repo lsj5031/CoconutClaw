@@ -100,6 +100,9 @@ fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
 }
 fn local(cfg: &RuntimeConfig) -> Result<Local> {
     validate_storage(cfg)?;
+    read_local(cfg)
+}
+fn read_local(cfg: &RuntimeConfig) -> Result<Local> {
     let value: Local = read_json(&directory(cfg).join("local.json"))?;
     ensure!(
         value.card.version == 1 && value.card.revision == REVISION,
@@ -108,14 +111,12 @@ fn local(cfg: &RuntimeConfig) -> Result<Local> {
     Ok(value)
 }
 fn key(cfg: &RuntimeConfig) -> Result<SecretKey> {
+    let identity = local(cfg)?.card.id;
     let bytes: [u8; 32] = fs::read(directory(cfg).join("device-key"))?
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid device key"))?;
     let key = SecretKey::from(bytes);
-    ensure!(
-        key.public() == local(cfg)?.card.id,
-        "node identity mismatch"
-    );
+    ensure!(key.public() == identity, "node identity mismatch");
     Ok(key)
 }
 pub(crate) fn require_coordinator(cfg: &RuntimeConfig) -> Result<()> {
@@ -137,34 +138,96 @@ fn create_private(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("node file already exists"))?;
     Ok(())
 }
+#[cfg(windows)]
+pub(super) fn load_checked(
+    overrides: &coconutclaw_config::CliOverrides,
+    command: &crate::Commands,
+) -> Result<RuntimeConfig> {
+    use coconutclaw_config::windows_security::{present, private_directory, validate_private};
+    let mut node = matches!(command, crate::Commands::Nodes(_));
+    let cfg = coconutclaw_config::preview_checked_config(overrides, |data| {
+        node |= present(&data.join("runtime/nodes"))?;
+        if node {
+            private_directory(data, true)?;
+            let config = data.join("config.toml");
+            if present(&config)? {
+                validate_private(&config)?;
+            }
+        }
+        Ok(())
+    })?;
+    if node {
+        let parent = cfg
+            .sqlite_db_path
+            .parent()
+            .context("missing SQLite parent")?;
+        private_directory(parent, parent == cfg.data_dir)?;
+        for dir in [&cfg.runtime_dir, &cfg.tmp_dir, &cfg.tasks_dir, &cfg.log_dir] {
+            private_directory(dir, true)?;
+        }
+        validate_existing(&cfg)?;
+        for file in [
+            cfg.instance_dir.join("SOUL.md"),
+            cfg.tasks_dir.join("pending.md"),
+        ] {
+            if present(&file)? {
+                validate_private(&file)?;
+            }
+        }
+        if present(&directory(&cfg).join("local.json"))? {
+            let identity = read_local(&cfg)?;
+            if matches!(command, crate::Commands::Run(_) | crate::Commands::Once(_)) {
+                ensure!(
+                    identity.card.role == Role::Coordinator,
+                    "runner identities cannot poll Telegram or run coordinator turns; use nodes start"
+                );
+            }
+        }
+    }
+    coconutclaw_config::ensure_instance_layout(&cfg).map_err(|_| anyhow::anyhow!("failed to initialize configured directories/files; check path permissions (values redacted)"))?;
+    if node {
+        validate_storage(&cfg)?;
+    }
+    Ok(cfg)
+}
+
 fn validate_storage(_cfg: &RuntimeConfig) -> Result<()> {
     #[cfg(windows)]
     {
-        use coconutclaw_config::windows_security::validate_private;
-        // The SQLite database is the coordinator allowlist. Its parent must
-        // be private as well: otherwise another account could replace it or
-        // introduce a journal/sidecar despite a private main-file DACL.
-        validate_private(&_cfg.data_dir)?;
-        let mut paths = vec![
-            _cfg.runtime_dir.clone(),
-            _cfg.config_file_path.clone(),
-            _cfg.runtime_dir.join("instance.lock"),
-            directory(_cfg),
-            directory(_cfg).join("device-key"),
-            directory(_cfg).join("local.json"),
-            _cfg.sqlite_db_path.clone(),
-        ];
-        for suffix in ["-wal", "-shm", "-journal", ".initialize.lock"] {
-            let mut path = _cfg.sqlite_db_path.as_os_str().to_os_string();
-            path.push(suffix);
-            paths.push(path.into());
-        }
-        for path in paths {
-            match fs::symlink_metadata(&path) {
-                Ok(_) => validate_private(&path)?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                Err(error) => return Err(error.into()),
-            }
+        use coconutclaw_config::windows_security::private_directory;
+        private_directory(&_cfg.data_dir, false)?;
+        private_directory(
+            _cfg.sqlite_db_path
+                .parent()
+                .context("missing SQLite parent")?,
+            false,
+        )?;
+        private_directory(&_cfg.tmp_dir, false)?;
+        validate_existing(_cfg)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_existing(cfg: &RuntimeConfig) -> Result<()> {
+    use coconutclaw_config::windows_security::{present, validate_private};
+    let mut paths = vec![
+        cfg.runtime_dir.clone(),
+        cfg.config_file_path.clone(),
+        cfg.runtime_dir.join("instance.lock"),
+        directory(cfg),
+        directory(cfg).join("device-key"),
+        directory(cfg).join("local.json"),
+        cfg.sqlite_db_path.clone(),
+    ];
+    for suffix in ["-wal", "-shm", "-journal", ".initialize.lock"] {
+        let mut path = cfg.sqlite_db_path.as_os_str().to_os_string();
+        path.push(suffix);
+        paths.push(path.into());
+    }
+    for path in paths {
+        if present(&path)? {
+            validate_private(&path)?;
         }
     }
     Ok(())

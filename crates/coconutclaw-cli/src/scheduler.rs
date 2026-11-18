@@ -740,6 +740,20 @@ impl SessionScheduler {
         let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
         anyhow::ensure!(store.is_current_attempt(task_id)?, "stale outcome owner");
         let admitted = if status == crate::TurnStatus::Cancelled {
+            let state: String = store.conn.query_row(
+                "SELECT delivery_state FROM task_payloads WHERE task_run_id=?1",
+                [task_id],
+                |row| row.get(0),
+            )?;
+            let Some(unstarted) = crate::delivery::unstarted_delivery(&state)? else {
+                return Ok(false);
+            };
+            if state != unstarted {
+                store.conn.execute(
+                    "UPDATE task_payloads SET delivery_state=?2 WHERE task_run_id=?1",
+                    rusqlite::params![task_id, unstarted],
+                )?;
+            }
             let saved = crate::markers::CompiledOutput::from_output(raw);
             crate::markers::CompiledOutput::new(
                 if saved.reply().trim().is_empty() {
@@ -1109,11 +1123,16 @@ impl SessionScheduler {
         )?;
         let output = if cancelled && !was_wait {
             if output != cancellation_output {
-                store.conn.execute(
-                    "UPDATE task_payloads SET output=?2,delivery_state='[]' WHERE task_run_id=?1",
-                    rusqlite::params![id, cancellation_output],
-                )?;
-                state = "[]".into();
+                let Some(unstarted) = crate::delivery::unstarted_delivery(&state)? else {
+                    return Ok(());
+                };
+                if store.conn.execute(
+                    "UPDATE task_payloads SET output=?2,delivery_state=?3 WHERE task_run_id=?1 AND output=?4 AND delivery_state=?5 AND delivered=0",
+                    rusqlite::params![id, cancellation_output, unstarted, output, state],
+                )? == 0 {
+                    return Ok(());
+                }
+                state = unstarted;
             }
             cancellation_output.as_str()
         } else {
@@ -1216,7 +1235,10 @@ impl SessionScheduler {
                     _ => crate::TurnStatus::AgentError,
                 };
                 let mut reply = turn.telegram_reply.clone();
-                if request.delegated && status != crate::TurnStatus::Cancelled {
+                if turn.admitted_output.is_none()
+                    && request.delegated
+                    && status != crate::TurnStatus::Cancelled
+                {
                     // Older/current successful materializations retain a labeled
                     // history reply. Remove only that exact proven decoration,
                     // not an arbitrary prefix in literal provider text.
@@ -1231,24 +1253,22 @@ impl SessionScheduler {
                         reply = original;
                     }
                 }
-                let output = if status == crate::TurnStatus::Cancelled {
-                    crate::markers::CompiledOutput::new(&reply, &[]).encode()
-                } else {
-                    crate::markers::CompiledOutput::from_saved_turn(&turn.provider_raw, &reply)
-                        .encode()
-                };
+                let output = turn.compiled(&reply)?.encode();
                 self.persist_result(&store, id, &request, &request.input, &output, status)?;
             }
         }
         store.conn.execute(
             "UPDATE task_payloads SET output='TELEGRAM_REPLY: Task #' || task_run_id ||
              ' was interrupted. Outcome unknown; inspect local state before retrying.'
-             WHERE output IS NULL AND EXISTS(SELECT 1 FROM task_runs r WHERE r.id=task_payloads.task_run_id
+             WHERE output IS NULL
+             AND NOT EXISTS(SELECT 1 FROM turns t WHERE t.task_run_id=task_payloads.task_run_id AND t.status='cancelled')
+             AND EXISTS(SELECT 1 FROM task_runs r WHERE r.id=task_payloads.task_run_id
              AND r.status='failed' AND r.error_summary LIKE '%outcome unknown%')", [])?;
         self.resume_waiting_events()?;
         let mut stmt = store.conn.prepare(
             "SELECT r.id,p.request FROM task_runs r JOIN task_payloads p ON p.task_run_id=r.id
              WHERE r.status='queued' AND r.started_at IS NULL
+             AND NOT EXISTS(SELECT 1 FROM turns t WHERE t.task_run_id=r.id AND t.status='cancelled')
              AND NOT EXISTS(SELECT 1 FROM runtime_remote_runs m WHERE m.task_run_id=r.id) ORDER BY r.id",
         )?;
         let rows = stmt

@@ -79,11 +79,11 @@ fn process_fixture() {
             let _ = leaf.try_wait();
         }
         "owner" => {
-            let (_child, _job) = spawn(&mut command(&root, "leader")).unwrap();
+            let (_child, _job) = spawn(&command(&root, "leader"), false).unwrap();
             thread::sleep(Duration::from_secs(90));
         }
         "shutdown" => {
-            let (_child, _job) = spawn(&mut command(&root, "leader")).unwrap();
+            let (_child, _job) = spawn(&command(&root, "leader"), false).unwrap();
             wait_file(&root.join("release"));
             crate::kill_active_process_groups();
             fs::write(root.join("shutdown-ready"), "ready").unwrap();
@@ -158,7 +158,17 @@ fn abrupt_owner_death_and_owned_shutdown_leave_no_tree_on_restart() {
         fs::remove_file(root.join("leaf")).unwrap();
         fs::remove_file(root.join("leader")).unwrap();
         let _ = fs::remove_file(root.join("release"));
-        let (mut restarted, job) = spawn(&mut command(&root, "leader")).unwrap();
+        let (restarted, job) = spawn(&command(&root, "leader"), false).unwrap();
+        let mut member = 0;
+        checked(unsafe {
+            windows_sys::Win32::System::JobObjects::IsProcessInJob(
+                restarted.process.0,
+                job.0.0,
+                &mut member,
+            )
+        })
+        .unwrap();
+        assert_ne!(member, 0);
         let new_leaf = process(&root, "leaf");
         job.terminate().unwrap();
         restarted.wait().unwrap();

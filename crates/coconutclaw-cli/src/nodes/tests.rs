@@ -82,6 +82,40 @@ fn windows_rechecks_allowlist_custody_before_peer_dispatch() {
         handler.dispatch(peer, Request::Ping).unwrap(),
         Reply::Pong
     ));
+    let tmp = &node.tmp_dir;
+    fs::remove_dir(tmp).unwrap();
+    assert!(handler.dispatch(peer, Request::Ping).is_err());
+    let target = node.data_dir.join("private-output-fixture");
+    fs::create_dir(&target).unwrap();
+    assert!(
+        std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(tmp)
+            .arg(&target)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(handler.dispatch(peer, Request::Ping).is_err());
+    fs::remove_dir(tmp).unwrap();
+    fs::create_dir(tmp).unwrap();
+    assert!(
+        std::process::Command::new("icacls.exe")
+            .arg(tmp)
+            .args(["/grant", "*S-1-1-0:R"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(handler.dispatch(peer, Request::Ping).is_err());
+    assert!(
+        std::process::Command::new("icacls.exe")
+            .arg(tmp)
+            .args(["/remove:g", "*S-1-1-0"])
+            .status()
+            .unwrap()
+            .success()
+    );
     assert!(
         std::process::Command::new("icacls.exe")
             .arg(&node.sqlite_db_path)

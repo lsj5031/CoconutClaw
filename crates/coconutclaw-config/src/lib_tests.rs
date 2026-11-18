@@ -62,6 +62,27 @@ fn all_numeric_domains_accept_endpoints_and_reject_outside_effective_values() {
 }
 
 #[test]
+fn custody_refusal_precedes_config_parsing_and_layout() {
+    let dir = unique_dir();
+    write_config(&dir, "invalid TOML");
+    let _env = TestEnvGuard::clear_config_env();
+    let error = load_config(
+        &CliOverrides {
+            data_dir: Some(dir.clone()),
+        },
+        true,
+        |selected| {
+            assert_eq!(selected, dir);
+            bail!("fixture custody refusal")
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "fixture custody refusal");
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn effective_invalid_values_fail_before_layout_creation() {
     for assignment in [
         "PROVIDER_TIMEOUT_SECS = false",

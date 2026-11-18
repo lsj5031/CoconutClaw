@@ -127,6 +127,7 @@ pub(crate) enum WebhookAction {
 
 #[derive(Debug)]
 pub(crate) struct TurnResult {
+    pub(crate) rejected: bool,
     pub(crate) effects: Vec<Effect>,
     pub(crate) telegram_reply: String,
     pub(crate) status: TurnStatus,

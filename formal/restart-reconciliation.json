@@ -1,0 +1,71 @@
+{
+  "base_revision": "e14238b9faf38a14c46489b993b1dad8fbbfce37",
+  "scope": "Effects and RuntimeComposition contracts unchanged. Concrete SQLite, parsing and delivery behavior require executable tests, not only these abstract checks.",
+  "changes": {
+    "crates/coconutclaw-cli/src/delivery/mod.rs": {
+      "before": "9382e4bcffbc615cadc12adb72976f453b0e0ae52cae34a42143bf579be2a136",
+      "after": "212d4c503a07d793a00ff5d0ab7666d2ace1c6d69e0d02910cb05236e862ed76",
+      "inspection": "Only an empty ledger or a known rich plan explicitly ready at zero attempts can be replaced."
+    },
+    "crates/coconutclaw-cli/src/delivery/telegram.rs": {
+      "before": "cf336d1d2f5a30290aef178a6e139bacdf0626e6dc1d6da08a6172145a92c49c",
+      "after": "0f04543701f455507fe8eddd520d9f7be78bdeef96456a5a0738f7c90cea2fbe",
+      "inspection": "Durable rejection policy and secondary notices are driven by typed decisions; legacy uncertain policy receipts stay held."
+    },
+    "crates/coconutclaw-cli/src/markers.rs": {
+      "before": "26d11490150e011412db4847fc838f90c5b8630d3afa13f01db42c6dc209ccc0",
+      "after": "3f1bab2e51c73195edbbfe43dc3c41ca2825ffa1f09ddc5fdbece79f13815947",
+      "inspection": "Compiled outputs carry rejection status; ambiguous legacy display copies supply no effect authority."
+    },
+    "crates/coconutclaw-cli/src/recovery/pending.rs": {
+      "before": "28ea5dc09bb0a7fd7bdaa1dbf18616b55b37094cdf25958b9e27bd9f1454683e",
+      "after": "0358ef101ed49fb7e6515f5b77521b995ff8368d5a8feb59c631350809f3bc71",
+      "inspection": "Pending appends consume saved admission and persist a whole-batch rejection without reading display wording."
+    },
+    "crates/coconutclaw-cli/src/scheduler.rs": {
+      "before": "49ef7423eaaae7aa076a8be22579f97d6cd8d7e15e55e96e9b4c0f6087b555e7",
+      "after": "7ac1fe375487994790654e0403fa4888501a3380b3ddf694af417b5694089a0e",
+      "inspection": "Recovery uses recorded admission. Both cancellation materialization and sender reconstruction preserve attempt evidence."
+    },
+    "crates/coconutclaw-cli/src/store/migrations.rs": {
+      "before": "408334e8acb73fc0b340507105ddaac52be7a71a74aa09da3d0ca8babb3f15fd",
+      "after": "b3d35e87913e6d7b4be31b4af73369be43cde6730bb944aa5c4acff1b318d9fe",
+      "inspection": "Nullable admission column leaves existing turns identifiable as legacy; migration does not backfill authority."
+    },
+    "crates/coconutclaw-cli/src/store/mod.rs": {
+      "before": "417c32c7c9e38e9c7352c9bbe1cd9e11229c0fe2678455b39895675829c29db4",
+      "after": "20cf95e6ef4b00d2114e22c5824bf7bdac8dec0abd0706bff9441861522c1c55",
+      "inspection": "Stored turn queries carry optional admission evidence separately from display and provider evidence."
+    },
+    "crates/coconutclaw-cli/src/store/turns.rs": {
+      "before": "4a9fbd2fe68ba2b3ab6bb279dd6bed3358fb79635d16103ca57d51b37beb3365",
+      "after": "76fd8c7a877ad429e1e0305aeb06435ce07c13de187fa415eab0ba5b2c84e854",
+      "inspection": "Atomic turn insert records admission; all three replay queries decode the same stored decision."
+    },
+    "crates/coconutclaw-cli/src/turn.rs": {
+      "before": "413907a0754f3ec1412311fce4c3070c0dcc807ac942da45376190e46ac9df49",
+      "after": "5db648a5de338f94c74ecc9f09e978d3aba4a8ee5898bccd9f9632be7d249f7d",
+      "inspection": "Live validation records bounded evidence using the decision, not the reply prefix."
+    },
+    "crates/coconutclaw-cli/src/types.rs": {
+      "before": "63ddc4617a4779bec7a1d8f42c937312be08429624149981a9f47065d8e9a7d7",
+      "after": "a5c1dc132f4f765ab349fe685dfa8fb4a3cd6f96a4af2f018ea3374ae93e2a16",
+      "inspection": "Turn resolution explicitly reports parser rejection."
+    },
+    "sql/schema.sql": {
+      "before": "2997b682373476397cc578481ac8d74976ace1937ca4ce1e88ef743652a04c49",
+      "after": "5327387dddaec1494cf6975162a4a5783c83d8d36e4993bd6099fe5add9aec54",
+      "inspection": "Nullable admission data on turns, no effects or jobs introduced by schema upgrade."
+    },
+    "crates/coconutclaw-cli/src/delivery/media.rs": {
+      "before": "5342eec64ed602f2d388944a325dea27107381f2f433ce40493f942d9df081d8",
+      "after": "97129d067b762f0036a8480e9a73ad3e3d03b1033c47c1abfcffda8af099a3b1",
+      "inspection": "Media and delegated batch validation return a typed rejection with no requested effects."
+    },
+    "crates/coconutclaw-cli/src/effect_boundary_tests.rs": {
+      "before": "ed43ebcf19a21fd352695e87b30f84061d998149656f31ea801f7fea60110c59",
+      "after": "7e8ffb487f2bfb463029b2a36be57cc38ca7a94bbebe99d5c8c01afe24af2d02",
+      "inspection": "Synthetic SQLite, local provider and mock sender checks separate display, admitted appends and legacy cancellation receipts."
+    }
+  }
+}
