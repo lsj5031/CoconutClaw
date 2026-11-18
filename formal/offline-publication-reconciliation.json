@@ -1,0 +1,19 @@
+{
+  "base_revision": "fb34def7d5010651aa25fd220f9fc5236d7c10fa",
+  "source_revision": "a4cdeaaacca9219ad82718765a0877177a799545",
+  "scope": "RemoteComposition assumes atomic local publication. The SQLite transaction and its rollback are executable obligations, not new model actions. Node contact bookkeeping remains separate. No change to bounds, fairness, Unknown handling or Windows custody.",
+  "changes": {
+    "crates/coconutclaw-cli/src/nodes.rs": {
+      "before": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+      "after": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+      "delta_sha256": "cc3db9c5e4459204ee8e46f64fe11da635fa4c654fa52a4cc0222dbaa6935564",
+      "inspection": "On exchange error, execute commits the failed status and Unknown explanation together on the same SQLite connection. The reserved run does not fall back to local execution."
+    },
+    "crates/coconutclaw-cli/src/nodes/tests.rs": {
+      "before": "4689c61b67444e6caa8df6739d4c76b7de80c08bb20b95d9773f3bd85522cbf1",
+      "after": "3e709169f92489fb41236f53b4d305d0ee45840196d207acbea11d2c7b455611",
+      "delta_sha256": "3c10d872916bc7e1fbe1df9dd4e315a76a6f6b1cf27c3a588ef5a3e402d42526",
+      "inspection": "The new fixture aborts the output update, observes the propagated error and reads waiting_remote from the store. Existing offline and Windows fixtures are unchanged."
+    }
+  }
+}

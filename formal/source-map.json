@@ -321,10 +321,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "recover",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
-                "line": 869,
+                "line": 871,
                 "text": "pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {"
               }
             ]
@@ -924,7 +924,7 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::admit",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
                 "line": 586,
@@ -1110,7 +1110,7 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::open",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
                 "line": 546,
@@ -1312,7 +1312,7 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "execute",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
                 "line": 784,
@@ -1380,7 +1380,7 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::admit",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
                 "line": 586,
@@ -1391,7 +1391,7 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::finish",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
                 "line": 621,
@@ -1459,10 +1459,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "accept",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
-                "line": 879,
+                "line": 881,
                 "text": "fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {"
               }
             ]
@@ -1505,7 +1505,7 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::cancel",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
                 "line": 667,
@@ -1790,7 +1790,7 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "selection",
-            "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
+            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
             "declarations": [
               {
                 "line": 686,

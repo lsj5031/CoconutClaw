@@ -477,6 +477,12 @@
       "state_coverage_and_gap": "Win32 job/ACL/PowerShell behavior is not proved by the finite models. Linux API signature shims are not Windows compilation or native execution. Native Windows named CI tests and separate user fleet acceptance are required. Existing host-local Codex auth is never transferred."
     },
     {
+      "path": "formal/offline-publication-reconciliation.json",
+      "classification": "per-input source reconciliation",
+      "owner_and_scope": "Atomic offline-node status and explanation publication over the Windows custody baseline",
+      "state_coverage_and_gap": "SQLite rollback is executable evidence, not a finite model or native Windows proof."
+    },
+    {
       "path": "docs/windows-onboarding.md",
       "classification": "native Windows source provenance/operator boundary",
       "owner_and_scope": "Exact historical delta layer / PowerShell operator checklist",

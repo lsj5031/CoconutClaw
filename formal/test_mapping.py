@@ -60,12 +60,13 @@ def remediation_pin(path, previous):
         if repair["before"] != previous:
             raise AssertionError(f"broken restart mapping ancestry: {path}")
         previous = repair["after"]
-    custody = load("windows-custody-reconciliation.json")["changes"].get(path)
-    if custody is None:
-        return previous
-    if custody["before"] != previous:
-        raise AssertionError(f"broken Windows custody mapping ancestry: {path}")
-    return custody["after"]
+    for layer in ("windows-custody-reconciliation.json", "offline-publication-reconciliation.json"):
+        change = load(layer)["changes"].get(path)
+        if change is not None:
+            if change["before"] != previous:
+                raise AssertionError(f"broken mapping ancestry in {layer}: {path}")
+            previous = change["after"]
+    return previous
 
 
 class Mapping(unittest.TestCase):
@@ -127,12 +128,15 @@ class Mapping(unittest.TestCase):
         rows = {row["path"]: row for row in audit["changes"]}
         self.assertEqual(len(rows), len(audit["changes"]))
         custody = load("windows-custody-reconciliation.json")
+        publication = load("offline-publication-reconciliation.json")
+        self.assertEqual(publication["base_revision"], "fb34def7d5010651aa25fd220f9fc5236d7c10fa")
         prior = pins.copy()
-        for path, row in custody["changes"].items():
-            self.assertEqual(pins[path], row["after"])
-            self.assertNotEqual(row["before"], row["after"])
-            self.assertTrue(row["inspection"])
-            prior[path] = row["before"]
+        for layer in (publication, custody):
+            for path, row in layer["changes"].items():
+                self.assertEqual(prior[path], row["after"])
+                self.assertNotEqual(row["before"], row["after"])
+                self.assertTrue(row["inspection"])
+                prior[path] = row["before"]
         restart = load("restart-reconciliation.json")
         self.assertEqual(restart["base_revision"], "e14238b9faf38a14c46489b993b1dad8fbbfce37")
         self.assertEqual(custody["base_revision"], restart["base_revision"])

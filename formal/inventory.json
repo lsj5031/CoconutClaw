@@ -12299,8 +12299,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/nodes.rs",
-      "sha256": "501ea0a02454ec42b1b04e8e4f702af52fc86b9f1b2cb5a6b43dc1fff1bd4664",
-      "lines": 942,
+      "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+      "lines": 944,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -12487,15 +12487,15 @@
           "text": "pub(crate) fn execute("
         },
         {
-          "line": 869,
+          "line": 871,
           "text": "pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {"
         },
         {
-          "line": 879,
+          "line": 881,
           "text": "fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {"
         },
         {
-          "line": 915,
+          "line": 917,
           "text": "async fn reconcile(cfg: &RuntimeConfig, store: &Store, run: i64) -> Result<()> {"
         }
       ],
@@ -12724,8 +12724,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/nodes/tests.rs",
-      "sha256": "4689c61b67444e6caa8df6739d4c76b7de80c08bb20b95d9773f3bd85522cbf1",
-      "lines": 998,
+      "sha256": "3e709169f92489fb41236f53b4d305d0ee45840196d207acbea11d2c7b455611",
+      "lines": 1035,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -12793,10 +12793,14 @@
         },
         {
           "line": 821,
+          "text": "fn offline_node_output_write_failure_does_not_publish_terminal_status() {"
+        },
+        {
+          "line": 858,
           "text": "fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {"
         },
         {
-          "line": 903,
+          "line": 940,
           "text": "fn cancellation_over_production_handler_stops_owned_fake_provider_once() {"
         }
       ],
@@ -12822,15 +12826,15 @@
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 828,
+          "line": 865,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 901,
+          "line": 938,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 956,
+          "line": 993,
           "text": "if let Reply::Evidence {"
         }
       ],
