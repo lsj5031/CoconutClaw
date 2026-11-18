@@ -140,6 +140,62 @@ fn ui_button(message: &crate::telegram_ui::Message, label: &str) -> String {
 }
 
 #[test]
+fn ingress_non_task_messages_never_queue_or_reply_and_attachment_only_is_eligible() {
+    let server = FakeTelegramServer::start();
+    let (_root, cfg, mut store, scheduler) = fixture(&server);
+    for (i, content) in [
+        json!({}),
+        json!({"text":" \n "}),
+        json!({"forum_topic_created":{"name":"Synthetic topic","icon_color":7322096}}),
+        json!({"forum_topic_edited":{"name":"Renamed"}}),
+        json!({"forum_topic_closed":{}}),
+        json!({"forum_topic_reopened":{}}),
+        json!({"pinned_message":{"text":"old content"}}),
+        json!({"delete_chat_photo":true}),
+        json!({"reply_to_message":{"text":"quoted content is not a task"}}),
+        json!({"document":{"file_id":""}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut message = content;
+        message["chat"] = json!({"id":321,"type":"private"});
+        message["from"] = json!({"id":321});
+        message["message_thread_id"] = json!(7);
+        let raw = json!({"update_id":20000+i,"message":message}).to_string();
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, &raw).unwrap();
+        assert!(outcome.output.is_none(), "{raw}");
+    }
+    assert_eq!(count(&store, "task_runs"), 0);
+    assert_eq!(count(&store, "runtime_inbox"), 0);
+    assert_eq!(count(&store, "turns"), 0);
+    scheduler.retry_deliveries().unwrap();
+    assert!(server.requests.lock().unwrap().is_empty());
+    for content in [
+        json!({"text":"real task"}),
+        json!({"photo":[{"file_id":"synthetic-photo"}]}),
+        json!({"document":{"file_id":"synthetic-document","file_name":"fixture.txt"}}),
+        json!({"video":{"file_id":"synthetic-video"}}),
+        json!({"video_note":{"file_id":"synthetic-video-note"}}),
+        json!({"caption":"real caption"}),
+    ] {
+        let mut message = content;
+        message["chat"] = json!({"id":321,"type":"private"});
+        message["from"] = json!({"id":321});
+        message["message_thread_id"] = json!(7);
+        let raw = json!({"update_id":21000,"message":message}).to_string();
+        assert!(
+            matches!(
+                crate::loops::webhook::parse_webhook_action(&cfg, &raw).unwrap(),
+                crate::WebhookAction::Turn(_)
+            ),
+            "{raw}"
+        );
+    }
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
 fn buttons_missing_actor_is_rejected_and_stale_cancel_keeps_competing_guide() {
     let server = FakeTelegramServer::start();
     let (_root, cfg, mut store, scheduler) = fixture(&server);

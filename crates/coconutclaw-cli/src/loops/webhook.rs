@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use coconutclaw_config::RuntimeConfig;
 use reqwest::blocking::Client;
-use rusqlite::{Transaction, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 
 use crate::commands::helpers::{
@@ -32,7 +32,7 @@ pub(crate) fn restore_inflight_update(
             value.get("channel").and_then(Value::as_str) != Some("slack"),
             "legacy non-Telegram checkpoint preserved; manual migration required"
         );
-        let (id, payload, session, _) = telegram_identity(cfg, &raw)?;
+        let (id, payload, session, _) = telegram_identity(cfg, store, &raw)?;
         if let Some(old_id) = store
             .kv_get("inflight_update_id")?
             .filter(|v| !v.is_empty())
@@ -60,6 +60,7 @@ pub(crate) fn restore_inflight_update(
 
 fn telegram_identity(
     cfg: &RuntimeConfig,
+    store: &Store,
     line: &str,
 ) -> Result<(String, String, Option<String>, WebhookAction)> {
     let value: Value = serde_json::from_str(line).context("invalid Telegram update")?;
@@ -68,7 +69,39 @@ fn telegram_identity(
         .and_then(Value::as_u64)
         .context("numeric Telegram update_id required")?
         .to_string();
-    let action = parse_webhook_value(cfg, &value)?;
+    let mut action = parse_webhook_value(cfg, &value)?;
+    // A callback's bot-authored message may omit the topic metadata. The
+    // persisted control binds the original topic, but never overrides an
+    // explicit topic or the source chat/sender checks performed by the parser.
+    if let WebhookAction::Turn(turn) = &mut action
+        && let Some(callback) = value.get("callback_query")
+        && callback["message"].get("message_thread_id").is_none()
+        && let Some(token) = callback["data"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("ui:"))
+    {
+        let origin: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT session_id FROM telegram_ui_controls WHERE token=?1 AND actor=?2",
+                params![token, turn.session.root_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(origin) = origin {
+            let bound = SessionKey::from_id(origin);
+            if bound.platform == turn.session.platform && bound.root_id == turn.session.root_id {
+                turn.session = bound;
+                if turn.session.thread_id.is_some() && cfg.telegram_topics_enabled == Some(false) {
+                    action = WebhookAction::Ignore {
+                        update_id: Some(id.clone()),
+                        reason: "topic route received with topic mode OFF; history preserved"
+                            .into(),
+                    };
+                }
+            }
+        }
+    }
     let session = match &action {
         WebhookAction::Fresh { session, .. } | WebhookAction::Cancel { session, .. } => {
             Some(session.id())
@@ -315,6 +348,12 @@ fn parse_webhook_value(cfg: &RuntimeConfig, value: &Value) -> Result<WebhookActi
         });
     }
     let media = extract_incoming_media(message);
+    if message_text.trim().is_empty() && media.is_none() {
+        return Ok(WebhookAction::Ignore {
+            update_id,
+            reason: "message_has_no_supported_task_content".into(),
+        });
+    }
 
     if let Some(token) = message_text.split_whitespace().next()
         && token.starts_with('/')
@@ -401,7 +440,7 @@ pub(crate) fn process_webhook_line(
     scheduler: &SessionScheduler,
     line: &str,
 ) -> Result<ProcessOutcome> {
-    let (id, payload, session, action) = telegram_identity(cfg, line)?;
+    let (id, payload, session, action) = telegram_identity(cfg, store, line)?;
     let reconciliation = matches!(&action, WebhookAction::Turn(turn)
         if turn.input.user_text.split_whitespace().next()
             .and_then(|t| crate::telegram::command_token(t, cfg.telegram_bot_username.as_deref()))

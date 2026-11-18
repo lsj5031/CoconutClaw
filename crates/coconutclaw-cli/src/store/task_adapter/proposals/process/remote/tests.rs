@@ -237,8 +237,9 @@ tool=subprocess.Popen([sys.executable,'-c',"""
 import json,os,socket,time
 from pathlib import Path
 nonce=json.loads(Path('fixture-input.json').read_text())['nonce']
-Path('fixture-tool-started.json').write_text(json.dumps(dict(nonce=nonce,tool_pid=os.getpid(),
+Path('fixture-tool-started.json.tmp').write_text(json.dumps(dict(nonce=nonce,tool_pid=os.getpid(),
     tool_parent=os.getppid(),pgid=os.getpgrp(),hostname=socket.gethostname(),started_ns=time.time_ns())))
+Path('fixture-tool-started.json.tmp').replace('fixture-tool-started.json')
 while not Path('fixture-cancel.json').exists(): time.sleep(0.01)
 Path('fixture-tool-ended.json').write_text(json.dumps(dict(nonce=nonce,tool_pid=os.getpid(),
     cancelled=True,ended_ns=time.time_ns())))

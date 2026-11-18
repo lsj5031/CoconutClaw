@@ -528,7 +528,8 @@ args=sys.argv[1:]
 out=args[args.index("--output-last-message")+1]
 text=sys.stdin.read()
 number=re.findall(r"gate-(\d+)",text)[-1]
-(root/("started-"+number)).write_text(str(os.getpid()))
+(root/("started-"+number+".tmp")).write_text(str(os.getpid()))
+(root/("started-"+number+".tmp")).replace(root/("started-"+number))
 while not (root/("release-"+number)).exists(): time.sleep(.025)
 pathlib.Path(out).write_text("TELEGRAM_REPLY: done "+number)
 "#,

@@ -30,7 +30,8 @@ fn fixture(role: Role, seed: u8) -> (tempfile::TempDir, RuntimeConfig) {
                 .success()
         );
     }
-    let cfg = RuntimeConfig::test_config_at(root.path().to_path_buf());
+    let mut cfg = RuntimeConfig::test_config_at(root.path().to_path_buf());
+    cfg.codex.bin = "/nonexistent/never-invoke-a-real-provider".into();
     for dir in [&cfg.runtime_dir, &cfg.tmp_dir, &cfg.instance_dir] {
         fs::create_dir_all(dir).unwrap();
     }
@@ -148,6 +149,119 @@ fn admit(store: &Store, request: &TaskRequest) -> i64 {
         .unwrap();
     tx.commit().unwrap();
     id
+}
+
+fn ingress_select_remote(
+    cfg: &RuntimeConfig,
+    store: &mut Store,
+    scheduler: &crate::scheduler::SessionScheduler,
+) {
+    let raw = serde_json::json!({"update_id":30001,"message":{
+        "chat":{"id":321,"type":"private"},"from":{"id":321},
+        "message_thread_id":7,"text":"/nodes"}})
+    .to_string();
+    let outcome = crate::loops::webhook::process_webhook_line(cfg, store, scheduler, &raw).unwrap();
+    let view = crate::telegram_ui::decode(outcome.output.as_deref().unwrap()).unwrap();
+    let token = view.keyboard["inline_keyboard"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|row| row.as_array().unwrap())
+        .find(|button| button["text"].as_str().unwrap().starts_with("Use remote"))
+        .unwrap()["callback_data"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Telegram callback messages can omit the topic field. Only the stored
+    // authenticated control may restore it, never a chat-wide fallback.
+    let callback = |id, actor, topic: Option<i64>| {
+        let mut value = serde_json::json!({"update_id":id,"callback_query":{
+            "id":format!("synthetic-{id}"),"from":{"id":actor},"data":token,
+            "message":{"message_id":123,"chat":{"id":321,"type":"private"},
+                "from":{"id":999,"is_bot":true}}}});
+        if let Some(topic) = topic {
+            value["callback_query"]["message"]["message_thread_id"] = topic.into();
+        }
+        value.to_string()
+    };
+    for raw in [callback(30002, 322, None), callback(30003, 321, Some(8))] {
+        crate::loops::webhook::process_webhook_line(cfg, store, scheduler, &raw).unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM node_selection", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    let raw = callback(30004, 321, None);
+    let mut topics_off = cfg.clone();
+    topics_off.telegram_topics_enabled = Some(false);
+    crate::loops::webhook::process_webhook_line(
+        &topics_off,
+        store,
+        scheduler,
+        &callback(30006, 321, None),
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT count(*) FROM node_selection", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    crate::loops::webhook::process_webhook_line(cfg, store, scheduler, &raw).unwrap();
+    let selected: String = store
+        .conn
+        .query_row("SELECT session FROM node_selection", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(selected, "telegram:321#7");
+    // A replay uses the same canonical custody and does not reapply selection.
+    crate::loops::webhook::process_webhook_line(cfg, store, scheduler, &raw).unwrap();
+}
+
+#[test]
+fn ingress_selection_callback_restores_only_its_authorized_topic() {
+    let (_a, mut core) = fixture(Role::Coordinator, 111);
+    let (_b, runner) = fixture(Role::Runner, 112);
+    pair(&core, &runner);
+    let telegram = crate::scheduler::tests::FakeTelegramServer::start();
+    core.telegram_api_base = Some(telegram.base_url.clone());
+    core.telegram_topics_enabled = Some(true);
+    let mut store = Store::open(&core).unwrap();
+    let scheduler = crate::scheduler::SessionScheduler::new(core.clone(), None);
+    ingress_select_remote(&core, &mut store, &scheduler);
+    // Exact topic matching remains mandatory for ordinary admissions.
+    let r = request();
+    let run = admit(&store, &r);
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT node FROM node_routes WHERE run=?1", [run], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        local(&runner).unwrap().card.id.to_string()
+    );
+    let mut other = r;
+    other.session = SessionKey::telegram("321#8");
+    other.update_id = Some("other-topic".into());
+    let run = admit(&store, &other);
+    assert_eq!(
+        store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM node_routes WHERE run=?1",
+                [run],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    scheduler.shutdown().unwrap();
 }
 
 #[test]
@@ -520,6 +634,14 @@ fn ordinary_production_adapter_over_native_iroh_has_one_invocation_per_assignmen
     fs::write(&script,"#!/bin/sh\nprintf 'called\\n' >> invocations\nout=''\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = '--output-last-message' ]; then shift; out=\"$1\"; fi; shift; done\nprintf 'SEND_DOCUMENT: /not-a-core-file\\nordinary answer' > \"$out\"\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     cfg.codex.bin = script.to_string_lossy().into();
+    let local_script = core.instance_dir.join("fake-local-codex");
+    fs::write(
+        &local_script,
+        "#!/bin/sh\nprintf 'called\\n' >> local-invocations\nexit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&local_script, fs::Permissions::from_mode(0o700)).unwrap();
+    core.codex.bin = local_script.to_string_lossy().into();
     let rt = transport::runtime().unwrap();
     let state = Arc::new(Mutex::new(Runner::open(cfg.clone()).unwrap()));
     let router = rt.block_on(async {
@@ -531,7 +653,7 @@ fn ordinary_production_adapter_over_native_iroh_has_one_invocation_per_assignmen
         .accept(ALPN, transport::Handler::new(state.clone()))
         .spawn()
     });
-    let store = Store::open(&core).unwrap();
+    let mut store = Store::open(&core).unwrap();
     let r = request();
     selection(
         &store,
@@ -560,10 +682,23 @@ fn ordinary_production_adapter_over_native_iroh_has_one_invocation_per_assignmen
     // Telegram HTTP replaced by the existing local mock server.
     let telegram = crate::scheduler::tests::FakeTelegramServer::start();
     core.telegram_api_base = Some(telegram.base_url.clone());
+    core.telegram_topics_enabled = Some(true);
     let scheduler = crate::scheduler::SessionScheduler::new(core.clone(), None);
-    let mut ordinary = r.clone();
-    ordinary.update_id = Some("ordinary-scheduler-2".into());
-    let scheduled = scheduler.enqueue(ordinary).unwrap();
+    selection(&store, &r.session.id(), None).unwrap();
+    ingress_select_remote(&core, &mut store, &scheduler);
+    let raw = serde_json::json!({"update_id":30005,"message":{
+        "chat":{"id":321,"type":"private"},"from":{"id":321},
+        "message_thread_id":7,"text":"ordinary next text from same topic"}})
+    .to_string();
+    crate::loops::webhook::process_webhook_line(&core, &mut store, &scheduler, &raw).unwrap();
+    let scheduled: i64 = store
+        .conn
+        .query_row(
+            "SELECT id FROM task_runs WHERE update_id='30005'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while store.get_task_run(scheduled).unwrap().unwrap().status != "completed" {
         assert!(
@@ -600,6 +735,7 @@ fn ordinary_production_adapter_over_native_iroh_has_one_invocation_per_assignmen
             .unwrap()
     );
     scheduler.shutdown().unwrap();
+    assert!(!core.instance_dir.join("local-invocations").exists());
     assert!(store.runtime_result_is_literal(scheduled).unwrap());
     assert!(
         !telegram
@@ -649,29 +785,49 @@ fn ordinary_production_adapter_over_native_iroh_has_one_invocation_per_assignmen
 
 #[test]
 fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {
-    let (_a, core) = fixture(Role::Coordinator, 91);
+    let (_a, mut core) = fixture(Role::Coordinator, 91);
     let (_b, cfg) = fixture(Role::Runner, 92);
     pair(&core, &cfg);
-    let store = Store::open(&core).unwrap();
-    let request = request();
-    selection(
-        &store,
-        &request.session.id(),
-        Some(&local(&cfg).unwrap().card.id.to_string()),
-    )
-    .unwrap();
-    let run = admit(&store, &request);
-    store.update_task_run_started(run, "fixture").unwrap();
-    assert!(
-        execute(
-            &core,
-            &store,
-            run,
-            &request,
-            Arc::new(AtomicBool::new(false))
+    let telegram = crate::scheduler::tests::FakeTelegramServer::start();
+    core.telegram_api_base = Some(telegram.base_url.clone());
+    core.telegram_topics_enabled = Some(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = core.instance_dir.join("fake-local-codex");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'called\\n' >> local-invocations\nexit 1\n",
         )
-        .unwrap()
-    );
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        core.codex.bin = script.to_string_lossy().into();
+    }
+    let mut store = Store::open(&core).unwrap();
+    let request = request();
+    let scheduler = crate::scheduler::SessionScheduler::new(core.clone(), None);
+    ingress_select_remote(&core, &mut store, &scheduler);
+    let raw = serde_json::json!({"update_id":30005,"message":{
+        "chat":{"id":321,"type":"private"},"from":{"id":321},
+        "message_thread_id":7,"text":"synthetic offline task"}})
+    .to_string();
+    crate::loops::webhook::process_webhook_line(&core, &mut store, &scheduler, &raw).unwrap();
+    let run: i64 = store
+        .conn
+        .query_row(
+            "SELECT id FROM task_runs WHERE update_id='30005'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while store.get_task_run(run).unwrap().unwrap().status != "failed" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "offline route did not settle"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let task = store.get_task_run(run).unwrap().unwrap();
     assert_eq!(task.status, "failed");
     assert!(task.error_summary.unwrap().contains("outcome unknown"));
@@ -692,7 +848,19 @@ fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {
         )
         .unwrap();
     assert_eq!(assignments, 1);
+    let output: String = store
+        .conn
+        .query_row(
+            "SELECT output FROM task_payloads WHERE task_run_id=?1",
+            [run],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(output.contains("No local fallback or automatic retry"));
+    assert!(output.contains("nodes reconcile"));
+    assert!(!core.instance_dir.join("local-invocations").exists());
     assert!(!cfg.instance_dir.join("invocations").exists());
+    scheduler.shutdown().unwrap();
 }
 
 #[cfg(unix)]
