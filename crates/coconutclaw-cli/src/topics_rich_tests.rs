@@ -11,7 +11,7 @@ fn form(request: &str) -> std::collections::HashMap<String, String> {
         .collect()
 }
 
-fn save_output(cfg: &RuntimeConfig, output: &str, topic: Option<&str>) -> (Store, i64) {
+pub(super) fn save_output(cfg: &RuntimeConfig, output: &str, topic: Option<&str>) -> (Store, i64) {
     let store = Store::open(cfg).unwrap();
     let mut request = make_request(SessionKey::telegram("321"), "telegram", "saved");
     request.session.thread_id = topic.map(str::to_string);
@@ -46,7 +46,7 @@ fn save_output(cfg: &RuntimeConfig, output: &str, topic: Option<&str>) -> (Store
     (store, id)
 }
 
-fn state(store: &Store, id: i64) -> serde_json::Value {
+pub(super) fn state(store: &Store, id: i64) -> serde_json::Value {
     let raw: String = store
         .conn
         .query_row(
@@ -309,7 +309,7 @@ fn timeout_after_acceptance_holds_rich_and_acknowledged_text_is_not_replayed_for
     });
     let mut cfg = RuntimeConfig::test_config();
     cfg.telegram_api_base = Some(server.base_url.trim_end_matches("/bot123:token").into());
-    let file = cfg.tmp_dir.join("artifact.txt");
+    let file = outbox_fixture(&cfg, "artifact.txt");
     fs::write(&file, "explicit marker artifact").unwrap();
     let (store, id) = save_output(
         &cfg,
@@ -776,7 +776,7 @@ fn all_media_and_regular_progress_and_chunks_preserve_topic_route() {
     let client = crate::telegram::build_telegram_client(&cfg).unwrap();
     crate::telegram::send_or_edit_text(&client, &cfg, "telegram:321#7", &"x".repeat(5000), None)
         .unwrap();
-    let file = cfg.tmp_dir.join("artifact.txt");
+    let file = outbox_fixture(&cfg, "artifact.txt");
     fs::write(&file, "explicit marker artifact").unwrap();
     let output = format!(
         "TELEGRAM_REPLY: final\nSEND_PHOTO: {}\nSEND_DOCUMENT: {}\nSEND_VIDEO: {}",

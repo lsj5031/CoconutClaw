@@ -199,7 +199,7 @@ fn incoming_memory_commands_are_authorized_scoped_and_replay_safe() {
 fn raw_reconstruction_matches_initial_final_content_and_effects() {
     let reply = "Literal code:\n```xml\n<think>keep this code</think>\n```";
     let envelope = format!(
-        "<think>\nSEND_APPROVAL: reasoning-only approval\nDELEGATE_TASK: reasoning-only delegation\nMEMORY_APPEND: reasoning-only memory\nTASK_APPEND: reasoning-only task\n</think>\nTELEGRAM_REPLY: {reply}\nSEND_DOCUMENT: final-file.pdf\nMEMORY_APPEND: final memory\nTASK_APPEND: final task"
+        "<think>\nSEND_APPROVAL: reasoning-only approval\nDELEGATE_TASK: reasoning-only delegation\nMEMORY_APPEND: reasoning-only memory\nTASK_APPEND: reasoning-only task\n</think>\nTELEGRAM_REPLY: {reply}\nSEND_DOCUMENT: outbox/final-file.pdf\nMEMORY_APPEND: final memory\nTASK_APPEND: final task"
     );
     let event =
         serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":reply}})
@@ -210,13 +210,15 @@ fn raw_reconstruction_matches_initial_final_content_and_effects() {
         (reply, false),
     ] {
         let cfg = test_config();
+        fs::create_dir_all(cfg.instance_dir.join("outbox")).unwrap();
+        fs::write(cfg.instance_dir.join("outbox/final-file.pdf"), "fixture").unwrap();
         let mut store = Store::open(&cfg).unwrap();
         let resolved = crate::turn::resolve_turn_result(raw, "telegram", true, false);
         assert_eq!(resolved.telegram_reply, reply);
         let mut expected = vec![crate::markers::Effect::TelegramReply(reply.into())];
         if has_final_effects {
             expected.extend([
-                crate::markers::Effect::SendDocument("final-file.pdf".into()),
+                crate::markers::Effect::SendDocument("outbox/final-file.pdf".into()),
                 crate::markers::Effect::MemoryAppend("final memory".into()),
                 crate::markers::Effect::TaskAppend("final task".into()),
             ]);

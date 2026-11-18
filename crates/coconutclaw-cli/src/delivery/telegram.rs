@@ -418,7 +418,66 @@ pub(crate) fn dispatch_task_output(
     single_attempt.telegram_api_retry_attempts = 0;
     let cfg = &single_attempt;
     let chat_id = chat_id.map(str::trim).filter(|value| !value.is_empty());
-    let effects = output_effects(store, request.task_id, request.output)?;
+    let policy_key = "telegram:output-policy";
+    let mut effects = if let Some(output) = state
+        .operations
+        .get(policy_key)
+        .and_then(|policy| policy["rejected_output"].as_str())
+    {
+        parse_markers(output).to_effects()
+    } else {
+        output_effects(store, request.task_id, request.output)?
+    };
+    // Literal remote evidence is text, never reinterpret it as marker protocol.
+    // For ordinary outputs, validate the complete batch before the first send.
+    if effects
+        .iter()
+        .any(|e| !matches!(e, crate::markers::Effect::TelegramReply(_)))
+    {
+        let admitted = super::media::admitted_output(cfg, request.output, false);
+        effects = parse_markers(&admitted).to_effects();
+    }
+    let rejected = matches!(effects.as_slice(), [crate::markers::Effect::TelegramReply(reply)] if reply.starts_with("Output rejected:"));
+    if rejected && !state.operations.contains_key(policy_key) {
+        state.operations.insert(
+            policy_key.into(),
+            serde_json::json!({"phase":"rejected","rejected_output":crate::markers::render_effects(&effects)}),
+        );
+        persist_delivery_state(store, request.task_id, state)?;
+    }
+    if rejected
+        && (state.text_plan.is_some()
+            || !state.completed_ops.is_empty()
+            || state.operations.keys().any(|key| key != policy_key))
+    {
+        // A file can leave the outbox between an acknowledged text send and
+        // a later media retry. Do not silently reuse that text receipt for a
+        // rejection, reset receipts, or erase a prior Unknown.
+        let uncertain = state.operations.iter().any(|(op, saved)| {
+            !state.has_telegram_op(op)
+                && matches!(saved["phase"].as_str(), Some("sending" | "unknown"))
+        }) || (!state.has_telegram_op("telegram:text")
+            && state
+                .text_plan
+                .as_ref()
+                .is_some_and(|plan| matches!(plan["phase"].as_str(), Some("sending" | "unknown"))));
+        let Some(chat_id) = chat_id else {
+            return Ok(false);
+        };
+        let notice = "Remaining output rejected by runtime limits or media outbox policy. Previously acknowledged effects are unchanged; unknown effects remain unknown.";
+        let op = "telegram:output-rejection";
+        state
+            .operations
+            .entry(op)
+            .or_insert_with(|| serde_json::json!({"phase":"ready","attempts":0,"message":notice}));
+        let mut plain = cfg.clone();
+        plain.telegram_parse_mode = TelegramParseMode::Off;
+        plain.telegram_parse_fallback = TelegramParseFallback::None;
+        return durable_op(store, request.task_id, state, op, || {
+            crate::telegram::telegram_send_message(client, &plain, chat_id, notice).map(|_| ())
+        })
+        .map(|sent| sent && !uncertain);
+    }
 
     // Index counters for idempotent media tracking
     let mut photo_idx = 0usize;

@@ -40,6 +40,8 @@ pub(crate) fn build_context_scoped(
     preference_scope: &str,
 ) -> Result<String> {
     let channel = input.channel.as_str();
+    fs::create_dir_all(crate::delivery::media::outbox(cfg))
+        .context("failed to create approved media outbox")?;
 
     let soul = read_or_default(
         &cfg.instance_dir.join("SOUL.md"),
@@ -132,6 +134,10 @@ pub(crate) fn build_context_scoped(
     text.push_str("Required first line format:\n");
     text.push_str("TELEGRAM_REPLY: <reply text>\n");
     text.push_str("Optional additional lines:\n");
+    text.push_str(&format!(
+        "Limits per outcome: 512 KiB total, 256 KiB reply, 4 delegations (16 KiB each), 8 media files (20 MiB each), 8 memory appends and 16 task appends (2048 bytes each). Approval/wait/path values: 4096 bytes each. Exceeding any limit rejects the entire outcome, with no effects. Delegated tasks cannot delegate further.\nMedia must be regular files inside the approved outbox: {}. Create generated attachments there; explicitly copy intended deliverables there before emitting media markers. Never send configuration, credentials, memory or arbitrary host files. Symlink escapes are rejected.\n",
+        crate::delivery::media::outbox(cfg).display()
+    ));
     text.push_str("SEND_PHOTO: <absolute file path>\n");
     text.push_str("SEND_DOCUMENT: <absolute file path>\n");
     text.push_str("SEND_VIDEO: <absolute file path>\n");
@@ -166,6 +172,7 @@ pub(crate) fn append_memory_and_tasks(
     _session_id: Option<&str>,
     _delivery_target_json: Option<&str>,
 ) -> Result<()> {
+    crate::markers::validate_effects(effects, false).map_err(anyhow::Error::msg)?;
     let memory_append: Vec<String> = effects
         .iter()
         .filter_map(|e| match e {

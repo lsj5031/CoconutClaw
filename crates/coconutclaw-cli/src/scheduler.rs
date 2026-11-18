@@ -641,6 +641,7 @@ impl SessionScheduler {
             self.inner.cancel_router.clone(),
             Some(&session_id_str),
             Some(&delivery_target_json),
+            request.delegated,
         ) {
             Ok(processed) => processed,
             Err(err) => {
@@ -737,6 +738,9 @@ impl SessionScheduler {
         let _queue = self.inner.queue_lock.lock().expect("durable enqueue order");
         let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
         anyhow::ensure!(store.is_current_attempt(task_id)?, "stale outcome owner");
+        let admitted =
+            crate::delivery::media::admitted_output(&self.inner.cfg, raw, request.delegated);
+        let raw = admitted.as_str();
         let fresh = store.record_inbox(
             &format!("result:{task_id}"),
             EventKind::Result,

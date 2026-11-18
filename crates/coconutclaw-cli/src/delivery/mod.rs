@@ -4,6 +4,7 @@ use coconutclaw_config::RuntimeConfig;
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
 
+pub(crate) mod media;
 pub(crate) mod telegram;
 
 pub(crate) fn cleanup_attachment_path(path: &std::path::Path) {

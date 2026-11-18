@@ -61,6 +61,7 @@ pub(crate) fn process_turn(
         cancel_router,
         None,
         None,
+        false,
     )?
     .output)
 }
@@ -81,6 +82,7 @@ pub(crate) fn process_turn_with_status(
     cancel_router: Option<Arc<CancelRouter>>,
     origin_session: Option<&str>,
     delivery_target_json: Option<&str>,
+    delegated: bool,
 ) -> Result<ProcessedTurn> {
     let turn_start = Instant::now();
     let _span = tracing::info_span!(
@@ -280,8 +282,21 @@ pub(crate) fn process_turn_with_status(
     let cancelled = cancel_flag.load(Ordering::SeqCst) || exit_code == 130;
     let turn_result =
         resolve_turn_result(&raw_output, &context_channel, provider_success, cancelled);
-    let effects = turn_result.effects;
-    let telegram_reply = turn_result.telegram_reply;
+    let proposed = render_output(&turn_result.telegram_reply, &turn_result.effects);
+    let admitted = crate::delivery::media::admitted_output(cfg, &proposed, delegated);
+    let markers = parse_markers(&admitted);
+    let effects = markers.to_effects();
+    let telegram_reply = markers.telegram_reply.unwrap_or_default();
+    // Retain normal provider evidence, but never persist oversized/rejected
+    // effects that recovery could later resurrect.
+    let raw_output = if proposed != admitted
+        || raw_output.len() > crate::markers::MAX_OUTPUT_BYTES
+        || telegram_reply.starts_with("Output rejected:")
+    {
+        admitted
+    } else {
+        raw_output
+    };
     let status = turn_result.status;
 
     tracing::info!(
@@ -373,6 +388,15 @@ pub(crate) fn resolve_turn_result(
             effects: vec![],
             telegram_reply: "❌ Cancelled.".to_string(),
             status: TurnStatus::Cancelled,
+            channel,
+        };
+    }
+
+    if raw_output.len() > crate::markers::MAX_OUTPUT_BYTES {
+        return TurnResult {
+            effects: vec![],
+            telegram_reply: crate::markers::rejection("output byte limit exceeded"),
+            status: TurnStatus::ParseFallback,
             channel,
         };
     }

@@ -1,5 +1,62 @@
 use serde_json::Value;
 
+pub(crate) const MAX_OUTPUT_BYTES: usize = 512 * 1024;
+pub(crate) const MAX_DELEGATIONS: usize = 4;
+pub(crate) const MAX_MEDIA: usize = 8;
+pub(crate) const MAX_MEMORY_APPENDS: usize = 8;
+pub(crate) const MAX_TASK_APPENDS: usize = 16;
+
+pub(crate) fn rejection(reason: &str) -> String {
+    format!("Output rejected: {reason}. No requested effects were applied.")
+}
+
+/// Reject the whole outcome, never execute an accepted prefix of a bad batch.
+pub(crate) fn validate_effects(effects: &[Effect], delegated: bool) -> Result<(), &'static str> {
+    let (mut delegates, mut media, mut memory, mut tasks) = (0, 0, 0, 0);
+    let mut bytes = 0usize;
+    for effect in effects {
+        bytes = bytes.saturating_add(effect.payload().len());
+        let limit = match effect {
+            Effect::DelegateTask(_) => {
+                delegates += 1;
+                if delegated {
+                    return Err("delegated tasks cannot delegate");
+                }
+                16 * 1024
+            }
+            Effect::SendPhoto(_) | Effect::SendDocument(_) | Effect::SendVideo(_) => {
+                media += 1;
+                4096
+            }
+            Effect::MemoryAppend(_) => {
+                memory += 1;
+                2048
+            }
+            Effect::TaskAppend(_) => {
+                tasks += 1;
+                2048
+            }
+            Effect::TelegramReply(_) => 256 * 1024,
+            Effect::SendApproval(_) | Effect::WaitForTask(_) => 4096,
+        };
+        if effect.payload().len() > limit {
+            return Err("marker payload byte limit exceeded");
+        }
+    }
+    if bytes > MAX_OUTPUT_BYTES {
+        return Err("output byte limit exceeded");
+    }
+    if delegates > MAX_DELEGATIONS
+        || media > MAX_MEDIA
+        || memory > MAX_MEMORY_APPENDS
+        || tasks > MAX_TASK_APPENDS
+        || effects.len() > 48
+    {
+        return Err("marker count limit exceeded");
+    }
+    Ok(())
+}
+
 /// Typed output effect produced by the AI provider.
 ///
 /// Every marker line the model emits (`TELEGRAM_REPLY:`, `SEND_PHOTO:`, …)
@@ -178,6 +235,24 @@ pub(crate) fn final_marker_payload(raw_output: &str) -> &str {
 }
 
 pub(crate) fn parse_markers(payload: &str) -> ParsedMarkers {
+    if payload.len() > MAX_OUTPUT_BYTES {
+        return rejected_markers("output byte limit exceeded");
+    }
+    let markers = parse_markers_unchecked(payload);
+    if let Err(reason) = validate_effects(&markers.to_effects(), false) {
+        return rejected_markers(reason);
+    }
+    markers
+}
+
+fn rejected_markers(reason: &str) -> ParsedMarkers {
+    ParsedMarkers {
+        telegram_reply: Some(rejection(reason)),
+        ..Default::default()
+    }
+}
+
+fn parse_markers_unchecked(payload: &str) -> ParsedMarkers {
     // Every effect compiler, including raw-turn recovery and legacy replay,
     // must exclude the same envelope as initial resolution.
     let payload = final_marker_payload(payload);

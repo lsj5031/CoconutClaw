@@ -21,6 +21,15 @@ use crate::approval::{
 use crate::store::Store;
 use crate::{InputType, QuotedMessage, TurnInput};
 
+fn outbox_fixture(cfg: &RuntimeConfig, name: &str) -> PathBuf {
+    let root = crate::delivery::media::outbox(cfg);
+    fs::create_dir_all(&root).unwrap();
+    root.join(name)
+}
+
+#[path = "effect_boundary_tests.rs"]
+mod effect_boundaries;
+
 #[path = "phase0_tests.rs"]
 mod phase0;
 

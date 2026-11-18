@@ -727,20 +727,22 @@ pub(crate) fn send_markdown_reply_document(
     markdown_text: &str,
     progress_message_id: Option<&str>,
 ) -> Result<()> {
-    let path = cfg.tmp_dir.join(format!(
-        "telegram_reply_{}.md",
-        chrono::Utc::now().timestamp_millis()
-    ));
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
+    use std::io::Write;
+    let root = crate::delivery::media::outbox(cfg);
+    fs::create_dir_all(&root)?;
+    anyhow::ensure!(!root.is_symlink(), "outbox must not be a symlink");
+    let mut document = tempfile::Builder::new()
+        .prefix("telegram_reply_")
+        .suffix(".md")
+        .tempfile_in(root)?;
+    let path = document.path().to_path_buf();
 
     let mut content = markdown_text.to_string();
     if !content.ends_with('\n') {
         content.push('\n');
     }
-    fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
+    document.write_all(content.as_bytes())?;
+    document.flush()?;
 
     if let Some(message_id) = progress_message_id {
         let notice = "Reply is long; sent as markdown document.";
@@ -752,10 +754,7 @@ pub(crate) fn send_markdown_reply_document(
         }
     }
 
-    let send_result =
-        telegram_send_media_file(client, cfg, chat_id, "sendDocument", "document", &path);
-    let _ = fs::remove_file(&path);
-    send_result
+    telegram_send_media_file(client, cfg, chat_id, "sendDocument", "document", &path)
 }
 
 pub(crate) fn split_text_chunks(
@@ -1496,23 +1495,26 @@ pub(crate) fn telegram_send_media_file(
     field: &str,
     path: &Path,
 ) -> Result<()> {
-    if !path.is_file() {
-        bail!(
-            "{} marker path not found: {}",
-            field.to_ascii_uppercase(),
-            path.display()
-        );
-    }
-
     let base = telegram_api_base(cfg)?;
     let response = telegram_request(client, cfg, method, || {
+        // Use the checked, already-open descriptor, not a later path reopen.
+        let file = crate::delivery::media::open_attachment(cfg, path)?;
+        let length = file.metadata()?.len();
+        anyhow::ensure!(
+            length <= crate::delivery::media::MAX_MEDIA_BYTES,
+            "attachment grew beyond byte limit"
+        );
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment");
+        let reader = std::io::Read::take(file, length);
+        let part = multipart::Part::reader_with_length(reader, length).file_name(name.to_string());
         let mut form = multipart::Form::new();
         for (key, value) in telegram_route_params(chat_id)? {
             form = form.text(key, value);
         }
-        let form = form
-            .file(field.to_string(), path)
-            .context("failed to prepare multipart upload")?;
+        let form = form.part(field.to_string(), part);
         Ok(client
             .post(format!("{base}/{method}"))
             .multipart(form)

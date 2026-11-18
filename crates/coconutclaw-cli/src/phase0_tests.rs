@@ -127,7 +127,7 @@ fn telegram_retry_budget_applies_to_form_polling_and_multipart_requests() {
         cfg.telegram_api_base = Some(server.base_url.trim_end_matches("/bot123:token").into());
         cfg.telegram_api_retry_attempts = 1;
         let client = crate::telegram::build_telegram_client(&cfg).unwrap();
-        let file = cfg.tmp_dir.join("upload.txt");
+        let file = outbox_fixture(&cfg, "upload.txt");
         fs::write(&file, "artifact").unwrap();
         let failed = if multipart {
             crate::telegram::telegram_send_media_file(
@@ -847,7 +847,7 @@ fn owned_input_attachment_is_kept_until_delivery_is_acknowledged() {
     cfg.telegram_api_timeout_secs = 1;
     cfg.telegram_api_retry_attempts = 0;
     let store = Store::open(&cfg).unwrap();
-    let path = cfg.tmp_dir.join("owned-document.txt");
+    let path = outbox_fixture(&cfg, "owned-document.txt");
     fs::write(&path, "retained artifact").unwrap();
     let mut request = make_request(SessionKey::telegram("321"), "telegram", "return attachment");
     request.delivery = DeliveryTarget::Telegram {
@@ -1223,7 +1223,7 @@ fn delivery_retry_skips_acknowledged_operations_after_restart() {
         chat_id: "321".into(),
         thread_id: None,
     };
-    let file = cfg.tmp_dir.join("result.txt");
+    let file = outbox_fixture(&cfg, "result.txt");
     fs::write(&file, "artifact").unwrap();
     let id = save_request(&store, &request, None);
     store

@@ -91,6 +91,29 @@ authorization and result destination remain the origin topic.
 
 ## Rich output and limits
 
+Model marker outcomes are admitted atomically with fixed limits: 512 KiB wire
+output, 256 KiB reply, four delegations (16 KiB each), eight media markers
+combined, eight memory candidates and sixteen task appends (2048 bytes each).
+Paths, approval and wait values are limited to 4096 bytes; at most 48 effects
+are accepted. Limits count UTF-8 bytes, not characters. An over-limit outcome
+becomes a small durable visible rejection, with no requested effects or partial
+delegation admission. Delegated attempts cannot delegate, including after
+approval/wait continuation and recovery.
+
+Media markers may name only regular files within `<data-dir>/outbox`, at most
+20 MiB each. Generate deliverables there, or explicitly stage intended output
+there before emitting a marker. An incoming attachment's download path is not
+automatically an approved outgoing attachment. Absolute paths and instance-
+relative `outbox/...` paths are supported. Canonical path checks reject traversal,
+outside symlink targets and a redirected outbox root. The sender rechecks after
+recovery and sends from the checked open handle, not a later pathname reopen.
+Generated long-reply Markdown documents use unique temporary files in this
+same outbox. This boundary limits marker-driven file disclosure, not the
+provider's tool access, and does not authorize copying secrets into the outbox.
+Delivery-time rejection is frozen in the durable delivery state. If any prior
+delivery was attempted, a separate bounded rejection notice retains the old
+receipts and Unknown states; restoring a file does not reactivate the batch.
+
 Official reference inspected **2026-11-15**:
 
 * [Feature overview](https://core.telegram.org/bots/features#rich-messages)
