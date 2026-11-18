@@ -71,8 +71,9 @@ fn telegram_identity(
         .to_string();
     let mut action = parse_webhook_value(cfg, &value)?;
     // A callback's bot-authored message may omit the topic metadata. The
-    // persisted control binds the original topic, but never overrides an
-    // explicit topic or the source chat/sender checks performed by the parser.
+    // Durable custody retains that origin even after capability expiry/pruning.
+    // Neither binding overrides explicit topic or current source authorization;
+    // the reducer still checks the capability before any mutation.
     if let WebhookAction::Turn(turn) = &mut action
         && let Some(callback) = value.get("callback_query")
         && callback["message"].get("message_thread_id").is_none()
@@ -80,14 +81,26 @@ fn telegram_identity(
             .as_str()
             .and_then(|s| s.strip_prefix("ui:"))
     {
-        let origin: Option<String> = store
+        let admitted: Option<String> = store
             .conn
             .query_row(
-                "SELECT session_id FROM telegram_ui_controls WHERE token=?1 AND actor=?2",
-                params![token, turn.session.root_id],
+                "SELECT session_id FROM telegram_ingress WHERE update_id=?1 AND payload=?2 AND session_id IS NOT NULL",
+                params![id, value.to_string()],
                 |r| r.get(0),
             )
             .optional()?;
+        let origin = if admitted.is_some() {
+            admitted
+        } else {
+            store
+                .conn
+                .query_row(
+                    "SELECT session_id FROM telegram_ui_controls WHERE token=?1 AND actor=?2",
+                    params![token, turn.session.root_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+        };
         if let Some(origin) = origin {
             let bound = SessionKey::from_id(origin);
             if bound.platform == turn.session.platform && bound.root_id == turn.session.root_id {

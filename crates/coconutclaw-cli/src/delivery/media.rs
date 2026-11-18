@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 use coconutclaw_config::RuntimeConfig;
 
-use crate::markers::{Effect, parse_markers, rejection, render_effects, validate_effects};
+use crate::markers::{CompiledOutput, Effect, rejection, validate_effects};
 
 pub(crate) const MAX_MEDIA_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -113,20 +113,29 @@ fn open_beneath(_root: &Path, _relative: &Path) -> Result<File> {
 /// Shared by turn persistence, scheduler admission and durable delivery replay.
 /// Keep rejections small, durable and visible, with no partial effects.
 pub(crate) fn admitted_output(cfg: &RuntimeConfig, output: &str, delegated: bool) -> String {
-    let effects = parse_markers(output).to_effects();
-    let reason = validate_effects(&effects, delegated).err().or_else(|| {
-        effects.iter().find_map(|effect| match effect {
-            Effect::SendPhoto(path) | Effect::SendDocument(path) | Effect::SendVideo(path) => {
-                open_attachment(cfg, Path::new(path))
-                    .err()
-                    .map(|_| "media must be a regular file in the approved outbox, at most 20 MiB")
-            }
-            _ => None,
-        })
-    });
+    admit_compiled(cfg, CompiledOutput::from_output(output), delegated).encode()
+}
+
+pub(crate) fn admit_compiled(
+    cfg: &RuntimeConfig,
+    output: CompiledOutput,
+    delegated: bool,
+) -> CompiledOutput {
+    let reason = validate_effects(&output.effects, delegated)
+        .err()
+        .or_else(|| {
+            output.effects.iter().find_map(|effect| match effect {
+                Effect::SendPhoto(path) | Effect::SendDocument(path) | Effect::SendVideo(path) => {
+                    open_attachment(cfg, Path::new(path)).err().map(
+                        |_| "media must be a regular file in the approved outbox, at most 20 MiB",
+                    )
+                }
+                _ => None,
+            })
+        });
     if let Some(reason) = reason {
-        render_effects(&[Effect::TelegramReply(rejection(reason))])
+        CompiledOutput::new(&rejection(reason), &[])
     } else {
-        render_effects(&effects)
+        output
     }
 }

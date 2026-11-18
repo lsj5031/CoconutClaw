@@ -115,6 +115,103 @@ fn update(id: u64, topic: i64, text: &str) -> String {
     .to_string()
 }
 
+#[test]
+fn ingress_pending_callback_keeps_durable_origin_after_expiry_and_prune() {
+    for prune in [false, true] {
+        let server = FakeTelegramServer::start();
+        let (_root, cfg, mut store, scheduler) = fixture(&server);
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(10, 7, "/nodes")).unwrap();
+        let token: String = store.conn.query_row(
+            "SELECT token FROM telegram_ui_controls WHERE session_id='telegram:321#7' AND action='node-select:local'",
+            [], |r| r.get(0),
+        ).unwrap();
+        store
+            .admit_telegram("11", "{}", Some("telegram:321#7"), "now")
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE telegram_ingress SET state='unknown' WHERE update_id='11'",
+                [],
+            )
+            .unwrap();
+        let mut callback: serde_json::Value =
+            serde_json::from_str(&ui_callback(12, 7, "321", &format!("ui:{token}"))).unwrap();
+        callback["callback_query"]["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("message_thread_id");
+        let raw = callback.to_string();
+        process_webhook_line(&cfg, &mut store, &scheduler, &raw).unwrap();
+        let origin: (String, String) = store
+            .conn
+            .query_row(
+                "SELECT session_id,state FROM telegram_ingress WHERE update_id='12'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(origin, ("telegram:321#7".into(), "pending".into()));
+        store
+            .conn
+            .execute("UPDATE telegram_ui_controls SET expires_at=0", [])
+            .unwrap();
+        if prune {
+            store
+                .retain_operational_rows(chrono::Utc::now().timestamp())
+                .unwrap();
+        }
+        // A different payload cannot borrow the retained event's origin or authority.
+        callback["callback_query"]["from"]["id"] = json!("322");
+        assert!(process_webhook_line(&cfg, &mut store, &scheduler, &callback.to_string()).is_err());
+        assert_eq!(count(&store, "node_selection"), 0);
+        store
+            .conn
+            .execute(
+                "UPDATE telegram_ingress SET state='done' WHERE update_id='11'",
+                [],
+            )
+            .unwrap();
+        drain_telegram_ingress(&cfg, &mut store, &scheduler).unwrap();
+        let outcome = process_webhook_line(&cfg, &mut store, &scheduler, &raw).unwrap();
+        assert!(
+            outcome
+                .output
+                .as_deref()
+                .unwrap()
+                .contains("invalid, expired, used")
+        );
+        assert_eq!(outcome.chat_id.as_deref(), Some("telegram:321#7"));
+        let saved: (String, String, String) = store
+            .conn
+            .query_row(
+                "SELECT session_id,state,route FROM telegram_ingress WHERE update_id='12'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            saved,
+            (
+                "telegram:321#7".into(),
+                "done".into(),
+                "telegram:321#7".into()
+            )
+        );
+        assert_eq!(count(&store, "node_selection"), 0);
+        assert_eq!(count(&store, "task_runs"), 0);
+        process_webhook_line(&cfg, &mut store, &scheduler, &update(13, 8, "/help")).unwrap();
+        crate::loops::webhook::deliver_telegram_acks(&cfg, &store).unwrap();
+        assert_eq!(state(&store, 12).1, "sent");
+        assert_eq!(state(&store, 13).1, "sent");
+        let requests = server.full_requests.lock().unwrap();
+        assert!(requests.iter().any(|r| r.contains("message_thread_id=8")));
+        assert!(requests.iter().any(|r| r.contains("message_thread_id=7")));
+        drop(requests);
+        scheduler.shutdown().unwrap();
+    }
+}
+
 fn ui_callback(id: u64, topic: i64, actor: &str, data: &str) -> String {
     json!({"update_id":id,"callback_query":{"id":format!("mock-{id}"),"from":{"id":actor},
         "data":data,"message":{"message_id":100,"chat":{"id":"321","type":"private"},

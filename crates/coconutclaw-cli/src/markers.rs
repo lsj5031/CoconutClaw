@@ -63,7 +63,7 @@ pub(crate) fn validate_effects(effects: &[Effect], delegated: bool) -> Result<()
 /// compiles to one `Effect`.  Transports iterate over `Effect`s instead of
 /// inspecting raw marker fields — adding a new transport becomes "match one
 /// enum variant", not "grep for marker name across the codebase".
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Effect {
     TelegramReply(String),
     SendPhoto(String),
@@ -74,6 +74,94 @@ pub(crate) enum Effect {
     WaitForTask(String),
     MemoryAppend(String),
     TaskAppend(String),
+}
+
+/// Internal output, already compiled at the provider boundary. This encoding is
+/// never accepted by `parse_markers` as a provider protocol. Literal reply text
+/// and trusted runtime decorations must not become new model effects/budgets.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct CompiledOutput {
+    pub(crate) effects: Vec<Effect>,
+    pub(crate) prefix: String,
+    pub(crate) suffix: String,
+}
+
+impl CompiledOutput {
+    const PREFIX: &str = "COCONUT_OUTPUT_V1:";
+
+    pub(crate) fn new(reply: &str, effects: &[Effect]) -> Self {
+        let mut body = vec![Effect::TelegramReply(reply.into())];
+        body.extend(
+            effects
+                .iter()
+                .filter(|e| !matches!(e, Effect::TelegramReply(_)))
+                .cloned(),
+        );
+        Self {
+            effects: body,
+            prefix: String::new(),
+            suffix: String::new(),
+        }
+    }
+
+    pub(crate) fn from_output(output: &str) -> Self {
+        if let Some(json) = output.strip_prefix(Self::PREFIX) {
+            return serde_json::from_str(json)
+                .unwrap_or_else(|_| Self::new(&rejection("invalid saved output"), &[]));
+        }
+        Self {
+            effects: parse_markers(output).to_effects(),
+            prefix: String::new(),
+            suffix: String::new(),
+        }
+    }
+
+    pub(crate) fn from_saved_turn(raw: &str, reply: &str) -> Self {
+        let markers = parse_markers(raw);
+        let reply = markers
+            .telegram_reply
+            .as_deref()
+            .filter(|s| s.starts_with("Output rejected:"))
+            .unwrap_or(reply);
+        Self::new(reply, &markers.to_effects())
+    }
+
+    pub(crate) fn reply(&self) -> &str {
+        self.effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::TelegramReply(reply) => Some(reply.as_str()),
+                _ => None,
+            })
+            .unwrap_or("")
+    }
+
+    pub(crate) fn delivery_effects(&self) -> Vec<Effect> {
+        self.effects
+            .iter()
+            .map(|e| match e {
+                Effect::TelegramReply(reply) => {
+                    Effect::TelegramReply(format!("{}{reply}{}", self.prefix, self.suffix))
+                }
+                other => other.clone(),
+            })
+            .collect()
+    }
+
+    pub(crate) fn encode(&self) -> String {
+        let effects = self.delivery_effects();
+        let rendered = render_effects(&effects);
+        // Keep the existing marker representation when it is lossless.
+        if parse_markers(&rendered).to_effects() == effects {
+            rendered
+        } else {
+            format!(
+                "{}{}",
+                Self::PREFIX,
+                serde_json::to_string(self).expect("serializable output")
+            )
+        }
+    }
 }
 
 impl Effect {

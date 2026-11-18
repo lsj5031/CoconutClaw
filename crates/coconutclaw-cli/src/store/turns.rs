@@ -1,5 +1,5 @@
 use super::*;
-use crate::markers::{parse_markers, render_effects};
+use crate::markers::parse_markers;
 use anyhow::Result;
 use chrono::DateTime;
 use rusqlite::params;
@@ -186,14 +186,17 @@ impl Store {
         let telegram_reply: String = row.get(1)?;
         let status: String = row.get(2)?;
         if status == "cancelled" {
-            return Ok(Some(crate::markers::render_output(
-                if telegram_reply.trim().is_empty() {
-                    crate::wording::CANCELLATION
-                } else {
-                    &telegram_reply
-                },
-                &[],
-            )));
+            return Ok(Some(
+                crate::markers::CompiledOutput::new(
+                    if telegram_reply.trim().is_empty() {
+                        crate::wording::CANCELLATION
+                    } else {
+                        &telegram_reply
+                    },
+                    &[],
+                )
+                .encode(),
+            ));
         }
         let markers = parse_markers(&provider_raw);
         let mut effects = markers.to_effects();
@@ -204,7 +207,15 @@ impl Store {
             ));
         }
 
-        let rendered = render_effects(&effects);
+        let rendered = crate::markers::CompiledOutput::new(
+            if telegram_reply.trim().is_empty() {
+                markers.reply().map(String::as_str).unwrap_or("")
+            } else {
+                &telegram_reply
+            },
+            &effects,
+        )
+        .encode();
         Ok(Some(rendered.trim_end().to_string()))
     }
 

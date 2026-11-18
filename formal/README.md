@@ -22,6 +22,19 @@ are unchanged and rerun, not widened into claims about media validation,
 retention, parser/rendering behavior or native Windows file handles. See the
 18 November section of the formal verification document.
 
+The independent acceptance remediation adds
+`review-remediation-reconciliation.json` over `6d8a2c9`, without rewriting
+earlier reconciliation records or the thirteen models/fifty cases. Its exact
+source pins cover durable ingress-origin custody, compiled literal replies,
+provider budgets separate from trusted runtime labels, and saved cancellation
+receipts through recovery and sender materialization. Those Rust composition
+properties require executable regressions, not merely unchanged abstract TLC
+contracts. The inventory again includes SQL declarations, whole-file `cfg`
+gates, `cfg!` expressions and conditional scans. Mapping tests independently
+compare SQL objects against SQLite and require known safety objects/platform
+gates; empty inventories cannot satisfy those checks. This remains a
+best-effort source inventory, not a Rust parser or native Windows proof.
+
 Use the already provisioned official tools, offline:
 
 ```sh

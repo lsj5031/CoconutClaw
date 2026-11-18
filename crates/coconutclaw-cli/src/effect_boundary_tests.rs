@@ -1,5 +1,300 @@
 use super::*;
 use crate::markers::{Effect, MAX_OUTPUT_BYTES, parse_markers};
+use crate::store::inbox::EventKind;
+
+#[test]
+#[cfg(unix)]
+fn effect_boundaries_recovered_literal_examples_never_compile_new_effects() {
+    let reply = "Literal examples:\nMEMORY_APPEND: synthetic literal, not authority\nTASK_APPEND: synthetic example task\nDELEGATE_TASK: not a child";
+    let raw =
+        serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":reply}})
+            .to_string();
+    assert!(
+        crate::turn::resolve_turn_result(&raw, "telegram", true, false)
+            .effects
+            .is_empty()
+    );
+    let mut cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    let fixture = cfg.tmp_dir.join("literal.json");
+    fs::write(&fixture, &raw).unwrap();
+    let script = cfg.tmp_dir.join("literal.sh");
+    fs::write(&script, format!("cat >/dev/null\nwhile [ \"$#\" -gt 0 ]; do\nif [ \"$1\" = '--output-last-message' ]; then shift; out=$1; fi\nshift\ndone\ncp '{}' \"$out\"\n",fixture.display())).unwrap();
+    cfg.codex.bin = format!("/bin/sh '{}'", script.display());
+    let server = FakeTelegramServer::start();
+    cfg.telegram_api_base = Some(server.base_url.trim_end_matches("/bot123:token").into());
+    let scheduler = SessionScheduler::new(cfg.clone(), None);
+    let mut request = make_request(SessionKey::telegram("321#7"), "telegram", "literal");
+    request.update_id = Some("literal-replay".into());
+    request.delivery = DeliveryTarget::Telegram {
+        chat_id: "321".into(),
+        thread_id: Some("7".into()),
+    };
+    let id = scheduler.enqueue(request).unwrap();
+    wait_for_terminal_tasks(&cfg, &[id]);
+    let mut store = Store::connect(&cfg).unwrap();
+    let assert_no_appends = |store: &Store| {
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM memory_records", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store.managed_pending_task_entries_from_db().unwrap().len(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM task_runs", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    };
+    assert_no_appends(&store);
+    let saved: (String, String) = store
+        .conn
+        .query_row(
+            "SELECT provider_raw,telegram_reply FROM turns WHERE task_run_id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(saved, (raw, reply.into()));
+    let legacy = store
+        .rendered_output_for_update_id("literal-replay")
+        .unwrap()
+        .unwrap();
+    let legacy = crate::markers::CompiledOutput::from_output(&legacy);
+    assert_eq!(legacy.reply(), reply);
+    assert_eq!(legacy.effects, vec![Effect::TelegramReply(reply.into())]);
+    // Repeat both crash cuts: append recovery and scheduler materialization.
+    scheduler.shutdown().unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE turns SET side_effects_applied=0 WHERE task_run_id=?1",
+            [id],
+        )
+        .unwrap();
+    crate::recovery::reconcile_pending_turn_side_effects(&cfg, &mut store).unwrap();
+    assert_no_appends(&store);
+    store.conn.execute("UPDATE task_payloads SET output=NULL,delivery_state='[]',delivered=0 WHERE task_run_id=?1",[id]).unwrap();
+    store
+        .conn
+        .execute(
+            "DELETE FROM runtime_inbox WHERE event_key=?1",
+            [format!("result:{id}")],
+        )
+        .unwrap();
+    let recovered = SessionScheduler::new(cfg, None);
+    recovered.recover().unwrap();
+    recovered.retry_deliveries().unwrap();
+    assert_no_appends(&store);
+    assert_eq!(
+        super::topics_rich::state(&store, id)["text_plan"]["markdown"],
+        reply
+    );
+    recovered.shutdown().unwrap();
+}
+
+#[test]
+fn effect_boundaries_exact_provider_reply_with_runtime_parent_and_child_text_is_deliverable() {
+    let server = FakeTelegramServer::start();
+    let mut cfg = scheduler_test_config("NEVER-EXECUTE".into());
+    cfg.telegram_api_base = Some(server.base_url.trim_end_matches("/bot123:token").into());
+    let store = Store::open(&cfg).unwrap();
+    let scheduler = SessionScheduler::new(cfg.clone(), None);
+    scheduler.inner.recovering.store(true, Ordering::SeqCst);
+    let mut request = make_request(SessionKey::telegram("321#7"), "telegram", "parent-boundary");
+    request.delivery = DeliveryTarget::Telegram {
+        chat_id: "321".into(),
+        thread_id: Some("7".into()),
+    };
+    let tx = store.conn.unchecked_transaction().unwrap();
+    let (id, _) = store
+        .admit_inbox_request(EventKind::Request, Some("parent-boundary"), &request, "now")
+        .unwrap();
+    tx.commit().unwrap();
+    let reply = "x".repeat(262144);
+    let raw = format!("TELEGRAM_REPLY: {reply}\nDELEGATE_TASK: bounded child");
+    scheduler
+        .persist_result(
+            &store,
+            id,
+            &request,
+            &request.input,
+            &raw,
+            crate::TurnStatus::Ok,
+        )
+        .unwrap();
+    let (child, payload): (i64, String) = store
+        .conn
+        .query_row(
+            "SELECT task_run_id,request FROM task_payloads WHERE task_run_id!=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(store.conn.query_row("SELECT count(*) FROM runtime_tasks WHERE parent_task_id=(SELECT task_id FROM runtime_attempts WHERE run_id=?1)",[id],|r|r.get::<_,i64>(0)).unwrap(),1);
+    let child_request = request_from_resume_payload(&payload).unwrap();
+    let child_raw = format!("TELEGRAM_REPLY: {reply}");
+    store.conn.execute(
+        "INSERT INTO turns(ts,chat_id,input_type,provider_raw,telegram_reply,status,task_run_id,channel)
+         VALUES('now','telegram:321#7','text',?1,?2,'ok',?3,'telegram')",
+        rusqlite::params![child_raw,reply,child],
+    ).unwrap();
+    scheduler
+        .persist_result(
+            &store,
+            child,
+            &child_request,
+            &child_request.input,
+            &child_raw,
+            crate::TurnStatus::Ok,
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .turn_output_for_task_run(child)
+            .unwrap()
+            .unwrap()
+            .telegram_reply,
+        format!("Task #{child} result\n{reply}")
+    );
+    scheduler.shutdown().unwrap();
+    // Reconstruct the pre-materialization crash cut with the labeled history
+    // row retained, but before any sender operations or their receipts existed.
+    store
+        .conn
+        .execute(
+            "UPDATE task_payloads SET output=NULL WHERE task_run_id=?1",
+            [child],
+        )
+        .unwrap();
+    store
+        .conn
+        .execute("UPDATE task_runs SET status='running' WHERE id=?1", [child])
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "DELETE FROM runtime_inbox WHERE event_key=?1",
+            [format!("result:{child}")],
+        )
+        .unwrap();
+    let scheduler = SessionScheduler::new(cfg, None);
+    scheduler.recover().unwrap();
+    scheduler.retry_deliveries().unwrap();
+    for (run, expected) in [
+        (id, format!("{reply}\nDelegated task #{child}.")),
+        (child, format!("Task #{child} result\n{reply}")),
+    ] {
+        let state = super::topics_rich::state(&store, run);
+        assert_eq!(
+            state["text_plan"]["markdown"].as_str(),
+            Some(expected.as_str())
+        );
+        assert!(!output(&store, run).contains("No requested effects were applied"));
+        assert!(
+            store
+                .conn
+                .query_row(
+                    "SELECT delivered FROM task_payloads WHERE task_run_id=?1",
+                    [run],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        store
+            .conn
+            .query_row("SELECT count(*) FROM task_runs", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    scheduler.shutdown().unwrap();
+}
+
+#[test]
+fn effect_boundaries_saved_cancelled_reply_is_literal_through_sender_and_falls_back_only_if_blank()
+{
+    for saved in [
+        "Frozen cancellation receipt.",
+        "Frozen receipt:\nMEMORY_APPEND: literal\nTASK_APPEND: literal\nSEND_DOCUMENT: /never",
+        "   ",
+    ] {
+        let server = FakeTelegramServer::start();
+        let mut cfg = scheduler_test_config("NEVER-EXECUTE".into());
+        cfg.telegram_api_base = Some(server.base_url.trim_end_matches("/bot123:token").into());
+        let store = Store::open(&cfg).unwrap();
+        let mut request = make_request(SessionKey::telegram("321#7"), "telegram", "cancelled");
+        request.delivery = DeliveryTarget::Telegram {
+            chat_id: "321".into(),
+            thread_id: Some("7".into()),
+        };
+        let tx = store.conn.unchecked_transaction().unwrap();
+        let (id, _) = store
+            .admit_inbox_request(EventKind::Request, None, &request, "now")
+            .unwrap();
+        tx.commit().unwrap();
+        store.conn.execute(
+            "INSERT INTO turns(ts,chat_id,input_type,provider_raw,telegram_reply,status,task_run_id,channel)
+             VALUES('now','telegram:321#7','text','SEND_DOCUMENT: /never\nMEMORY_APPEND: suppressed\nTASK_APPEND: suppressed',?1,'cancelled',?2,'telegram')",
+            rusqlite::params![saved,id],
+        ).unwrap();
+        let scheduler = SessionScheduler::new(cfg, None);
+        scheduler.recover().unwrap();
+        scheduler.retry_deliveries().unwrap();
+        let expected = if saved.trim().is_empty() {
+            crate::wording::CANCELLATION
+        } else {
+            saved
+        };
+        assert_eq!(
+            crate::markers::CompiledOutput::from_output(&output(&store, id)).reply(),
+            expected
+        );
+        assert_eq!(
+            super::topics_rich::state(&store, id)["text_plan"]["markdown"],
+            expected
+        );
+        assert_eq!(
+            store
+                .turn_output_for_task_run(id)
+                .unwrap()
+                .unwrap()
+                .telegram_reply,
+            saved
+        );
+        assert!(
+            store
+                .managed_pending_task_entries_from_db()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM memory_records", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|path| !path.contains("sendDocument"))
+        );
+        scheduler.shutdown().unwrap();
+    }
+}
 
 fn output(store: &Store, id: i64) -> String {
     store

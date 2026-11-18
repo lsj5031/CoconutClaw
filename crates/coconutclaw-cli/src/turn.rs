@@ -282,18 +282,20 @@ pub(crate) fn process_turn_with_status(
     let cancelled = cancel_flag.load(Ordering::SeqCst) || exit_code == 130;
     let turn_result =
         resolve_turn_result(&raw_output, &context_channel, provider_success, cancelled);
-    let proposed = render_output(&turn_result.telegram_reply, &turn_result.effects);
-    let admitted = crate::delivery::media::admitted_output(cfg, &proposed, delegated);
-    let markers = parse_markers(&admitted);
-    let effects = markers.to_effects();
-    let telegram_reply = markers.telegram_reply.unwrap_or_default();
+    let admitted = crate::delivery::media::admit_compiled(
+        cfg,
+        crate::markers::CompiledOutput::new(&turn_result.telegram_reply, &turn_result.effects),
+        delegated,
+    );
+    let telegram_reply = admitted.reply().to_string();
+    let output = admitted.encode();
+    let effects = admitted.effects;
     // Retain normal provider evidence, but never persist oversized/rejected
     // effects that recovery could later resurrect.
-    let raw_output = if proposed != admitted
-        || raw_output.len() > crate::markers::MAX_OUTPUT_BYTES
+    let raw_output = if raw_output.len() > crate::markers::MAX_OUTPUT_BYTES
         || telegram_reply.starts_with("Output rejected:")
     {
-        admitted
+        render_output(&telegram_reply, &[])
     } else {
         raw_output
     };
@@ -353,10 +355,7 @@ pub(crate) fn process_turn_with_status(
     if cancel_router.is_some() {
         clear_cancel_marker(cfg);
     }
-    Ok(ProcessedTurn {
-        output: render_output(&telegram_reply, &effects),
-        status,
-    })
+    Ok(ProcessedTurn { output, status })
 }
 
 fn turn_context_channel<'a>(source: &TaskSource, input: &'a TurnInput) -> &'a str {

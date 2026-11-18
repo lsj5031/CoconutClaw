@@ -410,6 +410,7 @@ fn cancelled_saved_turn_suppresses_media_in_recovery_and_legacy_replay() {
     );
     let scheduler = SessionScheduler::new(cfg, None);
     scheduler.recover().unwrap();
+    scheduler.retry_deliveries().unwrap();
     let output: String = store
         .conn
         .query_row(
@@ -420,7 +421,18 @@ fn cancelled_saved_turn_suppresses_media_in_recovery_and_legacy_replay() {
         .unwrap();
     assert!(!output.contains("SEND_DOCUMENT"));
     assert!(!output.contains("MEMORY_APPEND"));
+    assert_eq!(
+        crate::markers::parse_markers(&output)
+            .telegram_reply
+            .as_deref(),
+        Some("Cancelled."),
+        "scheduler recovery must retain the exact nonblank saved reply too"
+    );
     assert_eq!(store.get_task_run(id).unwrap().unwrap().status, "cancelled");
+    assert_eq!(
+        super::topics_rich::state(&store, id)["text_plan"]["markdown"],
+        "Cancelled."
+    );
     assert!(
         server
             .requests
@@ -429,6 +441,7 @@ fn cancelled_saved_turn_suppresses_media_in_recovery_and_legacy_replay() {
             .iter()
             .all(|path| !path.contains("sendDocument"))
     );
+    scheduler.shutdown().unwrap();
 }
 
 #[test]

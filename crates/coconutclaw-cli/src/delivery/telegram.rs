@@ -361,7 +361,7 @@ fn output_effects(
         };
         vec![crate::markers::Effect::TelegramReply(text)]
     } else {
-        parse_markers(output).to_effects()
+        crate::markers::CompiledOutput::from_output(output).delivery_effects()
     })
 }
 
@@ -435,7 +435,7 @@ pub(crate) fn dispatch_task_output(
         .any(|e| !matches!(e, crate::markers::Effect::TelegramReply(_)))
     {
         let admitted = super::media::admitted_output(cfg, request.output, false);
-        effects = parse_markers(&admitted).to_effects();
+        effects = crate::markers::CompiledOutput::from_output(&admitted).delivery_effects();
     }
     let rejected = matches!(effects.as_slice(), [crate::markers::Effect::TelegramReply(reply)] if reply.starts_with("Output rejected:"));
     if rejected && !state.operations.contains_key(policy_key) {

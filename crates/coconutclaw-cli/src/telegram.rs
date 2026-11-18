@@ -20,9 +20,9 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use reqwest::blocking::{Client, multipart};
 use serde_json::Value;
 
-use crate::util::value_to_string;
 #[cfg(test)]
-use crate::{markers::parse_markers, resolve_instance_path};
+use crate::resolve_instance_path;
+use crate::util::value_to_string;
 
 pub(crate) const TELEGRAM_TEXT_CHAR_LIMIT: usize = 4096;
 
@@ -385,7 +385,7 @@ pub(crate) fn dispatch_telegram_output(
         return Ok(());
     };
 
-    let effects = parse_markers(output).to_effects();
+    let effects = crate::markers::CompiledOutput::from_output(output).delivery_effects();
     let mut has_text_reply = false;
 
     for effect in &effects {

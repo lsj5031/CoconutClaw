@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sqlite3
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,14 +41,91 @@ def review_pin(path, previous):
     audit = load("review-fixes-reconciliation.json")
     changes = {row["path"]: row for row in audit["changes"]}
     if path not in changes:
-        return previous
+        return remediation_pin(path, previous)
     row = changes[path]
     if row["before"] != previous:
         raise AssertionError(f"broken review-fixes mapping ancestry: {path}")
+    return remediation_pin(path, row["after"])
+
+
+def remediation_pin(path, previous):
+    changes = {row["path"]: row for row in load("review-remediation-reconciliation.json")["changes"]}
+    if path not in changes:
+        return previous
+    row = changes[path]
+    if row["before"] != previous:
+        raise AssertionError(f"broken remediation mapping ancestry: {path}")
     return row["after"]
 
 
 class Mapping(unittest.TestCase):
+    def test_sql_inventory_covers_actual_database_objects_and_known_safety_schema(self):
+        inventory = {row["path"]: row for row in load("inventory.json")["paths"]}
+        db = sqlite3.connect(":memory:")
+        declared = set()
+        for path in ["sql/schema.sql", "sql/memory.sql"]:
+            db.executescript((ROOT / path).read_text())
+            for declaration in inventory[path]["declarations"]:
+                match = re.match(
+                    r"CREATE\s+(?:UNIQUE\s+|VIRTUAL\s+)?(TABLE|INDEX|TRIGGER)\s+(?:IF NOT EXISTS\s+)?(\w+)",
+                    declaration["text"], re.I,
+                )
+                self.assertIsNotNone(match, declaration)
+                declared.add((match[1].lower(), match[2]))
+        actual = {
+            (kind, name) for kind, name in db.execute(
+                "SELECT type,name FROM sqlite_master WHERE sql IS NOT NULL"
+            ) if not name.startswith(("sqlite_", "memory_search_"))
+        }
+        db.close()
+        self.assertEqual(actual, declared)
+        self.assertLessEqual({
+            ("table", "telegram_ingress"), ("table", "runtime_inbox"),
+            ("table", "telegram_ui_controls"), ("table", "runtime_reconciliation_audit"),
+            ("index", "telegram_ui_controls_expiry"), ("index", "telegram_ui_inputs_expiry"),
+            ("trigger", "reconciliation_audit_immutable_delete"),
+            ("trigger", "memory_record_immutable_update"),
+        }, declared)
+
+    def test_platform_inventory_includes_whole_file_gates_and_cfg_macros(self):
+        inventory = {row["path"]: row for row in load("inventory.json")["paths"]}
+        for path, row in inventory.items():
+            if not path.endswith(".rs"):
+                continue
+            required = {
+                (i, line.strip()) for i, line in enumerate((ROOT / path).read_text().splitlines(), 1)
+                if re.search(r"#!?\[cfg(?:_attr)?\s*\(|\bcfg!\s*\(", line)
+            }
+            recorded = {(d["line"], d["text"]) for d in row["conditional_branches"]}
+            self.assertLessEqual(required, recorded, path)
+        topics = inventory["crates/coconutclaw-cli/tests/topics_rich.rs"]["conditional_branches"]
+        self.assertIn({"line": 1, "text": "#![cfg(unix)]"}, topics)
+        config = inventory["crates/coconutclaw-config/src/lib.rs"]["conditional_branches"]
+        self.assertIn("if cfg!(windows) {", {d["text"] for d in config})
+        self.assertIn("#[cfg(windows)]", {d["text"] for d in config})
+        source = (ROOT / "crates/coconutclaw-config/src/lib.rs").read_text().splitlines()
+        self.assertLessEqual(
+            {line.strip() for line in source if re.match(r"\s*(?:if|match)\s", line)},
+            {d["text"] for d in config},
+        )
+
+    def test_remediation_keeps_complete_pin_ancestry_and_executable_obligations(self):
+        audit = load("review-remediation-reconciliation.json")
+        pins = load("implementation-hashes.json")
+        self.assertEqual(audit["base_revision"], "6d8a2c91be8780a1579454378369817d7b1ec164")
+        self.assertEqual(set(audit["inherited_pins"]), set(pins))
+        rows = {row["path"]: row for row in audit["changes"]}
+        self.assertEqual(len(rows), len(audit["changes"]))
+        self.assertEqual(set(rows), {path for path, pin in audit["inherited_pins"].items() if pin != pins[path]})
+        for path, before in audit["inherited_pins"].items():
+            self.assertEqual(remediation_pin(path, before), pins[path])
+        for row in rows.values():
+            self.assertNotEqual(row["before"], row["after"])
+            self.assertRegex(row["delta_sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(row["inspection"])
+            self.assertTrue(row["affected_families"])
+            self.assertTrue(row["executable_obligation"])
+
     def test_current_inventory_and_all_pins_agree(self):
         rows = load("inventory.json")["paths"]
         inventory = {row["path"]: row for row in rows}
@@ -60,8 +138,8 @@ class Mapping(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(data).hexdigest(), row["sha256"])
                 if path in pins:
                     self.assertEqual(pins[path], row["sha256"])
-                lines = data.decode().splitlines() if row["declarations"] else []
-                for declaration in row["declarations"]:
+                lines = data.decode().splitlines() if row["declarations"] or row["conditional_branches"] else []
+                for declaration in row["declarations"] + row["conditional_branches"]:
                     self.assertEqual(
                         lines[declaration["line"] - 1].strip(), declaration["text"]
                     )
@@ -186,7 +264,7 @@ class Mapping(unittest.TestCase):
             self.assertTrue(row["executable_obligation"])
         for path, row in audit["new_inputs"].items():
             self.assertNotIn(path, audit["inherited_pins"])
-            self.assertEqual(row["sha256"], pins[path])
+            self.assertEqual(remediation_pin(path, row["sha256"]), pins[path])
             self.assertTrue(row["inspection"])
             self.assertTrue(row["executable_obligation"])
 

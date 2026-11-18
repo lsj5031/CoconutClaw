@@ -34,7 +34,12 @@ pub(crate) fn run_once(
         },
         None,
     )?;
-    print!("{output}");
+    // The compiled persistence envelope is internal, not the CLI marker format.
+    let output = crate::markers::CompiledOutput::from_output(&output);
+    print!(
+        "{}",
+        crate::markers::render_effects(&output.delivery_effects())
+    );
     std::io::stdout().flush().ok();
     Ok(())
 }

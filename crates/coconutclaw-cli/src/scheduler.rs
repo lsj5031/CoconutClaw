@@ -15,7 +15,6 @@ use crate::approval::{
 };
 use crate::cancel::CancelRouter;
 use crate::delivery::{DeliveryTarget, TaskSource, cleanup_attachment_path};
-use crate::markers::parse_markers;
 use crate::session::SessionKey;
 use crate::store::{Store, TaskRunStatus};
 use crate::telegram::build_telegram_client;
@@ -740,8 +739,20 @@ impl SessionScheduler {
         let _queue = self.inner.queue_lock.lock().expect("durable enqueue order");
         let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
         anyhow::ensure!(store.is_current_attempt(task_id)?, "stale outcome owner");
-        let admitted =
-            crate::delivery::media::admitted_output(&self.inner.cfg, raw, request.delegated);
+        let admitted = if status == crate::TurnStatus::Cancelled {
+            let saved = crate::markers::CompiledOutput::from_output(raw);
+            crate::markers::CompiledOutput::new(
+                if saved.reply().trim().is_empty() {
+                    crate::wording::CANCELLATION
+                } else {
+                    saved.reply()
+                },
+                &[],
+            )
+            .encode()
+        } else {
+            crate::delivery::media::admitted_output(&self.inner.cfg, raw, request.delegated)
+        };
         let raw = admitted.as_str();
         let fresh = store.record_inbox(
             &format!("result:{task_id}"),
@@ -756,12 +767,8 @@ impl SessionScheduler {
                 matches!(r.status.as_str(), "awaiting_approval" | "waiting_event")
             }));
         }
-        let mut output = if status == crate::TurnStatus::Cancelled {
-            crate::markers::render_output(crate::wording::CANCELLATION, &[])
-        } else {
-            raw.to_string()
-        };
-        let effects = parse_markers(&output).to_effects();
+        let mut output = crate::markers::CompiledOutput::from_output(raw);
+        let effects = output.effects.clone();
         let mut approval = false;
         let mut children = Vec::new();
         if matches!(
@@ -796,7 +803,7 @@ impl SessionScheduler {
                     dependency,
                     &crate::approval::build_resume_payload(request, input)?,
                 )?;
-                output = crate::markers::render_output(
+                output = crate::markers::CompiledOutput::new(
                     &format!("Task #{task_id} is waiting for task #{dependency}."),
                     &[],
                 );
@@ -819,7 +826,7 @@ impl SessionScheduler {
                     id,
                     &crate::approval::build_resume_payload(request, input)?,
                 )?;
-                output = crate::markers::render_output(
+                output = crate::markers::CompiledOutput::new(
                     &format!("{prompt}\nApprove with /approve {id}, or reject with /reject {id}."),
                     &[],
                 );
@@ -859,19 +866,20 @@ impl SessionScheduler {
                     )?;
                     store.link_task_child(task_id, id)?;
                     store.inherit_schedule(task_id, id)?;
-                    output.push_str(&format!("\nTELEGRAM_REPLY: Delegated task #{id}.\n"));
+                    output.suffix.push_str(&format!("\nDelegated task #{id}."));
                     children.push((id, child));
                 }
             }
         }
-        if request.delegated {
-            output = format!("TELEGRAM_REPLY: Task #{task_id} result\n{output}");
-            let reply = parse_markers(&output).telegram_reply.unwrap_or_default();
+        if request.delegated && status != crate::TurnStatus::Cancelled {
+            output.prefix = format!("Task #{task_id} result\n");
+            let reply = format!("{}{}", output.prefix, output.reply());
             store.conn.execute(
                 "UPDATE turns SET telegram_reply=?2 WHERE task_run_id=?1",
                 rusqlite::params![task_id, reply],
             )?;
         }
+        let output = output.encode();
         store.conn.execute(
             "UPDATE task_payloads SET output=?2 WHERE task_run_id=?1",
             rusqlite::params![task_id, output],
@@ -1082,7 +1090,18 @@ impl SessionScheduler {
             [id],
             |r| r.get(0),
         )?;
-        let cancellation_output = crate::markers::render_output(crate::wording::CANCELLATION, &[]);
+        let saved_reply = store
+            .turn_output_for_task_run(id)?
+            .filter(|turn| turn.status == "cancelled")
+            .map(|turn| turn.telegram_reply)
+            .filter(|reply| !reply.trim().is_empty());
+        let cancellation_output = crate::markers::CompiledOutput::new(
+            saved_reply
+                .as_deref()
+                .unwrap_or(crate::wording::CANCELLATION),
+            &[],
+        )
+        .encode();
         let was_wait: bool = store.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_waits WHERE run_id=?1)",
             [id],
@@ -1189,14 +1208,34 @@ impl SessionScheduler {
         for (id, raw) in rows {
             let request = crate::approval::request_from_payload(&raw, false)?;
             if let Some(turn) = store.turn_output_for_task_run(id)? {
-                let effects = parse_markers(&turn.provider_raw).to_effects();
-                let output = crate::markers::render_output(&turn.telegram_reply, &effects);
                 let status = match turn.status.as_str() {
                     "ok" => crate::TurnStatus::Ok,
                     "parse_recovered" => crate::TurnStatus::ParseRecovered,
                     "parse_fallback" => crate::TurnStatus::ParseFallback,
                     "cancelled" => crate::TurnStatus::Cancelled,
                     _ => crate::TurnStatus::AgentError,
+                };
+                let mut reply = turn.telegram_reply.clone();
+                if request.delegated && status != crate::TurnStatus::Cancelled {
+                    // Older/current successful materializations retain a labeled
+                    // history reply. Remove only that exact proven decoration,
+                    // not an arbitrary prefix in literal provider text.
+                    let original = crate::turn::resolve_turn_result(
+                        &turn.provider_raw,
+                        request.source.channel_name(),
+                        true,
+                        false,
+                    )
+                    .telegram_reply;
+                    if reply == format!("Task #{id} result\n{original}") {
+                        reply = original;
+                    }
+                }
+                let output = if status == crate::TurnStatus::Cancelled {
+                    crate::markers::CompiledOutput::new(&reply, &[]).encode()
+                } else {
+                    crate::markers::CompiledOutput::from_saved_turn(&turn.provider_raw, &reply)
+                        .encode()
                 };
                 self.persist_result(&store, id, &request, &request.input, &output, status)?;
             }

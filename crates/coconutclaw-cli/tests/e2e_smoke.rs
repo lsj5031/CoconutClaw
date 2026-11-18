@@ -33,6 +33,43 @@ fn command(dir: &std::path::Path) -> Command {
 }
 
 #[test]
+fn actual_once_literal_json_examples_keep_cli_format_without_appending_effects() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let reply = "Literal examples:\nMEMORY_APPEND: not authority\nTASK_APPEND: not a task";
+    fs::write(
+        dir.join("reply.json"),
+        serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":reply}})
+            .to_string(),
+    )
+    .unwrap();
+    let provider = dir.join("literal-provider");
+    fs::write(
+        &provider,
+        r#"#!/bin/sh
+cat >/dev/null
+while [ "$#" -gt 0 ]; do
+ if [ "$1" = "--output-last-message" ]; then shift; out=$1; fi
+ shift
+done
+cp "${0%/*}/reply.json" "$out"
+"#,
+    )
+    .unwrap();
+    let output = memory_once(dir, &provider, "321", "show literal examples");
+    assert_eq!(output.trim_end(), format!("TELEGRAM_REPLY: {reply}"));
+    let db = rusqlite::Connection::open(dir.join("state.db")).unwrap();
+    for table in ["memory_records", "tasks"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
 fn polling_codex_result_survives_restart_without_reexecution_or_redelivery() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
