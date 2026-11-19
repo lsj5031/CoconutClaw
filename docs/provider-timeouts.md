@@ -12,6 +12,8 @@ All values are integer seconds, at most 86400; the two idle settings must be
 positive. File/environment precedence is unchanged. The provider API's
 `timeout_secs: None` inherits the configured total; `Some(0)` explicitly disables
 it, and `Some(n)` sets a total deadline for that invocation.
+For a paired task, the provider runs with the runner's host-local timeout
+settings, not the coordinator's.
 
 There is **no default total duration cap**. A task can run longer than 30 minutes,
 or many hours, provided it continues making progress inside its applicable silence
@@ -77,9 +79,10 @@ inference or claim that such work is dead.
 
 Exit code 124 distinguishes **inactivity** (silence duration, applicable limit,
 elapsed duration, and pending-tool state) from a **configured total deadline**
-(limit and observed elapsed duration). Cancellation remains independent, checked
-before timeouts, using the existing process-group termination including
-descendants. Deadline checks continue through stdin writes and output drain
+(limit and observed elapsed duration). Cancellation remains independent and is
+checked before timeouts. Termination uses the owned process group on Unix or
+the per-invocation [Windows Job Object](production-nodes.md#state-and-recovery).
+Deadline checks continue through stdin writes and output drain
 after leader exit. Pipe handling and join bounds are unchanged. No failed task
 is retried just because it timed out.
 

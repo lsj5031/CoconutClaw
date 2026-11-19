@@ -1,9 +1,8 @@
 # Final verification gates
 
-Owner-authorized next-safe-handoff amendment,16 November2026, from
-`next-handoff-verification-20261116-1455.md`. This is an obligation and execution
-order, not a completed verification claim. Review DEFERRED NOT APPROVED,
-Phase2 incomplete, activation unavailable. No publishing/packaging authority.
+The 16 November 2026 amendment set the following release checks. These are
+requirements for a candidate, not publication or packaging authority. See the
+[19 November baseline](#19-november-2026-baseline) for completed evidence.
 
 ## After implementation, before packaging
 
@@ -49,34 +48,24 @@ spawn/cancel/cleanup and SQLite/filesystem behavior. No credentials, live Telegr
 or paid-provider secrets in CI.
 
 Record the actual pinned published SHA, OS jobs, critical test counts/skips and
-retained artifacts; fix actual Windows failures. Real authenticated Windows
-Codex acceptance remains explicitly unverified if unavailable. Dirty local bytes
-have no hosted-CI evidence. Inspect remote/status and obtain/reconcile publishing
-authority before any commit/push. No publication is authorized by this gate.
+retained artifacts. Distinguish native test execution from a build-only pass
+and from live authenticated Codex acceptance. Dirty local bytes have no
+hosted-CI evidence. Obtain publication authority before publishing.
 
-## Current status and dependencies
+## 19 November 2026 baseline
 
-The implementation-owned [bounded formal gate](formal-verification.md) now has a
-whole-module best-effort inventory, source-linked executable contracts and
-reproducible official SANY/TLC safety, conditional-liveness and negative controls.
-Its finite bounds and explicit unmodeled/refinement gaps remain limitations, not
-an arbitrary Rust correctness proof or independent review. Actual source-pinned
-hosted Linux/macOS/Windows execution is **pending** and remains the next gate,
-not a blocked excuse for omitting portable coverage. Existing cross-Mac
-acceptance remains valid and must not be repeated without a new authorized gate.
-Stage-ready manifests/exact commands take the place of waiting for absent SSH;
-the parent owns paired-node operations and notifications.
+[Fleet verification](fleet-verification.md) records three separate gates:
 
-Completed finite foundations: actual runtime result bridge and persisted
-approval/dependency waiting, task/attempt/session/event linkage and isolated work
-lanes under the original conversation owner. Their local receipts do not satisfy
-the full final-source gates.
+- The exact merged commit `18c460c` passed hosted CI run `44455611317`,
+  including native Windows tests and the required Windows rollup.
+- The [bounded formal gate](formal-verification.md) was independently accepted
+  on `3a55ae9`, with the same Git tree as `18c460c`. It retains finite bounds
+  and explicit implementation gaps; it is not a proof of arbitrary Rust or
+  native behavior.
+- Live scoped memory was verified on `18c460c`. Earlier routing, calendar,
+  recovery and cancellation cases belong to `746c3b8`, not the merge commit.
 
-Further completed finite foundations: evidence-bound rich-text reconciliation
-and [separate context/notification ownership](context-notifications.md), including
-persisted changed-blocker suppression. These do not satisfy final verification.
-The finite [calendar/wake foundation](inbox-scheduling.md) adds weekly recurrence,
-selectable calendar policies and earliest-due event/deadline intake. Its portable
-local receipts do not substitute for either final-source verification gate.
-No actual schedule without an explicit user task/cadence. Packaging waits for
-implementation acceptance and both gates.
+Carry those receipts only for their stated inputs and cases. Future candidates
+need their own applicable checks and review. The fleet record lists uncovered
+live cases and product gaps; it does not close broad Phase 2 replication or
+release packaging. No actual schedule without an explicit user task/cadence.

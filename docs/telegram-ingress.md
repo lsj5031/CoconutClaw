@@ -1,8 +1,8 @@
 # Durable Telegram ingress
 
-16 November2026, finite foundation increment. Review **DEFERRED NOT APPROVED**,
-Phase2 incomplete, activation unavailable. No deployment, real jobs/messages or
-new Mac acceptance is implied. The real runtime remote-result bridge stays next.
+This began as a finite foundation on 16 November 2026. Its local receipts
+are not live acceptance. The coordinator is still the sole Telegram ingress
+owner when using [paired runners](production-nodes.md).
 
 ## Existing owners, not another framework
 
@@ -82,9 +82,9 @@ Pending recovery is bounded to32 eligible events (the earliest per bound origin)
 per polling wake; earlier
 unresolved events are excluded before admission of later events in that origin.
 Control delivery is bounded to32 eligible acknowledgments per dispatch pass.
-Unroutable/disabled-topic acks do not consume that delivery bound. Wake latency
-still follows existing polling/getUpdates intervals; earliest-due/event-driven
-wake remains a separate gate, not a timing guarantee here.
+Unroutable/disabled-topic acks do not consume that delivery bound. Telegram
+ingress wake latency follows polling/getUpdates; the separate
+[calendar wake](inbox-scheduling.md) does not depend on that cadence.
 
 ## Authority and legacy custody
 
@@ -115,8 +115,8 @@ sender/bot/topic authority, cancellation and approval gaps, slot release, native
 admission/restart counters, and actual mock HTTP send/ack uncertainty. They do not
 redefine a saved result as proof that its external effects were never delivered.
 
-Still open: real runtime remote-result bridge; general waiting and task graph;
-independent task lanes beyond origin ordering; explicit authority-aware Unknown
-reconciliation and UI; semantic changed-blocker notification history; preference/
-fact/progress interfaces and retention; richer recurrence and earliest-due wake;
-authorized product acceptance and review. Final packaging waits for those gates.
+The 16 November raw-ingress checkpoint preceded the
+[runtime result bridge](runtime-results.md), [task graph](runtime-task-graph.md),
+and [explicit reconciliation](runtime-reconciliation.md). The
+[dated fleet record](fleet-verification.md) separates live cases from these
+disposable ingress regressions.

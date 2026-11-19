@@ -47,6 +47,11 @@ and command receipts. They are needed for exact replay/conflict detection,
 dependencies, deduplication or immutable evidence, even after apparent success.
 Unknown is never aged into success, deletion or retry permission.
 
+Signed remote requests can contain approved topic facts. A memory correction
+or undo changes later selection, not already signed evidence on the coordinator
+or runner. Treat those receipts and backups as private; see
+[paired runner memory](memory.md#paired-runners).
+
 Resolved operational projections are not an excuse to delete their source
 rows. In particular, blocker generations and all immutable decision rows remain
 online. Automatic pruning of task history or payloads is not implemented.

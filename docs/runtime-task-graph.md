@@ -125,7 +125,8 @@ Unknown and every other resumption guard.
 The finite [context/notification interfaces](context-notifications.md) expose
 scoped structured status and persist core-derived changed-blocker decisions
 without rewriting this graph or historical results.
-Broader wake kinds, logical-task command UX, external-effect reconciliation, richer calendars,
-final source-wide formal/native gates and authorized acceptance remain open.
-See [verification gates](final-verification-gates.md). No new dependency selected;
-the existing Rust/SQLite/provider/inbox/outbox owners suffice for this slice.
+Broader wake kinds, logical-task command UX and general external-effect
+reconciliation remain open. For later calendar work and dated formal, native
+and live evidence, see [inbox scheduling](inbox-scheduling.md) and
+[verification gates](final-verification-gates.md). The existing
+Rust/SQLite/provider/inbox/outbox owners suffice for this slice.

@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controls, and durable explicit-code memory/preference input using local handlers.
 - Explicit local memory import, durable one-off followups and recurring schedules,
   and paired native execution nodes for ordinary Telegram tasks.
+- Active, owner-approved facts from an exact Telegram topic can be included as
+  bounded data in the signed text request to its assigned runner. Memory remains
+  coordinator-owned; it is not a shared index or a replicated database.
 
 ### Changed
 - Retained runtime is Telegram polling and Codex with a single data directory.
@@ -23,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reconcile workspace package metadata with the existing v0.4.1 release tag and
   changelog. That release retained 0.3.1 in Cargo metadata; this is not a new release.
 - Document all seven current CLI commands in the architecture overview.
+
+### Verification
+- [19 November 2026 fleet record](docs/fleet-verification.md) distinguishes the
+  live scoped-memory checks and exact hosted CI on `18c460c` from the earlier
+  live routing, scheduling, recovery and cancellation checks on `746c3b8`.
 
 ## [0.4.1] - 2026-05-21
 

@@ -1,10 +1,10 @@
 # Verified runtime result bridge
 
-This finite slice connects the existing isolated scoped TaskAdapter/RuntimeDriver
-to the normal runtime's durable result inbox and original task outbox. It does
-**not** activate production peer admission, runner networking or a second sender.
-The existing development adapter still binds one exact origin/session per
-disposable Store. No new transport descriptor or provider implementation exists.
+The 16 November 2026 bridge connected the development adapter to the runtime's
+durable result inbox and original task outbox. That adapter still uses
+disposable Stores. The later [paired-node path](production-nodes.md) admits
+ordinary text work separately, then reuses the same result reducer and delivery
+owner. The development adapter's receipts are not live fleet evidence.
 
 ## Ownership and durable boundaries
 
@@ -42,7 +42,9 @@ runner evidence is delivered with an explicit uncertainty warning, not a success
 claim or retry permission. Remote text never grants core filesystem, memory,
 approval or delegation marker authority. The same typed Task delivery key,
 rich/chunk/document plans, durable sending/ack flags and single dispatcher apply.
-An ambiguous HTTP acknowledgment is not automatically retried.
+An ambiguous HTTP acknowledgment is not automatically retried. Reapplying
+stored result evidence does not invoke Codex again or reset recorded delivery.
+There is no supported control for resending an acknowledged Telegram reply.
 
 ## Runnable isolated acceptance
 
@@ -80,8 +82,9 @@ logs. Every source-defined bridge test must execute successfully, including
 Windows; a cfg-excluded/ignored critical case fails this subset gate. This is
 not hosted evidence for uncommitted local bytes or completion of the mandatory
 [whole-architecture formal/native-CI gates](final-verification-gates.md).
-General task graphs, reconciliation UI, broader independently runnable work,
-source-wide inventory/models and full Windows lifecycle acceptance remain open.
+At this checkpoint, task graphs, reconciliation, broader independently runnable
+work, source-wide models and native Windows acceptance were still follow-up
+gates. See [fleet verification](fleet-verification.md) for later dated evidence.
 
 Local final validation: **436 passed, 0 failed, 5 ignored**, including all eleven
 new bridge tests; formatting, strict all-target workspace Clippy, doctests and

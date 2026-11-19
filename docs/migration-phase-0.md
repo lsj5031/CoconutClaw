@@ -1,5 +1,12 @@
 # Phase 0 migration
 
+This records the November 2026 Phase 0 trim, not later feature support. For
+current deployments, read [memory migration limits](memory.md#no-legacy-memory-layer)
+before reusing an old directory. [Explicit schedules](inbox-scheduling.md) do
+not activate old schedule rows, and [paired nodes](production-nodes.md) require
+matching revisions and explicit enrollment rather than an in-place node-state
+migration.
+
 This version supports Telegram polling and Codex only. There is no automatic
 configuration rewrite, credential change, data move, scheduler change or deletion.
 
@@ -71,4 +78,4 @@ by templates. Review old voice/scheduling/provider instructions in them manually
 `VOICE_REPLY` and `SCHEDULE_PROMPT` are ignored marker boundaries, not supported
 output effects. The retained output contract is listed in `AGENTS.md`.
 
-No iroh, remote runners, replication or new agent runtime is included here.
+Phase 0 did not include iroh, remote runners, replication or a new agent runtime.

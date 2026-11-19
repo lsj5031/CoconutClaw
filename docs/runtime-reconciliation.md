@@ -60,6 +60,11 @@ without repeating projection, provider execution or target delivery. A new
 command can have its own ordinary reply, sent by the same existing outbox owner.
 Failed/Unknown schedules remain blocked, not silently rearmed.
 
+This Telegram command is distinct from the coordinator CLI's
+[`nodes reconcile RUN_ID`](production-nodes.md#state-and-recovery), which
+retrieves signed evidence for the original remote run. Neither command
+offers a fresh resend of an acknowledged reply.
+
 A proven text acknowledgment can unblock the existing dependency reducer only
 if **all its other gates already hold**: successful current source, actual result
 inbox, no cancellation/approval/remote uncertainty, and no raw custody fence.
@@ -107,11 +112,8 @@ The latter starts the same binary twice, retains a genuinely Unknown control,
 sends the target text once and invokes no provider. CI requires each critical
 case to execute `ok`; local receipts are not hosted OS evidence.
 
-Next: separate preferences/facts/task progress/notification history and persisted
-changed-blocker identity; richer timezone/DST recurrence and earliest-due wake;
-then final-source codewide explicit/implicit machine inventory and official
-SANY/TLC safety/liveness/fairness, negative controls, bounds/state counts and
-source-action mapping. Actual pinned native Ubuntu/macOS/Windows CI and Windows
-provider lifecycle remain mandatory. Authenticated Windows Codex is unverified.
-[Full final gates](final-verification-gates.md) precede packaging. Independent
-review is DEFERRED NOT APPROVED; publishing and activation are not authorized.
+At the 16 November checkpoint, the separate context interfaces, calendar wake
+and candidate verification were follow-up gates. See
+[verification gates](final-verification-gates.md) for the later baseline.
+The live [stored-result replay case](fleet-verification.md#earlier-live-fleet-cases-746c3b8)
+did not verify a fresh Telegram resend or abrupt in-flight coordinator death.

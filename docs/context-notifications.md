@@ -33,10 +33,12 @@ No legacy USER.md/private-memory/configuration import occurs.
 Native prompt preferences and their revision are read in the same SQLite
 snapshot as existing fact context. A mutation or unset starts a distinct native
 session generation; an older in-flight prompt cannot populate the new key.
-Isolated task attempts inherit the original conversation's authorized preferences,
-not its unrelated factual/history context. Existing isolated task history remains
-isolated. SOUL.md/operator configuration stays unchanged. Preference text does not
-change runtime scheduling, delivery policy, approval or execution permissions.
+Isolated local task attempts inherit the original conversation's authorized
+preferences, not its unrelated factual/history context. Paired runner requests
+do not receive preferences; eligible remote text tasks can receive
+[bounded factual context](memory.md#paired-runners). SOUL.md/operator configuration
+stays unchanged. Preference text does not change runtime scheduling, delivery
+policy, approval or execution permissions.
 Model output and remote text cannot write preferences. Existing memory markers
 still propose facts only, with no user-instruction authority.
 
@@ -102,16 +104,8 @@ remote Unknown blocker change, and sends exactly one changed notice. Signed
 custody verification remains independently covered by the existing bridge suite;
 the new fixture injects only at that already-authenticated boundary.
 
-CI requires every source-defined critical case to execute `ok`, but local checks
-are not hosted Linux/macOS/Windows proof. Next: richer timezone/DST recurrence and
-earliest-due wake, then final-source repository-wide explicit **and implicit**
-machine inventory, official source-linked SANY/TLC safety and justified
-liveness/fairness, negative controls/counterexample fixes/regressions, bounds,
-state counts/exits/action maps/gaps/residual risks. Actual source-pinned native
-Linux/macOS/Windows CI and portable provider lifecycle remain mandatory.
-Authenticated Windows Codex is unverified. See the unchanged full mandates in
-[final verification gates](final-verification-gates.md).
-
-Packaging waits for those gates and appropriate publication authority. Review
-remains DEFERRED NOT APPROVED. No deployment, activation, actual user schedule,
-real Telegram/provider use, or Phase 2/architecture/packaging completion claim.
+CI requires every source-defined critical case to execute `ok`; these local
+fixtures are not hosted CI or live acceptance. Calendar wake and candidate
+verification were follow-up work at the 16 November checkpoint. See the later
+[release and live evidence](final-verification-gates.md) for their separate
+status and limits.

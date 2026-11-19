@@ -1,6 +1,7 @@
 # CoconutClaw
 
-A local Telegram agent using Codex for conversation and delegated tasks.
+A Telegram agent using Codex for conversation and durable tasks, with optional
+paired native runners and coordinator-owned scoped memory.
 
 SQLite startup, live doctor behavior, retention and archival policy:
 [storage lifecycle](docs/storage-retention.md).
@@ -9,7 +10,7 @@ SQLite startup, live doctor behavior, retention and archival policy:
 
 CoconutClaw runs on your computer: Telegram supplies messages, your locally
 installed Codex executes them, and SQLite keeps history and task results.
-Start with one computer. Adding an experimental runner is a separate procedure
+Start with one computer. Pairing a trusted runner is a separate procedure
 below, not a setting that silently enables networking in the normal application.
 
 Native runner instructions for Windows are in the
@@ -146,25 +147,34 @@ not their parent. `COCONUTCLAW_DATA_DIR` has the same meaning. Without either,
 Unix uses `$XDG_STATE_HOME/coconutclaw/default` or
 `~/.local/state/coconutclaw/default`; the configured Windows default path is
 `%LOCALAPPDATA%/CoconutClaw/default` (a path definition, not a runner-support claim).
-History, memory, task receipts and projections stay local. Codex authentication
-remains in its separately provisioned local home. Keep state private and back it
-up consistently while stopped; copying only `state.db` during a running WAL
-transaction is not a safe backup procedure.
+The coordinator owns history, memory and delivery state. It can forward selected
+approved facts to an assigned runner for an exact-topic text task; it does not
+copy the database. Codex authentication remains in its separately provisioned
+local home on each host. Keep state private and back it up consistently while
+stopped; copying only `state.db` during a running WAL transaction is not a safe
+backup procedure.
 
-## Pair a native execution node (Linux/macOS)
+## Pair a native execution node
 
 `coconutclaw nodes enroll`, `pair`, `start`, and `status` provide the native
 text-task path. One coordinator polls Telegram; trusted runners use host-local
-Codex authentication and an explicitly permitted workspace. Home → Nodes
-selects the executor for new tasks in that conversation/topic. Unavailable or
-interrupted work remains Unknown, never local fallback or automatic retry.
+Codex authentication and an explicitly permitted workspace. Home → Nodes sets
+the destination for future tasks in that conversation/topic, not for just one
+task. It shows assignments, not the signed actual executor of a result.
+Unconfirmed remote execution remains Unknown, without local fallback or an
+automatic execution retry.
 
 Read [setup, admission, recovery and rollback](docs/production-nodes.md) before
-pairing. Source checks are separate from parent-owned native/live acceptance;
-no deployment or independent review is implied. Windows runners enforce private
-state ACLs and per-invocation Job Object custody; see the PowerShell guide for
-their native test and manual acceptance gates. Never copy credentials or private
-node roots between hosts.
+pairing. Windows runners enforce private state ACLs and per-invocation Job
+Object custody; use the [PowerShell checklist](docs/windows-onboarding.md).
+Never copy credentials or private node roots between hosts. See
+[fleet verification](docs/fleet-verification.md) for the dated live cases,
+exact hosted CI and remaining gaps.
+
+Use the local [`schedule` CLI](docs/inbox-scheduling.md#entry-points) for
+one-off or recurring work. `/schedules` only inspects schedules in the current
+conversation/topic. A scheduled Telegram task uses that scope's destination
+when its occurrence is admitted, and the coordinator delivers the result there.
 
 ## Historical experimental runner fixture
 
@@ -299,7 +309,7 @@ relay, with no default relay, discovery or firewall changes.
   search/source reads. `MEMORY_APPEND` proposes a candidate, not authority.
   Use `/memory remember <text>`, `list [before-id]`, `search <text>`, `get <id>`,
   `promote <id>`, `correct <active-id> <text>` or `undo`.
-  See [local memory](docs/memory.md) for budgets, scope and limitations.
+  See [memory](docs/memory.md) for local and paired-runner budgets and scope.
   Explicit local `import-openclaw` previews selected Markdown files by default;
   `--apply` imports scoped candidates, never a live OpenClaw backend. See the
   [import contract](docs/openclaw-import.md) before selecting personal data.
@@ -314,7 +324,8 @@ relay, with no default relay, discovery or firewall changes.
   approvals/sandbox; `"yolo"` explicitly enables the dangerous bypass.
 
 Final results and per-operation delivery acknowledgments live outside Codex
-context. Failed delivery retries the saved output, never re-runs Codex.
+context. Eligible delivery retries use saved output, never re-run Codex.
+There is no supported resend control for an already acknowledged reply.
 After a crash, a saved final turn can be finalized without another agent call;
 started attempts without a final result are marked outcome-unknown and are
 not automatically retried. Pending approvals survive restart.

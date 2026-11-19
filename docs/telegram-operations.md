@@ -21,6 +21,12 @@ destination of **new text tasks** from existing assignments. “Last reached” 
 a saved successful contact, not current online status. Failed probe times were
 not recorded by the existing protocol and are explicitly unavailable.
 
+To route future text work, open `/nodes` in the intended conversation/topic
+and choose the runner by its short ID or select **Use local**. This changes
+the saved selection for that scope; it is not a single-task override. Changing
+it does not move admitted work. An assignment is not proof of invocation, and
+the task result does not display a signer-backed actual executor.
+
 ## Scope and authority
 
 Every click and message rechecks the configured private chat allowlist, actual
@@ -47,14 +53,18 @@ New runtime timestamps use RFC3339 offsets. Older compact-offset or malformed
 timestamps may appear unavailable; existing persisted bytes are not rewritten.
 Unknown is displayed as an **unconfirmed outcome**, never as a failed operation
 or permission to retry. The next step is to inspect Tasks, the conversation and
-local run evidence before repeating work. Unconfirmed delivery similarly asks
-the user to check the conversation before sending again.
+local run evidence before repeating work. For unconfirmed delivery, check the
+conversation and receipts. `/reconcile` records a proven acknowledgment; it
+does not send the reply again. There is no supported resend control for an
+already acknowledged reply.
 
 Tasks are logical work; runs are physical attempts. Beside-run cancellation and
 pending approval controls preserve existing runtime ownership/approval semantics.
 Cancel is a request, not confirmation of process termination. Schedule next-due
-times are persisted cursors, not execution promises. The view shows existing
-runtime schedules only, never imports historical schedules or creates jobs.
+times are persisted cursors, not execution promises. The view lists and opens
+details for current schedules; use the [local CLI](inbox-scheduling.md#entry-points)
+to create or change them. See [fleet verification](fleet-verification.md) for
+the live distinction between Mac `/cancel` and Windows inline **Cancel**.
 
 ## Existing commands
 
@@ -90,6 +100,8 @@ memory change** uses the existing scoped undo semantics and a single-use control
 Ordinary unrelated messages continue as conversation messages; they are not
 silently consumed by a pending guide. This explicit-address design avoids
 guessing whether arbitrary text is an operational input or provider request.
+Approved facts can accompany an ordinary remote text task only from that exact
+topic, under the [remote memory limits](memory.md#paired-runners).
 
 ## Local verification
 

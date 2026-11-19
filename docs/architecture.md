@@ -16,7 +16,27 @@ per chat and context-boundary generation, never resumed using `--last`.
 Delegated attempts use distinct task-scoped session keys. A result is also saved
 in the origin conversation history.
 Delegated jobs receive their prompt, not the parent transcript or automatic
-attachment inheritance. Pass durable local artifact paths explicitly when needed.
+attachment inheritance. Pass durable artifact paths explicitly only for jobs
+executing on the same host.
+
+## Paired execution
+
+The coordinator freezes the conversation/topic's runner choice at task
+admission, including for scheduled occurrences. Before contacting the runner it
+commits the signed assignment and remote run reservation. The runner commits a
+separate local claim and signed Start before launching a fresh Codex session.
+The coordinator verifies signed results, applies them to the original run and
+delivers through the same outbox. Assignment is not proof of invocation.
+Unavailable or interrupted execution does not fall back to local work or retry
+automatically. See [paired nodes](production-nodes.md) and the
+[dated fleet evidence](fleet-verification.md).
+
+For an eligible text task, the assignment can include bounded approved facts
+from the exact Telegram topic. Fact selection and assignment commit serialize
+with memory mutations; no network call holds the write transaction. There is no
+shared database, remote memory index, transcript or credential transfer.
+
+## Local effects and delivery
 
 `TASK_APPEND` is a local pending-memory item. `DELEGATE_TASK` instead materializes
 a durable executable job. It does not recursively delegate. Approval requests
@@ -24,7 +44,9 @@ pause the task and can be resolved only in the originating chat. New delegated
 jobs, approval state and their parent delivery output are finalized atomically.
 
 SQLite is authoritative for result/outbox state. Delivery is serialized in-process,
-records completed Telegram operations and retries only incomplete operations.
+records completed Telegram operations and retries only eligible incomplete
+operations. Ambiguous sends are held for inspection, and recorded acknowledgments
+do not grant a fresh resend.
 Text has a saved representation/chunk plan; document fallback is saved before
 chunk delivery, and each successful chunk has its own acknowledgment.
 Owned input attachments remain available until result delivery is acknowledged;
@@ -34,7 +56,7 @@ Memory proposals use unique source-turn/append identities, not managed Markdown.
 Incoming chat commands authorize promotion, direct remembering, correction and
 undo. SQLite transactions own immutable records/history, effective state and
 FTS5 indexing. A small scoped curated layer plus bounded snippets enters context;
-bulk sources require bounded scoped reads. See [local memory](memory.md).
+bulk sources require bounded scoped reads. See [memory](memory.md).
 Task appends still project managed Markdown with in-process read/write serialization.
 Replacements are staged and synced beside the target, renamed atomically, and
 the parent directory is synced on Unix. Recovery materializes results/children

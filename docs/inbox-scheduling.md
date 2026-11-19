@@ -1,8 +1,9 @@
 # Durable inbox and calendar foundation
 
-Owner amendment, 16 November2026. Review **DEFERRED NOT APPROVED**; Phase2 remains
-incomplete. No deployment or actual user schedule is authorized by these examples.
-The previous real Mitori→Mars acceptance is preserved, not rerun.
+The 16 November 2026 owner amendment scoped this calendar to explicit work
+with durable admission and timing policies. No actual user schedule is
+authorized by these examples. See [fleet verification](fleet-verification.md)
+for separately authorized live cases and their exact revisions.
 
 ## Domain and existing owners
 
@@ -115,9 +116,16 @@ coconutclaw --data-dir /chosen/data schedule --session telegram:321#77 cancel 1
 
 Shell-quote session IDs containing `#` where the shell requires it. Telegram
 origins must be configured private chats; existing topic-off admission/delivery
-guards remain in effect. `/schedules` lists only the current conversation's new
-calendar records. Creation/edit stays explicit local CLI, not model markers or
-an automatically inferred natural-language cadence.
+guards remain in effect. `/schedules` lists and opens details for the current
+conversation's new calendar records. Creation and changes require the local CLI,
+not a Telegram control, model marker or inferred natural-language cadence.
+
+A Telegram occurrence freezes the configured chat/topic's saved node selection
+when the occurrence is admitted, not when the schedule is created. A later
+selection change does not move accepted work. The coordinator sends the result
+to the configured scope; if the runner is unavailable, an unconfirmed outcome
+stays Unknown without local fallback. Calendar requests do not receive the
+[ordinary text task's remote memory context](memory.md#paired-runners).
 
 Calendar administration uses SQLite transactions without taking core execution
 ownership, so it remains available while `run` owns the instance lock. After
@@ -141,7 +149,7 @@ same scheduler lifecycle. There is no shared mutable Store, second sender,
 standalone calendar daemon, resident model tick or new provider owner.
 A standalone `schedule create` persists only, never starts a service.
 
-## Finite remaining gates
+## Evidence and limits
 
 - [x] [Durable raw Telegram ingress](telegram-ingress.md), including command/control
       dedup and acknowledgment recovery, replaces the single inflight KV checkpoint.
@@ -154,9 +162,14 @@ A standalone `schedule create` persists only, never starts a service.
       [preference/fact/progress/notification interfaces](context-notifications.md).
 - [x] Weekly recurrence, selectable missed/DST policies and scheduler-owned
       earliest-due wake independent of Telegram polling latency.
-- [ ] Final-source explicit/implicit machine inventory and official SANY/TLC,
-      plus actual pinned hosted native Linux/macOS/Windows execution.
-- [ ] Authorized product/live acceptance, independent review and final packaging.
+
+On `746c3b8`, a CLI-created one-off completed on Mac and delivered to its
+configured topic. A separate one-off due during guarded coordinator downtime
+was admitted once on restart; stored-result reconciliation did not invoke
+Codex again or resend the acknowledged reply. An unavailable assigned Mac
+produced Unknown with no local fallback. These were one-off cases, not live
+recurrence/DST or abrupt in-flight death tests and not reruns on `18c460c`.
+See [release verification and remaining gates](final-verification-gates.md).
 
 Disposable clock/SQLite tests cover DST expectations, catch-up/batch bounds,
 concurrent writers, rollback cuts, conflicting replay, future-only edits,

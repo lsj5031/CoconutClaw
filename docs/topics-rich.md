@@ -1,9 +1,9 @@
 # Private topics and native rich replies
 
-Scope: one owner's authorized **private chat**, currently `321951227`. Keep the
-existing configured chat guard. This slice does not enable groups, add chats,
-change BotFather settings, import OpenClaw memory, or enable networking features.
-Tests use synthetic configuration and local HTTP/process mocks.
+Scope: configured **private chats**. Topic mode does not enable groups, add
+chats, change BotFather settings or import memory. Pairing a runner is a
+separate [setup step](production-nodes.md). The tests described here use local
+HTTP/process mocks.
 
 ## Sessions and mode changes
 
@@ -34,12 +34,16 @@ identity and does not override the first. No implicit shared preference or
 global-memory scope is introduced. `/fresh` does not erase scoped memory.
 Cancellation callbacks and approval commands are scoped to their origin
 session; a different topic cannot cancel or approve its neighbor's work.
+Runner selection is also scoped to the exact conversation/topic. The assignment
+can include that topic's [approved facts](memory.md#paired-runners) for an
+ordinary remote text turn only; neither root memory nor another topic's facts
+are inherited.
 
 Root and thread are persisted separately in request/delivery payloads, new turn
 transport columns, task source metadata and approval metadata. Existing
-historical rows are not rewritten. Internal canonical IDs such as
-`telegram:321951227#7` are expanded at the transport boundary: Telegram receives
-`chat_id=321951227` and `message_thread_id=7`, including multipart media.
+historical rows are not rewritten. A canonical `telegram:CHAT_ID#TOPIC_ID`
+expands into separate `chat_id` and `message_thread_id` fields at the Telegram
+boundary, including for multipart media.
 History's historical unprefixed alias remains restricted to that same complete
 session identity, never to its root.
 

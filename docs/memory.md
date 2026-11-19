@@ -1,4 +1,4 @@
-# Local memory
+# Scoped memory
 
 One Rust/rusqlite implementation, using SQLite's already bundled FTS5. No
 embeddings, network service, engine interface, plugin or new dependency.
@@ -46,7 +46,7 @@ bytes. Superseded/undone records remain in immutable history but do not match
 search or ordinary `get`. Explicit promotion of an inactive ID is an intentional
 restore. Undo is LIFO per chat, not arbitrary historical deletion or redo.
 
-## Compact context, search, then source read
+## Local context, search, then source read
 
 - Curated bootstrap: newest four active curated records, **2048 bytes total**,
   including record labels and JSON-quoted content. Overflow records remain
@@ -64,7 +64,7 @@ restore. Undo is LIFO per chat, not arbitrary historical deletion or redo.
 - `list`: eight 128-character previews, 2048 bytes total; `get` is the next step
   when the preview is insufficient.
 
-The memory payload is at most 4096 bytes per ordinary prompt, plus fixed
+The local memory payload is at most 4096 bytes per ordinary prompt, plus fixed
 headings/instructions, independent of corpus size. This is a **memory** bound,
 not a bound on user input, recent conversation, SOUL.md or pending tasks.
 Memory command source turns are excluded from recent conversation injection.
@@ -78,6 +78,30 @@ arriving while a lane prepares an older prompt cannot label it as the new
 revision; that in-flight turn can finish with old context, but later turns use
 the new revision.
 
+## Paired runners
+
+Memory is authoritative on the coordinator. For an ordinary remote Telegram
+text task in an explicit topic, the coordinator can include active
+owner-approved facts from that exact chat and topic. Root chats, delegated and
+scheduled requests do not receive this memory. There is no parent-chat fallback.
+The newest curated facts are considered first, followed by snippets matched
+against the original text, with duplicates omitted. Unpromoted candidates do
+not qualify.
+
+Only fact content is included as JSON data in the signed request. No record
+IDs, provenance, history, preferences, database or credentials are sent. The
+whole expanded request must fit in 2048 UTF-8 bytes and the signed event in
+4096 bytes. Facts that do not fit are skipped; the original user text is not
+trimmed or rewritten. If no fact fits or applies, the request text is unchanged.
+
+The coordinator selects facts and persists the signed assignment in one
+transaction before contacting the runner. Correction and undo affect later
+assignments, not signed or in-flight ones. Each remote task starts a fresh
+Codex session; runners have no replicated memory index. Signed requests and
+their outputs may retain previously approved content, so do not approve secrets
+as memory. See [paired nodes](production-nodes.md) and the
+[live cross-runner recall and isolation checks](fleet-verification.md#live-scoped-memory).
+
 ## Authority and consistency
 
 Scope is the runtime's canonical Telegram chat identity, never text inside a
@@ -85,7 +109,7 @@ memory. Proposals derive scope and source ID from the stored turn. Commands use
 the already-authorized incoming private chat and exact topic. The current raw
 parser rejects groups and mismatched sender identities. Local operator `once`
 remains trusted for the existing memory interface.
-No cross-chat promote/get/search/undo operation exists.
+No cross-topic or cross-chat promote/get/search/undo operation exists.
 
 Content is JSON-quoted and labeled as data. Content resembling metadata or
 commands cannot change its SQL columns, authorize promotion, or create a
@@ -137,8 +161,6 @@ Read locally, offline, 15 November 2026:
 - `openclaw/docs/concepts/memory-search.md`: keyword BM25, bounded trusted
   pre-reply recall, deliberate FTS-only mode.
 
-Installed reference root:
-`/home/leo/.local/share/mise/installs/node/24.20.0/lib/node_modules/openclaw`.
 These are design references, not copied implementation or a claim of API parity.
 Here small immutable records are already bounded chunks; there is no file
 watcher, vector/hybrid search, semantic paraphrase recall, dreaming scheduler,
@@ -148,18 +170,18 @@ learned reranking, plugin system or configurable backend.
 
 | Domain | Stable local reference | Scope and authoritative store |
 | --- | --- | --- |
-| Messages/source turns | `turns.id`, Telegram update ID | Origin chat, core SQLite |
-| Memory | `memory_records.id`, `memory_history.id`, source turn | Origin chat, core SQLite; FTS/effective set are derived |
+| Messages/source turns | `turns.id`, Telegram update ID | Origin conversation/topic, coordinator SQLite |
+| Memory | `memory_records.id`, `memory_history.id`, source turn | Origin conversation/topic, coordinator SQLite; FTS/effective set are derived |
 | Jobs/results | `task_runs.id`, payload/result linkage | Origin session; assigned attempt owns execution result, core owns assignment/delivery |
-| Membership | Not implemented | Future owner-authorized peer records, never inferred from transport identity |
+| Node admission | Role-bound public pairing card and endpoint ID | Explicitly paired peers; not a replicated membership or coordinator-transfer protocol |
 | Artifacts | Existing owned local paths and task linkage | Local files; no portable identity or remote access yet |
 
 Future distributed identities must qualify local IDs with a stable core/store
 identity; bare integers or filesystem paths are not globally unique. Owner-key
 design: an offline-backed-up owner authority authorizes membership and explicit
 core transfer; device keys identify peers, not memory promotion authority.
-No key creation, copying, backup, rotation, crypto implementation or membership
-mutation occurs in this phase.
+This is a design for broader replication and transfer, not a capability of
+the current paired-node workflow.
 
 Before iroh state is called complete, define and test immutable record transport
 keys, core/store identity, epoch/fencing for sole-core transfer, membership grants,
@@ -171,7 +193,7 @@ prove distributed revocation, recovery or exactly-once execution.
 
 ## Verification
 
-New `store/memory_tests.rs` covers proposal/promotion, provenance forgery,
+The local memory suite covers proposal/promotion, provenance forgery,
 isolation, correction/undo, duplicate replay, reopen, malformed/oversize inputs,
 FTS5 availability and injected transactional rollback including the search index.
 The existing executable E2E suite now includes fresh-process `once` scenarios
@@ -179,4 +201,5 @@ for the full workflow and a 5000-record bulk corpus plus curated records.
 It asserts exact SQLite state, context/search/get budgets, source fetch isolation,
 native session invalidation and unchanged unscoped files. Incoming Telegram
 dispatch is exercised with synthetic local updates and no network/provider.
-See the Phase 1 report/evidence for actual check results, not just test intent.
+The Unix signed-runner fixture uses mock Codex and a reopened Store/scheduler;
+it is not the live cross-runner acceptance or a native Windows execution check.

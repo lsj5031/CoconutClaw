@@ -1,11 +1,13 @@
 # Disposable multihost acceptance
 
-Development only. Review **DEFERRED, NOT APPROVED**. Phase 2 remains incomplete;
-this does not activate networking or execution in the production executable.
+Historical development fixture, starting 16 November 2026. Its independent
+review was **DEFERRED, NOT APPROVED**. Its receipts apply only to this fixture;
+for ordinary Telegram task routing, see [paired execution nodes](production-nodes.md)
+and the separate [live fleet record](fleet-verification.md).
 
 The runnable role executable is the CLI's native **test harness**, launched only
-at the exact ignored `multihost_role_entry`. No normal CLI networking flag or
-sync dependency is introduced. `scripts/multihost-acceptance.py` builds, prepares,
+at the exact ignored `multihost_role_entry`, not the normal `nodes` CLI.
+`scripts/multihost-acceptance.py` builds, prepares,
 launches and controls it on Linux/macOS using an existing Python 3 installation.
 Never run the whole ignored suite with credentials.
 

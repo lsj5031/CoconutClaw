@@ -1,4 +1,38 @@
-# CoconutClaw revival plan — revision 9
+# CoconutClaw roadmap
+
+## Status, 19 November 2026
+
+Keep one Telegram/Codex coordinator for ingress, durable tasks and schedules,
+scoped memory and delivery. Trusted native runners execute assigned text work
+with host-local Codex authentication. Broader replication, automatic coordinator
+failover, extra clients/providers and a general coding UI are out of this slice.
+
+[PR #24](https://github.com/lsj5031/CoconutClaw/pull/24) merged scoped runner
+memory. The [fleet verification record](fleet-verification.md) documents the
+exact hosted Linux, macOS and native Windows CI pass on `18c460c`, the
+same-tree formal evidence on `3a55ae9`, and live Windows and Mac recall across a
+guarded coordinator restart. The isolation check used the same Mac in an
+unrelated topic; its signed request omitted the saved fact. Earlier live
+placement, scheduling, restart/reconciliation, offline Unknown and reachable
+cancellation cases were on `746c3b8`. Do not read those as reruns on `18c460c`.
+
+Next:
+
+1. Add explicit per-task Telegram placement without changing the saved topic
+   selection, and show the signer-backed actual executor in each result when
+   authenticated execution evidence exists.
+2. Close the live gaps for abrupt in-flight coordinator death and Mac inline
+   cancellation. Stored-result reconciliation is not fresh resend; no
+   supported control resends an acknowledged reply.
+3. Keep [artifact management in issue #23](https://github.com/lsj5031/CoconutClaw/issues/23)
+   separate from fleet acceptance. Broad Phase 2 state replication, coordinator
+   replacement and fresh-host/release packaging retain their own gates.
+
+## Historical plan, revision 9 (16 November 2026)
+
+The rest of this page is the 16 November development record. Its deployment
+pins, outstanding gates and review decisions describe the increments then,
+not the current paired-node baseline.
 
 16 November 2026 · Owner's 12:37/12:40 always-on/scheduling amendment supersedes
 the previous scheduling exclusion. Packaging waits for the foundation gates below.
@@ -236,7 +270,7 @@ Test duplicate assignments, cancellation, restart and lost result delivery. Pers
 
 Complete Telegram setup, pairing, service lifecycle, backup and diagnostics. Measure actual release-build resource use and remove demonstrated overhead. Verify fresh-machine installation and recovery. No Discord or Slack implementation or channel abstraction is required.
 
-## Immediate priority
+## Priorities at the 16 November checkpoint
 
 The Phase 0 baseline, bounded memory, and Telegram topics on/off, five-worker
 admission and native rich delivery are complete. The explicit one-time

@@ -1,15 +1,16 @@
 # iroh Phase 2, synthetic increments
 
-The historical fixture status below predates the isolated production-node
-implementation lane. See [paired execution nodes](production-nodes.md) for its
-separate source path, activation limits and required native acceptance. Historical
-fixture receipts are not evidence for that new path.
+The 16 November 2026 record below describes the synthetic replication and
+development fixtures, not the later paired-node runtime. The CLI now uses
+shared signing and iroh code for [paired execution nodes](production-nodes.md),
+but that path does not activate synthetic state replication or coordinator
+replacement. See [fleet verification](fleet-verification.md) for live evidence
+of the separate ordinary-task path.
 
-16 November 2026. **Partial, unreviewed, not deployed. Replicated application
-state is not complete.** No production cross-host runner, CLI network configuration or live
-production runtime adapters are enabled. `coconutclaw-sync` remains separate from the
-shipped Telegram/Codex executable; the isolated Store adapter below links it
-only as a CLI dev-dependency.
+At this checkpoint the replicated-state increment was **partial, unreviewed
+and not deployed**. The isolated Store adapter below was test-only; the CLI
+did not then ship a cross-host runner. These fixtures do not establish live
+fleet behavior or broad distributed consistency.
 
 ## Runnable multihost development roles, 16 November 11:03 authorization
 

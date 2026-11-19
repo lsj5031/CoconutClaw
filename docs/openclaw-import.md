@@ -6,7 +6,7 @@ without selecting and reviewing them first.
 
 ```
 coconutclaw --data-dir /private/destination import-openclaw \
-  --source-root /selected/workspace --chat-id 321951227 \
+  --source-root /selected/workspace --chat-id "$CHAT_ID" \
   --file USER.md --file memory/selected.md
 ```
 
@@ -14,8 +14,8 @@ Preview is the default and opens no database, takes no lock, and creates no
 destination files. It prints bounded JSON paths, line ranges and excerpts.
 Repeat with `--apply` to commit. `--topic-id N` chooses a private-chat topic;
 omitting it deliberately selects the root chat. The configured chat allowlist
-must authorize the positive private chat ID. File bodies cannot choose scope.
-The current deployment authorizes only chat 321951227.
+must authorize the positive private chat ID supplied as `CHAT_ID` in the example.
+File bodies cannot choose scope.
 
 Only explicitly selected `USER.md`, `MEMORY.md`, or `memory/*.md` are accepted.
 Nested memory files require `--recursive`; this permits selection, not discovery.
@@ -40,8 +40,10 @@ enable bounded search/recall. Explicit `--promote-curated` with `--apply` accept
 at most four chunks of at most 512 bytes each and enables compact bootstrap.
 This flag affects new versions only; it does not silently curate existing
 unchanged candidates. `/memory promote` enables search, not curation.
-The existing four-record/2048-byte bootstrap and eight-snippet/2048-byte recall
-bounds are unchanged regardless of corpus size.
+Local context retains its separate bootstrap and recall bounds. Once approved,
+an import in an exact Telegram topic can be selected for an eligible remote
+request under the [paired-runner bounds](memory.md#paired-runners). The signed
+request sends selected fact content, not the imported files or their provenance.
 
 Import origins are separate from conversation turns. Identity is canonical
 source root + relative path + chunk ordinal within destination scope. Versions
@@ -59,6 +61,4 @@ Each apply is one immediate SQLite transaction, including provenance, version
 receipts, effective set, FTS and history. A crash/failure leaves none or all.
 No original source content is automatically copied into reports or logs.
 
-Roadmap order: bounded built-in memory (done), Telegram topics/parallelism/rich
-delivery (done), this explicit import, then iroh **and replicated-state checks**,
-remote Codex, packaging. Networking and distributed consistency are not done.
+Import does not replicate memory or turn OpenClaw into a runtime dependency.

@@ -1,8 +1,9 @@
 # Paired execution nodes
 
-Implementation lane, **not deployed or accepted**. Native/live fleet acceptance
-and independent review are separate. The old `multihost-acceptance.py` fixture
-does not exercise this ordinary-task path.
+The ordinary-task path has live evidence with paired macOS and native Windows
+runners. See [fleet verification](fleet-verification.md) for the exact
+revisions, checks and limits. The older disposable multihost fixture does not
+exercise this path.
 
 One Linux coordinator polls Telegram. Explicitly paired runners accept text
 tasks over the already pinned iroh QUIC implementation. They never poll Telegram,
@@ -18,8 +19,7 @@ Git metadata, set `COCONUTCLAW_SOURCE_REVISION` to its verified 40-character
 commit. Never use that override to mislabel different source. Preserve binary
 and source-manifest hashes in the fleet receipt.
 
-The following are templates for the parent-owned fresh fixture, not permission
-for this lane to launch against live authentication:
+These are templates for a new, explicitly authorized pairing:
 
 ```sh
 # Coordinator, using its own data directory and actual reachable UDP address:
@@ -67,16 +67,19 @@ that coordinator identity. Administrative network probes/reconciliation require
 the core instance lock, so stop polling before running those commands.
 `nodes status` without `--probe` only reads persisted observations.
 
-On Telegram, open **Home → Nodes → Use remote ID**. Selection is scoped to the
-authenticated conversation/topic and frozen when each new task is admitted.
+On Telegram, open **Home → Nodes** or `/nodes` in the intended conversation/topic
+and choose the **Use Runner** button with the matching short ID. Selection is
+scoped to that conversation/topic and frozen when each new task is admitted.
 Existing tasks cannot be stolen by changing the selection. **Use local**
-affects only future tasks. Ordinary text goes directly through the production
-scheduler adapter, not through the finite checksum fixture.
+affects only future tasks. There is no per-task destination override. A
+[scheduled Telegram occurrence](inbox-scheduling.md) uses the selection in its
+configured scope at admission, not at calendar creation.
 
 Remote requests start fresh Codex sessions. For ordinary text tasks in an
 explicit Telegram topic, the coordinator can include active, owner-approved
 [memory](memory.md) from that exact chat and topic in the signed request to
-the assigned runner. Curated facts are considered first, then matching
+the assigned runner. Root, delegated and scheduled requests do not get this
+memory. Curated facts are considered first, then matching
 snippets from the original user text. Only fact content goes into the prompt
 as JSON data, not instructions. There is no parent-chat fallback, and no
 coordinator history, preferences, memory provenance or database, credentials,
@@ -125,9 +128,10 @@ runner, attempt and complete event chain are checked before acceptance.
 
 Nodes shows last successful contact, unavailable observations, selection and
 conversation-scoped assignments. These are dated observations, not heartbeat
-leases or guaranteed present liveness.
+leases or guaranteed present liveness. Assignment does not prove execution;
+the signed actual executor is not shown in the Telegram task result.
 
-Use existing task cancellation buttons during normal work. Cancellation intent
+Use `/cancel [run ID]` or the task's inline Cancel control. Cancellation intent
 is durable before dispatch and is not proof that external effects stopped. A
 late completed result after cancellation remains Unknown, with signed evidence
 retained. Graceful runner termination signals owned cancellation flags, shuts
@@ -155,6 +159,8 @@ coconutclaw --data-dir "$CORE_DATA" nodes reconcile RUN_ID
 These commands retrieve evidence or repeat the same assignment-bound
 cancellation intent, never Begin or provider execution. A durable result can
 replay exactly, but local Unknown is not erased by late Completed evidence.
+Replay preserves recorded Telegram acknowledgments. There is no supported
+control to send another copy of an already acknowledged reply.
 Only rerun ordinary polling after the administrative process has exited.
 Do not restore a copied identity root while an old holder may still be alive.
 Whole-backup freshness/adoption and coordinator replacement remain outside this
@@ -169,7 +175,7 @@ node-state migration are deliberately unavailable, not silently inferred.
 
 ## Native evidence gate
 
-Parent-owned Linux/Mac acceptance must record actual host/revision/binary
+For a new fleet acceptance check, record actual host/revision/binary
 identity, permitted workspace, separate Store roots, native invocation count,
 signed event and source-state hashes, successful ordinary Telegram selection/
 delivery, before/during/late cancellation, disconnect/reconnect, full restart,
@@ -181,9 +187,9 @@ device-key/coordinator-allowlist ACL enforcement instead of an unconditional
 platform refusal. Windows-native mocked-process tests cover cancellation,
 timeout, normal leader exit, abrupt owner death, shutdown/restart and unsafe/
 proper ACLs; CI requires their execution, not merely compilation. Existing
-durable claim/replay/restart tests also run there. The Linux development host
-does not establish Windows-native execution; the candidate must pass hosted
-Windows CI after parent publication. The user then performs native fleet
-acceptance with their existing Windows prerequisites and host-local Codex auth.
+durable claim/replay/restart tests also run there. A Linux development run does
+not establish Windows-native execution. For future candidates, require exact
+hosted Windows CI and separate authorized fleet acceptance with host-local
+Codex auth.
 No Windows paired host or OpenClaw installation is required to develop/test this
 source. No auth installation, export or copy is authorized by these docs.
