@@ -483,6 +483,12 @@
       "state_coverage_and_gap": "SQLite rollback is executable evidence, not a finite model or native Windows proof."
     },
     {
+      "path": "formal/fleet-memory-reconciliation.json",
+      "classification": "per-input source reconciliation",
+      "owner_and_scope": "Exact scoped-memory dispatch and inherited Windows test/workflow pin preimages; Windows CI remains Leo-owned",
+      "state_coverage_and_gap": "Models are unchanged. Scoped memory selection and bytes at remote dispatch require executable evidence; the synthetic Unix fixture does not close hosted platform or live fleet gates."
+    },
+    {
       "path": "docs/windows-onboarding.md",
       "classification": "native Windows source provenance/operator boundary",
       "owner_and_scope": "Exact historical delta layer / PowerShell operator checklist",

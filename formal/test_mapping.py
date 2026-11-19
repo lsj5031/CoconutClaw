@@ -14,6 +14,20 @@ def load(name):
     return json.loads((FORMAL / name).read_text())
 
 
+def pre_fleet_pins():
+    """Project current pins back through the checked fleet reconciliation."""
+    audit = load("fleet-memory-reconciliation.json")
+    pins = load("implementation-hashes.json")
+    for path, row in audit["changes"].items():
+        if pins[path] != row["after"]:
+            raise AssertionError(f"broken fleet mapping ancestry: {path}")
+        pins[path] = row["before"]
+    for path, row in audit["new_inputs"].items():
+        if pins.pop(path) != row["after"]:
+            raise AssertionError(f"broken fleet evidence pin: {path}")
+    return pins
+
+
 def production_pin(path, previous):
     """Preserve historical integration evidence and check the next exact delta."""
     changes = {row["path"]: row for row in load("production-reconciliation.json")["changes"]}
@@ -122,7 +136,7 @@ class Mapping(unittest.TestCase):
 
     def test_remediation_keeps_complete_pin_ancestry_and_executable_obligations(self):
         audit = load("review-remediation-reconciliation.json")
-        pins = load("implementation-hashes.json")
+        pins = pre_fleet_pins()
         self.assertEqual(audit["base_revision"], "6d8a2c91be8780a1579454378369817d7b1ec164")
         self.assertEqual(set(audit["inherited_pins"]), set(pins))
         rows = {row["path"]: row for row in audit["changes"]}
@@ -154,6 +168,38 @@ class Mapping(unittest.TestCase):
             self.assertTrue(row["inspection"])
             self.assertTrue(row["affected_families"])
             self.assertTrue(row["executable_obligation"])
+
+    def test_fleet_reconciliation_distinguishes_source_fixture_and_ci(self):
+        audit = load("fleet-memory-reconciliation.json")
+        inventory = {row["path"]: row for row in load("inventory.json")["paths"]}
+        pins = load("implementation-hashes.json")
+        before = pre_fleet_pins()
+        changes, new = audit["changes"], audit["new_inputs"]
+        workflow = ".github/workflows/ci.yml"
+        parent = "crates/coconutclaw-cli/src/nodes/tests.rs"
+        fixture = "crates/coconutclaw-cli/src/nodes/memory_tests.rs"
+        self.assertEqual(set(new), {fixture})
+        self.assertEqual(set(audit["inventory_only"]), {workflow})
+        self.assertEqual(pins.keys() - before.keys(), new.keys())
+        self.assertEqual({path for path in before if before[path] != pins[path]}, changes.keys())
+        self.assertNotIn(workflow, pins)
+        self.assertTrue(audit["publication_boundary"])
+        for path, row in (changes | new | audit["inventory_only"]).items():
+            self.assertEqual(inventory[path]["sha256"], row["after"])
+            if path not in new:
+                self.assertRegex(row["before"], r"^[0-9a-f]{64}$")
+                self.assertNotEqual(row["before"], row["after"])
+            for key in ("parent_revision", "change_revision"):
+                self.assertRegex(row[key], r"^[0-9a-f]{40}$")
+            self.assertRegex(row["delta_sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(row["inspection"])
+            self.assertTrue(row["executable_obligation"])
+        self.assertEqual(inventory[fixture]["classification"], "evidence-only")
+        module = next(d for d in inventory[parent]["declarations"] if d["text"] == "mod memory;")
+        self.assertIn({"line": module["line"] - 2, "text": "#[cfg(unix)]"},
+                      inventory[parent]["conditional_branches"])
+        self.assertEqual((ROOT / parent).read_text().splitlines()[module["line"] - 2],
+                         '#[path = "memory_tests.rs"]')
 
     def test_current_inventory_and_all_pins_agree(self):
         rows = load("inventory.json")["paths"]
@@ -189,7 +235,7 @@ class Mapping(unittest.TestCase):
                         )
 
     def test_reconciliation_records_match_reviewed_inputs(self):
-        pins = load("implementation-hashes.json")
+        pins = pre_fleet_pins()
         audit = load("reconciliation.json")
         integration = {
             row["path"]: row for row in load("integration-reconciliation.json")["reviews"]
@@ -211,7 +257,7 @@ class Mapping(unittest.TestCase):
             self.assertEqual(production_pin(row["path"], row["sha256"]), pins[row["path"]])
 
     def test_integration_reviews_cover_pin_union_without_losing_ui_history(self):
-        pins = load("implementation-hashes.json")
+        pins = pre_fleet_pins()
         audit = load("integration-reconciliation.json")
         rows = audit["reviews"]
         reviewed = {row["path"] for row in rows}
@@ -233,7 +279,7 @@ class Mapping(unittest.TestCase):
         self.assertFalse(audit["inherited_main_pin_mismatches"])
 
     def test_production_deltas_and_new_inputs_have_exact_provenance(self):
-        pins = load("implementation-hashes.json")
+        pins = pre_fleet_pins()
         audit = load("production-reconciliation.json")
         changes = {r["path"]: r for r in audit["changes"]}
         windows_added = load("windows-native-reconciliation.json")["new_inputs"]
@@ -257,7 +303,7 @@ class Mapping(unittest.TestCase):
             self.assertTrue(row["affected_families"])
 
     def test_windows_native_deltas_preserve_prior_pins_and_mark_native_boundary(self):
-        pins = load("implementation-hashes.json")
+        pins = pre_fleet_pins()
         audit = load("windows-native-reconciliation.json")
         self.assertEqual(audit["base_revision"], "114a1cf9e768b681d0d47cdf871e1906386243e2")
         review_added = load("review-fixes-reconciliation.json")["new_inputs"]
@@ -278,7 +324,7 @@ class Mapping(unittest.TestCase):
         self.assertIn("not proved", audit["native_boundary"])
 
     def test_review_fixes_preserve_ancestry_and_explicit_executable_gaps(self):
-        pins = load("implementation-hashes.json")
+        pins = pre_fleet_pins()
         audit = load("review-fixes-reconciliation.json")
         self.assertEqual(audit["base_revision"], "2e8eb2defafd62b89496660d5553a2dbf0c413ee")
         self.assertEqual(set(audit["inherited_pins"]) | set(audit["new_inputs"]), set(pins))

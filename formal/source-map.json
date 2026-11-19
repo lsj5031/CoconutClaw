@@ -321,10 +321,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "recover",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 871,
+                "line": 929,
                 "text": "pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {"
               }
             ]
@@ -661,10 +661,10 @@
           {
             "path": "crates/coconutclaw-cli/src/store/memory.rs",
             "symbol": "memory_command",
-            "sha256": "e4bc6a9f97ac0b1314c0329618041620b784ec1c39fb404e1dd6b42535f20a5e",
+            "sha256": "3809076fbf3ecac2acb87095f951924ab1134ccdccc118e81dea3ae2e6c8a3da",
             "declarations": [
               {
-                "line": 179,
+                "line": 230,
                 "text": "pub(crate) fn memory_command("
               }
             ]
@@ -765,7 +765,7 @@
       },
       "guards": "Original scope/actor authenticates user preference writes, facts/remote progress/history never choose instruction authority. Snapshot revision governs native reuse. Same semantic blocker does not allocate another decision; send checks current binding; stale/Unknown does not resend.",
       "atomicity": "Preference+control reply and blocker decision+projection+outbox each commit atomically; external send remains separate. Preference change during a running prompt affects next generation, not retroactively its frozen snapshot.",
-      "gaps": "Factual records represented as role-separated scope bits, not full memory candidate/promote/correct/undo, recall/FTS ranking, retention/import/file projection. Semantic blocker progression monotonic0..Limit here; source allows returning to an earlier semantic identity with a fresh generation. Changed-notice batching/cursor fairness and full route snapshots remain executable-test coverage."
+      "gaps": "Factual records represented as role-separated scope bits, not full memory candidate/promote/correct/undo, recall/FTS ranking, retention/import/file projection. Semantic blocker progression monotonic0..Limit here; source allows returning to an earlier semantic identity with a fresh generation. Changed-notice batching/cursor fairness and full route snapshots remain executable-test coverage. Remote dispatch reads a scoped active projection at reservation; this model does not prove what bytes reach another runner. See RemoteComposition and fleet-memory-reconciliation.json."
     },
     "Replication": {
       "owner": "Exclusive synthetic ScopedPeer owner, signed membership high-water, lease boundary, immutable disclosure journal and projection repair",
@@ -924,10 +924,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::admit",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 586,
+                "line": 616,
                 "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
               }
             ]
@@ -1110,10 +1110,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::open",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 546,
+                "line": 576,
                 "text": "fn open(cfg: RuntimeConfig) -> Result<Self> {"
               }
             ]
@@ -1312,11 +1312,33 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "execute",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 784,
+                "line": 814,
                 "text": "pub(crate) fn execute("
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/nodes.rs",
+            "symbol": "Bundle::include_memory",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
+            "declarations": [
+              {
+                "line": 448,
+                "text": "fn include_memory(&mut self, core: &SecretKey, text: &str, facts: Vec<String>) -> Result<()> {"
+              }
+            ]
+          },
+          {
+            "path": "crates/coconutclaw-cli/src/store/memory.rs",
+            "symbol": "Store::remote_memory",
+            "sha256": "3809076fbf3ecac2acb87095f951924ab1134ccdccc118e81dea3ae2e6c8a3da",
+            "declarations": [
+              {
+                "line": 182,
+                "text": "pub(crate) fn remote_memory(&self, scope: &str, query: &str) -> Result<Vec<String>> {"
               }
             ]
           }
@@ -1380,10 +1402,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::admit",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 586,
+                "line": 616,
                 "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
               }
             ]
@@ -1391,10 +1413,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::finish",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 621,
+                "line": 651,
                 "text": "fn finish(&mut self, bundle: &Bundle, mut outcome: Outcome, output: &str) -> Result<()> {"
               }
             ]
@@ -1459,10 +1481,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "accept",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 881,
+                "line": 939,
                 "text": "fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {"
               }
             ]
@@ -1505,10 +1527,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "Runner::cancel",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 667,
+                "line": 697,
                 "text": "fn cancel(&mut self, bundle: &Bundle, command: &Cancellation) -> Result<()> {"
               }
             ]
@@ -1516,8 +1538,8 @@
         ]
       },
       "guards": "Pre-provider reservation excludes local execution; claim is one-shot. Verified signed original assignment/run/actor/route before custody; raw receipt survives partition/restart. Original local cancellation or existing Unknown yields uncertain result, never clean success. Route substitution quarantines rather than reroutes or executes marker text.",
-      "atomicity": "Reservation+original request, signed custody+result inbox, original result+outbox each have separate commits; network/signature callbacks own no mutable Store. Application epoch2 suspends, not automatic failover.",
-      "gaps": "No actual socket/crypto/native-Codex execution; dev-only admission preserved. Conflicting signed proposals, RPC frame ordering and receipt-byte guards are source-test assumptions. Already-custodied results may project after later fencing; source cancellation after an already-committed completion does not retroactively rewrite outcome. Controlled fixture file gates, before-original-ACK fault cut and coordinator-only detach/reconnect are new executable regressions, not native/Rust refinement proofs. Separate original Stores do not prove a shared-core two-runner composition. Inert nonce preflight exchanges use generic scoped artifact custody, not domain-event receipt, and are executable-test coverage only. PR22 Ready write/read acknowledgment before socket close refines physical harness readiness only, not signed task/domain custody. Physical socket blocking and readiness delivery remain executable obligations. Production handlers retain coarse claim/authority/Unknown cuts with independent histories. No native sandbox, descendant cleanup, key ACL, heartbeat, whole-backup freshness or external exactly-once proof. See production-runners.md."
+      "atomicity": "Reservation+original request, signed custody+result inbox, original result+outbox each have separate commits; network/signature callbacks own no mutable Store. Application epoch2 suspends, not automatic failover. In production, exact-topic memory selection, signing and durable assignment/reservation share one immediate SQLite write transaction after durable source binding; transport starts after commit. The signed provider prompt is not the stored original request.",
+      "gaps": "No actual socket/crypto/native-Codex execution; dev-only admission preserved. Conflicting signed proposals, RPC frame ordering and receipt-byte guards are source-test assumptions. Already-custodied results may project after later fencing; source cancellation after an already-committed completion does not retroactively rewrite outcome. Controlled fixture file gates, before-original-ACK fault cut and coordinator-only detach/reconnect are new executable regressions, not native/Rust refinement proofs. Separate original Stores do not prove a shared-core two-runner composition. Inert nonce preflight exchanges use generic scoped artifact custody, not domain-event receipt, and are executable-test coverage only. PR22 Ready write/read acknowledgment before socket close refines physical harness readiness only, not signed task/domain custody. Physical socket blocking and readiness delivery remain executable obligations. Production handlers retain coarse claim/authority/Unknown cuts with independent histories. No native sandbox, descendant cleanup, key ACL, heartbeat, whole-backup freshness or external exactly-once proof. See production-runners.md. Reserve abstracts the durable publication cut, not topic eligibility, scoped selection, correction/undo ordering, JSON projection or signed byte bounds. These remain executable obligations; the two-runner Unix fixture reopens Store/scheduler, not a live fleet service. Previously signed input is not retractable."
     },
     "WaitNoticeComposition": {
       "owner": "Logical head/dependency completion reducer -> new physical continuation; blocker/notice sender; original preference scope",
@@ -1790,10 +1812,10 @@
           {
             "path": "crates/coconutclaw-cli/src/nodes.rs",
             "symbol": "selection",
-            "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+            "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
             "declarations": [
               {
-                "line": 686,
+                "line": 716,
                 "text": "pub(crate) fn selection(store: &Store, session: &str, id: Option<&str>) -> Result<()> {"
               }
             ]

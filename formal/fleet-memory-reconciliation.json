@@ -1,0 +1,92 @@
+{
+  "base_revision": "6a44d7d4da1df4d77ac08436c2a4e92a146310de",
+  "source_revision": "dfcedae435fb6062879820b161ef5cf90c08eee9",
+  "scope": "Append-only reconciliation over atomic offline publication. Existing models, configs, case registry and official checker are unchanged. Windows CI remains Leo-owned.",
+  "publication_boundary": "Local task/route admission already exists. In one immediate SQLite transaction the coordinator binds the durable source, selects exact-topic active content, and commits the signed bundle and runtime reservation. No remote exchange before commit; failure before commit publishes neither assignment nor reservation. Correction or undo affects later selections, not frozen signed evidence. Result custody and offline Unknown remain separate cuts.",
+  "changes": {
+    "crates/coconutclaw-cli/src/store/memory.rs": {
+      "parent_revision": "b1e0240fb62c88b9c36dcbfc7ddb168df1336a6c",
+      "change_revision": "dfcedae435fb6062879820b161ef5cf90c08eee9",
+      "before": "e4bc6a9f97ac0b1314c0329618041620b784ec1c39fb404e1dd6b42535f20a5e",
+      "after": "3809076fbf3ecac2acb87095f951924ab1134ccdccc118e81dea3ae2e6c8a3da",
+      "delta_sha256": "26b94aaa9a3675ce0d60a2b4d884906bff3d23deb2f6b1d7ba1b1e525711c8dd",
+      "inspection": "Curated and literal FTS queries reuse exact-scope memory_active joins; remote_memory projects only content, curated first with ID deduplication, not IDs, source labels or paths. Removed MAX_RESULTS/bounded_rows; recall SQL retains LIMIT 8 and local display remains bounded. Original memory mutation/authority code is unchanged.",
+      "affected_families": [
+        "Context",
+        "History",
+        "WaitNoticeComposition",
+        "RemoteComposition"
+      ],
+      "executable_obligation": "SQL/FTS, active content selection, local display and correction/undo are executable obligations, not finite actions."
+    },
+    "crates/coconutclaw-cli/src/nodes.rs": {
+      "parent_revision": "b1e0240fb62c88b9c36dcbfc7ddb168df1336a6c",
+      "change_revision": "dfcedae435fb6062879820b161ef5cf90c08eee9",
+      "before": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+      "after": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
+      "delta_sha256": "455413a7e1b0a3583acf675d1d3b8ae202ef0026a8bc49c50d1cbd78c903dc3c",
+      "inspection": "execute matches durable session, original text, channel, source user and update; memory requires a non-delegated Telegram topic with matching delivery route. Bundle::include_memory adds JSON fact data only if the whole text and signed event fit; the valid original survives if none fits. Runner claim, recovery, original request, result acceptance and offline Unknown remain separate and unchanged.",
+      "affected_families": [
+        "Process",
+        "RemoteComposition",
+        "UIAuthority",
+        "Tasks"
+      ],
+      "executable_obligation": "The coordinator transaction, prompt/wire bounds and authenticated fresh provider input require executable evidence."
+    },
+    "crates/coconutclaw-cli/src/nodes/tests.rs": {
+      "parent_revision": "b1e0240fb62c88b9c36dcbfc7ddb168df1336a6c",
+      "change_revision": "dfcedae435fb6062879820b161ef5cf90c08eee9",
+      "before": "3e709169f92489fb41236f53b4d305d0ee45840196d207acbea11d2c7b455611",
+      "after": "572306fc23e147c8c3d55fe2f76ceba224d7240dc40d61fae8fd46ed1605fb4a",
+      "delta_sha256": "e42b2047b9c591b9ff3c101c25e8234585b1f24cff7430bca663c3e557561a9a",
+      "inspection": "Added portable signed bound test and Unix-gated fixture module. Reanchored later declarations and Unix gates; existing atomic-offline rollback and Windows custody fixtures are unchanged.",
+      "affected_families": [
+        "Process",
+        "RemoteComposition",
+        "UIAuthority",
+        "Tasks"
+      ],
+      "executable_obligation": "Portable bound checks and synthetic Unix loopback do not replace native Windows custody or live fleet tests."
+    },
+    "crates/coconutclaw-cli/tests/nodes_cli.rs": {
+      "parent_revision": "6a44d7d4da1df4d77ac08436c2a4e92a146310de",
+      "change_revision": "746c3b8632dd60a113077455eb4b696edef06fe3",
+      "before": "495b10425f1aecaa7f0235723c93c8bf26bd3c7dd19636a15ff52f570bb8f073",
+      "after": "81b42f6782a88487f8db62df40dae5e5ce26699f825ccae914a8197776adba03",
+      "delta_sha256": "7669c1d0b7d12f4df6596a9a4be2982afe804948809547b447dd7bb60d214b6d",
+      "inspection": "Same Windows-only private pair/start/probe/restart fixture still requires probe success; its output assertion now matches the exact rendered reachable line. nodes::status maps the stored observation token to that line. Shifted downstream Windows test and gate; no ACL or restart behavior changed.",
+      "affected_families": [
+        "Process",
+        "RemoteComposition"
+      ],
+      "executable_obligation": "Native Windows execution remains required and owned by Leo. This is not a Windows execution receipt."
+    }
+  },
+  "new_inputs": {
+    "crates/coconutclaw-cli/src/nodes/memory_tests.rs": {
+      "parent_revision": "b1e0240fb62c88b9c36dcbfc7ddb168df1336a6c",
+      "change_revision": "dfcedae435fb6062879820b161ef5cf90c08eee9",
+      "after": "bb1bce120bc18071cbce8fb88628edf863d7575c48955d3c58335b7365e60079",
+      "delta_sha256": "935a262cf68ad968eb769d74ac851d7892f0f1fb855c5c0240499eb0cd7423c0",
+      "inspection": "Evidence-only module reached through #[cfg(unix)] mod memory in nodes/tests.rs. Fake Codex, authenticated two-runner loopback, and Store/scheduler reopen check exact signed input versus stdin, scope controls, correction/undo and no reinvocation on replay.",
+      "affected_families": [
+        "Context",
+        "RemoteComposition"
+      ],
+      "executable_obligation": "Synthetic Unix fixture, not live MEMORY-01, native Windows, a service restart or real authenticated Codex."
+    }
+  },
+  "inventory_only": {
+    ".github/workflows/ci.yml": {
+      "parent_revision": "746c3b8632dd60a113077455eb4b696edef06fe3",
+      "change_revision": "b1e0240fb62c88b9c36dcbfc7ddb168df1336a6c",
+      "before": "247b19f9e2fe303136f90161febf171f2c172028738f9d4441466546a301d296",
+      "after": "f7a86dc6c5d9be34aad088d166a9e007fdb515eeb30c67e8459f15f3ac48ae54",
+      "delta_sha256": "c3a5315dab1d7490e6535fe1da8c1ad46dbac90ccac5d979dae304f4d01c0840",
+      "inspection": "Ubuntu/macOS remain matrix jobs. Windows splits build and native tests, and the always-running aggregate requires both successes. Shared receipt Python, named Windows assertions and test command remain unchanged; Windows precompiles test targets and keeps the windows-latest artifact suffix.",
+      "affected_families": [],
+      "executable_obligation": "Hosted exact-SHA platform evidence is separate. Leo retains Windows CI ownership."
+    }
+  }
+}

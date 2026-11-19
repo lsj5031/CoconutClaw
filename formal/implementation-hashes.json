@@ -47,7 +47,7 @@
   "crates/coconutclaw-cli/src/store/approvals.rs": "e6ab182c3307edbaebeed6235f8b32ca5b41a0bbc198a9ba61b76845f04c15b4",
   "crates/coconutclaw-cli/src/store/inbox.rs": "e3cbc95f07fc14c031291e060a99767241a04c347808bbfa6429d3fc2e300a07",
   "crates/coconutclaw-cli/src/store/kv.rs": "5a413fb7cfb6775278267e4b58cd66ffb44cd139debb6073660a76a8b5a3da7e",
-  "crates/coconutclaw-cli/src/store/memory.rs": "e4bc6a9f97ac0b1314c0329618041620b784ec1c39fb404e1dd6b42535f20a5e",
+  "crates/coconutclaw-cli/src/store/memory.rs": "3809076fbf3ecac2acb87095f951924ab1134ccdccc118e81dea3ae2e6c8a3da",
   "crates/coconutclaw-cli/src/store/memory_pre_import_fixture.sql": "1959388ac6b1ec08b56e30e0cf52d707953cf097abf3bbc65571aa922a773f2e",
   "crates/coconutclaw-cli/src/store/memory_tests.rs": "49adfcd4efde9ebad546a4eada907c7914bce3b8095c1d2d7c49c11b8afe6494",
   "crates/coconutclaw-cli/src/store/migrations.rs": "b3d35e87913e6d7b4be31b4af73369be43cde6730bb944aa5c4acff1b318d9fe",
@@ -140,11 +140,11 @@
   "sql/memory.sql": "a36959213cf51dc33e16df5a388b7bc19cda2f9674e8d9d4751bc80b3a1722d3",
   "sql/schema.sql": "5327387dddaec1494cf6975162a4a5783c83d8d36e4993bd6099fe5add9aec54",
   "crates/coconutclaw-cli/build.rs": "3c9db6e13c7d9b7a35b662878cf36b9a34635def86b29218a105f6cae977a6fb",
-  "crates/coconutclaw-cli/src/nodes.rs": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
+  "crates/coconutclaw-cli/src/nodes.rs": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
   "crates/coconutclaw-cli/src/nodes/transport.rs": "3afc2af03433c8a555237028110ad178255102ce5ce845d5777674c3e6cc726b",
-  "crates/coconutclaw-cli/src/nodes/tests.rs": "3e709169f92489fb41236f53b4d305d0ee45840196d207acbea11d2c7b455611",
+  "crates/coconutclaw-cli/src/nodes/tests.rs": "572306fc23e147c8c3d55fe2f76ceba224d7240dc40d61fae8fd46ed1605fb4a",
   "crates/coconutclaw-cli/src/runner_wire.rs": "ae74c54661351262af5dc85e5054eee3f5e9cc31507973081296c04a14e47c92",
-  "crates/coconutclaw-cli/tests/nodes_cli.rs": "495b10425f1aecaa7f0235723c93c8bf26bd3c7dd19636a15ff52f570bb8f073",
+  "crates/coconutclaw-cli/tests/nodes_cli.rs": "81b42f6782a88487f8db62df40dae5e5ce26699f825ccae914a8197776adba03",
   "crates/coconutclaw-provider/src/windows.rs": "8922a88f91d95d9453160b97f855650522a49b9a052c425af17748245e128703",
   "crates/coconutclaw-provider/src/windows/tests.rs": "d7f3dd58c365622fad8454ae59de4be2edeee535b4a83d10ac6996f75d91c831",
   "crates/coconutclaw-config/src/windows_security.rs": "6fe7be87edd7b632bd4d82a45423533615217a0475a388265dc1b81d8c8cb6c6",
@@ -153,5 +153,6 @@
   "crates/coconutclaw-cli/src/store/retention.rs": "5d813ca3d84d3104486eed27f6b884451a7925827bf44d5661279cf809004c05",
   "crates/coconutclaw-cli/src/store/startup_tests.rs": "a7b81aa19dff93a08d57fc4e4c8f45755b420c59d3490811dc62d056c818404e",
   "crates/coconutclaw-cli/src/wording.rs": "23fc977f76d4ac255e2c1bbaa5e74f76d5ffc68c58eb39f3727a5d3481fd9390",
-  "crates/coconutclaw-cli/tests/doctor.rs": "01e5496910b7f2476cc9da0d4a8d4eab1017a5d1c74aaffaa207239dc0b1c1b4"
+  "crates/coconutclaw-cli/tests/doctor.rs": "01e5496910b7f2476cc9da0d4a8d4eab1017a5d1c74aaffaa207239dc0b1c1b4",
+  "crates/coconutclaw-cli/src/nodes/memory_tests.rs": "bb1bce120bc18071cbce8fb88628edf863d7575c48955d3c58335b7365e60079"
 }

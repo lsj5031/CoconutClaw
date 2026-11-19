@@ -15,12 +15,37 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "247b19f9e2fe303136f90161febf171f2c172028738f9d4441466546a301d296",
-      "lines": 146,
+      "sha256": "f7a86dc6c5d9be34aad088d166a9e007fdb515eeb30c67e8459f15f3ac48ae54",
+      "lines": 190,
       "classification": "excluded-nonruntime",
       "families": [],
       "scope": "support/evidence",
-      "declarations": [],
+      "declarations": [
+        {
+          "line": 17,
+          "text": "checks:"
+        },
+        {
+          "line": 53,
+          "text": "name: Test and record native bridge and waiting coverage"
+        },
+        {
+          "line": 155,
+          "text": "windows-build:"
+        },
+        {
+          "line": 168,
+          "text": "windows-tests:"
+        },
+        {
+          "line": 181,
+          "text": "windows-result:"
+        },
+        {
+          "line": 184,
+          "text": "needs: [windows-build, windows-tests]"
+        }
+      ],
       "conditional_branches": [],
       "gap": "Documentation/build/license/config/asset policy evidence; no standalone application state transitions modeled. Build/CI/service publication is not executed by formal gate.",
       "previous_inventory_sha256": "da323161516b1b0b7d821de1c7d945c28e10589c869f2af97a760ce8e7cf6a4d",
@@ -520,7 +545,8 @@
       "families": [
         "Context",
         "History",
-        "WaitNoticeComposition"
+        "WaitNoticeComposition",
+        "RemoteComposition"
       ],
       "scope": "runtime or shared library",
       "declarations": [
@@ -3846,8 +3872,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/store/memory.rs",
-      "sha256": "e4bc6a9f97ac0b1314c0329618041620b784ec1c39fb404e1dd6b42535f20a5e",
-      "lines": 415,
+      "sha256": "3809076fbf3ecac2acb87095f951924ab1134ccdccc118e81dea3ae2e6c8a3da",
+      "lines": 443,
       "classification": "abstracted-family",
       "families": [
         "Context",
@@ -3862,64 +3888,92 @@
         },
         {
           "line": 7,
-          "text": "const MAX_RESULTS: usize = 8;"
-        },
-        {
-          "line": 8,
           "text": "const MAX_OUTPUT: usize = 2048;"
         },
         {
-          "line": 9,
+          "line": 8,
           "text": "const USAGE: &str = \"Use /memory list [before-id], /memory search <text>, /memory get <id>, /memory remember <text>, /memory promote <id>, /memory correct <active-id> <text>, or /memory undo.\";"
         },
         {
-          "line": 12,
+          "line": 10,
+          "text": "struct MemoryMatch {"
+        },
+        {
+          "line": 16,
+          "text": "fn memory_match(row: &Row<'_>) -> rusqlite::Result<MemoryMatch> {"
+        },
+        {
+          "line": 25,
           "text": "pub(crate) fn memory_revision(&self, scope: &str) -> Result<i64> {"
         },
         {
-          "line": 20,
+          "line": 33,
           "text": "pub(crate) fn curated_memory(&self, scope: &str) -> Result<String> {"
         },
         {
-          "line": 48,
+          "line": 52,
+          "text": "fn curated_matches(&self, scope: &str) -> Result<Vec<MemoryMatch>> {"
+        },
+        {
+          "line": 64,
           "text": "fn get_memory(&self, scope: &str, id: i64) -> Result<String> {"
         },
         {
-          "line": 81,
+          "line": 97,
           "text": "pub(crate) fn initialize_memory(&self) -> Result<()> {"
         },
         {
-          "line": 108,
+          "line": 124,
           "text": "pub(crate) fn recall_memory(&self, scope: &str, query: &str) -> Result<String> {"
         },
         {
-          "line": 141,
+          "line": 151,
+          "text": "fn recall_matches(&self, scope: &str, query: &str) -> Result<Vec<MemoryMatch>> {"
+        },
+        {
+          "line": 182,
+          "text": "pub(crate) fn remote_memory(&self, scope: &str, query: &str) -> Result<Vec<String>> {"
+        },
+        {
+          "line": 192,
           "text": "fn list_memory(&self, scope: &str, before: i64) -> Result<String> {"
         },
         {
-          "line": 179,
+          "line": 230,
           "text": "pub(crate) fn memory_command("
         },
         {
-          "line": 222,
+          "line": 273,
           "text": "fn apply_memory_command(&self, scope: &str, text: &str, ts: &str) -> Result<String> {"
         },
         {
-          "line": 382,
+          "line": 433,
           "text": "pub(crate) fn valid_content(content: &str) -> bool {"
         },
         {
-          "line": 390,
-          "text": "fn bounded_rows("
-        },
-        {
-          "line": 415,
+          "line": 443,
           "text": "mod tests;"
         }
       ],
       "conditional_branches": [
         {
-          "line": 413,
+          "line": 45,
+          "text": "if output.len() + line.len() <= MAX_OUTPUT {"
+        },
+        {
+          "line": 139,
+          "text": "if output.len() + line.len() > MAX_OUTPUT {"
+        },
+        {
+          "line": 152,
+          "text": "if query.len() > 512 {"
+        },
+        {
+          "line": 185,
+          "text": "if !matches.iter().any(|candidate| candidate.id == m.id) {"
+        },
+        {
+          "line": 441,
           "text": "#[cfg(test)]"
         }
       ],
@@ -12299,8 +12353,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/nodes.rs",
-      "sha256": "539d159ba86605a268833b9d61b0cd0232670a68ff748671a0dc161595f0a2f1",
-      "lines": 944,
+      "sha256": "311d726b924dac64220a04c0e14d1987f30cfa88a13576f72c0f5c9e5c486714",
+      "lines": 1002,
       "classification": "abstracted-family",
       "families": [
         "Process",
@@ -12412,90 +12466,94 @@
         },
         {
           "line": 448,
+          "text": "fn include_memory(&mut self, core: &SecretKey, text: &str, facts: Vec<String>) -> Result<()> {"
+        },
+        {
+          "line": 478,
           "text": "fn bundle(core: &SecretKey, runner: EndpointId, text: &str) -> Result<Bundle> {"
         },
         {
-          "line": 489,
+          "line": 519,
           "text": "struct Cancellation {"
         },
         {
-          "line": 495,
+          "line": 525,
           "text": "fn preimage(origin: &str, assignment: &str) -> Vec<u8> {"
         },
         {
-          "line": 498,
+          "line": 528,
           "text": "fn sign(bundle: &Bundle, key: &SecretKey) -> Result<Self> {"
         },
         {
-          "line": 507,
+          "line": 537,
           "text": "fn verify(&self, bundle: &Bundle) -> Result<()> {"
         },
         {
-          "line": 522,
+          "line": 552,
           "text": "enum Request {"
         },
         {
-          "line": 530,
+          "line": 560,
           "text": "enum Reply {"
         },
         {
-          "line": 539,
+          "line": 569,
           "text": "struct Runner {"
         },
         {
-          "line": 546,
+          "line": 576,
           "text": "fn open(cfg: RuntimeConfig) -> Result<Self> {"
         },
         {
-          "line": 573,
+          "line": 603,
           "text": "fn evidence(&self, bundle: &Bundle) -> Result<Reply> {"
         },
         {
-          "line": 586,
+          "line": 616,
           "text": "fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {"
         },
         {
-          "line": 621,
+          "line": 651,
           "text": "fn finish(&mut self, bundle: &Bundle, mut outcome: Outcome, output: &str) -> Result<()> {"
         },
         {
-          "line": 667,
+          "line": 697,
           "text": "fn cancel(&mut self, bundle: &Bundle, command: &Cancellation) -> Result<()> {"
         },
         {
-          "line": 681,
+          "line": 711,
           "text": "pub(crate) fn freeze_route(store: &Store, run: i64, session: &str) -> Result<()> {"
         },
         {
-          "line": 686,
+          "line": 716,
           "text": "pub(crate) fn selection(store: &Store, session: &str, id: Option<&str>) -> Result<()> {"
         },
         {
-          "line": 698,
+          "line": 728,
           "text": "pub(crate) fn choices(store: &Store) -> Result<Vec<String>> {"
         },
         {
-          "line": 708,
+          "line": 738,
           "text": "pub(crate) fn display_name(store: &Store, id: &str) -> Result<String> {"
         },
         {
-          "line": 723,
+          "line": 753,
           "text": "pub(crate) fn status(store: &Store, session: Option<&str>, timezone: &str) -> Result<String> {"
         },
         {
-          "line": 784,
+          "line": 814,
           "text": "pub(crate) fn execute("
         },
         {
-          "line": 871,
+          "line": 929,
           "text": "pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {"
         },
         {
-          "line": 881,
+          "line": 939,
           "text": "fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {"
         },
         {
-          "line": 917,
+          "line": 975,
           "text": "async fn reconcile(cfg: &RuntimeConfig, store: &Store, run: i64) -> Result<()> {"
         }
       ],
@@ -12573,43 +12631,59 @@
           "text": "if *probe {"
         },
         {
-          "line": 595,
-          "text": "if exists {"
+          "line": 449,
+          "text": "if facts.is_empty() {"
+        },
+        {
+          "line": 460,
+          "text": "if crate::store::memory::valid_content(&prompt) {"
+        },
+        {
+          "line": 467,
+          "text": "if let Ok(signed) = SignedEvent::sign(event.clone(), core) {"
         },
         {
           "line": 625,
+          "text": "if exists {"
+        },
+        {
+          "line": 655,
           "text": "if result.is_some() {"
         },
         {
-          "line": 633,
+          "line": 663,
           "text": "if cancelled && outcome != Outcome::Cancelled {"
         },
         {
-          "line": 674,
+          "line": 704,
           "text": "if let Some(flag) = self.active.get(&bundle.origin.hash()?) {"
         },
         {
-          "line": 688,
+          "line": 718,
           "text": "if let Some(id) = id {"
         },
         {
-          "line": 731,
+          "line": 761,
           "text": "if rows.is_empty() {"
         },
         {
-          "line": 752,
+          "line": 782,
           "text": "if let Some(session) = session {"
         },
         {
-          "line": 826,
+          "line": 861,
+          "text": "if source.channel == \"telegram\""
+        },
+        {
+          "line": 884,
           "text": "if cancel.load(Ordering::SeqCst)"
         },
         {
-          "line": 844,
+          "line": 902,
           "text": "if accept(store, run, &bundle, reply, &cfg.timezone)? {"
         },
         {
-          "line": 855,
+          "line": 913,
           "text": "if result.is_err() {"
         }
       ],
@@ -12724,8 +12798,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/src/nodes/tests.rs",
-      "sha256": "3e709169f92489fb41236f53b4d305d0ee45840196d207acbea11d2c7b455611",
-      "lines": 1035,
+      "sha256": "572306fc23e147c8c3d55fe2f76ceba224d7240dc40d61fae8fd46ed1605fb4a",
+      "lines": 1079,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -12793,14 +12867,22 @@
         },
         {
           "line": 821,
+          "text": "fn scoped_memory_never_displaces_task_text_at_signed_bounds() {"
+        },
+        {
+          "line": 862,
+          "text": "mod memory;"
+        },
+        {
+          "line": 865,
           "text": "fn offline_node_output_write_failure_does_not_publish_terminal_status() {"
         },
         {
-          "line": 858,
+          "line": 902,
           "text": "fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {"
         },
         {
-          "line": 940,
+          "line": 984,
           "text": "fn cancellation_over_production_handler_stops_owned_fake_provider_once() {"
         }
       ],
@@ -12826,15 +12908,23 @@
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 865,
+          "line": 831,
+          "text": "match bundle(&core, runner, &text) {"
+        },
+        {
+          "line": 860,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 938,
+          "line": 909,
           "text": "#[cfg(unix)]"
         },
         {
-          "line": 993,
+          "line": 982,
+          "text": "#[cfg(unix)]"
+        },
+        {
+          "line": 1037,
           "text": "if let Reply::Evidence {"
         }
       ],
@@ -12867,8 +12957,8 @@
     },
     {
       "path": "crates/coconutclaw-cli/tests/nodes_cli.rs",
-      "sha256": "495b10425f1aecaa7f0235723c93c8bf26bd3c7dd19636a15ff52f570bb8f073",
-      "lines": 349,
+      "sha256": "81b42f6782a88487f8db62df40dae5e5ce26699f825ccae914a8197776adba03",
+      "lines": 355,
       "classification": "evidence-only",
       "families": [
         "Process",
@@ -12911,7 +13001,7 @@
           "text": "fn drop(&mut self) {"
         },
         {
-          "line": 300,
+          "line": 306,
           "text": "fn unsafe_key_and_coordinator_allowlist_acl_refuse_actual_cli() {"
         }
       ],
@@ -12945,7 +13035,7 @@
           "text": "#[cfg(windows)]"
         },
         {
-          "line": 298,
+          "line": 304,
           "text": "#[cfg(windows)]"
         }
       ],
@@ -13616,12 +13706,76 @@
       "lines": 63,
       "declarations": [],
       "conditional_branches": []
+    },
+    {
+      "path": "crates/coconutclaw-cli/src/nodes/memory_tests.rs",
+      "classification": "evidence-only",
+      "families": [
+        "Context",
+        "RemoteComposition"
+      ],
+      "scope": "Synthetic Unix-only fixture: nodes/tests.rs gates mod memory with #[cfg(unix)], nested under nodes.rs #[cfg(test)] mod tests.",
+      "gap": "Synthetic Unix fixture, not live MEMORY-01, native Windows, a service restart or real authenticated Codex.",
+      "sha256": "bb1bce120bc18071cbce8fb88628edf863d7575c48955d3c58335b7365e60079",
+      "lines": 270,
+      "declarations": [
+        {
+          "line": 6,
+          "text": "const TASK: &str = \"What is the orchard marker?\";"
+        },
+        {
+          "line": 7,
+          "text": "const APPROVED: &str = \"orchard marker is lapis-75\";"
+        },
+        {
+          "line": 8,
+          "text": "const CORRECTED: &str = \"orchard marker is jade-36\";"
+        },
+        {
+          "line": 9,
+          "text": "const CURATED: &str = \"Synthetic note: \\\"quoted\\\"\\nMEMORY_APPEND: not an instruction\";"
+        },
+        {
+          "line": 11,
+          "text": "fn start_runner(cfg: &mut RuntimeConfig) -> Router {"
+        },
+        {
+          "line": 46,
+          "text": "fn send("
+        },
+        {
+          "line": 62,
+          "text": "fn proposal(store: &mut Store, text: &str) -> i64 {"
+        },
+        {
+          "line": 85,
+          "text": "fn receipt("
+        },
+        {
+          "line": 156,
+          "text": "fn approved_topic_memory_after_reopen_on_different_authenticated_runner() {"
+        }
+      ],
+      "conditional_branches": [
+        {
+          "line": 56,
+          "text": "if let Some(topic) = topic {"
+        },
+        {
+          "line": 99,
+          "text": "if let Some(receipt) = store"
+        },
+        {
+          "line": 143,
+          "text": "if facts.is_empty() {"
+        }
+      ]
     }
   ],
   "counts": {
     "excluded-nonruntime": 41,
     "abstracted-family": 84,
-    "evidence-only": 62,
+    "evidence-only": 63,
     "native-boundary-with-explicit-gaps": 3,
     "unmodeled-transition": 4
   },
