@@ -1,12 +1,25 @@
 //! Local core transitions. Model strings supply content only, never scope/authority.
 use super::Store;
 use anyhow::{Result, bail};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Row, params};
 
 const MAX_CONTENT: usize = 2048;
-const MAX_RESULTS: usize = 8;
 const MAX_OUTPUT: usize = 2048;
 const USAGE: &str = "Use /memory list [before-id], /memory search <text>, /memory get <id>, /memory remember <text>, /memory promote <id>, /memory correct <active-id> <text>, or /memory undo.";
+
+struct MemoryMatch {
+    id: i64,
+    source: String,
+    content: String,
+}
+
+fn memory_match(row: &Row<'_>) -> rusqlite::Result<MemoryMatch> {
+    Ok(MemoryMatch {
+        id: row.get(0)?,
+        source: row.get(1)?,
+        content: row.get(2)?,
+    })
+}
 
 impl Store {
     pub(crate) fn memory_revision(&self, scope: &str) -> Result<i64> {
@@ -18,31 +31,34 @@ impl Store {
     }
 
     pub(crate) fn curated_memory(&self, scope: &str) -> Result<String> {
+        let mut output = String::new();
+        for MemoryMatch {
+            id,
+            source,
+            content,
+        } in self.curated_matches(scope)?
+        {
+            let line = format!(
+                "#{id} [source {source}] {}\n",
+                serde_json::to_string(&content)?
+            );
+            if output.len() + line.len() <= MAX_OUTPUT {
+                output.push_str(&line);
+            }
+        }
+        Ok(output)
+    }
+
+    fn curated_matches(&self, scope: &str) -> Result<Vec<MemoryMatch>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.id,COALESCE('turn '||r.source_turn,
                (SELECT 'import '||path||':'||first_line||'-'||last_line FROM memory_import_origins WHERE id=r.import_origin)),r.content FROM memory_records r
              JOIN memory_active a ON a.record_id=r.id
              WHERE r.scope=?1 AND r.curated=1 ORDER BY r.id DESC LIMIT 4",
         )?;
-        let rows = stmt.query_map([scope], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        let mut output = String::new();
-        for row in rows {
-            let (id, source, content) = row?;
-            let line = format!(
-                "#{id} [source {source}] {}\n",
-                serde_json::to_string(&content)?
-            );
-            if output.len() + line.len() <= 2048 {
-                output.push_str(&line);
-            }
-        }
-        Ok(output)
+        Ok(stmt
+            .query_map([scope], memory_match)?
+            .collect::<rusqlite::Result<_>>()?)
     }
 
     fn get_memory(&self, scope: &str, id: i64) -> Result<String> {
@@ -109,6 +125,33 @@ impl Store {
         if query.len() > 512 {
             return Ok("Search text exceeds 512 bytes. Try a shorter phrase.".into());
         }
+        let mut output = String::new();
+        for MemoryMatch {
+            id,
+            source,
+            content,
+        } in self.recall_matches(scope, query)?
+        {
+            let line = format!(
+                "#{id} [active, source {source}] {}\n",
+                serde_json::to_string(&content)?
+            );
+            if output.len() + line.len() > MAX_OUTPUT {
+                break;
+            }
+            output.push_str(&line);
+        }
+        Ok(if output.is_empty() {
+            "No matching promoted memories.".into()
+        } else {
+            output
+        })
+    }
+
+    fn recall_matches(&self, scope: &str, query: &str) -> Result<Vec<MemoryMatch>> {
+        if query.len() > 512 {
+            return Ok(Vec::new());
+        }
         // Literal tokens only. Quotes, operators, column names and punctuation
         // cannot become FTS syntax. Bound both tokenizer input and term count.
         let terms = query
@@ -118,7 +161,7 @@ impl Store {
             .map(|s| format!("\"{}\"", s.chars().take(64).collect::<String>()))
             .collect::<Vec<_>>();
         if terms.is_empty() {
-            return Ok("No matching promoted memories.".into());
+            return Ok(Vec::new());
         }
         let mut stmt = self.conn.prepare(
             "SELECT r.id,COALESCE('turn '||r.source_turn,
@@ -128,14 +171,22 @@ impl Store {
              WHERE memory_search MATCH ?1 AND r.scope=?2
              ORDER BY rank,r.id LIMIT 8",
         )?;
-        let rows = stmt.query_map(params![terms.join(" OR "), scope], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        bounded_rows(rows, "active")
+        Ok(stmt
+            .query_map(params![terms.join(" OR "), scope], memory_match)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Reuse coordinator lookup, but only export fact content, never source
+    /// identifiers, paths, or command/display text. The caller bounds the
+    /// complete signed prompt and reads both queries in the reservation snapshot.
+    pub(crate) fn remote_memory(&self, scope: &str, query: &str) -> Result<Vec<String>> {
+        let mut matches = self.curated_matches(scope)?;
+        for m in self.recall_matches(scope, query)? {
+            if !matches.iter().any(|candidate| candidate.id == m.id) {
+                matches.push(m);
+            }
+        }
+        Ok(matches.into_iter().map(|m| m.content).collect())
     }
 
     fn list_memory(&self, scope: &str, before: i64) -> Result<String> {
@@ -385,29 +436,6 @@ pub(crate) fn valid_content(content: &str) -> bool {
         && !content
             .chars()
             .any(|c| c.is_control() && c != '\n' && c != '\t')
-}
-
-fn bounded_rows(
-    rows: impl Iterator<Item = rusqlite::Result<(i64, String, String)>>,
-    state: &str,
-) -> Result<String> {
-    let mut output = String::new();
-    for row in rows.take(MAX_RESULTS) {
-        let (id, source, content) = row?;
-        let line = format!(
-            "#{id} [{state}, source {source}] {}\n",
-            serde_json::to_string(&content)?
-        );
-        if output.len() + line.len() > MAX_OUTPUT {
-            break;
-        }
-        output.push_str(&line);
-    }
-    Ok(if output.is_empty() {
-        "No matching promoted memories.".into()
-    } else {
-        output
-    })
 }
 
 #[cfg(test)]
