@@ -818,6 +818,50 @@ fn ordinary_production_adapter_over_native_iroh_has_one_invocation_per_assignmen
 }
 
 #[test]
+fn scoped_memory_never_displaces_task_text_at_signed_bounds() {
+    let core = SecretKey::from([103; 32]);
+    let runner = SecretKey::from([104; 32]).public();
+    // Exactly the text limit, then an input with room in text bytes but not in
+    // the escaped signed event. Both valid plain assignments must be unchanged.
+    let (mut low, mut high) = (1usize, 2048usize);
+    let mut near_limit = None;
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        let text = "\"".repeat(mid);
+        match bundle(&core, runner, &text) {
+            Ok(b) => {
+                // Keep these exact bytes: the random origin affects the
+                // signature, and its JSON array does not have fixed length.
+                near_limit = Some((text, b));
+                low = mid;
+            }
+            Err(_) => high = mid - 1,
+        }
+    }
+    let (quoted, quoted_bundle) = near_limit.unwrap();
+    assert!(quoted.len() + 100 < 2048);
+    let full = "x".repeat(2048);
+    let full_bundle = bundle(&core, runner, &full).unwrap();
+    for (text, mut b) in [(full, full_bundle), (quoted, quoted_bundle)] {
+        let plain = b.assignment.clone();
+        b.include_memory(&core, &text, vec!["optional fact".into()])
+            .unwrap();
+        assert_eq!(b.assignment, plain);
+        assert_eq!(b.validate(core.public(), runner).unwrap(), text);
+    }
+    // An oversized JSON-escaped fact must not prevent a later fact from fitting.
+    let mut b = bundle(&core, runner, "task").unwrap();
+    b.include_memory(&core, "task", vec!["\"".repeat(1100), "fits".into()])
+        .unwrap();
+    let prompt = b.validate(core.public(), runner).unwrap();
+    assert!(prompt.ends_with("\n[\"fits\"]\n\nUser request:\ntask"));
+}
+
+#[cfg(unix)]
+#[path = "memory_tests.rs"]
+mod memory;
+
+#[test]
 fn offline_node_output_write_failure_does_not_publish_terminal_status() {
     let (_core_dir, core) = fixture(Role::Coordinator, 93);
     let (_runner_dir, runner) = fixture(Role::Runner, 94);

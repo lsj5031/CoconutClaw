@@ -73,13 +73,31 @@ Existing tasks cannot be stolen by changing the selection. **Use local**
 affects only future tasks. Ordinary text goes directly through the production
 scheduler adapter, not through the finite checksum fixture.
 
-Remote requests intentionally start fresh Codex sessions and do not forward
-coordinator history, memory, preferences, private supplemental context or quoted
-messages. Attachments and unsupported richer requests fail explicitly rather
-than being silently stripped. The signed text/request envelope is bounded by
-the existing domain validator (2048-byte text, 4096-byte signed event). An
-oversized/unpublishable result becomes Unknown with a bounded explanation,
-never a fabricated/truncated completion.
+Remote requests start fresh Codex sessions. For ordinary text tasks in an
+explicit Telegram topic, the coordinator can include active, owner-approved
+[memory](memory.md) from that exact chat and topic in the signed request to
+the assigned runner. Curated facts are considered first, then matching
+snippets from the original user text. Only fact content goes into the prompt
+as JSON data, not instructions. There is no parent-chat fallback, and no
+coordinator history, preferences, memory provenance or database, credentials,
+private supplemental context or quoted messages are sent. Attachments and
+unsupported richer requests still fail explicitly.
+
+The existing 2048-byte text and 4096-byte signed-event limits cover the whole
+request, including any memory. Facts that do not fit are skipped, never at the
+expense of the original user text. If none fit or apply, the signed text is
+exactly the original. An oversized/unpublishable result becomes Unknown with a
+bounded explanation, never a fabricated/truncated completion.
+
+Correction and undo affect new assignments, not already signed or in-flight
+requests. The exact signed input is kept in coordinator and runner evidence;
+there is no runner memory index or session reuse, but changing a fact cannot
+erase an older prompt, receipt or output. Do not approve secrets as memory:
+the runtime does not classify or redact owner-approved fact content.
+
+Mixed revisions remain unsupported. The signed request is still text, with no
+new wire format or fallback for mismatched cards. Both identities and pairing
+cards must pass the existing same-revision checks before exchanging work.
 
 Remote Codex uses explicit `workspace-write` sandbox and no dangerous flag or
 automatic compatibility retry, regardless of the coordinator's execution policy.
