@@ -1,7 +1,7 @@
 import { mount, Picker, Scroll, signal, Text, View } from "nsh";
 import { demo } from "./demo";
-import { delivery, maxSnapshotBytes, observations, readSnapshot, statuses } from "./snapshot";
-import type { Snapshot } from "./snapshot";
+import { delivery, maxSnapshotBytes, observations, readPublicCard, readSnapshot, statuses } from "./snapshot";
+import type { PublicCard, Snapshot } from "./snapshot";
 
 type Page = "Nodes" | "Jobs";
 
@@ -41,21 +41,29 @@ function Nodes(props: { nodes: Snapshot["nodes"] }) {
     <View class="gap-3">
       <Text class="text-sm text-[#526174]">Saved reachability observations</Text>
       {props.nodes.length === 0 && <Text class="text-sm text-[#526174]">No paired runners in this snapshot.</Text>}
-      {props.nodes.map((node) => (
-        <View class="gap-2 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
-          <View class="flex-row flex-wrap items-center justify-between gap-2">
-            <Text class="text-base font-semibold text-[#1d2938]" accessibilityLabel={`Runner ${node.id}`}>
-              {runnerLabel(node.id)}
-            </Text>
-            <Text class={["reachable", "exchange"].includes(node.observation)
-              ? "text-sm font-semibold text-[#17614c]"
-              : "text-sm font-semibold text-[#526174]"}>
-              {observations[node.observation]}
-            </Text>
+      {props.nodes.map((node) => {
+        const observation = node.check ? (node.check.reachable ? "reachable" : "unreachable") : node.observation;
+        return (
+          <View class="gap-2 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
+            <View class="flex-row flex-wrap items-center justify-between gap-2">
+              <Text class="text-base font-semibold text-[#1d2938]" accessibilityLabel={`Runner ${node.id}`}>
+                {runnerLabel(node.id)}
+              </Text>
+              <Text class={["reachable", "exchange"].includes(observation)
+                ? "text-sm font-semibold text-[#17614c]"
+                : "text-sm font-semibold text-[#526174]"}>
+                {observations[observation]}
+              </Text>
+            </View>
+            <View class="flex-row flex-wrap gap-x-6 gap-y-2">
+              {(node.check || observation === "reachable" || observation === "unreachable") && (
+                <Fact label="Checked" value={node.check ? utc(node.check.checked_at) : "Time not recorded"} />
+              )}
+              <Fact label="Last reached" value={node.last_reached ? utc(node.last_reached) : "No recorded contact"} />
+            </View>
           </View>
-          <Fact label="Last reached" value={node.last_reached ? utc(node.last_reached) : "No recorded contact"} />
-        </View>
-      ))}
+        );
+      })}
     </View>
   );
 }
@@ -94,22 +102,28 @@ function App() {
   const current = signal<Snapshot>(demo);
   const busy = signal(false);
   const error = signal("");
+  const card = signal<PublicCard | null>(null);
 
-  async function openSnapshot() {
+  async function openFile(kind: "snapshot" | "card") {
     if (busy()) return;
     busy.set(true);
     error.set("");
+    if (kind === "card") card.set(null);
     try {
       const [picked] = await Picker.pickFiles({
-        filters: [{ name: "Coordinator snapshots", extensions: ["json"] }],
+        filters: [{ name: kind === "snapshot" ? "Coordinator snapshots" : "Public node cards", extensions: ["json"] }],
         maxSize: maxSnapshotBytes,
       });
       if (picked) {
-        if (!picked.file) throw new Error("Snapshot is too large");
-        current.set(readSnapshot(await picked.file.text()));
+        if (!picked.file) throw new Error("File is too large");
+        const contents = await picked.file.text();
+        if (kind === "snapshot") current.set(readSnapshot(contents));
+        else card.set(readPublicCard(contents));
       }
     } catch {
-      error.set("Couldn’t open the snapshot. Choose a coordinator JSON export under 64 KiB.");
+      error.set(kind === "snapshot"
+        ? "Couldn’t open the snapshot. Choose a coordinator JSON export under 64 KiB."
+        : "Couldn’t review the card. Choose a UTF-8 public node card from nodes card.");
     } finally {
       busy.set(false);
     }
@@ -127,20 +141,49 @@ function App() {
           <Text class="text-sm font-semibold text-[#526174]">
             {current().source === "demo" ? "Synthetic demo" : `Snapshot · ${utc(current().observed_at)}`}
           </Text>
-          <View role="button" accessibilityLabel="Open snapshot" onPress={openSnapshot}
+          <View role="button" accessibilityLabel="Open snapshot" onPress={() => openFile("snapshot")}
             accessibilityState={{ disabled: busy() }}
             class="rounded-md border border-[#d8dfe8] px-3 py-2 hover:bg-[#eef2f6] active:bg-[#e4e9f1]">
-            <Text class="text-sm font-semibold text-[#1d2938]">{busy() ? "Opening…" : "Open snapshot"}</Text>
+            <Text class="text-sm font-semibold text-[#1d2938]">Open snapshot</Text>
           </View>
         </View>
         {error() ? <Text class="px-5 pt-3 text-sm text-[#913c27]" role="alert">{error()}</Text> : null}
         <Scroll class="flex-1">
           <View class="gap-4 px-5 py-5">
             <Text class="text-2xl font-semibold text-[#1d2938]" role="header" accessibilityLevel={1}>{page()}</Text>
-            {page() === "Nodes" ? <Nodes nodes={current().nodes} /> : <Jobs jobs={current().jobs} />}
+            {page() === "Nodes" ? (
+              <>
+                <View role="button" accessibilityLabel="Review public card" onPress={() => openFile("card")}
+                  accessibilityState={{ disabled: busy() }}
+                  class="self-start rounded-md border border-[#d8dfe8] bg-white px-3 py-2 hover:bg-[#eef2f6]">
+                  <Text class="text-sm font-semibold text-[#1d2938]">Review public card</Text>
+                </View>
+                {card() && <CardReview card={card()!} clear={() => card.set(null)} />}
+                <Nodes nodes={current().nodes} />
+              </>
+            ) : <Jobs jobs={current().jobs} />}
           </View>
         </Scroll>
       </View>
+    </View>
+  );
+}
+
+function CardReview(props: { card: PublicCard; clear: () => void }) {
+  return (
+    <View class="gap-2 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
+      <View class="flex-row flex-wrap items-center justify-between gap-2">
+        <Text class="text-base font-semibold text-[#1d2938]">
+          {props.card.role === "runner" ? "Runner card for coordinator" : "Coordinator card for runner"}
+        </Text>
+        <View role="button" accessibilityLabel="Close card" onPress={props.clear} class="px-2 py-1">
+          <Text class="text-sm text-[#354459]">Close card</Text>
+        </View>
+      </View>
+      <Fact label="Public ID" value={props.card.id} />
+      <Fact label="Fixed UDP address" value={props.card.address} />
+      <Fact label="Source revision" value={props.card.revision} />
+      <Text class="text-sm text-[#526174]">Compare these values independently, then use nodes pair --preview on the intended host.</Text>
     </View>
   );
 }

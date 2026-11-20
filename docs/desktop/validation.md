@@ -1,5 +1,13 @@
 # Desktop validation, 20 November 2026
 
+## Functional follow-up
+
+On Linux, the workspace format check and Clippy passed. The locked workspace suites passed 580 tests with five ignored. The executable fixture confirmed reviewed card bytes, private-root rejection, idempotent reimport and exactly one admission across conflicting concurrent confirmations. An isolated coordinator and runner exercised authenticated refusal before reciprocal pairing, reachability, disconnection, preservation of the last successful contact, reconnection and refresh by export. The retained fixture child handled Ctrl+C, exited cleanly and released the instance lock.
+
+NSH 0.6.0 passed its type check and three headless tests. Substituting the last contact time for a failed probe's check time in a disposable copy failed the reachability test. The packaged Linux app launched and opened and cancelled the real GTK public-card picker on isolated X11. Accepted and rejected picker results were exercised headlessly. Desktop confirmation and local Start/Stop still require a native adapter. Native Windows acceptance remains pending.
+
+## Initial package
+
 Validated on Ubuntu 24.04.5 LTS x86-64. The companion uses TSX with NSH's native GTK and Win32 hosts and has no app-level package dependencies. NSH CLI and both prebuilt runners came from the same official v0.6.0 release, commit `554163758e30d2f62f814096a6327937dcb4fe49`. The CLI reported `nsh 0.6.0 (5541637)`. The release CLI pins TypeScript 7.0.2 and verifies its platform tarball against the integrity in its source. The compiler cache, Cargo output and extracted archives were isolated under `.desktop-attempt/`. Spotish informed the small NSH app/package layout and demo approach. [NSH release](https://github.com/longbridge/nsh/releases/tag/v0.6.0) · [Compiler pin](https://github.com/longbridge/nsh/blob/554163758e30d2f62f814096a6327937dcb4fe49/crates/nsh-cli/src/check.rs) · [Spotish reference](https://github.com/huacnlee/spotish/tree/a8d88114991b24bcff68286c55a6ccb8e38f3756)
 
 ## Reproduce the package and demo

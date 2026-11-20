@@ -7,6 +7,9 @@ test("reachability, assigned computer, evidence, and delivery stay independent",
   expect(app.texts()).toContain("Synthetic demo");
   expect(app.texts()).toContain("Reachable at last check");
   expect(app.texts()).toContain("Runner · 51c2a740");
+  expect(app.texts().join("\n")).toContain(
+    "Unreachable at last check\nChecked\n2026-11-20 · 01:50:00 UTC\nLast reached\n2026-11-20 · 01:14:00 UTC",
+  );
 
   await app.press("Jobs");
   const jobs = app.texts().join("\n");
@@ -16,6 +19,35 @@ test("reachability, assigned computer, evidence, and delivery stay independent",
 
   await app.press("Nodes");
   expect(app.texts()).toContain("Reachable at last check");
+});
+
+test("reviews only a selected public card and clears it on cancel or rejection", async () => {
+  const app = await open("./App.tsx");
+  const card = {
+    version: 1, role: "coordinator", id: "ab".repeat(32),
+    address: "[2001:db8::10]:49731", revision: "cd".repeat(20),
+  };
+  const pick = (value: unknown) => [{
+    name: "public.json", data: Uint8Array.from(JSON.stringify(value), (char) => char.charCodeAt(0)),
+  }];
+  app.onPick(() => pick(card));
+  await app.press("Review public card");
+  for (const value of ["Coordinator card for runner", card.id, card.address, card.revision]) {
+    expect(app.texts()).toContain(value);
+  }
+  await app.press("Close card");
+  expect(app.texts()).not.toContain(card.id);
+  await app.press("Review public card");
+  app.onPick(() => null);
+  await app.press("Review public card");
+  expect(app.texts()).not.toContain(card.id);
+
+  app.onPick(() => pick({ ...card, workspace: "private path" }));
+  await app.press("Review public card");
+  expect(app.texts()).toContain("Couldn’t review the card. Choose a UTF-8 public node card from nodes card.");
+  expect(app.texts()).not.toContain("private path");
+  await app.press("Jobs");
+  expect(app.texts()).toContain("Run #1042");
 });
 
 test("opens an explicit export, keeps its snapshot after cancel or invalid selection", async () => {

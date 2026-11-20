@@ -212,15 +212,11 @@ pub(super) async fn serve(cfg: RuntimeConfig) -> Result<()> {
     })?;
     println!("Runner ready {}", own.card.id);
     let _ = receive.await;
-    {
-        let runner = runner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("runner stopped"))?;
-        for flag in runner.active.values() {
-            flag.store(true, Ordering::SeqCst);
-        }
-    }
-    router.shutdown().await?;
+    runner
+        .lock()
+        .map_err(|_| anyhow::anyhow!("runner stopped"))?
+        .begin_shutdown();
+    let stopped = router.shutdown().await;
     // Existing provider cleanup targets only currently owned live groups.
     coconutclaw_provider::kill_active_process_groups();
     let workers = std::mem::take(
@@ -228,8 +224,13 @@ pub(super) async fn serve(cfg: RuntimeConfig) -> Result<()> {
             .lock()
             .map_err(|_| anyhow::anyhow!("runner stopped"))?,
     );
+    let mut joined = Ok(());
     for work in workers {
-        work.await?;
+        if let Err(error) = work.await {
+            joined = Err(error);
+        }
     }
+    stopped?;
+    joined?;
     Ok(())
 }

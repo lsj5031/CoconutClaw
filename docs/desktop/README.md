@@ -2,7 +2,7 @@
 
 The NSH window starts with a synthetic fleet. Runner `51c2a740` was reachable at its last saved check. Run `1042` was assigned to that runner and is still **Unknown**, with no verified start or result. **Delivered** refers to the status message. Run `1041` has verified signed start and result records while its delivery is pending.
 
-[Nodes screenshot](nodes-linux.png) · [Jobs screenshot](jobs-linux.png) · [Build and validation receipt](validation.md)
+[Initial Nodes screenshot](nodes-linux.png) · [Initial Jobs screenshot](jobs-linux.png) · [Build and validation receipt](validation.md)
 
 ## Operator access
 
@@ -15,7 +15,27 @@ coconutclaw desktop --database /path/to/coordinator/state.db \
 
 Use the exact conversation ID, for example `telegram:123` for the chat, `telegram:123#4` for one topic, or `local:default` for a local scope. Run the export on the coordinator. It uses SQLite read-only mode and a single read transaction over the initialized store, with SQLite's usual WAL/SHM access requirements. It can run alongside the coordinator. **Open snapshot** reads the selected JSON through the native picker and holds it in memory until another file is opened or the app closes. Transfer the export only to an authorized operator. It contains public runner IDs, observation times, run IDs and status metadata. Prompts, output, memory, tokens, paths, addresses, session IDs and raw receipts are excluded.
 
-Nodes shows up to 32 paired runners with saved contact and the last successful contact time. An unsuccessful administrative check may lack its own timestamp. Jobs shows up to 50 current attempts for the selected scope in the coordinator's status order. Assigned computer is the frozen route. Verified evidence means the trusted coordinator recorded both signed events after checking the history. Start-only observations are not retained by the existing coordinator adapter. Snapshot files are operator-trusted exports and the viewer does not authenticate the file. Refresh means exporting and opening a new file.
+Nodes shows up to 32 paired runners. The latest explicit probe includes its UTC check time and whether the paired runner returned an authenticated response. A failed probe preserves the last successful contact. Older exports may lack the check time. Jobs shows up to 50 current attempts for the selected scope in the coordinator's status order. Assigned computer is the frozen route. Verified evidence means the trusted coordinator recorded both signed events after checking the history. Start-only observations are not retained by the existing coordinator adapter. Snapshot files are operator-trusted exports and the viewer does not authenticate the file. Refresh means exporting and opening a new file.
+
+### Review a public card
+
+Use **Review public card** to inspect the selected file's public ID, role, fixed UDP address and exact source revision. Compare these values independently with the other operator. Then use the reviewed absolute CoconutClaw executable and the existing private data root on the intended host.
+
+~~~sh
+"$BIN" --data-dir "$DATA" nodes pair "$PEER_CARD" --preview
+"$BIN" --data-dir "$DATA" nodes pair "$PEER_CARD" --confirm "$REVIEWED_DIGEST"
+~~~
+
+The preview checks the peer role against the local identity and prints a confirmation digest for the exact card file. After comparing the displayed card, set `REVIEWED_DIGEST` to the printed digest. Confirmation validates the card again and serializes the admission in SQLite. Reimporting the same card is idempotent. The runner keeps its first coordinator admission when a different coordinator is offered. Each host operator admits the opposite card independently.
+
+### Check a paired runner
+
+The coordinator operator uses the existing [administrative probe procedure](../production-nodes.md) with the coordinator instance available for exclusive access. Export and open a fresh snapshot after the check.
+
+~~~sh
+"$CORE_BIN" --data-dir "$CORE_DATA" nodes status --probe
+"$CORE_BIN" desktop --database "$COORDINATOR_DB" --session "$SESSION" > snapshot.json
+~~~
 
 ## Windows rollout gates
 
@@ -28,7 +48,7 @@ Nodes shows up to 32 paired runners with saved contact and the last successful c
 | Local stop | Extend the existing runner shutdown path with a private control pipe inherited only by the child, and retain the original process handle for ownership and exit verification. The existing Ctrl+C path continues to use the same shutdown routine. Accept Stop only for the child that reached readiness under this adapter. Prove shutdown drains intake, joins workers and releases their owned Windows jobs and the instance lock. Verify timeout, stale handle, PID reuse, companion restart and unrelated look-alike processes. On timeout or lost ownership, report the observed state and leave stop to the owning console/operator. Never target a PID found by scan or use a machine-wide cancellation signal. |
 | Jobs and recovery | Use disposable fixtures for trusted signed completion, signed cancellation, missing evidence on disconnect, late signed completion after Unknown, and each delivery state. Compare the same run ID against the coordinator and native window. Check the exact topic boundary, assignment staying fixed, delivery remaining independent of outcome and preserved Unknown after reconciliation. Evidence collection can use the existing mocked providers and native transport tests. |
 
-Pairing and runner lifecycle are staged as the reuse contract above. This package exposes the read-only Nodes and Jobs views and their snapshot picker. It grants no host bridge, shell execution, direct database access, background network or remote start. While staging is pending, the existing owner-operated `nodes card`, `nodes pair` and foreground `nodes start`/Ctrl+C flow remains the operational path. [Runner guide and recovery](../production-nodes.md)
+Public-card review and snapshot viewing run in NSH. Pairing confirmation and probing run in the operator CLI. Owner-operated foreground `nodes start` and Ctrl+C remain the local lifecycle path. The pinned NSH process grant filters executable names and leaves arguments unrestricted. Desktop pairing confirmation and lifecycle controls still need a narrow native adapter. Local Start and Stop require the reviewed executable, existing account and private root, readiness and exit through the original child handle, and an inherited shutdown pipe. Native Windows packaging, accessibility, staging and flow receipts remain open. [Runner guide and recovery](../production-nodes.md)
 
 ## Telegram follow-up after parity
 

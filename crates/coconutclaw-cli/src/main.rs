@@ -117,6 +117,9 @@ fn main() -> Result<()> {
     let overrides = CliOverrides {
         data_dir: cli.data_dir.clone(),
     };
+    if let Commands::Nodes(args) = &cli.command {
+        nodes::preflight_pair_root(args, overrides.data_dir.as_deref())?;
+    }
 
     if let Commands::Doctor(args) = &cli.command {
         let cfg = coconutclaw_config::preview_runtime_config(&overrides)?;
@@ -127,7 +130,11 @@ fn main() -> Result<()> {
         return memory_import::run(&cfg, args);
     }
     #[cfg(not(windows))]
-    let cfg = coconutclaw_config::load_runtime_config(&overrides)?;
+    let cfg = if matches!(&cli.command, Commands::Nodes(args) if args.reviewed_pair()) {
+        coconutclaw_config::preview_runtime_config(&overrides)?
+    } else {
+        coconutclaw_config::load_runtime_config(&overrides)?
+    };
     #[cfg(windows)]
     let cfg = nodes::load_checked(&overrides, &cli.command)?;
     let command = cli.command;

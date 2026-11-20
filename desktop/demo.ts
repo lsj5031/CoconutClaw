@@ -7,8 +7,10 @@ export const demo: Snapshot = {
   source: "demo",
   observed_at: "2026-11-20T01:52:00Z",
   nodes: [
-    { id: runner, observation: "reachable", last_reached: "2026-11-20T01:51:00Z" },
-    { id: "0".repeat(56) + "c917df26", observation: "unreachable", last_reached: "2026-11-20T01:14:00Z" },
+    { id: runner, observation: "reachable", last_reached: "2026-11-20T01:51:00Z",
+      check: { reachable: true, checked_at: "2026-11-20T01:51:00Z" } },
+    { id: "0".repeat(56) + "c917df26", observation: "unreachable", last_reached: "2026-11-20T01:14:00Z",
+      check: { reachable: false, checked_at: "2026-11-20T01:50:00Z" } },
   ],
   jobs: [
     { run_id: "1042", assigned_node: runner, status: "unknown", signed_evidence: "none", delivery: "delivered" },

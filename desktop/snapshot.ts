@@ -33,6 +33,7 @@ type Node = {
   id: string;
   observation: keyof typeof observations;
   last_reached: string | null;
+  check?: { checked_at: string; reachable: boolean };
 };
 
 type Job = {
@@ -76,7 +77,32 @@ function isNode(value: unknown): value is Node {
   return isRecord(value)
     && isNodeId(value.id)
     && hasKey(value.observation, observations)
-    && (value.last_reached === null || isTimestamp(value.last_reached));
+    && (value.last_reached === null || isTimestamp(value.last_reached))
+    && (value.check === undefined || (isRecord(value.check)
+      && isTimestamp(value.check.checked_at) && typeof value.check.reachable === "boolean"));
+}
+
+export type PublicCard = {
+  role: "coordinator" | "runner";
+  id: string;
+  address: string;
+  revision: string;
+};
+
+export function readPublicCard(contents: string): PublicCard {
+  const value: unknown = JSON.parse(contents);
+  const address = isRecord(value) && typeof value.address === "string"
+    ? /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:.]+(?:%\d{1,10})?\]):(\d{1,5})$/.exec(value.address)
+    : null;
+  if (!isRecord(value) || value.version !== 1 || Object.keys(value).length !== 5
+      || (value.role !== "coordinator" && value.role !== "runner")
+      || !isNodeId(value.id)
+      || typeof value.address !== "string" || !address || address[0] !== value.address
+      || Number(address[1]) < 1 || Number(address[1]) > 65535
+      || typeof value.revision !== "string" || !/^[0-9a-fA-F]{40}$/.test(value.revision)) {
+    throw new Error("Invalid public node card");
+  }
+  return { role: value.role, id: value.id, address: value.address, revision: value.revision };
 }
 
 function isJob(value: unknown): value is Job {

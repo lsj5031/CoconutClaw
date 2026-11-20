@@ -337,7 +337,18 @@ fn durable_claim_replay_restart_and_signed_cancellation_do_not_reinvoke() {
     };
     assert_eq!(result.unwrap(), bytes);
     let b2 = bundle(&core_key, runner.key.public(), "interrupted").unwrap();
-    assert!(runner.admit(core_key.public(), &b2).unwrap().is_some());
+    let active = runner.admit(core_key.public(), &b2).unwrap().unwrap();
+    runner.begin_shutdown();
+    assert!(active.load(Ordering::SeqCst));
+    let later = bundle(&core_key, runner.key.public(), "arrived during shutdown").unwrap();
+    assert_eq!(
+        runner
+            .admit(core_key.public(), &later)
+            .unwrap_err()
+            .to_string(),
+        "runner stopping"
+    );
+    assert!(runner.evidence(&later).is_err());
     drop(runner);
     let mut runner = Runner::open(cfg).unwrap();
     assert!(runner.admit(core_key.public(), &b2).unwrap().is_none());

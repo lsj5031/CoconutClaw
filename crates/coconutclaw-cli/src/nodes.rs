@@ -9,12 +9,12 @@ use coconutclaw_sync::synthetic::{
     membership::domain::{Action, BoundOrigin, History, Origin, Outcome, SignedEvent},
 };
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, Signature, endpoint::presets};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
-    io::Write,
+    io::{Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
@@ -25,6 +25,7 @@ use std::{
 };
 
 pub(crate) mod desktop;
+mod probe;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -36,6 +37,18 @@ const ALPN: &[u8] = b"/coconutclaw/runner/1";
 pub(crate) struct Args {
     #[command(subcommand)]
     action: Command,
+}
+impl Args {
+    pub(super) fn reviewed_pair(&self) -> bool {
+        matches!(
+            &self.action,
+            Command::Pair { preview: true, .. }
+                | Command::Pair {
+                    confirm: Some(_),
+                    ..
+                }
+        )
+    }
 }
 #[derive(Subcommand, Debug)]
 enum Command {
@@ -51,7 +64,15 @@ enum Command {
         workspace: Option<PathBuf>,
     },
     /// Trust a public pairing card after verifying it independently.
-    Pair { card: PathBuf },
+    Pair {
+        card: PathBuf,
+        /// Validate the card against this host and print its confirmation digest.
+        #[arg(long, conflicts_with = "confirm")]
+        preview: bool,
+        /// Admit only the exact card bytes reviewed with --preview.
+        #[arg(long, value_name = "DIGEST")]
+        confirm: Option<String>,
+    },
     /// Show this node's public pairing card as JSON.
     Card,
     /// Accept tasks from paired coordinators on this runner.
@@ -95,9 +116,15 @@ fn directory(cfg: &RuntimeConfig) -> PathBuf {
     cfg.runtime_dir.join("nodes")
 }
 fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
-    let bytes = fs::read(path)?;
+    Ok(serde_json::from_slice(&read_bounded(path)?)?)
+}
+
+fn read_bounded(path: &Path) -> Result<Vec<u8>> {
+    ensure!(path.is_file(), "expected a node configuration file");
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.take(65537).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 65536, "node configuration exceeds bound");
-    Ok(serde_json::from_slice(&bytes)?)
+    Ok(bytes)
 }
 fn local(cfg: &RuntimeConfig) -> Result<Local> {
     validate_storage(cfg)?;
@@ -185,7 +212,9 @@ pub(super) fn load_checked(
             }
         }
     }
-    coconutclaw_config::ensure_instance_layout(&cfg).map_err(|_| anyhow::anyhow!("failed to initialize configured directories/files; check path permissions (values redacted)"))?;
+    if !matches!(command, crate::Commands::Nodes(args) if args.reviewed_pair()) {
+        coconutclaw_config::ensure_instance_layout(&cfg).map_err(|_| anyhow::anyhow!("failed to initialize configured directories/files; check path permissions (values redacted)"))?;
+    }
     if node {
         validate_storage(&cfg)?;
     }
@@ -257,8 +286,141 @@ fn paired(store: &Store, id: EndpointId) -> Result<Card> {
     Ok(card)
 }
 
+pub(super) fn preflight_pair_root(args: &Args, data_dir: Option<&Path>) -> Result<()> {
+    if args.reviewed_pair() {
+        let root = data_dir
+            .filter(|root| root.is_absolute())
+            .context("provide the existing absolute --data-dir for reviewed pairing")?;
+        #[cfg(unix)]
+        {
+            private_pair_directory(root)?;
+            reject_pair_symlink(&root.join("config.toml"))?;
+        }
+        #[cfg(windows)]
+        coconutclaw_config::windows_security::private_directory(root, false)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn private_pair_directory(path: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path).context("open existing private node directory")?;
+    // SAFETY: geteuid has no inputs or memory effects.
+    let owner = unsafe { libc::geteuid() };
+    ensure!(
+        metadata.is_dir() && metadata.uid() == owner && metadata.mode() & 0o077 == 0,
+        "reviewed pairing requires an owner-only node directory"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn reject_pair_symlink(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => ensure!(!metadata.is_symlink(), "node custody path is a symlink"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn pair_card(cfg: &RuntimeConfig, path: &Path, preview: bool, confirm: Option<&str>) -> Result<()> {
+    let reviewed = preview || confirm.is_some();
+    #[cfg(unix)]
+    if reviewed {
+        private_pair_directory(
+            cfg.sqlite_db_path
+                .parent()
+                .context("missing SQLite parent")?,
+        )?;
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut name = cfg.sqlite_db_path.as_os_str().to_os_string();
+            name.push(suffix);
+            reject_pair_symlink(Path::new(&name))?;
+        }
+    }
+    let own = local(cfg)?;
+    let bytes = read_bounded(path)?;
+    let peer: Card = serde_json::from_slice(&bytes).context("invalid public node card")?;
+    ensure!(
+        peer.version == 1
+            && peer.revision == REVISION
+            && peer.role != own.card.role
+            && peer.id != own.card.id,
+        "foreign role/revision/identity"
+    );
+    ensure!(
+        peer.address.port() != 0
+            && !peer.address.ip().is_unspecified()
+            && !peer.address.ip().is_multicast(),
+        "invalid peer address"
+    );
+    if reviewed {
+        ensure!(
+            cfg.sqlite_db_path.is_file(),
+            "reviewed pairing requires the existing node database"
+        );
+        key(cfg)?;
+        let digest = blake3::hash(&bytes).to_hex();
+        if preview {
+            println!("{}", serde_json::to_string(&peer)?);
+            println!("Confirmation digest {digest}");
+            return Ok(());
+        }
+        ensure!(
+            confirm == Some(digest.as_str()),
+            "card changed since review"
+        );
+    }
+    let mut store = if reviewed {
+        Store::connect(cfg)?
+    } else {
+        Store::open(cfg)?
+    };
+    if !reviewed {
+        initialize(&store)?;
+    }
+    let id = peer.id.to_string();
+    let json = serde_json::to_string(&peer)?;
+    // Hold SQLite's writer reservation across the cardinality check and insert.
+    let tx = store
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if own.card.role == Role::Runner {
+        let other: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM paired_nodes WHERE id!=?1)",
+            [&id],
+            |r| r.get(0),
+        )?;
+        ensure!(!other, "runner already pinned to another coordinator");
+    }
+    tx.execute(
+        "INSERT INTO paired_nodes(id,card) VALUES(?1,?2) ON CONFLICT(id) DO NOTHING",
+        params![id, json],
+    )?;
+    let saved: String = tx.query_row("SELECT card FROM paired_nodes WHERE id=?1", [&id], |r| {
+        r.get(0)
+    })?;
+    ensure!(
+        serde_json::to_string(&serde_json::from_str::<Card>(&saved)?)? == json,
+        "pairing conflict; existing admission preserved"
+    );
+    tx.commit()?;
+    println!("Paired {}", node_label(Some(peer.role), &id));
+    Ok(())
+}
+
 pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
     validate_storage(cfg)?;
+    if let Command::Pair {
+        card,
+        preview,
+        confirm,
+    } = &args.action
+    {
+        return pair_card(cfg, card, *preview, confirm.as_deref());
+    }
     let store = Store::open(cfg)?;
     initialize(&store)?;
     match &args.action {
@@ -314,55 +476,13 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
             validate_storage(cfg)?;
             println!("{}", serde_json::to_string(&card)?);
         }
-        Command::Pair { card } => {
-            let own = local(cfg)?;
-            let peer: Card = read_json(card)?;
-            ensure!(
-                peer.version == 1
-                    && peer.revision == REVISION
-                    && peer.role != own.card.role
-                    && peer.id != own.card.id,
-                "foreign role/revision/identity"
-            );
-            ensure!(
-                peer.address.port() != 0 && !peer.address.ip().is_unspecified(),
-                "invalid peer address"
-            );
-            if own.card.role == Role::Runner {
-                let count: i64 = store.conn.query_row(
-                    "SELECT count(*) FROM paired_nodes WHERE id!=?1",
-                    [peer.id.to_string()],
-                    |r| r.get(0),
-                )?;
-                ensure!(count == 0, "runner already pinned to another coordinator");
-            }
-            let json = serde_json::to_string(&peer)?;
-            store.conn.execute(
-                "INSERT OR IGNORE INTO paired_nodes(id,card) VALUES(?1,?2)",
-                params![peer.id.to_string(), json],
-            )?;
-            ensure!(
-                serde_json::to_string(&paired(&store, peer.id)?)? == json,
-                "pairing conflict; existing admission preserved"
-            );
-            println!("Paired {}", display_name(&store, &peer.id.to_string())?);
-        }
+        Command::Pair { .. } => unreachable!("pair handled before store initialization"),
         Command::Card => println!("{}", serde_json::to_string(&local(cfg)?.card)?),
         Command::Status { probe } => {
             if *probe {
-                let _instance = cfg.acquire_instance_lock()?;
-                transport::runtime()?.block_on(async {
-                    let endpoint=transport::coordinator(cfg).await?;
-                    for id in choices(&store)? {
-                        let card=paired(&store,id.parse()?)?;
-                        let available=matches!(transport::call(&endpoint,&card,Request::Ping).await,Ok(Reply::Pong));
-                        store.conn.execute("UPDATE paired_nodes SET last_contact=CASE WHEN ?2 THEN ?3 ELSE last_contact END,last_error=?4 WHERE id=?1",
-                            params![id,available,crate::iso_now(&cfg.timezone),if available {Some("reachable at observation")} else {Some("unavailable at observation")}])?;
-                    }
-                    Ok::<_,anyhow::Error>(())
-                })?;
+                probe::run(cfg, &store)?;
             }
-            println!("{}", status(&store, None, &cfg.timezone)?);
+            println!("{}", status_impl(&store, None, &cfg.timezone, true)?);
         }
         Command::Start => {
             let own = local(cfg)?;
@@ -572,6 +692,7 @@ struct Runner {
     key: SecretKey,
     store: Store,
     active: HashMap<String, Arc<AtomicBool>>,
+    stopping: bool,
 }
 impl Runner {
     fn open(cfg: RuntimeConfig) -> Result<Self> {
@@ -583,6 +704,7 @@ impl Runner {
             cfg,
             store,
             active: HashMap::new(),
+            stopping: false,
         };
         // A durable claim without this process's dispatch capability is Unknown.
         let rows: Vec<String> = runner
@@ -615,6 +737,7 @@ impl Runner {
         Ok(Reply::Evidence { start, result })
     }
     fn admit(&mut self, peer: EndpointId, bundle: &Bundle) -> Result<Option<Arc<AtomicBool>>> {
+        ensure!(!self.stopping, "runner stopping");
         let card = paired(&self.store, peer)?;
         ensure!(card.role == Role::Coordinator, "not coordinator");
         bundle.validate(peer, self.key.public())?;
@@ -648,6 +771,12 @@ impl Runner {
         let flag = Arc::new(AtomicBool::new(false));
         self.active.insert(bundle.origin.hash()?, flag.clone());
         Ok(Some(flag))
+    }
+    fn begin_shutdown(&mut self) {
+        self.stopping = true;
+        for flag in self.active.values() {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
     fn finish(&mut self, bundle: &Bundle, mut outcome: Outcome, output: &str) -> Result<()> {
         let Reply::Evidence { start, result } = self.evidence(bundle)? else {
@@ -739,20 +868,35 @@ pub(crate) fn choices(store: &Store) -> Result<Vec<String>> {
 pub(crate) fn display_name(store: &Store, id: &str) -> Result<String> {
     initialize(store)?;
     let card = id.parse().ok().and_then(|id| paired(store, id).ok());
-    let role = match card.map(|card| card.role) {
+    Ok(node_label(card.map(|card| card.role), id))
+}
+
+fn node_label(role: Option<Role>, id: &str) -> String {
+    let role = match role {
         Some(Role::Runner) => "Runner",
         Some(Role::Coordinator) => "Coordinator",
         None => "Node",
     };
     let suffix = id.chars().rev().take(8).collect::<String>();
-    Ok(format!(
-        "{role} · {}",
-        suffix.chars().rev().collect::<String>()
-    ))
+    format!("{role} · {}", suffix.chars().rev().collect::<String>())
 }
 
 pub(crate) fn status(store: &Store, session: Option<&str>, timezone: &str) -> Result<String> {
+    status_impl(store, session, timezone, false)
+}
+
+fn status_impl(
+    store: &Store,
+    session: Option<&str>,
+    timezone: &str,
+    dates: bool,
+) -> Result<String> {
     initialize(store)?;
+    let probes = if dates {
+        probe::saved(&store.conn)?
+    } else {
+        HashMap::new()
+    };
     let mut lines = vec!["Nodes".into()];
     let rows: Vec<(String, Option<String>, Option<String>)> = store
         .conn
@@ -763,16 +907,29 @@ pub(crate) fn status(store: &Store, session: Option<&str>, timezone: &str) -> Re
         lines.push("No remote nodes paired.".into());
     }
     for (id, contact, error) in rows {
-        let check = match error.as_deref() {
-            Some("reachable at observation") => "Reachable when last checked.",
-            Some("unavailable at observation") => {
-                "Not reachable at the last check (check time not recorded)."
+        let check = if let Some(probe) = probes.get(&id) {
+            let label = if probe.reachable {
+                "Reachable when last checked."
+            } else {
+                "Not reachable at the last check."
+            };
+            format!(
+                "{label}\nChecked: {}",
+                crate::wording::time(Some(&probe.checked_at), timezone)
+            )
+        } else {
+            match error.as_deref() {
+                Some("reachable at observation") => "Reachable when last checked.",
+                Some("unavailable at observation") => {
+                    "Not reachable at the last check (check time not recorded)."
+                }
+                Some(_) => {
+                    "Last exchange did not confirm an outcome. Inspect the run before trying again."
+                }
+                None if contact.is_some() => "Reached during the last recorded exchange.",
+                None => "Not checked yet.",
             }
-            Some(_) => {
-                "Last exchange did not confirm an outcome. Inspect the run before trying again."
-            }
-            None if contact.is_some() => "Reached during the last recorded exchange.",
-            None => "Not checked yet.",
+            .to_owned()
         };
         lines.push(format!(
             "{}\n{check}\nLast reached: {}",

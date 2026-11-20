@@ -1,5 +1,5 @@
 //! One-shot operator export. The companion receives metadata through a file picker.
-use super::{Card, EndpointId, Role};
+use super::{Card, EndpointId, Role, probe};
 use crate::{session::SessionKey, store::Store, store::status::timestamp};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -30,6 +30,8 @@ struct Node {
     id: String,
     observation: Observation,
     last_reached: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    check: Option<probe::Check>,
 }
 
 #[derive(Serialize)]
@@ -163,6 +165,7 @@ fn node_id(raw: &str) -> Result<EndpointId> {
 }
 
 fn saved_nodes(conn: &Connection) -> Result<Vec<Node>> {
+    let mut probes = probe::saved(conn)?;
     let mut stmt = conn
         .prepare("SELECT id,card,last_contact,last_error FROM paired_nodes ORDER BY id LIMIT 32")?;
     let mut rows = stmt.query([])?;
@@ -185,6 +188,7 @@ fn saved_nodes(conn: &Connection) -> Result<Vec<Node>> {
             None => Observation::Unchecked,
         };
         nodes.push(Node {
+            check: probes.remove(&id),
             id,
             observation,
             last_reached,
