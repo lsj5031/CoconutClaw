@@ -67,7 +67,7 @@ pub(crate) struct TransportObservation {
     pub(crate) latest_received_at: Option<String>,
 }
 
-fn timestamp(raw: Option<String>) -> Option<String> {
+pub(crate) fn timestamp(raw: Option<String>) -> Option<String> {
     DateTime::parse_from_rfc3339(raw.as_deref()?)
         .ok()
         .map(|time| time.with_timezone(&Utc).to_rfc3339())

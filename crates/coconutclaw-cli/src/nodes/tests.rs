@@ -575,6 +575,19 @@ fn source_restart_and_late_signed_result_preserve_unknown_without_second_admissi
     let store = Store::open(&core).unwrap();
     let request = request();
     let run = admit(&store, &request);
+    let node = key(&cfg).unwrap().public().to_string();
+    store
+        .conn
+        .execute("INSERT INTO node_routes VALUES(?1,?2)", params![run, node])
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE paired_nodes SET last_contact='2026-11-20T01:51:00Z',
+         last_error='reachable at observation' WHERE id=?1",
+            [&node],
+        )
+        .unwrap();
     let b = bundle(
         &key(&core).unwrap(),
         key(&cfg).unwrap().public(),
@@ -603,6 +616,12 @@ fn source_restart_and_late_signed_result_preserve_unknown_without_second_admissi
             .is_some()
     );
     recover(&store, "restart").unwrap();
+    let unverified = desktop::test_export(&core.sqlite_db_path, &request.session);
+    assert_eq!(unverified["nodes"][0]["observation"], "reachable");
+    assert_eq!(unverified["jobs"][0]["assigned_node"], node);
+    assert_eq!(unverified["jobs"][0]["status"], "unknown");
+    assert_eq!(unverified["jobs"][0]["signed_evidence"], "none");
+    assert_eq!(unverified["jobs"][0]["delivery"], "pending");
     runner
         .finish(&b, Outcome::Completed, "late durable output")
         .unwrap();
@@ -616,6 +635,11 @@ fn source_restart_and_late_signed_result_preserve_unknown_without_second_admissi
         )
         .unwrap()
     );
+    let verified = desktop::test_export(&core.sqlite_db_path, &request.session);
+    assert_eq!(verified["jobs"][0]["assigned_node"], node);
+    assert_eq!(verified["jobs"][0]["status"], "unknown");
+    assert_eq!(verified["jobs"][0]["signed_evidence"], "verified");
+    assert!(!verified.to_string().contains("late durable output"));
     let task = store.get_task_run(run).unwrap().unwrap();
     assert_eq!(task.status, "failed");
     assert!(task.error_summary.unwrap().contains("outcome unknown"));

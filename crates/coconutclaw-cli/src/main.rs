@@ -66,6 +66,8 @@ enum Commands {
     Schedule(commands::schedule::ScheduleArgs),
     /// Pair execution nodes, inspect saved checks and recover run evidence.
     Nodes(nodes::Args),
+    /// Export a read-only snapshot for the desktop companion.
+    Desktop(nodes::desktop::Args),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -109,6 +111,9 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if let Commands::Desktop(args) = &cli.command {
+        return nodes::desktop::run(args);
+    }
     let overrides = CliOverrides {
         data_dir: cli.data_dir.clone(),
     };
@@ -158,6 +163,7 @@ fn main() -> Result<()> {
         Commands::ImportOpenclaw(_) => unreachable!("import handled before store setup"),
         Commands::Schedule(_) => unreachable!("calendar command handled before execution lock"),
         Commands::Nodes(_) => unreachable!("nodes handled before execution lock"),
+        Commands::Desktop(_) => unreachable!("desktop handled before config and store setup"),
     }
 }
 #[cfg(test)]

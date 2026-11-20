@@ -18,6 +18,9 @@ Native runner instructions for Windows are in the
 is needed. Native CI tests and manual fleet acceptance are separate gates;
 the Windows matrix alone does not establish live fleet acceptance.
 
+The [desktop companion](docs/desktop/README.md) has a synthetic fleet demo and
+can open read-only coordinator snapshots.
+
 ### 1. Prerequisites and build
 
 You need a source checkout, Rust stable/Cargo (Rust 2024 edition), and a C compiler

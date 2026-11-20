@@ -1,0 +1,13 @@
+{
+  "name": "CoconutClaw",
+  "id": "dev.coconutclaw.companion",
+  "version": "0.1.0",
+  "build": 1,
+  "appearance": "light",
+  "minRuntime": "0.6.0",
+  "window": {
+    "defaultSize": { "width": 820, "height": 560 },
+    "minSize": { "width": 640, "height": 460 }
+  },
+  "capabilities": { "picker": true }
+}

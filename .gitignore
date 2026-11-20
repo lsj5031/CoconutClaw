@@ -34,3 +34,6 @@ pr_page.html
 *.ogg
 *.wav
 __pycache__/
+
+# Isolated desktop build and validation artifacts
+.desktop-attempt/

@@ -24,6 +24,7 @@ use std::{
     time::Duration,
 };
 
+pub(crate) mod desktop;
 #[cfg(test)]
 mod tests;
 mod transport;
