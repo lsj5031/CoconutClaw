@@ -68,6 +68,8 @@ enum Commands {
     Nodes(nodes::Args),
     /// Export a read-only snapshot for the desktop companion.
     Desktop(nodes::desktop::Args),
+    /// Open the companion with controls for one existing local runner.
+    DesktopHost(nodes::desktop_host::Args),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -114,11 +116,14 @@ fn main() -> Result<()> {
     if let Commands::Desktop(args) = &cli.command {
         return nodes::desktop::run(args);
     }
+    if let Commands::DesktopHost(args) = &cli.command {
+        return nodes::desktop_host::run(cli.data_dir.as_deref(), args);
+    }
     let overrides = CliOverrides {
         data_dir: cli.data_dir.clone(),
     };
     if let Commands::Nodes(args) = &cli.command {
-        nodes::preflight_pair_root(args, overrides.data_dir.as_deref())?;
+        nodes::preflight_root(args, overrides.data_dir.as_deref())?;
     }
 
     if let Commands::Doctor(args) = &cli.command {
@@ -130,7 +135,7 @@ fn main() -> Result<()> {
         return memory_import::run(&cfg, args);
     }
     #[cfg(not(windows))]
-    let cfg = if matches!(&cli.command, Commands::Nodes(args) if args.reviewed_pair()) {
+    let cfg = if matches!(&cli.command, Commands::Nodes(args) if args.existing_layout()) {
         coconutclaw_config::preview_runtime_config(&overrides)?
     } else {
         coconutclaw_config::load_runtime_config(&overrides)?
@@ -171,6 +176,9 @@ fn main() -> Result<()> {
         Commands::Schedule(_) => unreachable!("calendar command handled before execution lock"),
         Commands::Nodes(_) => unreachable!("nodes handled before execution lock"),
         Commands::Desktop(_) => unreachable!("desktop handled before config and store setup"),
+        Commands::DesktopHost(_) => {
+            unreachable!("desktop host handled before config and store setup")
+        }
     }
 }
 #[cfg(test)]

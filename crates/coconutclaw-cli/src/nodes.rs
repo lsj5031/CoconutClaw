@@ -25,6 +25,7 @@ use std::{
 };
 
 pub(crate) mod desktop;
+pub(crate) mod desktop_host;
 mod probe;
 #[cfg(test)]
 mod tests;
@@ -39,6 +40,19 @@ pub(crate) struct Args {
     action: Command,
 }
 impl Args {
+    fn desktop_start(&self) -> bool {
+        matches!(
+            self.action,
+            Command::Start {
+                desktop_control: true
+            }
+        )
+    }
+
+    pub(super) fn existing_layout(&self) -> bool {
+        self.reviewed_pair() || self.desktop_start()
+    }
+
     pub(super) fn reviewed_pair(&self) -> bool {
         matches!(
             &self.action,
@@ -76,7 +90,10 @@ enum Command {
     /// Show this node's public pairing card as JSON.
     Card,
     /// Accept tasks from paired coordinators on this runner.
-    Start,
+    Start {
+        #[arg(long, hide = true)]
+        desktop_control: bool,
+    },
     /// Show saved node checks, not current online status.
     Status {
         /// Check reachability now and save the result.
@@ -212,7 +229,7 @@ pub(super) fn load_checked(
             }
         }
     }
-    if !matches!(command, crate::Commands::Nodes(args) if args.reviewed_pair()) {
+    if !matches!(command, crate::Commands::Nodes(args) if args.existing_layout()) {
         coconutclaw_config::ensure_instance_layout(&cfg).map_err(|_| anyhow::anyhow!("failed to initialize configured directories/files; check path permissions (values redacted)"))?;
     }
     if node {
@@ -286,8 +303,10 @@ fn paired(store: &Store, id: EndpointId) -> Result<Card> {
     Ok(card)
 }
 
-pub(super) fn preflight_pair_root(args: &Args, data_dir: Option<&Path>) -> Result<()> {
-    if args.reviewed_pair() {
+pub(super) fn preflight_root(args: &Args, data_dir: Option<&Path>) -> Result<()> {
+    if args.desktop_start() {
+        desktop_host::runner_card(data_dir.context("provide the existing absolute --data-dir")?)?;
+    } else if args.reviewed_pair() {
         let root = data_dir
             .filter(|root| root.is_absolute())
             .context("provide the existing absolute --data-dir for reviewed pairing")?;
@@ -325,20 +344,31 @@ fn reject_pair_symlink(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn pair_card(cfg: &RuntimeConfig, path: &Path, preview: bool, confirm: Option<&str>) -> Result<()> {
-    let reviewed = preview || confirm.is_some();
+fn existing_node_database(cfg: &RuntimeConfig) -> Result<()> {
     #[cfg(unix)]
-    if reviewed {
+    {
         private_pair_directory(
             cfg.sqlite_db_path
                 .parent()
                 .context("missing SQLite parent")?,
         )?;
-        for suffix in ["", "-wal", "-shm", "-journal"] {
+        for suffix in ["", "-wal", "-shm", "-journal", ".initialize.lock"] {
             let mut name = cfg.sqlite_db_path.as_os_str().to_os_string();
             name.push(suffix);
             reject_pair_symlink(Path::new(&name))?;
         }
+    }
+    ensure!(
+        cfg.sqlite_db_path.is_file(),
+        "reviewed node controls require the existing node database"
+    );
+    Ok(())
+}
+
+fn pair_card(cfg: &RuntimeConfig, path: &Path, preview: bool, confirm: Option<&str>) -> Result<()> {
+    let reviewed = preview || confirm.is_some();
+    if reviewed {
+        existing_node_database(cfg)?;
     }
     let own = local(cfg)?;
     let bytes = read_bounded(path)?;
@@ -357,10 +387,6 @@ fn pair_card(cfg: &RuntimeConfig, path: &Path, preview: bool, confirm: Option<&s
         "invalid peer address"
     );
     if reviewed {
-        ensure!(
-            cfg.sqlite_db_path.is_file(),
-            "reviewed pairing requires the existing node database"
-        );
         key(cfg)?;
         let digest = blake3::hash(&bytes).to_hex();
         if preview {
@@ -420,6 +446,16 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
     } = &args.action
     {
         return pair_card(cfg, card, *preview, confirm.as_deref());
+    }
+    if let Command::Start { desktop_control } = args.action {
+        ensure!(
+            local(cfg)?.card.role == Role::Runner,
+            "only a runner starts a network listener; run starts the Telegram coordinator"
+        );
+        if desktop_control {
+            existing_node_database(cfg)?;
+        }
+        return transport::runtime()?.block_on(transport::serve(cfg.clone(), desktop_control));
     }
     let store = Store::open(cfg)?;
     initialize(&store)?;
@@ -484,14 +520,7 @@ pub(crate) fn run(cfg: &RuntimeConfig, args: &Args) -> Result<()> {
             }
             println!("{}", status_impl(&store, None, &cfg.timezone, true)?);
         }
-        Command::Start => {
-            let own = local(cfg)?;
-            ensure!(
-                own.card.role == Role::Runner,
-                "only a runner starts a network listener; run starts the Telegram coordinator"
-            );
-            transport::runtime()?.block_on(transport::serve(cfg.clone()))?;
-        }
+        Command::Start { .. } => unreachable!("start handled before store initialization"),
         Command::Reconcile { run } => {
             transport::runtime()?.block_on(reconcile(cfg, &store, *run))?;
             println!(

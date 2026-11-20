@@ -17,16 +17,36 @@ Use the exact conversation ID, for example `telegram:123` for the chat, `telegra
 
 Nodes shows up to 32 paired runners. The latest explicit probe includes its UTC check time and whether the paired runner returned an authenticated response. A failed probe preserves the last successful contact. Older exports may lack the check time. Jobs shows up to 50 current attempts for the selected scope in the coordinator's status order. Assigned computer is the frozen route. Verified evidence means the trusted coordinator recorded both signed events after checking the history. Start-only observations are not retained by the existing coordinator adapter. Snapshot files are operator-trusted exports and the viewer does not authenticate the file. Refresh means exporting and opening a new file.
 
-### Review a public card
+### Open local runner controls
 
-Use **Review public card** to inspect the selected file's public ID, role, fixed UDP address and exact source revision. Compare these values independently with the other operator. Then use the reviewed absolute CoconutClaw executable and the existing private data root on the intended host.
+Launch through the reviewed absolute CoconutClaw CLI, under the account that enrolled the runner. Use its existing protected data root and the absolute executable from the pinned NSH companion package. Keep the adjacent `nsh` directory with that executable.
+
+~~~sh
+"$BIN" --data-dir "$RUNNER_DATA" desktop-host --companion "$COMPANION"
+~~~
+
+~~~powershell
+& $Bin --data-dir $RunnerData desktop-host --companion $Companion
+~~~
+
+The launcher uses the CLI it was started with and the operator's current environment. It stages the companion's bundle for this launch and gives NSH filesystem access to two disposable directories for local requests and replies. The native adapter accepts public card bytes, an explicit confirmation digest, Start and Stop. The launcher verifies the existing runner root and identity before accepting local actions. Opening the packaged app directly provides snapshot viewing and public-card review.
+
+### Review and confirm pairing
+
+In the launched companion, choose **Review public card** and select the coordinator's UTF-8 card. The CLI preview validates the role, identity, fixed UDP address and exact source revision for this runner. Compare these fields independently with the coordinator operator. **Confirm pairing** passes the held bytes and digest back to the reviewed CLI. Changing or replacing the selected file after preview leaves the held bytes intact. An identical import is idempotent, and a conflicting second coordinator leaves the first admission pinned.
+
+The coordinator operator admits the runner's card independently using the coordinator CLI. The reviewed CLI pairing path is also available for foreground operation on either host.
 
 ~~~sh
 "$BIN" --data-dir "$DATA" nodes pair "$PEER_CARD" --preview
 "$BIN" --data-dir "$DATA" nodes pair "$PEER_CARD" --confirm "$REVIEWED_DIGEST"
 ~~~
 
-The preview checks the peer role against the local identity and prints a confirmation digest for the exact card file. After comparing the displayed card, set `REVIEWED_DIGEST` to the printed digest. Confirmation validates the card again and serializes the admission in SQLite. Reimporting the same card is idempotent. The runner keeps its first coordinator admission when a different coordinator is offered. Each host operator admits the opposite card independently.
+### Start and stop the local runner
+
+**Start local runner** starts the existing `nodes start` runtime for this root. The window reports ready after the launcher receives that runner's readiness line from the retained child and verifies the child is still alive. **Stop local runner** closes the original child's private inherited control pipe. The runner uses the same shutdown routine as foreground Ctrl+C. The window reports a successful stop after the original child exits successfully and the launcher acquires and releases the instance lock. It reports an unverified exit or lock if either check fails.
+
+Closing the companion closes the control pipe of any child it owns. A reopened companion begins with fresh ownership. A foreground runner or one owned by another window can continue to hold the instance lock and must be stopped by its operator or owning window.
 
 ### Check a paired runner
 
@@ -44,11 +64,11 @@ The coordinator operator uses the existing [administrative probe procedure](../p
 | Package and window | Use the exact pinned x64 package. Record Windows build, architecture, artifact hash, successful launch from a path with spaces, Nodes ↔ Jobs, keyboard and accessibility navigation, scrolling, minimum window size and 100%/150% scaling. Confirm the picker opens a valid export, keeps the previous view after cancel or rejection and holds data only for the current run. Record screenshots and command exits. |
 | Nodes and reachability | Use a separately authorized staging coordinator and paired runner. Compare an unchecked node, successful authenticated contact, disconnect and reconnect against fresh exports. Confirm old snapshots stay dated, failed probes preserve the last successful contact, and neither pairing nor a saved reachable state supplies job evidence. The administrator owns any active probe through the existing coordinator procedure. |
 | Public-card pairing | Stage a local preflight and explicit confirmation that present the public ID, expected opposite role, fixed address and exact revision for independent comparison. Pass only the selected public card to existing `nodes pair` on the configured host under its current operator account. The coordinator side remains an explicit coordinator-operator action. Verify UTF-8 card exchange, identical re-import, rejected wrong role/revision/identity and a conflicting second coordinator preserving the first admission. Prove the existing pair command enforces that invariant atomically under concurrent imports. Verify private-root and ACL failures precede admission. Keep production identity and private state in place. Follow the [native Windows enrollment guide](../windows-onboarding.md). |
-| Local start | Bind the future Windows adapter to the reviewed absolute CLI path, existing private runner root and the existing Windows account/SID. Use fixed arguments `--data-dir <root> nodes start` with direct process creation and the runner's configured Codex environment. Preserve the runtime instance lock. Require a retained process handle plus `Runner ready` for that exact child before showing it as started. Test bad role, wrong account, ACL/reparse failures, absent configuration, startup failure, duplicate starts and the runner already owned by another launcher. Start applies only to this configured local runner. |
-| Local stop | Extend the existing runner shutdown path with a private control pipe inherited only by the child, and retain the original process handle for ownership and exit verification. The existing Ctrl+C path continues to use the same shutdown routine. Accept Stop only for the child that reached readiness under this adapter. Prove shutdown drains intake, joins workers and releases their owned Windows jobs and the instance lock. Verify timeout, stale handle, PID reuse, companion restart and unrelated look-alike processes. On timeout or lost ownership, report the observed state and leave stop to the owning console/operator. Never target a PID found by scan or use a machine-wide cancellation signal. |
+| Local start | Verify that the Windows adapter uses the reviewed absolute CLI path, existing private runner root and the existing Windows account/SID. Verify direct process creation with `--data-dir <root> nodes start --desktop-control` and the runner's configured Codex environment. Preserve the runtime instance lock. Require a retained process handle plus `Runner ready` for that exact child before showing it as started. Test bad role, wrong account, ACL/reparse failures, absent configuration, startup failure, duplicate starts and the runner already owned by another launcher. Start applies only to this configured local runner. |
+| Local stop | Verify the private inherited control pipe and the retained process handle for ownership and exit. The existing Ctrl+C path continues to use the same shutdown routine. Accept Stop only for the child that reached readiness under this adapter. Prove shutdown drains intake, joins workers and releases their owned Windows jobs and the instance lock. Verify timeout, stale handle, PID reuse, companion restart and unrelated look-alike processes. On timeout or lost ownership, report the observed state and leave stop to the owning console/operator. Never target a PID found by scan or use a machine-wide cancellation signal. |
 | Jobs and recovery | Use disposable fixtures for trusted signed completion, signed cancellation, missing evidence on disconnect, late signed completion after Unknown, and each delivery state. Compare the same run ID against the coordinator and native window. Check the exact topic boundary, assignment staying fixed, delivery remaining independent of outcome and preserved Unknown after reconciliation. Evidence collection can use the existing mocked providers and native transport tests. |
 
-Public-card review and snapshot viewing run in NSH. Pairing confirmation and probing run in the operator CLI. Owner-operated foreground `nodes start` and Ctrl+C remain the local lifecycle path. The pinned NSH process grant filters executable names and leaves arguments unrestricted. Desktop pairing confirmation and lifecycle controls still need a narrow native adapter. Local Start and Stop require the reviewed executable, existing account and private root, readiness and exit through the original child handle, and an inherited shutdown pipe. Native Windows packaging, accessibility, staging and flow receipts remain open. [Runner guide and recovery](../production-nodes.md)
+The packaged GTK app has exercised the local controls with disposable identities. Windows packaging, accessibility, staging and operator receipts remain open. The coordinator continues to own active probing and exports. [Validation receipt](validation.md) · [Runner guide and recovery](../production-nodes.md)
 
 ## Telegram follow-up after parity
 

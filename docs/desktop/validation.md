@@ -1,10 +1,18 @@
 # Desktop validation, 20 November 2026
 
-## Functional follow-up
+## Desktop controls
+
+The packaged GTK companion ran on an isolated Xvfb display under the same account as its disposable runner and coordinator. The real file picker selected a public card from a path with spaces. Preview displayed the public fields and digest while the pairing table stayed empty. The fixture changed the selected file before pressing **Confirm pairing**. SQLite then contained the original reviewed identity and public fields.
+
+The window started the runner and received readiness from its retained child. The existing coordinator CLI observed authenticated reachability after reciprocal CLI admission. The window stopped the runner through the inherited pipe, observed successful exit and verified the instance lock was available. An independent lock acquisition succeeded. A later failed coordinator probe retained the earlier contact timestamp. The executable Rust fixture also exercises foreground Ctrl+C on Linux, the inherited pipe, duplicate launch rejection, reconnection and lock release.
+
+Local package archives, native accessibility captures, screenshots, build logs and coordinator exports are under `.desktop-attempt/functional-host/`. Native Windows operator acceptance and staging remain open. The Windows x64 companion ZIP was assembled on Linux with the pinned NSH runner. Closing the companion and stop failure handling must also be checked on the acceptance host. [Operator rollout gates](README.md#windows-rollout-gates)
+
+## Earlier pairing and reachability follow-up
 
 On Linux, the workspace format check and Clippy passed. The locked workspace suites passed 580 tests with five ignored. The executable fixture confirmed reviewed card bytes, private-root rejection, idempotent reimport and exactly one admission across conflicting concurrent confirmations. An isolated coordinator and runner exercised authenticated refusal before reciprocal pairing, reachability, disconnection, preservation of the last successful contact, reconnection and refresh by export. The retained fixture child handled Ctrl+C, exited cleanly and released the instance lock.
 
-NSH 0.6.0 passed its type check and three headless tests. Substituting the last contact time for a failed probe's check time in a disposable copy failed the reachability test. The packaged Linux app launched and opened and cancelled the real GTK public-card picker on isolated X11. Accepted and rejected picker results were exercised headlessly. Desktop confirmation and local Start/Stop still require a native adapter. Native Windows acceptance remains pending.
+NSH 0.6.0 passed its type check and three headless tests. Substituting the last contact time for a failed probe's check time in a disposable copy failed the reachability test. The packaged Linux app launched and opened and cancelled the real GTK public-card picker on isolated X11. Accepted and rejected picker results were exercised headlessly.
 
 ## Initial package
 
@@ -79,4 +87,4 @@ The Rust commands used two build jobs, disabled incremental compilation and debu
 | [Native GTK Nodes](nodes-linux.png) | `a68962bdc54e4523bd1900cb5a52e115074a0ca17f4510fb49270d442de62c7b` |
 | [Native GTK Jobs](jobs-linux.png) | `7f789144f15ec088848316d90238895bbf4f800cb3256d3d44a6fa34f6aaab59` |
 
-Package bytes and full logs are local checkout artifacts. The screenshots are tracked. Native Windows launch, DPI, keyboard/UI Automation, picker and packaging on Windows remain open. Inno Setup 6 and Authenticode signing were unavailable here, so the ZIP is an unsigned portable package and there is no setup EXE. Pairing, local runner start/stop and live staging verification remain gated. [Operator rollout gates](README.md#windows-rollout-gates)
+Package bytes and full logs are local checkout artifacts. The screenshots are tracked. Native Windows launch, DPI, keyboard/UI Automation, picker and packaging on Windows remain open. Inno Setup 6 and Authenticode signing were unavailable here, so the ZIP is an unsigned portable package and there is no setup EXE. Native Windows pairing, local runner lifecycle and staging verification remain gated. [Operator rollout gates](README.md#windows-rollout-gates)

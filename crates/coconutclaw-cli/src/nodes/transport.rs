@@ -195,7 +195,18 @@ impl Handler {
     }
 }
 
-pub(super) async fn serve(cfg: RuntimeConfig) -> Result<()> {
+pub(super) async fn serve(cfg: RuntimeConfig, desktop_control: bool) -> Result<()> {
+    let (stop, receive) = tokio::sync::oneshot::channel();
+    if desktop_control {
+        super::desktop_host::listen_for_stop(stop)?;
+    } else {
+        let signal = Mutex::new(Some(stop));
+        ctrlc::set_handler(move || {
+            if let Some(stop) = signal.lock().expect("signal").take() {
+                let _ = stop.send(());
+            }
+        })?;
+    }
     let _instance = cfg.acquire_instance_lock()?;
     let own = local(&cfg)?;
     let runner = Arc::new(Mutex::new(Runner::open(cfg.clone())?));
@@ -203,13 +214,6 @@ pub(super) async fn serve(cfg: RuntimeConfig) -> Result<()> {
     let handler = Handler::new(runner.clone());
     let workers = handler.workers.clone();
     let router = Router::builder(endpoint).accept(ALPN, handler).spawn();
-    let (stop, receive) = tokio::sync::oneshot::channel();
-    let signal = Arc::new(Mutex::new(Some(stop)));
-    ctrlc::set_handler(move || {
-        if let Some(stop) = signal.lock().expect("signal").take() {
-            let _ = stop.send(());
-        }
-    })?;
     println!("Runner ready {}", own.card.id);
     let _ = receive.await;
     runner

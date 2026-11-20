@@ -15,6 +15,7 @@ chrono.workspace = true
 chrono-tz.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
+fs2.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
@@ -32,6 +33,9 @@ iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring"] }
 iroh-docs = { version = "=0.101.0", default-features = false, features = ["fs-store"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 
 [dev-dependencies]
 iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring", "test-utils"] }

@@ -366,7 +366,14 @@ fn paired_runner_start_dated_probe_disconnect_and_restart_use_native_transport()
     #[cfg(windows)]
     private(root.path());
     let core = root.path().join("core");
-    let node = root.path().join("node");
+    // macOS may expose the system temporary directory through /var.
+    let node = root.path().canonicalize().unwrap().join("node");
+    fs::create_dir(&node).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let workspace = root.path().join("workspace");
     fs::create_dir(&workspace).unwrap();
     let core_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -430,10 +437,13 @@ fn paired_runner_start_dated_probe_disconnect_and_restart_use_native_transport()
     assert!(unchecked["nodes"][0]["check"].is_null());
     assert!(unchecked["nodes"][0]["last_reached"].is_null());
 
-    let start = || {
+    let start = |desktop_control| {
+        let mut cmd = command(&node, &["nodes", "start"]);
+        if desktop_control {
+            cmd.arg("--desktop-control").stdin(Stdio::piped());
+        }
         let mut child = Owned(
-            command(&node, &["nodes", "start"])
-                .stdout(Stdio::piped())
+            cmd.stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap(),
@@ -466,31 +476,35 @@ fn paired_runner_start_dated_probe_disconnect_and_restart_use_native_transport()
     };
     let stop = |mut child: Owned| {
         assert!(child.0.try_wait().unwrap().is_none());
-        #[cfg(unix)]
-        {
-            // The retained, unreaped handle identifies this exact fixture child.
-            assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGINT) }, 0);
-            let deadline = std::time::Instant::now() + Duration::from_secs(20);
-            loop {
-                if let Some(status) = child.0.try_wait().unwrap() {
-                    assert!(status.success(), "{status:?}");
-                    break;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "runner did not shut down"
-                );
-                std::thread::sleep(Duration::from_millis(25));
+        if child.0.stdin.take().is_none() {
+            #[cfg(unix)]
+            {
+                // The retained, unreaped handle identifies this exact fixture child.
+                assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGINT) }, 0);
             }
+            #[cfg(windows)]
+            unreachable!("Windows fixture uses the inherited control pipe");
         }
-        #[cfg(windows)]
-        {
-            child.0.kill().unwrap();
-            child.0.wait().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success(), "{status:?}");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "runner did not shut down"
+            );
+            std::thread::sleep(Duration::from_millis(25));
         }
+        let lock = fs::OpenOptions::new()
+            .write(true)
+            .open(node.join("runtime/instance.lock"))
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&lock).unwrap();
     };
 
-    let child = start();
+    let child = start(cfg!(windows));
     let duplicate = cli(&node, &["nodes", "start"]);
     assert!(!duplicate.status.success());
     assert!(
@@ -513,7 +527,7 @@ fn paired_runner_start_dated_probe_disconnect_and_restart_use_native_transport()
     assert_eq!(disconnected["last_reached"], reached["last_reached"]);
     assert!(disconnected["check"]["checked_at"].as_str() > reached["check"]["checked_at"].as_str());
 
-    let child = start();
+    let child = start(true);
     let reconnected = probe();
     assert_eq!(reconnected["check"]["reachable"], true);
     assert!(

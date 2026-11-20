@@ -1,5 +1,6 @@
-import { mount, Picker, Scroll, signal, Text, View } from "nsh";
+import { cleanup, mount, Picker, Scroll, signal, Text, View } from "nsh";
 import { demo } from "./demo";
+import { readRunner, requestRunner, runnerLabels } from "./local-runner";
 import { delivery, maxSnapshotBytes, observations, readPublicCard, readSnapshot, statuses } from "./snapshot";
 import type { PublicCard, Snapshot } from "./snapshot";
 
@@ -103,12 +104,81 @@ function App() {
   const busy = signal(false);
   const error = signal("");
   const card = signal<PublicCard | null>(null);
+  const digest = signal<string | null>(null);
+  const runner = signal<Awaited<ReturnType<typeof readRunner>>["runner"] | null>(null);
+  const message = signal("");
+  let sequence = 0;
+  let connected = false;
+  let polling = false;
+  let closed = false;
+
+  async function refreshRunner() {
+    if (busy() || polling) return;
+    polling = true;
+    try {
+      const reply = await readRunner();
+      if (closed || busy() || (connected && reply.sequence !== sequence)) return;
+      connected = true;
+      sequence = reply.sequence;
+      runner.set(reply.runner);
+    } catch {
+      if (connected && !closed && !busy()) {
+        runner.set(null);
+        error.set("Local runner state is unavailable. Reopen the companion to reconnect.");
+      }
+    } finally {
+      polling = false;
+    }
+  }
+
+  void refreshRunner();
+  const timer = setInterval(() => { if (connected) void refreshRunner(); }, 350);
+  cleanup(() => { closed = true; clearInterval(timer); });
+
+  function clearCard() {
+    card.set(null);
+    digest.set(null);
+  }
+
+  async function localAction(action: Parameters<typeof requestRunner>[1]) {
+    try {
+      const reply = await requestRunner(++sequence, action);
+      runner.set(reply.runner);
+      message.set(reply.message ?? "");
+      return reply;
+    } catch {
+      runner.set(null);
+      error.set("The desktop host did not acknowledge the action. Reopen the companion to verify the outcome.");
+    }
+  }
+
+  async function pressLocal(type: "confirm" | "start" | "stop") {
+    if (busy() || !runner()) return;
+    const reviewed = digest();
+    if (type === "confirm" && !reviewed) return;
+    busy.set(true);
+    error.set("");
+    message.set("");
+    try {
+      if (type === "confirm") {
+        clearCard();
+        await localAction({ type, digest: reviewed! });
+      } else {
+        await localAction({ type });
+      }
+    } finally {
+      busy.set(false);
+    }
+  }
 
   async function openFile(kind: "snapshot" | "card") {
     if (busy()) return;
     busy.set(true);
     error.set("");
-    if (kind === "card") card.set(null);
+    if (kind === "card") {
+      clearCard();
+      message.set("");
+    }
     try {
       const [picked] = await Picker.pickFiles({
         filters: [{ name: kind === "snapshot" ? "Coordinator snapshots" : "Public node cards", extensions: ["json"] }],
@@ -116,9 +186,18 @@ function App() {
       });
       if (picked) {
         if (!picked.file) throw new Error("File is too large");
-        const contents = await picked.file.text();
-        if (kind === "snapshot") current.set(readSnapshot(contents));
-        else card.set(readPublicCard(contents));
+        if (kind === "snapshot") {
+          current.set(readSnapshot(await picked.file.text()));
+        } else if (runner()) {
+          const bytes = new Uint8Array(await picked.file.arrayBuffer());
+          const reviewed = (await localAction({ type: "review", bytes: Array.from(bytes) }))?.preview;
+          if (reviewed) {
+            card.set(reviewed.card);
+            digest.set(reviewed.digest);
+          }
+        } else {
+          card.set(readPublicCard(await picked.file.text()));
+        }
       }
     } catch {
       error.set(kind === "snapshot"
@@ -158,7 +237,21 @@ function App() {
                   class="self-start rounded-md border border-[#d8dfe8] bg-white px-3 py-2 hover:bg-[#eef2f6]">
                   <Text class="text-sm font-semibold text-[#1d2938]">Review public card</Text>
                 </View>
-                {card() && <CardReview card={card()!} clear={() => card.set(null)} />}
+                {card() && <CardReview card={card()!} digest={digest()} busy={busy()}
+                  clear={clearCard} confirm={() => pressLocal("confirm")} />}
+                {message() ? <Text role="alert" class="text-sm text-[#354459]">{message()}</Text> : null}
+                {runner() && (
+                  <View class="gap-2 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
+                    <Text class="text-sm text-[#354459]">{runnerLabels[runner()!]}</Text>
+                    <View class="flex-row gap-2">
+                      <LocalButton label="Start local runner"
+                        disabled={busy() || ["starting", "running", "stopping", "startup_timeout", "stop_timeout"].includes(runner()!)}
+                        onPress={() => pressLocal("start")} />
+                      <LocalButton label="Stop local runner" disabled={busy() || runner() !== "running"}
+                        onPress={() => pressLocal("stop")} />
+                    </View>
+                  </View>
+                )}
                 <Nodes nodes={current().nodes} />
               </>
             ) : <Jobs jobs={current().jobs} />}
@@ -169,7 +262,19 @@ function App() {
   );
 }
 
-function CardReview(props: { card: PublicCard; clear: () => void }) {
+function LocalButton(props: { label: string; disabled: boolean; onPress: () => void }) {
+  return (
+    <View role="button" accessibilityLabel={props.label} accessibilityState={{ disabled: props.disabled }}
+      onPress={() => { if (!props.disabled) props.onPress(); }}
+      class={props.disabled
+        ? "self-start rounded-md border border-[#d8dfe8] px-3 py-2 opacity-50"
+        : "self-start rounded-md border border-[#d8dfe8] px-3 py-2 hover:bg-[#eef2f6]"}>
+      <Text class="text-sm font-semibold text-[#1d2938]">{props.label}</Text>
+    </View>
+  );
+}
+
+function CardReview(props: { card: PublicCard; digest: string | null; busy: boolean; clear: () => void; confirm: () => void }) {
   return (
     <View class="gap-2 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
       <View class="flex-row flex-wrap items-center justify-between gap-2">
@@ -183,7 +288,15 @@ function CardReview(props: { card: PublicCard; clear: () => void }) {
       <Fact label="Public ID" value={props.card.id} />
       <Fact label="Fixed UDP address" value={props.card.address} />
       <Fact label="Source revision" value={props.card.revision} />
-      <Text class="text-sm text-[#526174]">Compare these values independently, then use nodes pair --preview on the intended host.</Text>
+      {props.digest ? (
+        <>
+          <Fact label="Confirmation digest" value={props.digest} />
+          <Text class="text-sm text-[#526174]">Compare these values independently before confirming.</Text>
+          <LocalButton label="Confirm pairing" disabled={props.busy} onPress={props.confirm} />
+        </>
+      ) : (
+        <Text class="text-sm text-[#526174]">Compare these values independently, then use nodes pair --preview on the intended host.</Text>
+      )}
     </View>
   );
 }
