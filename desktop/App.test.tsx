@@ -14,8 +14,8 @@ test("reachability, assigned computer, evidence, and delivery stay independent",
   await app.press("Jobs");
   const jobs = app.texts().join("\n");
   expect(jobs).toContain("Run #1042\nUnknown\nAssigned computer\nRunner · 51c2a740");
-  expect(jobs).toContain("Signed start\nNo verified start\nSigned result\nNo verified result\nDelivery\nDelivered");
-  expect(jobs).toContain("Verified start\nSigned result\nVerified result\nDelivery\nPending");
+  expect(jobs).toContain("Signed start\nNo verified start\nSigned result\nNo verified result\nMessage delivery\nDelivered");
+  expect(jobs).toContain("Verified start\nSigned result\nVerified result\nMessage delivery\nPending");
 
   await app.press("Nodes");
   expect(app.texts()).toContain("Reachable at last check");
@@ -81,4 +81,14 @@ test("opens an explicit export, keeps its snapshot after cancel or invalid selec
   await app.press("Open snapshot");
   expect(app.texts()).toContain("Couldn’t open the snapshot. Choose a coordinator JSON export under 64 KiB.");
   expect(app.texts()).toContain("Run #1042");
+
+  app.onPick(() => null);
+  await app.press("Open snapshot");
+  expect(app.texts()).toContain("Couldn’t open the snapshot. Choose a coordinator JSON export under 64 KiB.");
+  expect(app.texts()).toContain("Run #1042");
+
+  app.onPick(() => pick(JSON.stringify({ ...exportData, jobs: [] })));
+  await app.press("Open snapshot");
+  expect(app.texts()).toContain("No jobs in this snapshot.");
+  expect(app.texts()).not.toContain("Couldn’t open the snapshot. Choose a coordinator JSON export under 64 KiB.");
 });

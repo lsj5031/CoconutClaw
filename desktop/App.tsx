@@ -1,10 +1,16 @@
 import { cleanup, mount, Picker, Scroll, signal, Text, View } from "nsh";
+import type { ScrollRef, ViewRef } from "nsh";
 import { demo } from "./demo";
 import { readRunner, requestRunner, runnerLabels } from "./local-runner";
 import { delivery, maxSnapshotBytes, observations, readPublicCard, readSnapshot, statuses } from "./snapshot";
 import type { PublicCard, Snapshot } from "./snapshot";
 
 type Page = "Nodes" | "Jobs";
+type Operation = "snapshot" | "card" | "confirm" | "start" | "stop";
+
+const focusRing = { outlineWidth: 2, outlineOffset: 2, outlineColor: "#1756ad" } as const;
+const navFocusRing = { ...focusRing, outlineColor: "#9ebffb" } as const;
+const unacknowledged = "The desktop host did not acknowledge the action. Reopen the companion to verify the outcome.";
 
 function utc(iso: string) {
   return `${iso.slice(0, 10)} · ${iso.slice(11, 19)} UTC`;
@@ -17,22 +23,23 @@ function runnerLabel(id: string) {
 function NavItem(props: { label: Page; selected: boolean; onPress: () => void }) {
   return (
     <View role="button" accessibilityLabel={props.label} accessibilityState={{ selected: props.selected }}
-      onPress={props.onPress}
+      onPress={props.onPress} focusVisibleStyle={navFocusRing}
       class={props.selected
-        ? "rounded-md bg-[#33394a] px-3 py-3"
-        : "rounded-md px-3 py-3 hover:bg-[#2a3040]"}>
-      <Text class={props.selected ? "text-sm font-semibold text-white" : "text-sm font-semibold text-[#c5ccdd]"}>
+        ? "rounded-md bg-[#dce7fb] px-3 py-3 active:bg-[#c6d8f7]"
+        : "rounded-md px-3 py-3 hover:bg-[#33394a] active:bg-[#444c60]"}>
+      <Text class={props.selected ? "text-sm font-semibold text-[#192843]" : "text-sm font-semibold text-[#c5ccdd]"}>
         {props.label}
       </Text>
     </View>
   );
 }
 
-function Fact(props: { label: string; value: string }) {
+function Fact(props: { label: string; value: string; publicValue?: boolean }) {
   return (
-    <View class="gap-1">
+    <View selectable={props.publicValue} class={props.publicValue ? "min-w-0" : "gap-1"}>
       <Text class="text-xs text-[#526174]">{props.label}</Text>
-      <Text class="text-sm text-[#1d2938]">{props.value}</Text>
+      <Text class={props.publicValue
+        ? "font-mono text-sm text-[#1d2938]" : "text-sm text-[#1d2938]"}>{props.value}</Text>
     </View>
   );
 }
@@ -89,7 +96,7 @@ function Jobs(props: { jobs: Snapshot["jobs"] }) {
               <Fact label="Assigned computer" value={job.assigned_node ? runnerLabel(job.assigned_node) : "No recorded runner"} />
               <Fact label="Signed start" value={signed ? "Verified start" : "No verified start"} />
               <Fact label="Signed result" value={signed ? "Verified result" : "No verified result"} />
-              <Fact label="Delivery" value={delivery[job.delivery]} />
+              <Fact label="Message delivery" value={delivery[job.delivery]} />
             </View>
           </View>
         );
@@ -101,30 +108,33 @@ function Jobs(props: { jobs: Snapshot["jobs"] }) {
 function App() {
   const page = signal<Page>("Nodes");
   const current = signal<Snapshot>(demo);
-  const busy = signal(false);
-  const error = signal("");
+  const operation = signal<Operation | null>(null);
+  const snapshotError = signal("");
+  const pairNotice = signal("");
+  const runnerNotice = signal("");
   const card = signal<PublicCard | null>(null);
   const digest = signal<string | null>(null);
   const runner = signal<Awaited<ReturnType<typeof readRunner>>["runner"] | null>(null);
-  const message = signal("");
+  let scroll: ScrollRef | null = null;
+  let openButton: ViewRef | null = null;
+  let reviewButton: ViewRef | null = null;
   let sequence = 0;
   let connected = false;
   let polling = false;
   let closed = false;
 
   async function refreshRunner() {
-    if (busy() || polling) return;
+    if (operation() || polling) return;
     polling = true;
     try {
       const reply = await readRunner();
-      if (closed || busy() || (connected && reply.sequence !== sequence)) return;
+      if (closed || operation() || (connected && reply.sequence !== sequence)) return;
       connected = true;
       sequence = reply.sequence;
       runner.set(reply.runner);
     } catch {
-      if (connected && !closed && !busy()) {
+      if (connected && !closed && !operation()) {
         runner.set(null);
-        error.set("Local runner state is unavailable. Reopen the companion to reconnect.");
       }
     } finally {
       polling = false;
@@ -140,71 +150,88 @@ function App() {
     digest.set(null);
   }
 
+  function closeCard() {
+    clearCard();
+    reviewButton?.focus();
+  }
+
+  function showPage(target: Page) {
+    if (page() === target) return;
+    page.set(target);
+    scroll?.scrollTo({ y: 0, animated: false });
+  }
+
   async function localAction(action: Parameters<typeof requestRunner>[1]) {
     try {
       const reply = await requestRunner(++sequence, action);
       runner.set(reply.runner);
-      message.set(reply.message ?? "");
       return reply;
     } catch {
       runner.set(null);
-      error.set("The desktop host did not acknowledge the action. Reopen the companion to verify the outcome.");
     }
   }
 
   async function pressLocal(type: "confirm" | "start" | "stop") {
-    if (busy() || !runner()) return;
+    if (operation() || !runner()) return;
     const reviewed = digest();
     if (type === "confirm" && !reviewed) return;
-    busy.set(true);
-    error.set("");
-    message.set("");
+    operation.set(type);
     try {
-      if (type === "confirm") {
+      if (type === "confirm" && reviewed) {
+        pairNotice.set("");
         clearCard();
-        await localAction({ type, digest: reviewed! });
-      } else {
-        await localAction({ type });
+        const reply = await localAction({ type, digest: reviewed });
+        pairNotice.set(reply ? reply.message ?? "" : unacknowledged);
+      } else if (type !== "confirm") {
+        runnerNotice.set("");
+        const reply = await localAction({ type });
+        runnerNotice.set(reply ? reply.message ?? "" : unacknowledged);
       }
     } finally {
-      busy.set(false);
+      operation.set(null);
+      if (type === "confirm" && page() === "Nodes") reviewButton?.focus();
     }
   }
 
   async function openFile(kind: "snapshot" | "card") {
-    if (busy()) return;
-    busy.set(true);
-    error.set("");
+    if (operation()) return;
+    operation.set(kind);
     if (kind === "card") {
       clearCard();
-      message.set("");
+      pairNotice.set("");
     }
     try {
       const [picked] = await Picker.pickFiles({
         filters: [{ name: kind === "snapshot" ? "Coordinator snapshots" : "Public node cards", extensions: ["json"] }],
         maxSize: maxSnapshotBytes,
       });
-      if (picked) {
-        if (!picked.file) throw new Error("File is too large");
-        if (kind === "snapshot") {
-          current.set(readSnapshot(await picked.file.text()));
-        } else if (runner()) {
-          const bytes = new Uint8Array(await picked.file.arrayBuffer());
-          const reviewed = (await localAction({ type: "review", bytes: Array.from(bytes) }))?.preview;
-          if (reviewed) {
-            card.set(reviewed.card);
-            digest.set(reviewed.digest);
-          }
-        } else {
-          card.set(readPublicCard(await picked.file.text()));
+      if (!picked) return;
+      if (!picked.file) throw new Error("File is too large");
+      if (kind === "snapshot") {
+        current.set(readSnapshot(await picked.file.text()));
+        snapshotError.set("");
+        scroll?.scrollTo({ y: 0, animated: false });
+      } else if (runner()) {
+        const bytes = new Uint8Array(await picked.file.arrayBuffer());
+        const reply = await localAction({ type: "review", bytes: Array.from(bytes) });
+        pairNotice.set(reply ? reply.message ?? "" : unacknowledged);
+        if (reply?.preview) {
+          card.set(reply.preview.card);
+          digest.set(reply.preview.digest);
         }
+      } else {
+        card.set(readPublicCard(await picked.file.text()));
       }
     } catch {
-      error.set(kind === "snapshot"
-        ? "Couldn’t open the snapshot. Choose a coordinator JSON export under 64 KiB."
-        : "Couldn’t review the card. Choose a UTF-8 public node card from nodes card.");
+      if (kind === "snapshot") {
+        snapshotError.set("Couldn’t open the snapshot. Choose a coordinator JSON export under 64 KiB.");
+      } else {
+        pairNotice.set("Couldn’t review the card. Choose a UTF-8 public node card from nodes card.");
+      }
     } finally {
-      busy.set(false);
+      operation.set(null);
+      if (kind === "snapshot") openButton?.focus();
+      else if (page() === "Nodes") reviewButton?.focus();
     }
   }
 
@@ -212,44 +239,58 @@ function App() {
     <View class="flex-1 flex-row bg-[#f3f5f9]">
       <View class="w-40 shrink-0 gap-1 bg-[#212635] px-3 py-5">
         <Text class="mb-5 px-2 text-base font-semibold text-white">CoconutClaw</Text>
-        <NavItem label="Nodes" selected={page() === "Nodes"} onPress={() => page.set("Nodes")} />
-        <NavItem label="Jobs" selected={page() === "Jobs"} onPress={() => page.set("Jobs")} />
+        <NavItem label="Nodes" selected={page() === "Nodes"} onPress={() => showPage("Nodes")} />
+        <NavItem label="Jobs" selected={page() === "Jobs"} onPress={() => showPage("Jobs")} />
       </View>
       <View class="min-w-0 flex-1">
         <View class="flex-row flex-wrap items-center justify-between gap-2 border-b border-[#d8dfe8] bg-white px-5 py-3">
           <Text class="text-sm font-semibold text-[#526174]">
             {current().source === "demo" ? "Synthetic demo" : `Snapshot · ${utc(current().observed_at)}`}
           </Text>
-          <View role="button" accessibilityLabel="Open snapshot" onPress={() => openFile("snapshot")}
-            accessibilityState={{ disabled: busy() }}
-            class="rounded-md border border-[#d8dfe8] px-3 py-2 hover:bg-[#eef2f6] active:bg-[#e4e9f1]">
-            <Text class="text-sm font-semibold text-[#1d2938]">Open snapshot</Text>
-          </View>
+          <ActionButton label="Open snapshot" disabled={operation() !== null}
+            buttonRef={(ref) => { openButton = ref; }} onPress={() => openFile("snapshot")} />
         </View>
-        {error() ? <Text class="px-5 pt-3 text-sm text-[#913c27]" role="alert">{error()}</Text> : null}
-        <Scroll class="flex-1">
+        {snapshotError() ? (
+          <Text class="border-b border-[#efd2c8] bg-[#fff3ee] px-5 py-2 text-sm text-[#913c27]"
+            role="alert">{snapshotError()}</Text>
+        ) : null}
+        <Scroll class="flex-1" ref={(ref) => { scroll = ref; }}>
           <View class="gap-4 px-5 py-5">
-            <Text class="text-2xl font-semibold text-[#1d2938]" role="header" accessibilityLevel={1}>{page()}</Text>
+            <View class="flex-row flex-wrap items-center justify-between gap-2">
+              <Text class="text-2xl font-semibold text-[#1d2938]" role="header" accessibilityLevel={1}>{page()}</Text>
+              {page() === "Nodes" && (
+                <ActionButton label="Review public card" disabled={operation() !== null}
+                  buttonRef={(ref) => { reviewButton = ref; }} onPress={() => openFile("card")} />
+              )}
+            </View>
             {page() === "Nodes" ? (
               <>
-                <View role="button" accessibilityLabel="Review public card" onPress={() => openFile("card")}
-                  accessibilityState={{ disabled: busy() }}
-                  class="self-start rounded-md border border-[#d8dfe8] bg-white px-3 py-2 hover:bg-[#eef2f6]">
-                  <Text class="text-sm font-semibold text-[#1d2938]">Review public card</Text>
-                </View>
-                {card() && <CardReview card={card()!} digest={digest()} busy={busy()}
-                  clear={clearCard} confirm={() => pressLocal("confirm")} />}
-                {message() ? <Text role="alert" class="text-sm text-[#354459]">{message()}</Text> : null}
-                {runner() && (
+                {card() && <CardReview card={card()!} digest={digest()} busy={operation() !== null}
+                  clear={closeCard} confirm={() => pressLocal("confirm")} />}
+                {(pairNotice() || operation() === "confirm") && (
+                  <Text role="alert" class="text-sm text-[#354459]">
+                    {operation() === "confirm" ? "Confirming pairing…" : pairNotice()}
+                  </Text>
+                )}
+                {(runner() || runnerNotice() || (connected && !runner())) && (
                   <View class="gap-2 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
-                    <Text class="text-sm text-[#354459]">{runnerLabels[runner()!]}</Text>
-                    <View class="flex-row gap-2">
-                      <LocalButton label="Start local runner"
-                        disabled={busy() || ["starting", "running", "stopping", "startup_timeout", "stop_timeout"].includes(runner()!)}
-                        onPress={() => pressLocal("start")} />
-                      <LocalButton label="Stop local runner" disabled={busy() || runner() !== "running"}
-                        onPress={() => pressLocal("stop")} />
-                    </View>
+                    <Text class="text-base font-semibold text-[#1d2938]">Local runner</Text>
+                    <Text class="text-sm text-[#354459]">
+                      {operation() === "start" ? "Requesting runner start…"
+                        : operation() === "stop" ? "Requesting runner stop…"
+                        : runner() ? runnerLabels[runner()!]
+                        : "Local runner state is unavailable. Reopen the companion to reconnect."}
+                    </Text>
+                    {runnerNotice() ? <Text role="alert" class="text-sm text-[#354459]">{runnerNotice()}</Text> : null}
+                    {runner() && (
+                      <View class="flex-row flex-wrap gap-2">
+                        <ActionButton label="Start local runner"
+                          disabled={operation() !== null || ["starting", "running", "stopping", "startup_timeout", "stop_timeout"].includes(runner()!)}
+                          onPress={() => pressLocal("start")} />
+                        <ActionButton label="Stop local runner" disabled={operation() !== null || runner() !== "running"}
+                          onPress={() => pressLocal("stop")} />
+                      </View>
+                    )}
                   </View>
                 )}
                 <Nodes nodes={current().nodes} />
@@ -262,37 +303,43 @@ function App() {
   );
 }
 
-function LocalButton(props: { label: string; disabled: boolean; onPress: () => void }) {
+function ActionButton(props: {
+  label: string;
+  disabled?: boolean;
+  buttonRef?: (ref: ViewRef | null) => void;
+  onPress: () => void;
+}) {
   return (
     <View role="button" accessibilityLabel={props.label} accessibilityState={{ disabled: props.disabled }}
+      ref={props.buttonRef} focusVisibleStyle={focusRing}
       onPress={() => { if (!props.disabled) props.onPress(); }}
       class={props.disabled
-        ? "self-start rounded-md border border-[#d8dfe8] px-3 py-2 opacity-50"
-        : "self-start rounded-md border border-[#d8dfe8] px-3 py-2 hover:bg-[#eef2f6]"}>
-      <Text class="text-sm font-semibold text-[#1d2938]">{props.label}</Text>
+        ? "self-start rounded-md border border-[#d8dfe8] bg-[#eef2f6] px-3 py-2"
+        : "self-start rounded-md border border-[#78889d] bg-white px-3 py-2 hover:bg-[#eef2f6] active:bg-[#dce7fb]"}>
+      <Text class={props.disabled ? "text-sm font-semibold text-[#526174]" : "text-sm font-semibold text-[#1d2938]"}>
+        {props.label}
+      </Text>
     </View>
   );
 }
 
 function CardReview(props: { card: PublicCard; digest: string | null; busy: boolean; clear: () => void; confirm: () => void }) {
   return (
-    <View class="gap-2 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
+    <View class="gap-1 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
       <View class="flex-row flex-wrap items-center justify-between gap-2">
         <Text class="text-base font-semibold text-[#1d2938]">
           {props.card.role === "runner" ? "Runner card for coordinator" : "Coordinator card for runner"}
         </Text>
-        <View role="button" accessibilityLabel="Close card" onPress={props.clear} class="px-2 py-1">
-          <Text class="text-sm text-[#354459]">Close card</Text>
-        </View>
+        <ActionButton label="Close card" disabled={props.busy} onPress={props.clear} />
       </View>
-      <Fact label="Public ID" value={props.card.id} />
-      <Fact label="Fixed UDP address" value={props.card.address} />
-      <Fact label="Source revision" value={props.card.revision} />
+      <Fact label="Public ID" value={props.card.id} publicValue />
+      <Fact label="Fixed UDP address" value={props.card.address} publicValue />
+      <Fact label="Source revision" value={props.card.revision} publicValue />
       {props.digest ? (
         <>
-          <Fact label="Confirmation digest" value={props.digest} />
+          <Fact label="Confirmation digest" value={props.digest} publicValue />
           <Text class="text-sm text-[#526174]">Compare these values independently before confirming.</Text>
-          <LocalButton label="Confirm pairing" disabled={props.busy} onPress={props.confirm} />
+          <ActionButton label="Confirm pairing" disabled={props.busy} onPress={props.confirm} />
         </>
       ) : (
         <Text class="text-sm text-[#526174]">Compare these values independently, then use nodes pair --preview on the intended host.</Text>
