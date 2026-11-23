@@ -884,6 +884,17 @@ pub(crate) fn selection(store: &Store, session: &str, id: Option<&str>) -> Resul
     }
     Ok(())
 }
+
+fn selected_runner(conn: &rusqlite::Connection, session: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT node FROM node_selection WHERE session=?1",
+            [session],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 pub(crate) fn choices(store: &Store) -> Result<Vec<String>> {
     initialize(store)?;
     Ok(store
@@ -967,14 +978,7 @@ fn status_impl(
         ));
     }
     if let Some(session) = session {
-        let selected: Option<String> = store
-            .conn
-            .query_row(
-                "SELECT node FROM node_selection WHERE session=?1",
-                [session],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let selected = selected_runner(&store.conn, session)?;
         lines.push(format!(
             "New text tasks go to: {}",
             selected

@@ -1,6 +1,12 @@
 //! One-shot operator export. The companion receives metadata through a file picker.
-use super::{Card, EndpointId, Role, probe};
-use crate::{session::SessionKey, store::Store, store::status::timestamp};
+use super::{Card, EndpointId, Role, probe, selected_runner};
+use crate::{
+    session::{SessionKey, SessionPlatform},
+    store::{
+        Store,
+        status::{ScheduleTiming, StatusSchedule, timestamp},
+    },
+};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Serialize;
@@ -23,6 +29,39 @@ struct Snapshot {
     observed_at: String,
     nodes: Vec<Node>,
     jobs: Vec<Job>,
+    routing: Option<Routing>,
+    schedules: Vec<Schedule>,
+    schedule_count: i64,
+}
+
+#[derive(Serialize)]
+struct Routing {
+    runner: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Schedule {
+    id: String,
+    revision: String,
+    state: &'static str,
+    next_due: Option<String>,
+    timing: Option<ScheduleTiming>,
+    blocked: bool,
+    latest_run_id: Option<String>,
+}
+
+impl From<StatusSchedule> for Schedule {
+    fn from(schedule: StatusSchedule) -> Self {
+        Self {
+            id: schedule.id.to_string(),
+            revision: schedule.revision.to_string(),
+            state: schedule.state,
+            next_due: schedule.next_due,
+            timing: schedule.timing,
+            blocked: schedule.blocked,
+            latest_run_id: schedule.latest_run_id.map(|id| id.to_string()),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -93,7 +132,19 @@ fn snapshot(store: &Store, session: &SessionKey, now: &str) -> Result<Snapshot> 
     };
     let routes = table_exists(&tx, "node_routes")?;
     let assignments = table_exists(&tx, "node_assignments")?;
-    let session = session.id();
+    let scope = session.id();
+    let routing = if session.platform == SessionPlatform::Telegram {
+        let runner = if table_exists(&tx, "node_selection")? {
+            selected_runner(&tx, &scope)?
+                .map(|id| node_id(&id).map(|key| key.to_string()))
+                .transpose()?
+        } else {
+            None
+        };
+        Some(Routing { runner })
+    } else {
+        None
+    };
     let mut jobs = Vec::with_capacity(status.tasks.len());
     for task in status.tasks {
         let assigned_node = if routes {
@@ -118,7 +169,7 @@ fn snapshot(store: &Store, session: &SessionKey, now: &str) -> Result<Snapshot> 
                     JOIN runtime_remote_results r ON r.task_run_id=a.run
                     WHERE a.run=?1 AND m.session_id=?2
                     AND length(r.start)>0 AND length(r.result)>0)",
-                params![task.run_id, session],
+                params![task.run_id, scope],
                 |r| r.get::<_, bool>(0),
             )?
         } else {
@@ -142,11 +193,14 @@ fn snapshot(store: &Store, session: &SessionKey, now: &str) -> Result<Snapshot> 
     }
     tx.commit()?;
     Ok(Snapshot {
-        version: 1,
+        version: 2,
         source: "coordinator",
         observed_at: status.observed_at,
         nodes,
         jobs,
+        routing,
+        schedules: status.schedules.into_iter().map(Schedule::from).collect(),
+        schedule_count: status.schedule_count,
     })
 }
 
@@ -205,46 +259,152 @@ pub(super) fn test_export(db: &Path, session: &SessionKey) -> serde_json::Value 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::InsertTaskRunParams;
+    use crate::{nodes, scheduling::Timing, store::InsertTaskRunParams};
     use coconutclaw_config::RuntimeConfig;
+    use serde_json::json;
+
+    const NOW: &str = "2026-11-20T01:52:00Z";
+
+    fn insert_job(store: &Store, session: &SessionKey) -> i64 {
+        store
+            .insert_task_run(InsertTaskRunParams {
+                session_id: session.id(),
+                channel: "telegram".into(),
+                source_chat_id: None,
+                source_user_id: None,
+                update_id: None,
+                prompt: "private job prompt".into(),
+                created_at: NOW.into(),
+                progress_message_id: None,
+                scheduled_task_id: None,
+            })
+            .unwrap()
+    }
 
     #[test]
     fn read_only_export_cannot_create_a_database_and_scopes_jobs() {
         let temp = tempfile::tempdir().unwrap();
         let cfg = RuntimeConfig::test_config_at(temp.path().into());
-        let now = "2026-11-20T01:52:00Z";
         let session = SessionKey::telegram("101#4");
-        assert!(read(&cfg.sqlite_db_path, &session, now).is_err());
+        assert!(read(&cfg.sqlite_db_path, &session, NOW).is_err());
         assert!(!cfg.sqlite_db_path.exists());
         let store = Store::open(&cfg).unwrap();
-        let insert = |session: SessionKey| {
-            store
-                .insert_task_run(InsertTaskRunParams {
-                    session_id: session.id(),
-                    channel: "telegram".into(),
-                    source_chat_id: None,
-                    source_user_id: None,
-                    update_id: None,
-                    prompt: "private prompt".into(),
-                    created_at: now.into(),
-                    progress_message_id: None,
-                    scheduled_task_id: None,
-                })
-                .unwrap()
-        };
-        let run = insert(session.clone());
-        insert(SessionKey::telegram("101#3"));
-        let value =
-            serde_json::to_value(read(&cfg.sqlite_db_path, &session, now).unwrap()).unwrap();
-        assert_eq!(value["nodes"], serde_json::json!([]));
+        let run = insert_job(&store, &session);
+        insert_job(&store, &SessionKey::telegram("101#3"));
+        let value = test_export(&cfg.sqlite_db_path, &session);
+        assert_eq!(value["version"], 2);
+        assert_eq!(value["nodes"], json!([]));
+        assert_eq!(value["routing"], json!({"runner": null}));
+        assert_eq!(value["schedules"], json!([]));
+        assert_eq!(value["schedule_count"], 0);
         assert_eq!(
             value["jobs"],
-            serde_json::json!([{
+            json!([{
                 "run_id": run.to_string(), "assigned_node": null, "status": "queued",
                 "signed_evidence": "none", "delivery": "unavailable"
             }])
         );
-        assert!(!value.to_string().contains("private prompt"));
+        assert!(!value.to_string().contains("private job prompt"));
         assert!(!table_exists(&store.conn, "paired_nodes").unwrap());
+    }
+
+    #[test]
+    fn exports_the_exact_topics_selection_and_durable_schedule_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = RuntimeConfig::test_config_at(temp.path().into());
+        let store = Store::open(&cfg).unwrap();
+        let now = NOW.parse().unwrap();
+        let scope = SessionKey::telegram("321#4");
+        let sibling = SessionKey::telegram("321#3");
+        let chat = SessionKey::telegram("321");
+        let local = SessionKey::local("default");
+        nodes::initialize(&store).unwrap();
+        let pair = |seed| {
+            let id = nodes::SecretKey::from_bytes(&[seed; 32]).public();
+            let card = Card {
+                version: 1,
+                role: Role::Runner,
+                id,
+                address: "192.0.2.1:49731".parse().unwrap(),
+                revision: nodes::REVISION.into(),
+            };
+            store.conn.execute(
+                "INSERT INTO paired_nodes(id,card,last_error) VALUES(?1,?2,'private node error')",
+                params![id.to_string(), serde_json::to_string(&card).unwrap()],
+            ).unwrap();
+            id.to_string()
+        };
+        let frozen_runner = pair(1);
+        let selected_runner = pair(2);
+        nodes::selection(&store, &scope.id(), Some(&frozen_runner)).unwrap();
+        let run = insert_job(&store, &scope);
+        nodes::freeze_route(&store, run, &scope.id()).unwrap();
+        nodes::selection(&store, &scope.id(), Some(&selected_runner)).unwrap();
+        nodes::selection(&store, &sibling.id(), Some(&frozen_runner)).unwrap();
+        nodes::selection(&store, &local.id(), Some(&frozen_runner)).unwrap();
+        let create = |session: &SessionKey, daily| {
+            let request = crate::commands::schedule::request(
+                &cfg,
+                session.clone(),
+                "private schedule prompt",
+            )
+            .unwrap();
+            store
+                .create_schedule(
+                    "private creation key",
+                    &request,
+                    &Timing::parse(None, Some(daily), "UTC").unwrap(),
+                    now,
+                )
+                .unwrap()
+        };
+        let schedule = create(&scope, "12:00");
+        let sibling_schedule = create(&sibling, "13:00");
+        create(&chat, "14:00");
+        let local_schedule = create(&local, "15:00");
+        store
+            .conn
+            .execute(
+                "INSERT INTO runtime_schedule_runs VALUES(?1,?2)",
+                params![schedule, run],
+            )
+            .unwrap();
+
+        let export = |session: &SessionKey| test_export(&cfg.sqlite_db_path, session);
+        let value = export(&scope);
+        assert_eq!(value["routing"], json!({"runner": selected_runner}));
+        assert_eq!(value["jobs"][0]["assigned_node"], frozen_runner);
+        assert_eq!(value["schedule_count"], 1);
+        assert_eq!(
+            value["schedules"],
+            json!([{
+                "id": schedule.to_string(), "revision": "1", "state": "active",
+                "next_due": "2026-11-20T12:00:00+00:00", "blocked": true,
+                "latest_run_id": run.to_string(),
+                "timing": {"cadence": "daily 12:00", "timezone": "UTC",
+                    "fold": "first", "gap": "skip", "missed": "coalesce"}
+            }])
+        );
+        let serialized = value.to_string();
+        for private in [
+            "private job prompt",
+            "private schedule prompt",
+            "private creation key",
+            "private node error",
+            "192.0.2.1",
+            "telegram:321",
+            "local:default",
+        ] {
+            assert!(!serialized.contains(private));
+        }
+
+        let other = export(&sibling);
+        assert_eq!(other["routing"], json!({"runner": frozen_runner}));
+        assert_eq!(other["schedules"][0]["id"], sibling_schedule.to_string());
+        assert_eq!(other["jobs"], json!([]));
+        assert_eq!(export(&chat)["routing"], json!({"runner": null}));
+        let local = export(&local);
+        assert_eq!(local["routing"], json!(null));
+        assert_eq!(local["schedules"][0]["id"], local_schedule.to_string());
     }
 }

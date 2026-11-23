@@ -27,7 +27,15 @@ const delivery = {
   unavailable: "No delivery record",
 } as const;
 
-export { observations, statuses, delivery };
+const scheduleStates = {
+  active: "Active",
+  paused: "Paused",
+  cancelled: "Cancelled",
+  done: "Finished",
+  unknown: "Unknown",
+} as const;
+
+export { observations, statuses, delivery, scheduleStates };
 
 type Node = {
   id: string;
@@ -44,13 +52,39 @@ type Job = {
   delivery: keyof typeof delivery;
 };
 
-export type Snapshot = {
-  version: 1;
+export type Routing = { runner: string | null };
+
+type ScheduleTiming = {
+  cadence: string;
+  timezone: string;
+  fold: "first" | "second";
+  gap: "skip" | "next-valid";
+  missed: "skip" | "coalesce";
+};
+
+export type Schedule = {
+  id: string;
+  revision: string;
+  state: keyof typeof scheduleStates;
+  next_due: string | null;
+  timing: ScheduleTiming | null;
+  blocked: boolean;
+  latest_run_id: string | null;
+};
+
+type SnapshotBase = {
   source: "demo" | "coordinator";
   observed_at: string;
   nodes: Node[];
   jobs: Job[];
 };
+
+export type Snapshot = SnapshotBase & ({ version: 1 } | {
+  version: 2;
+  routing: Routing | null;
+  schedules: Schedule[];
+  schedule_count: number;
+});
 
 export const maxSnapshotBytes = 64 * 1024;
 
@@ -107,26 +141,63 @@ export function readPublicCard(contents: string): PublicCard {
 
 function isJob(value: unknown): value is Job {
   return isRecord(value)
-    && typeof value.run_id === "string" && /^[1-9]\d{0,18}$/.test(value.run_id)
+    && isId(value.run_id)
     && (value.assigned_node === null || isNodeId(value.assigned_node))
     && hasKey(value.status, statuses)
     && (value.signed_evidence === "none" || value.signed_evidence === "verified")
     && hasKey(value.delivery, delivery);
 }
 
+function isId(value: unknown): value is string {
+  return typeof value === "string" && /^[1-9]\d{0,18}$/.test(value);
+}
+
+function isRouting(value: unknown): value is Routing {
+  return isRecord(value) && (value.runner === null || isNodeId(value.runner));
+}
+
+function isScheduleTiming(value: unknown): value is ScheduleTiming {
+  return isRecord(value)
+    && typeof value.cadence === "string"
+    && (value.cadence.startsWith("once ") ? isTimestamp(value.cadence.slice(5))
+      : /^(?:daily|weekly (?:mon|tue|wed|thu|fri|sat|sun)(?:,(?:mon|tue|wed|thu|fri|sat|sun)){0,6}) (?:[01]\d|2[0-3]):[0-5]\d$/.test(value.cadence))
+    && typeof value.timezone === "string" && /^[A-Za-z0-9_+/-]{1,64}$/.test(value.timezone)
+    && (value.fold === "first" || value.fold === "second")
+    && (value.gap === "skip" || value.gap === "next-valid")
+    && (value.missed === "skip" || value.missed === "coalesce");
+}
+
+function isSchedule(value: unknown): value is Schedule {
+  return isRecord(value)
+    && isId(value.id) && isId(value.revision)
+    && hasKey(value.state, scheduleStates)
+    && (value.next_due === null || isTimestamp(value.next_due))
+    && (value.timing === null || isScheduleTiming(value.timing))
+    && typeof value.blocked === "boolean"
+    && (value.latest_run_id === null || isId(value.latest_run_id));
+}
+
 export function readSnapshot(contents: string): Snapshot {
   const value: unknown = JSON.parse(contents);
-  if (!isRecord(value) || value.version !== 1 || value.source !== "coordinator"
+  if (!isRecord(value) || value.source !== "coordinator"
       || !isTimestamp(value.observed_at)
       || !Array.isArray(value.nodes) || value.nodes.length > 32 || !value.nodes.every(isNode)
       || !Array.isArray(value.jobs) || value.jobs.length > 50 || !value.jobs.every(isJob)) {
     throw new Error("Invalid coordinator snapshot");
   }
-  return {
-    version: 1,
-    source: "coordinator",
+  const base = {
+    source: value.source,
     observed_at: value.observed_at,
     nodes: value.nodes,
     jobs: value.jobs,
-  };
+  } as const;
+  if (value.version === 1) return { ...base, version: 1 };
+  if (value.version !== 2
+      || (value.routing !== null && !isRouting(value.routing))
+      || !Array.isArray(value.schedules) || value.schedules.length > 50 || !value.schedules.every(isSchedule)
+      || typeof value.schedule_count !== "number" || !Number.isSafeInteger(value.schedule_count)
+      || value.schedules.length !== Math.min(50, value.schedule_count)) {
+    throw new Error("Invalid coordinator snapshot");
+  }
+  return { ...base, version: 2, routing: value.routing, schedules: value.schedules, schedule_count: value.schedule_count };
 }

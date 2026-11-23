@@ -50,7 +50,7 @@ pub(crate) struct StatusSchedule {
     pub(crate) latest_status: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct ScheduleTiming {
     pub(crate) cadence: String,
     pub(crate) timezone: String,

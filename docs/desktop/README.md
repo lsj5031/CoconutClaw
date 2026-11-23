@@ -17,6 +17,8 @@ Use the exact conversation ID, for example `telegram:123` for the chat, `telegra
 
 Nodes shows up to 32 paired runners. The latest explicit probe includes its UTC check time and whether the paired runner returned an authenticated response. A failed probe preserves the last successful contact. Older exports may lack the check time. Jobs shows up to 50 current attempts for the selected scope in the coordinator's status order. Assigned computer is the frozen route. Verified evidence means the trusted coordinator recorded both signed events after checking the history. Start-only observations are not retained by the existing coordinator adapter. Snapshot files are operator-trusted exports and the viewer does not authenticate the file. Refresh means exporting and opening a new file.
 
+Version 2 exports add **Routing** and **Schedules**. Routing shows where new Telegram text tasks go in the exported chat or topic. Schedules shows up to 50 durable schedules in the same order as Telegram, with saved state, planned time, cadence and policies, and any recorded run blocker. Local conversation exports include their own schedules. Version 1 files still open and report that routing and schedules were unavailable in that export. Cancelling the picker or selecting an invalid file preserves the open snapshot.
+
 ### Open local runner controls
 
 Launch through the reviewed absolute CoconutClaw CLI, under the account that enrolled the runner. Use its existing protected data root and the absolute executable from the pinned NSH companion package. Keep the adjacent `nsh` directory with that executable.

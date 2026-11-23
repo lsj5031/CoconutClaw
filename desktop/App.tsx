@@ -2,10 +2,11 @@ import { cleanup, mount, Picker, Scroll, signal, Text, View } from "nsh";
 import type { ScrollRef, ViewRef } from "nsh";
 import { demo } from "./demo";
 import { readRunner, requestRunner, runnerLabels } from "./local-runner";
-import { delivery, maxSnapshotBytes, observations, readPublicCard, readSnapshot, statuses } from "./snapshot";
+import { delivery, maxSnapshotBytes, observations, readPublicCard, readSnapshot, scheduleStates, statuses } from "./snapshot";
 import type { PublicCard, Snapshot } from "./snapshot";
 
-type Page = "Nodes" | "Jobs";
+const pages = ["Nodes", "Jobs", "Routing", "Schedules"] as const;
+type Page = typeof pages[number];
 type Operation = "snapshot" | "card" | "confirm" | "start" | "stop";
 
 const focusRing = { outlineWidth: 2, outlineOffset: 2, outlineColor: "#1756ad" } as const;
@@ -98,6 +99,73 @@ function Jobs(props: { jobs: Snapshot["jobs"] }) {
               <Fact label="Signed result" value={signed ? "Verified result" : "No verified result"} />
               <Fact label="Message delivery" value={delivery[job.delivery]} />
             </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function Routing(props: { snapshot: Snapshot }) {
+  return (
+    <>
+      {props.snapshot.version === 1 ? (
+        <Text class="text-sm text-[#526174]">Routing was not recorded in this snapshot.</Text>
+      ) : props.snapshot.routing ? (
+        <View class="gap-2 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
+          <Fact label="New Telegram text tasks"
+            value={props.snapshot.routing.runner ? runnerLabel(props.snapshot.routing.runner) : "Local coordinator"} />
+          <Text class="text-sm text-[#526174]">Existing jobs keep their assignment.</Text>
+        </View>
+      ) : (
+        <Text class="text-sm text-[#526174]">This snapshot covers a local conversation.</Text>
+      )}
+    </>
+  );
+}
+
+function Schedules(props: { snapshot: Snapshot }) {
+  return (
+    <View class="gap-3">
+      {props.snapshot.version === 1 && (
+        <Text class="text-sm text-[#526174]">Schedules were not recorded in this snapshot.</Text>
+      )}
+      {props.snapshot.version === 2 && props.snapshot.schedules.length === 0 && (
+        <Text class="text-sm text-[#526174]">No schedules in this snapshot.</Text>
+      )}
+      {props.snapshot.version === 2 && props.snapshot.schedule_count > props.snapshot.schedules.length && (
+        <Text class="text-sm text-[#526174]">
+          {`Showing ${props.snapshot.schedules.length} of ${props.snapshot.schedule_count} schedules.`}
+        </Text>
+      )}
+      {props.snapshot.version === 2 && props.snapshot.schedules.map((schedule) => {
+        const timing = schedule.timing;
+        return (
+          <View class="gap-3 rounded-lg border border-[#d8dfe8] bg-white px-4 py-3">
+            <View class="flex-row flex-wrap items-center justify-between gap-2">
+              <Text class="text-base font-semibold text-[#1d2938]">{`Schedule #${schedule.id}`}</Text>
+              <Text class="text-sm font-semibold text-[#354459]">{scheduleStates[schedule.state]}</Text>
+            </View>
+            {schedule.blocked && <Text class="text-sm font-semibold text-[#764608]">Blocked by a prior run</Text>}
+            <View class="flex-row flex-wrap gap-x-6 gap-y-3">
+              <Fact label="Planned next run" value={schedule.next_due ? utc(schedule.next_due) : "No time recorded"} />
+              <Fact label="Latest run" value={schedule.latest_run_id ? `Run #${schedule.latest_run_id}` : "No run recorded"} />
+              <Fact label="Revision" value={schedule.revision} />
+            </View>
+            {timing ? (
+              <View class="flex-row flex-wrap gap-x-6 gap-y-3">
+                <Fact label="Cadence" value={timing.cadence.startsWith("once ")
+                  ? `Once · ${utc(timing.cadence.slice(5))}` : timing.cadence} />
+                <Fact label="Timezone" value={timing.timezone} />
+                {!timing.cadence.startsWith("once ") && (
+                  <>
+                    <Fact label="Repeated time" value={timing.fold === "second" ? "Second occurrence" : "First occurrence"} />
+                    <Fact label="Skipped time" value={timing.gap === "next-valid" ? "Use next valid time" : "Skip occurrence"} />
+                  </>
+                )}
+                <Fact label="Missed runs" value={timing.missed === "coalesce" ? "Combine into one run" : "Skip"} />
+              </View>
+            ) : <Text class="text-sm text-[#526174]">Timing unavailable.</Text>}
           </View>
         );
       })}
@@ -239,8 +307,7 @@ function App() {
     <View class="flex-1 flex-row bg-[#f3f5f9]">
       <View class="w-40 shrink-0 gap-1 bg-[#212635] px-3 py-5">
         <Text class="mb-5 px-2 text-base font-semibold text-white">CoconutClaw</Text>
-        <NavItem label="Nodes" selected={page() === "Nodes"} onPress={() => showPage("Nodes")} />
-        <NavItem label="Jobs" selected={page() === "Jobs"} onPress={() => showPage("Jobs")} />
+        {pages.map((label) => <NavItem label={label} selected={page() === label} onPress={() => showPage(label)} />)}
       </View>
       <View class="min-w-0 flex-1">
         <View class="flex-row flex-wrap items-center justify-between gap-2 border-b border-[#d8dfe8] bg-white px-5 py-3">
@@ -263,7 +330,7 @@ function App() {
                   buttonRef={(ref) => { reviewButton = ref; }} onPress={() => openFile("card")} />
               )}
             </View>
-            {page() === "Nodes" ? (
+            {page() === "Nodes" && (
               <>
                 {card() && <CardReview card={card()!} digest={digest()} busy={operation() !== null}
                   clear={closeCard} confirm={() => pressLocal("confirm")} />}
@@ -295,7 +362,10 @@ function App() {
                 )}
                 <Nodes nodes={current().nodes} />
               </>
-            ) : <Jobs jobs={current().jobs} />}
+            )}
+            {page() === "Jobs" && <Jobs jobs={current().jobs} />}
+            {page() === "Routing" && <Routing snapshot={current()} />}
+            {page() === "Schedules" && <Schedules snapshot={current()} />}
           </View>
         </Scroll>
       </View>
