@@ -2,6 +2,8 @@
 mod journal;
 #[cfg(unix)]
 mod link;
+#[cfg(target_os = "linux")]
+mod production;
 #[cfg(unix)]
 mod runner;
 

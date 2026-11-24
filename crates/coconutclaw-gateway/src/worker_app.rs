@@ -12,7 +12,9 @@ use crate::executor_wire::{self, Event, Evidence, evidence_bytes_for, request_by
 use crate::ledger::{
     Delivery, Execution, Ledger, LocalAuthority, Receipt, Reply, ScheduleInput, conflict,
 };
-use crate::protocol::{Agent, BODY_LIMIT, Command, Fixture, INSTANCE, telegram_input, valid_text};
+use crate::protocol::{
+    Agent, BODY_LIMIT, Command, Device, Fixture, INSTANCE, telegram_input, valid_text,
+};
 use crate::runtime_authority::{Authority, Pin, nonce};
 
 #[wasm_bindgen(inline_js = "
@@ -417,7 +419,7 @@ impl BotLedger {
             {
                 return Ok(conflict());
             }
-            if let Some(reply) = ledger.read_agent(&agent, now(), &instance)? {
+            if let Some(reply) = ledger.read_agent(&agent, now(), &instance, true)? {
                 return Ok(reply.authority_deadline(valid_until));
             }
             ledger.transaction(&storage, || {
@@ -454,7 +456,7 @@ impl BotLedger {
                     if !ledger.take_pilot_request(at, false)? {
                         return ledger.pilot_limit(at);
                     }
-                    ledger.ingest(id, input, false, Some(at))
+                    ledger.ingest(id, input, false, Some(at), Some(Device::Alpha))
                 })?,
                 None,
             )
@@ -595,6 +597,7 @@ impl BotLedger {
                         input,
                         fault.as_deref() == Some("rollback"),
                         executor.then(now),
+                        None,
                     )
                 })?;
                 (reply, fault.as_deref() == Some("after_commit"))
@@ -623,7 +626,7 @@ impl BotLedger {
                         return Ok(conflict());
                     }
                 }
-                if let Some(reply) = ledger.read_agent(&agent, now(), &instance)? {
+                if let Some(reply) = ledger.read_agent(&agent, now(), &instance, false)? {
                     return Ok(reply);
                 }
                 let drop_reply = fault.as_deref() == Some("after_commit")

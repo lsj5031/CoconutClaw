@@ -321,6 +321,7 @@ impl Ledger {
         input: Option<(i64, Option<i32>, &str)>,
         fail: bool,
         pilot_now: Option<i64>,
+        placement: Option<Device>,
     ) -> Result<Reply> {
         if self
             .number(
@@ -351,7 +352,7 @@ impl Ledger {
         )?;
         let task = if let Some((chat, thread, text)) = input {
             let id = format!("telegram:{update}");
-            self.insert_task(&id, chat, thread, text, None)?;
+            self.insert_task(&id, chat, thread, text, placement.map(Device::name))?;
             Some(id)
         } else {
             None
@@ -382,26 +383,45 @@ impl Ledger {
         )
     }
 
-    fn candidate(&self, device: Device, now: i64, id: Option<&str>) -> Result<Option<Task>> {
+    fn candidate(
+        &self,
+        device: Device,
+        now: i64,
+        id: Option<&str>,
+        pinned_only: bool,
+    ) -> Result<Option<Task>> {
         self.row(
             "SELECT t.id,t.chat_id,t.thread_id,t.prompt FROM tasks t
              LEFT JOIN attempts a ON t.current_attempt=a.id
-             WHERE t.cancelled=0 AND (t.pin IS NULL OR t.pin=?1)
+             WHERE t.cancelled=0 AND (t.pin=?1 OR (t.pin IS NULL AND ?4=0))
              AND (?2 IS NULL OR t.id=?2)
              AND (a.id IS NULL OR (a.phase='claimed' AND a.lease_until<=?3))
              ORDER BY t.sequence LIMIT 1",
-            [device.name().into(), id.into(), now.into()],
+            [
+                device.name().into(),
+                id.into(),
+                now.into(),
+                i32::from(pinned_only).into(),
+            ],
         )
     }
 
-    pub fn read_agent(&self, agent: &Agent, now: i64, instance: &str) -> Result<Option<Reply>> {
+    pub fn read_agent(
+        &self,
+        agent: &Agent,
+        now: i64,
+        instance: &str,
+        pinned_only: bool,
+    ) -> Result<Option<Reply>> {
         match agent.command {
             Command::Hello => Ok(Some(Reply::ok(json!({
                 "protocol": 1, "instance": instance, "device": agent.device, "capabilities": ["text"],
                 "last_sequence": self.last_sequence(agent.device)?
             })))),
             Command::Next => {
-                let task = self.candidate(agent.device, now, None)?.map(|task| task.id);
+                let task = self
+                    .candidate(agent.device, now, None, pinned_only)?
+                    .map(|task| task.id);
                 Ok(Some(Reply::ok(json!({"task": task}))))
             }
             Command::Status { attempt } => {
@@ -419,6 +439,7 @@ impl Ledger {
                         },
                         start_until: row.start_until,
                         cancel_requested: row.cancel_requested != 0,
+                        authority_valid_until: None,
                     })),
                     None => conflict(),
                 }))
@@ -501,7 +522,13 @@ impl Ledger {
             {
                 Ok(conflict())
             }
-            Command::Claim { task } => self.claim(device, now, &task, executor),
+            Command::Claim { task } => self.claim(
+                device,
+                now,
+                &task,
+                executor,
+                matches!(execution, Some(Execution::Cutover { .. })),
+            ),
             Command::Start { attempt } => self.update_attempt(device, attempt, |row| {
                 if row.cancel_requested != 0 {
                     return Ok(conflict());
@@ -534,6 +561,7 @@ impl Ledger {
                         attempt,
                         start_until: until,
                         request_sequence: sequence,
+                        authority_valid_until: None,
                     }),
                     Some(Execution::HostedPilot) => {
                         json!({"attempt":attempt, "start_until":until, "request_sequence":sequence})
@@ -721,8 +749,15 @@ impl Ledger {
         }
     }
 
-    fn claim(&self, device: Device, now: i64, id: &str, executor: bool) -> Result<Reply> {
-        let candidate = self.candidate(device, now, Some(id))?;
+    fn claim(
+        &self,
+        device: Device,
+        now: i64,
+        id: &str,
+        executor: bool,
+        pinned_only: bool,
+    ) -> Result<Reply> {
+        let candidate = self.candidate(device, now, Some(id), pinned_only)?;
         let task = if let Some(task) = candidate {
             task
         } else {
@@ -733,13 +768,23 @@ impl Ledger {
             {
                 return Ok(conflict());
             }
-            let task = self
-                .row(
-                    "SELECT id,chat_id,thread_id,prompt FROM tasks WHERE id=?",
-                    [id.into()],
-                )?
-                .ok_or("missing claimed task")?;
-            return Ok(Self::claim_reply(task, row.id, row.lease_until));
+            let task = self.row(
+                "SELECT id,chat_id,thread_id,prompt FROM tasks WHERE id=? AND (?2=0 OR pin=?3)",
+                [
+                    id.into(),
+                    i32::from(pinned_only).into(),
+                    device.name().into(),
+                ],
+            )?;
+            let Some(task) = task else {
+                return Ok(conflict());
+            };
+            return Ok(Self::claim_reply(
+                task,
+                row.id,
+                row.lease_until,
+                pinned_only.then_some(device),
+            ));
         };
         if self.number(
             "SELECT id AS value FROM attempts ORDER BY id DESC LIMIT 1",
@@ -761,14 +806,23 @@ impl Ledger {
             "UPDATE tasks SET current_attempt=? WHERE id=?",
             [attempt.into(), id.into()],
         )?;
-        Ok(Self::claim_reply(task, attempt, lease))
+        Ok(Self::claim_reply(
+            task,
+            attempt,
+            lease,
+            pinned_only.then_some(device),
+        ))
     }
 
-    fn claim_reply(task: Task, attempt: i64, lease_until: i64) -> Reply {
-        Reply::ok(json!({
+    fn claim_reply(task: Task, attempt: i64, lease_until: i64, placement: Option<Device>) -> Reply {
+        let mut body = json!({
             "phase":"claimed", "task":task.id, "attempt":attempt, "lease_until":lease_until,
             "chat_id":task.chat_id, "message_thread_id":task.thread_id, "prompt":task.prompt
-        }))
+        });
+        if let Some(placement) = placement {
+            body["placement"] = json!(placement);
+        }
+        Reply::ok(body)
     }
 
     fn current_attempt(&self, task: &str) -> Result<Option<Attempt>> {

@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 
 use super::journal::{Intent, Journal};
 use super::link::{Link, PilotPaused, Unavailable, now_ms};
+#[cfg(target_os = "linux")]
+use super::production;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Fixture {
@@ -31,14 +33,41 @@ struct Executor {
     link: Link,
     journal: Journal,
     dir: PathBuf,
-    fixture: Fixture,
+    execution: Execution,
+}
+
+enum Execution {
+    Fixture(Fixture),
+    #[cfg(target_os = "linux")]
+    Production(Box<production::Config>),
 }
 
 pub fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
+    let mode = args.next();
+    #[cfg(target_os = "linux")]
+    if mode.as_deref().is_some_and(|arg| arg == "--production") {
+        let usage = "--production init|resume <private runner JSON> <journal directory>";
+        let init = match args.next().as_deref().and_then(|arg| arg.to_str()) {
+            Some("init") => true,
+            Some("resume") => false,
+            _ => bail!("{usage}"),
+        };
+        let config = PathBuf::from(args.next().context(usage)?);
+        let dir = PathBuf::from(args.next().context(usage)?);
+        ensure!(args.next().is_none(), "{usage}");
+        let (config, link, journal) = production::Config::load(&config, &dir, init)?;
+        return Executor {
+            link,
+            journal,
+            dir,
+            execution: Execution::Production(Box::new(config)),
+        }
+        .serve();
+    }
     let usage = "--loopback-fixture init|resume <https-origin> <CA PEM> <32-byte key file> <journal directory> [--generation N] [hold|crash-before-spawn|crash-after-spawn]";
     ensure!(
-        args.next().is_some_and(|arg| arg == "--loopback-fixture"),
+        mode.is_some_and(|arg| arg == "--loopback-fixture"),
         "{usage}"
     );
     let init = match args.next().as_deref().and_then(|arg| arg.to_str()) {
@@ -85,7 +114,7 @@ pub fn run() -> Result<()> {
         link,
         journal,
         dir,
-        fixture,
+        execution: Execution::Fixture(fixture),
     }
     .serve()
 }
@@ -153,6 +182,7 @@ impl Executor {
             task: String,
             attempt: i64,
             prompt: String,
+            placement: Option<String>,
         }
         let next: Next = self.link.read(json!({"op":"next"}))?;
         let Some(task) = next.task else {
@@ -166,6 +196,11 @@ impl Executor {
             return Ok(true);
         };
         ensure!(claim.task == task, "claim bound to another task");
+        ensure!(
+            !self.link.is_production()
+                || claim.placement.as_deref() == Some(coconutclaw_gateway::executor_wire::DEVICE),
+            "claim lacks the enrolled runner placement"
+        );
         self.journal.remember(&Intent {
             attempt: claim.attempt,
             prompt: claim.prompt,
@@ -192,6 +227,19 @@ impl Executor {
         {
             return Err(Unavailable.into());
         }
+        #[cfg(target_os = "linux")]
+        if let Execution::Production(config) = &self.execution {
+            let permit = production::start_permit(&grant).map_err(|_| Unavailable)?;
+            ensure!(
+                self.journal.consume(attempt)?,
+                "grant has already been consumed"
+            );
+            let event = config
+                .launch(&self.link, &self.journal, &self.dir, intent, &grant, permit)
+                .unwrap_or(Event::Unknown);
+            self.journal.finish(&self.link.key, attempt, [event])?;
+            return Ok(false);
+        }
         let status = self.link.status(attempt)?;
         if self.resolve_without_launch(&status)? {
             return Ok(false);
@@ -207,13 +255,20 @@ impl Executor {
             self.journal.consume(attempt)?,
             "grant has already been consumed"
         );
-        let events = run_child(&self.link, &self.dir, intent, deadline, self.fixture);
+        let Execution::Fixture(fixture) = self.execution else {
+            unreachable!();
+        };
+        let events = run_child(&self.link, &self.dir, intent, deadline, fixture);
         self.journal.finish(&self.link.key, attempt, events)?;
         Ok(false)
     }
 
     fn resolve_without_launch(&mut self, status: &Status) -> Result<bool> {
         let terminal = if status.cancel_requested || status.phase == Phase::CancelledBeforeStart {
+            #[cfg(target_os = "linux")]
+            if self.link.is_production() {
+                production::check_cancel(status).map_err(|_| Unavailable)?;
+            }
             Some(Event::Cancelled {
                 evidence: CancelEvidence::BeforeStart,
             })
@@ -221,9 +276,10 @@ impl Executor {
             match status.phase {
                 Phase::Claimed => return Ok(false),
                 Phase::Authorized
-                    if status
-                        .start_until
-                        .is_some_and(|until| now_ms().is_ok_and(|now| now < until)) =>
+                    if !self.link.is_production()
+                        && status
+                            .start_until
+                            .is_some_and(|until| now_ms().is_ok_and(|now| now < until)) =>
                 {
                     return Ok(false);
                 }

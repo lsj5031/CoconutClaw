@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { once } from "node:events";
-import { cp, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer, request } from "node:https";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -274,6 +275,7 @@ const timeout = { timeout: 20_000 };
 
 const executable = process.env.GATEWAY_LOCAL_EXECUTOR;
 const nativeTimeout = { timeout: 45_000, skip: !executable };
+const realCodex = process.env.GATEWAY_TEST_CODEX;
 
 async function until(check, message, timeoutMs = 10_000) {
     const deadline = Date.now() + timeoutMs;
@@ -285,7 +287,7 @@ async function until(check, message, timeoutMs = 10_000) {
     assert.fail(message);
 }
 
-async function attachExecutor(context, client) {
+async function attachExecutor(context, client, production) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "executor-"));
     const dir = join(root, "journal");
     const cert = join(root, "cert.pem");
@@ -319,6 +321,7 @@ async function attachExecutor(context, client) {
             for await (const chunk of req) chunks.push(chunk);
             const body = Buffer.concat(chunks).toString();
             const packet = { body, headers: { "x-agent-signature": req.headers["x-agent-signature"] } };
+            if (production) packet.headers["x-executor-incarnation"] = req.headers["x-executor-incarnation"];
             const envelope = JSON.parse(body);
             packets.push(envelope);
             assert.ok(packets.length <= 160, "executor request budget");
@@ -344,14 +347,13 @@ async function attachExecutor(context, client) {
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     const origin = `https://127.0.0.1:${server.address().port}`;
-    function run(mode, behavior, endpoint = origin, generation = 1, { journal = dir, key = seed } = {}) {
-        const child = spawn(executable, ["--loopback-fixture", mode, endpoint, ca, key, journal,
-            ...(generation === 1 ? [] : ["--generation", String(generation)]), ...(behavior ? [behavior] : [])],
-            { env: {}, stdio: ["ignore", "ignore", "pipe"] });
+    function start(args, env = {}) {
+        const child = spawn(executable, args, { env, stdio: ["ignore", "ignore", "pipe"] });
         let stderr = "";
         child.stderr.setEncoding("utf8").on("data", data => { stderr += data; });
         const exited = once(child, "exit");
         const process = {
+            pid: child.pid,
             async exit(expected) {
                 assert.deepEqual(await exited, [expected, null], stderr);
                 return stderr;
@@ -363,6 +365,20 @@ async function attachExecutor(context, client) {
         };
         processes.push(process);
         return process;
+    }
+    function run(mode, behavior, endpoint = origin, generation = 1, { journal = dir, key = seed } = {}) {
+        return start(["--loopback-fixture", mode, endpoint, ca, key, journal,
+            ...(generation === 1 ? [] : ["--generation", String(generation)]), ...(behavior ? [behavior] : [])]);
+    }
+    async function runProduction(mode, config, options = {}) {
+        const privateConfig = join(root, "runner.json");
+        const incarnation = join(root, "incarnation");
+        await writeFile(incarnation, options.runner ?? production.runner, { mode: 0o600 });
+        await writeFile(privateConfig, JSON.stringify({
+            origin, ca, signing_key: seed, incarnation, generation: production.target.pin.generation,
+            object_id: production.target.pin.objectId, placement: "alpha", timeout_seconds: 20, ...config,
+        }), { mode: 0o600 });
+        return start(["--production", mode, privateConfig, options.journal ?? dir], options.env);
     }
     function query(sql, ...bindings) {
         const db = new DatabaseSync(join(dir, "executor.sqlite3"), { readOnly: true });
@@ -385,12 +401,266 @@ async function attachExecutor(context, client) {
             && JSON.parse(command.proof.payload).event.kind === event);
     }
     function verifyProof(proof) {
-        assert.ok(verify(null, Buffer.from(`coconutclaw-evidence-v1\nlocal-executor-fixture\nalpha\n${proof.payload}`),
+        const instance = production
+            ? `bigfur:${production.target.pin.generation}:${production.target.pin.objectId}`
+            : "local-executor-fixture";
+        assert.ok(verify(null, Buffer.from(`coconutclaw-evidence-v1\n${instance}\nalpha\n${proof.payload}`),
             client.keys.alpha.publicKey, Buffer.from(proof.signature, "hex")));
         return JSON.parse(proof.payload);
     }
-    return { proxy, run, launches, proofs, verifyProof, query, packets, dir, seed };
+    return { proxy, run, runProduction, launches, proofs, verifyProof, query, packets, dir, seed, root };
 }
+
+async function productionRunner(context) {
+    const control = await mkdtemp(join(import.meta.dirname, "build", "runner-control-"));
+    const mock = await authorityFixture(join(control, "authority.sqlite"));
+    context.after(async () => {
+        await mock.close();
+        await rm(control, { recursive: true, force: true });
+    });
+    const cutover = { fetch: request => mock.fetch(request), runner: "d".repeat(64) };
+    const client = await runFixture(context, { executor: true, inspect: true, cutover });
+    const objectId = await client.objectId("hosted-synthetic-pilot");
+    const digest = "b".repeat(64);
+    const setTarget = generation => {
+        cutover.target = {
+            pin: {
+                generation, hostname, objectId, custodyDigest: digest, revision: "e".repeat(40),
+                telegramCredentialVersion: "synthetic-existing-token",
+                executorKey: client.keys.alpha.publicKey.export({ format: "der", type: "spki" })
+                    .subarray(-32).toString("hex"),
+            },
+            versionId: `synthetic-runner-worker-${generation}`,
+        };
+    };
+    const ingress = (id, text, code = 200) => client.post("telegram", update(id, 37, text), webhook, code);
+    const enroll = runner => mock.publish(cutover.target, mock.checks.at(-1).objectIncarnation, runner);
+    setTarget(1);
+    await client.restart();
+    await ingress(80, "enrollment", 503);
+    enroll("c".repeat(64));
+    await ingress(80, "initialize held ledger", 503);
+    mock.retire();
+    setTarget(2);
+    await client.restart(() => client.editLedger(db => {
+        db.exec("INSERT INTO local_authority VALUES(1,2,0,1)");
+        db.prepare("INSERT INTO local_legacy_cutover VALUES(1,?,?,?)")
+            .run(Buffer.from("baseline"), Buffer.from("delta"), Buffer.from("archived"));
+        db.prepare("INSERT INTO cutover_custody VALUES(1,2,?)").run(digest);
+        db.exec(`INSERT INTO tasks(id,chat_id,thread_id,prompt,pin) VALUES
+            ('held-unpinned',321,37,'held',NULL), ('held-beta',321,37,'held','beta')`);
+    }));
+    await ingress(80, "enrollment", 503);
+    enroll(cutover.runner);
+    const executor = await attachExecutor(context, client, cutover);
+    const workspace = join(executor.root, "work");
+    const home = join(executor.root, "codex-home");
+    await mkdir(workspace, { mode: 0o700 });
+    await mkdir(home, { mode: 0o700 });
+    return {
+        ...executor, client, ingress, mock, workspace, home, cutover,
+        configure: codex => ({ codex, codex_home: home, workspace }),
+        cancel: id => client.post("cancel", { task: `telegram:${id}` }, {
+            "x-cutover-operator": operator["x-fixture-secret"],
+        }),
+        async receipt(attempt, event) {
+            await until(() => {
+                try {
+                    return executor.query(
+                        "SELECT acknowledged FROM evidence WHERE attempt=? AND event=? AND acknowledged=1",
+                        attempt, event,
+                    ).length;
+                } catch (error) {
+                    if (error.errcode !== 14 && !error.message.includes("no such table: evidence")) throw error;
+                    return false;
+                }
+            }, `no acknowledged ${event} for attempt ${attempt}`, 15_000);
+            const { command } = executor.proofs(event).find(({ command }) =>
+                JSON.parse(command.proof.payload).attempt === attempt);
+            return executor.verifyProof(command.proof).event;
+        },
+    };
+}
+
+async function procChildren(pid) {
+    const children = await readFile(`/proc/${pid}/task/${pid}/children`, "utf8");
+    return children.trim().split(/\s+/).filter(Boolean).map(Number);
+}
+
+test("BigFur Linux runner binds placement and authority and drains owned processes without relaunch", {
+    timeout: 55_000, skip: !executable || process.platform !== "linux",
+}, async context => {
+    const runner = await productionRunner(context);
+    const codex = join(runner.root, "codex-test");
+    await writeFile(codex, `#!/usr/bin/python3
+import os, pathlib, subprocess, sys, time
+prompt = sys.stdin.read()
+with open("observed", "a") as records:
+    if prompt.startswith("hold"):
+        child = subprocess.Popen(["/bin/sleep", "60"], start_new_session=True)
+        records.write(f"{os.getpid()} {child.pid}\\n")
+    else:
+        records.write(f"{os.getpid()}\\n")
+if prompt.startswith("hold"):
+    time.sleep(60)
+pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text("bounded result")
+`, { mode: 0o700 });
+    const records = join(runner.workspace, "observed");
+    const observed = async count => until(async () => {
+        const text = await readFile(records, "utf8").catch(error => {
+            if (error.code !== "ENOENT") throw error;
+            return "";
+        });
+        const rows = text.trim().split("\n").filter(Boolean);
+        return rows.length >= count && rows.map(row => row.split(" ").map(Number));
+    }, `did not observe ${count} native starts`, 15_000);
+    const config = runner.configure(codex);
+    await (await runner.runProduction("init", { ...config, origin: "http://127.0.0.1" })).exit(1);
+    assert.equal((await runner.client.agent("alpha", "next")).task, null);
+    await runner.client.agent("alpha", "claim", { task: "held-unpinned" }, 409);
+    await runner.client.agent("alpha", "claim", { task: "held-beta" }, 409);
+    for (const [id, prompt] of [[81, "wrong sequence"], [82, "wrong instance"], [83, "wrong attempt"],
+        [84, "wrong original deadline"], [85, "lost committed grant"], [86, "expired status"],
+        [87, "reply"], [88, "hold cancel"], [89, "hold crash"]]) {
+        await runner.ingress(id, prompt);
+    }
+    let staleCancel = true;
+    let staleReplies = 0;
+    runner.proxy.transform = async ({ response, envelope }) => {
+        const { op, attempt } = envelope.command;
+        if (response.status !== 200) return response;
+        if (op === "start" && attempt === 1) response.value.request_sequence++;
+        if (op === "start" && attempt === 2) response.value.instance = response.value.instance.replace("bigfur:2:", "bigfur:1:");
+        if (op === "start" && attempt === 3) response.value.attempt++;
+        if (op === "start" && attempt === 4) response.value.start_until--;
+        if (op === "start" && attempt === 5) return undefined;
+        if (op === "status" && (attempt === 6 && response.value.phase === "authorized"
+            || attempt === 8 && response.value.cancel_requested && staleCancel)) {
+            response.value.authority_valid_until = Date.now() - 1;
+            if (attempt === 8) staleReplies++;
+        }
+        return response;
+    };
+    const started = await runner.runProduction("init", config);
+    for (const attempt of [1, 2, 3, 4, 5, 6]) {
+        assert.deepEqual(await runner.receipt(attempt, "unknown"), { kind: "unknown" });
+    }
+    assert.deepEqual(await runner.receipt(7, "result"), { kind: "result", text: "bounded result" });
+    const [, holding] = await observed(2);
+    assert.equal(holding.length, 2);
+    await runner.cancel(88);
+    await until(() => staleReplies >= 2, "no expired cancellation replies");
+    for (const pid of holding) assert.doesNotThrow(() => process.kill(pid, 0));
+    staleCancel = false;
+    assert.deepEqual(await runner.receipt(8, "cancelled"), { kind: "cancelled", evidence: "process_exited" });
+    for (const pid of holding) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    const [, , abandoned] = await observed(3);
+    await started.stop();
+    await until(() => abandoned.every(pid => {
+        try { process.kill(pid, 0); return false; } catch (error) { return error.code === "ESRCH"; }
+    }), "supervisor did not drain descendants after loss of runner");
+    const restored = join(runner.root, "restored");
+    await cp(runner.dir, restored, { recursive: true });
+    const old = await runner.runProduction("resume", config, { runner: "c".repeat(64), journal: restored });
+    await until(() => runner.mock.checks.some(check => check.runnerIncarnation === "c".repeat(64) && !check.allowed),
+        "independently restored journal did not reach the predecessor incarnation check");
+    await old.stop();
+    await runner.runProduction("resume", config);
+    assert.deepEqual(await runner.receipt(9, "unknown"), { kind: "unknown" });
+    assert.equal((await observed(3)).length, 3);
+    assert.deepEqual(runner.packets.filter(({ command }) => command.op === "start")
+        .map(({ command }) => command.attempt), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    context.diagnostic("3 native starts, 6 stale, lost or mismatched authorizations held, signed result and cancellation, 2 owned PIDs gone after cancel and after parent loss, no relaunch");
+});
+
+test("BigFur runs installed Codex and cancels it over the signed protocol with a local provider", {
+    timeout: 50_000, skip: !executable || !realCodex || process.platform !== "linux",
+}, async context => {
+    const runner = await productionRunner(context);
+    await writeFile(join(runner.home, "auth"), "#!/bin/sh\nprintf local-smoke-only\n", { mode: 0o700 });
+    let calls = 0;
+    let cancelledStreamClosed = false;
+    let mockError;
+    const api = createHttpServer(async (req, res) => {
+        try {
+            if (req.url.startsWith("/v1/models?")) {
+                res.writeHead(200, { "content-type": "application/json" }).end('{"models":[]}');
+                return;
+            }
+            assert.equal(req.url, "/v1/responses");
+            assert.equal(req.headers.authorization, "Bearer local-smoke-only");
+            const chunks = [];
+            for await (const chunk of req) chunks.push(chunk);
+            const body = JSON.parse(Buffer.concat(chunks));
+            assert.equal(body.model, "gpt-6.2-sol");
+            const held = JSON.stringify(body.input).includes("Hold this local smoke request");
+            calls++;
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            const item = { type: "message", id: `msg_${calls}`, role: "assistant", status: "completed",
+                content: [{ type: "output_text", text: "Codex local smoke", annotations: [] }] };
+            const response = { id: `resp_${calls}`, status: "completed", output: [item] };
+            const event = (type, fields) => res.write(`data: ${JSON.stringify({ type, ...fields })}\n\n`);
+            event("response.created", { response: { ...response, status: "in_progress", output: [] } });
+            if (held) {
+                res.once("close", () => { cancelledStreamClosed = true; });
+                return;
+            }
+            event("response.output_item.added", { output_index: 0, item: { ...item, status: "in_progress", content: [] } });
+            event("response.output_text.delta", { item_id: item.id, output_index: 0, content_index: 0, delta: "Codex local smoke" });
+            event("response.output_item.done", { output_index: 0, item });
+            event("response.completed", { response });
+            res.end();
+        } catch (error) {
+            mockError ??= error;
+            res.destroy();
+        }
+    });
+    api.on("connect", (_req, socket) => socket.destroy());
+    api.listen(0, "127.0.0.1");
+    await once(api, "listening");
+    context.after(async () => {
+        api.closeAllConnections();
+        await new Promise(resolve => api.close(resolve));
+        if (mockError) throw mockError;
+    });
+    const endpoint = `http://127.0.0.1:${api.address().port}`;
+    await writeFile(join(runner.home, "config.toml"), `
+model = "gpt-6.2-sol"
+model_provider = "myprovider"
+check_for_update_on_startup = false
+[model_providers.myprovider]
+name = "myprovider"
+base_url = "${endpoint}/v1"
+wire_api = "responses"
+[model_providers.myprovider.auth]
+command = ${JSON.stringify(join(runner.home, "auth"))}
+`, { mode: 0o600 });
+    await runner.ingress(81, "Reply with Codex local smoke.");
+    await runner.ingress(82, "Hold this local smoke request.");
+    const provider_env = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"];
+    const config = { ...runner.configure(realCodex), provider_env };
+    const env = { HTTP_PROXY: endpoint, HTTPS_PROXY: endpoint, ALL_PROXY: endpoint, NO_PROXY: "127.0.0.1" };
+    const processHandle = await runner.runProduction("init", config, { env });
+    await until(() => calls === 2 || mockError, "Codex did not open both local Responses requests");
+    if (mockError) throw mockError;
+    assert.deepEqual(await runner.receipt(1, "result"), { kind: "result", text: "Codex local smoke" });
+    const [supervisor] = await procChildren(processHandle.pid);
+    const [codexPid] = await procChildren(supervisor);
+    assert.equal(await readFile(`/proc/${codexPid}/comm`, "utf8"), "codex\n");
+    await runner.cancel(82);
+    assert.deepEqual(await runner.receipt(2, "cancelled"), { kind: "cancelled", evidence: "process_exited" });
+    assert.throws(() => process.kill(codexPid, 0), { code: "ESRCH" });
+    await until(() => cancelledStreamClosed, "local Codex HTTP stream remained open");
+    await processHandle.stop();
+    const helloCount = runner.packets.filter(({ command }) => command.op === "hello").length;
+    await runner.runProduction("resume", config, { env });
+    await until(() => runner.packets.filter(({ command }) => command.op === "hello").length > helloCount
+        && runner.packets.at(-1).command.op === "next", "reopened runner did not reconcile");
+    assert.equal(calls, 2);
+    assert.deepEqual(runner.packets.filter(({ command }) => command.op === "start")
+        .map(({ command }) => command.attempt), [1, 2]);
+    context.diagnostic("2 local Responses requests, signed result and process_exited, native Codex PID gone and HTTP stream closed, 0 relaunches on resume");
+});
 
 test("native executor retains result across lost receipt, reconnects, and replies in the original topic", nativeTimeout, async context => {
     const client = await runFixture(context, { executor: true });

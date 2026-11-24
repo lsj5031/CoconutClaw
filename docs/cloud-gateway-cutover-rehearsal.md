@@ -518,10 +518,10 @@ The grant's original deadline is capped by the precommit permit. At spawn the
 production executor must check the attempt, instance, sequence and original
 deadline, consume from its journal once, and obtain then enforce fresh
 uncancelled status and its `authority_valid_until` at the spawn boundary.
-Pending cancellation also needs fresh status and its deadline immediately
-before signaling a process. Process timeouts and local shutdown remain local
-safety controls. Keep the current loopback-only executor separate. Production
-runner support and containment evidence are still gates.
+  Pending cancellation also needs fresh status and its deadline immediately
+  before signaling a process. Process timeouts and local shutdown remain local
+  safety controls. The [Linux runner](gateway-linux-runner.md) has a separate
+  production entry point and records local containment evidence.
 
 ### Control host
 
@@ -630,18 +630,11 @@ git diff --check
   fixture request budget. A production candidate needs explicit authorized
   Telegram identities and routes, production budget policy, the cutover
   bindings and a separately approved activation.
-- The runner binary still requires `--loopback-fixture`, pins a fixture CA and
-  loopback URL, derives a fixture signing domain and executes a shell fixture.
-  A production runner needs trusted HTTPS routing, `bigfur:<generation>:<objectId>`
-  signing and persistent generation adoption, and private
-  `x-executor-incarnation` provisioning outside the journal. It must bind the
-  grant to the exact instance, attempt, sequence and original deadline and
-  durably consume it once. Its current grant and status types do not carry
-  `authority_valid_until`. Enforce fresh uncancelled status and the shorter
-  deadline at process creation, and verify fresh cancellation authority at
-  the actual signal boundary. Prove Codex containment, native lifecycle and
-  exit evidence, crash recovery without relaunch, and predecessor rejection
-  with an independently restored journal.
+- The [Linux runner receipts](gateway-linux-runner.md#local-receipts) cover
+  installed Codex with a local Responses provider, cancellation, process
+  cleanup on runner loss, and rejection of a predecessor incarnation with an
+  independently copied journal. Verify the enrolled Leo-Claw service and
+  scoped injector route at the production acceptance gate.
 - Reconcile the frozen production export across all live writer paths and
   verify `#23` directly from the authorized source. The offline import command
   targets a stopped local SQLite ledger. The production DO still needs a

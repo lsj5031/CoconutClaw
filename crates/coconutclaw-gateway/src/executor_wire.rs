@@ -89,6 +89,8 @@ pub struct Status {
     pub phase: Phase,
     pub start_until: Option<i64>,
     pub cancel_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_valid_until: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -97,4 +99,6 @@ pub struct Grant {
     pub attempt: i64,
     pub start_until: i64,
     pub request_sequence: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_valid_until: Option<i64>,
 }

@@ -55,7 +55,28 @@ const SCHEMA: &str = "
 
 impl Journal {
     pub fn open(dir: &Path, key: &SigningKey, init: bool, generation: u32) -> Result<Self> {
-        let instance = fixture_instance(generation);
+        Self::open_scoped(
+            dir,
+            key,
+            init,
+            fixture_instance(generation),
+            generation
+                .checked_sub(1)
+                .filter(|previous| *previous > 0)
+                .map(fixture_instance)
+                .as_deref(),
+            false,
+        )
+    }
+
+    pub fn open_scoped(
+        dir: &Path,
+        key: &SigningKey,
+        init: bool,
+        instance: String,
+        predecessor: Option<&str>,
+        rotate_key: bool,
+    ) -> Result<Self> {
         if init {
             DirBuilder::new().mode(0o700).create(dir)?;
         }
@@ -90,15 +111,23 @@ impl Journal {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        ensure!(
-            identity.1 == public_key,
-            "executor journal identity mismatch"
-        );
-        if identity.0 != instance {
+        if identity.0 == instance {
             ensure!(
-                generation.checked_sub(1).is_some_and(
-                    |previous| previous > 0 && identity.0 == fixture_instance(previous)
-                ),
+                identity.1 == public_key,
+                "executor journal identity mismatch"
+            );
+        } else {
+            ensure!(
+                predecessor.is_some_and(|previous| if rotate_key {
+                    identity.0.strip_prefix(previous).is_some_and(|id| {
+                        id.len() == 64
+                            && id
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    })
+                } else {
+                    identity.0 == previous && identity.1 == public_key
+                }),
                 "executor generation must advance exactly once"
             );
             let txn = db.transaction()?;
@@ -112,8 +141,8 @@ impl Journal {
                 "executor has unresolved launch authority or unacknowledged evidence"
             );
             txn.execute(
-                "UPDATE identity SET instance=? WHERE singleton=1",
-                [&instance],
+                "UPDATE identity SET instance=?,public_key=? WHERE singleton=1",
+                params![instance, public_key],
             )?;
             txn.commit()?;
         }
@@ -122,6 +151,11 @@ impl Journal {
             _lock: lock,
             instance,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn process_lock(&self) -> Result<File> {
+        Ok(self._lock.try_clone()?)
     }
 
     pub fn sync_sequence(&self, floor: i64) -> Result<()> {
@@ -208,18 +242,31 @@ impl Journal {
             "attempt is already sealed"
         );
         for event in events {
-            let name = event.name();
-            let payload = serde_json::to_string(&Evidence { attempt, event })?;
-            let signature = hex::encode(
-                key.sign(&evidence_bytes_for(&self.instance, &payload))
-                    .to_bytes(),
-            );
-            txn.execute(
-                "INSERT INTO evidence(attempt,event,payload,signature) VALUES(?,?,?,?)",
-                params![attempt, name, payload, signature],
-            )?;
+            Self::record(&txn, &self.instance, key, attempt, event)?;
         }
         txn.commit()?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn started(&self, key: &SigningKey, attempt: i64) -> Result<()> {
+        Self::record(&self.db, &self.instance, key, attempt, Event::Started)
+    }
+
+    fn record(
+        db: &Connection,
+        instance: &str,
+        key: &SigningKey,
+        attempt: i64,
+        event: Event,
+    ) -> Result<()> {
+        let name = event.name();
+        let payload = serde_json::to_string(&Evidence { attempt, event })?;
+        let signature = hex::encode(key.sign(&evidence_bytes_for(instance, &payload)).to_bytes());
+        db.execute(
+            "INSERT INTO evidence(attempt,event,payload,signature) VALUES(?,?,?,?)",
+            params![attempt, name, payload, signature],
+        )?;
         Ok(())
     }
 
