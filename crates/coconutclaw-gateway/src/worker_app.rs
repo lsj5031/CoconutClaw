@@ -69,6 +69,17 @@ impl LocalPhase {
     fn executor(self) -> bool {
         self != Self::Protocol
     }
+
+    fn authority_pin(self, env: &Env) -> std::result::Result<Option<NonZeroU32>, Reply> {
+        if self != Self::Executor {
+            return Ok(None);
+        }
+        env.var("LOCAL_GENERATION")
+            .ok()
+            .and_then(|var| var.to_string().parse().ok())
+            .map(Some)
+            .ok_or_else(inactive_generation)
+    }
 }
 
 fn authorized(req: &Request, env: &Env, header: &str, binding: &str) -> bool {
@@ -87,6 +98,10 @@ fn now() -> i64 {
 
 fn unavailable() -> Result<Response> {
     Reply::error(503, "unavailable").response()
+}
+
+fn inactive_generation() -> Reply {
+    Reply::error(503, "inactive_generation")
 }
 
 fn route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
@@ -114,6 +129,9 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let Some(phase) = route(&req, &env)? else {
         return Reply::error(404, "not_found").response();
     };
+    if let Err(reply) = phase.authority_pin(&env) {
+        return reply.response();
+    }
     match forward(req, env, phase).await {
         Ok(response) => Ok(response),
         Err(_) => unavailable(),
@@ -147,6 +165,10 @@ impl DurableObject for BotLedger {
         let Some(phase) = route(&req, &self.env)? else {
             return Reply::error(404, "not_found").response();
         };
+        let pin = match phase.authority_pin(&self.env) {
+            Ok(pin) => pin,
+            Err(reply) => return reply.response(),
+        };
         if self.state.id()
             != self
                 .env
@@ -155,7 +177,7 @@ impl DurableObject for BotLedger {
         {
             return Reply::error(404, "not_found").response();
         }
-        match self.handle(req, phase).await {
+        match self.handle(req, phase, pin).await {
             Ok(reply) => reply.response(),
             Err(_) => unavailable(),
         }
@@ -165,6 +187,9 @@ impl DurableObject for BotLedger {
         let Some(phase) = LocalPhase::from_env(&self.env) else {
             return Reply::ok(json!({})).response();
         };
+        let Ok(pin) = phase.authority_pin(&self.env) else {
+            return Reply::ok(json!({})).response();
+        };
         let bots = self.env.durable_object("BOTS")?;
         if self.state.id() != bots.id_from_name(phase.instance())? {
             return Reply::ok(json!({})).response();
@@ -172,10 +197,9 @@ impl DurableObject for BotLedger {
         let storage = self.state.storage();
         let result = async {
             let ledger = self.ledger(&storage, phase, "alarm")?;
-            if phase == LocalPhase::Executor
+            if let Some(pin) = pin
                 && (ledger.legacy_cutover_held()?
-                    || !self
-                        .local_authority(&ledger)?
+                    || !Self::local_authority(&ledger, pin)?
                         .is_some_and(|authority| authority.active == 1))
             {
                 return Ok(());
@@ -203,17 +227,9 @@ impl DurableObject for BotLedger {
 }
 
 impl BotLedger {
-    fn local_authority(&self, ledger: &Ledger) -> Result<Option<LocalAuthority>> {
-        let Some(configured) = self
-            .env
-            .var("LOCAL_GENERATION")
-            .ok()
-            .and_then(|var| var.to_string().parse::<NonZeroU32>().ok())
-        else {
-            return Ok(None);
-        };
+    fn local_authority(ledger: &Ledger, pin: NonZeroU32) -> Result<Option<LocalAuthority>> {
         let durable = ledger.local_authority()?;
-        Ok((configured.get() == durable.generation).then_some(durable))
+        Ok((pin.get() == durable.generation).then_some(durable))
     }
 
     fn ledger(&self, storage: &Storage, phase: LocalPhase, scope: &'static str) -> Result<Ledger> {
@@ -253,7 +269,12 @@ impl BotLedger {
         Ok(())
     }
 
-    async fn handle(&self, mut req: Request, phase: LocalPhase) -> Result<Reply> {
+    async fn handle(
+        &self,
+        mut req: Request,
+        phase: LocalPhase,
+        pin: Option<NonZeroU32>,
+    ) -> Result<Reply> {
         let executor = phase.executor();
         let pilot = phase == LocalPhase::Pilot;
         let path = req.path();
@@ -282,12 +303,12 @@ impl BotLedger {
         };
         let storage = self.state.storage();
         let ledger = self.ledger(&storage, phase, scope)?;
-        let authority = if phase == LocalPhase::Executor {
+        let authority = if let Some(pin) = pin {
             if ledger.legacy_cutover_held()? {
                 return Ok(Reply::error(503, "legacy_cutover_held"));
             }
-            let Some(authority) = self.local_authority(&ledger)? else {
-                return Ok(Reply::error(503, "inactive_generation"));
+            let Some(authority) = Self::local_authority(&ledger, pin)? else {
+                return Ok(inactive_generation());
             };
             Some(authority)
         } else {

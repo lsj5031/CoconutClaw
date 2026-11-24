@@ -7,7 +7,7 @@ import { loadAndParseConfig } from "@cloudflare/config";
 
 test("only non-preview phase2-pilot selects the custom domain", async () => {
     for (const isPreview of [false, true]) {
-        for (const mode of [undefined, "other", "phase2-pilot"]) {
+        for (const mode of [undefined, "production", "phase2-local", "phase2-pilot"]) {
             const { result } = await loadAndParseConfig(join(import.meta.dirname, "cloudflare.config.ts"), {
                 isPreview, mode,
             });
@@ -20,6 +20,7 @@ test("only non-preview phase2-pilot selects the custom domain", async () => {
             assert.equal(worker.previewUrls, false);
             assert.equal(worker.routes, undefined);
             assert.equal(worker.triggers, undefined);
+            assert.equal(worker.env.LOCAL_GENERATION, undefined);
         }
     }
 });

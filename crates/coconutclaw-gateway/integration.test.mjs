@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Log, LogLevel, Miniflare } from "miniflare";
+import { checkAuthorityHandoff } from "./authority-preflight.mjs";
 import {
     admitLegacyFixtureUpdate, advanceGatewayFixture, appendRunningFixtureTask, cutoverSnapshot,
     freezeGatewayFixture, importCutoverDelta,
@@ -173,6 +174,13 @@ async function runFixture(context, {
         return response.value;
     }
 
+    async function directIngress(objectName, update) {
+        const bots = await service.getDurableObjectNamespace("BOTS");
+        return bots.get(bots.idFromName(objectName)).fetch(new URL("/v1/telegram", url), {
+            method: "POST", headers: webhook, body: JSON.stringify(update),
+        });
+    }
+
     function signed(device, command, { at = Date.now(), prefix, seq } = {}) {
         prefix ??= executor
             ? (generation === 1 ? executorPrefix : executorPrefix.replace("fixture\n", `fixture:${generation}\n`))
@@ -222,7 +230,7 @@ async function runFixture(context, {
         drainProxy = drain;
         return () => stopped;
     }
-    return { agent, fixture, post, rawPost, stop, restart, snapshot, sends, sendTimes, signed, wire, keys, sql,
+    return { agent, fixture, post, rawPost, directIngress, stop, restart, snapshot, sends, sendTimes, signed, wire, keys, sql,
         editLedger, ledgerPath: () => fixtureDbPath(ledgerFile), scheduledAlarm, metrics, registerProxyDrain };
 }
 
@@ -1056,8 +1064,35 @@ test("stale restore fences independent ledgers and executor journals after gener
         assert.equal(advanceGatewayFixture(db, 2, source.keys.alpha.publicKey, true), "advanced");
         db.exec("UPDATE pilot_delivery SET not_before=0");
     });
-    await publishGeneration(2);
-    await successor.restart(undefined, 2);
+    const target = (client, generation, ledgerPath) => ({
+        generation,
+        revision: "0123456789abcdef0123456789abcdef01234567",
+        deployment: `synthetic-deployment-${generation}`,
+        hostname: `generation-${generation}.gateway.invalid`,
+        objectId: ledgerPath.split("/").at(-1).split(".")[0],
+        custodyDigest: createHash("sha256").update(`synthetic-custody-${generation}`).digest("hex"),
+        telegramCredentialVersion: `synthetic-token-${generation}`,
+        executorKey: client.keys.alpha.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"),
+    });
+    const oldTarget = target(source, 1, await source.ledgerPath());
+    const nextTarget = target(successor, 2, await successor.ledgerPath());
+    const currentAuthority = {
+        target: nextTarget,
+        retirement: {
+            generation: 1,
+            writers: "synthetic/stopped-predecessor",
+            executorGrants: "synthetic/terminal-proof",
+            telegram: "synthetic/isolated-mock",
+            custody: "synthetic/frozen-transfer",
+        },
+    };
+    const checkedGeneration = checkAuthorityHandoff(currentAuthority, nextTarget);
+    await publishGeneration(checkedGeneration);
+    await assert.rejects(runFixture(context, {
+        ...options, restore: staleStore, keys: source.keys,
+        generationPin: () => String(checkAuthorityHandoff(currentAuthority, oldTarget)),
+    }), /target mismatch: generation/);
+    await successor.restart(undefined, checkedGeneration);
     assert.notEqual(await source.ledgerPath(), await successor.ledgerPath());
     assert.notDeepEqual(source.keys.alpha.publicKey.export({ format: "der", type: "spki" }),
         successor.keys.alpha.publicKey.export({ format: "der", type: "spki" }));
@@ -1315,11 +1350,33 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
 });
 
 test("checked-in phase gate disables webhook, agent and fixture routes", timeout, async context => {
-    const client = await runFixture(context, { enabled: false });
+    const client = await runFixture(context, { enabled: false, executor: true });
     await client.post("telegram", update(41), webhook, 404);
     await client.agent("alpha", "hello", {}, 404);
     await client.fixture("wake", { at_ms: Date.now() }, 404);
     assert.deepEqual(client.sends, []);
+});
+
+test("missing generation stops ingress and signed requests before opening a ledger", timeout, async context => {
+    let pin;
+    const client = await runFixture(context, { executor: true, inspect: true, generationPin: () => pin });
+    const inactive = { error: "inactive_generation" };
+    assert.deepEqual(await client.post("telegram", update(41), webhook, 503), inactive);
+    assert.deepEqual(await client.agent("alpha", "hello", {}, 503), inactive);
+    const direct = await client.directIngress("local-executor-fixture", update(41));
+    assert.equal(direct.status, 503);
+    assert.deepEqual(await direct.json(), inactive);
+    assert.deepEqual(client.metrics(), []);
+
+    pin = "1";
+    await client.restart();
+    const wrongObject = await client.directIngress("other-ledger", update(41));
+    assert.equal(wrongObject.status, 404);
+    assert.deepEqual(await wrongObject.json(), { error: "not_found" });
+    await client.post("telegram", update(41), { ...webhook, host: "other.gateway.invalid" }, 404);
+    assert.deepEqual(await client.post("telegram", update(41), webhook), {
+        disposition: "task", task: "telegram:41",
+    });
 });
 
 test("webhook admission, rollback, durable ack after restart, and late same-topic update", timeout, async context => {

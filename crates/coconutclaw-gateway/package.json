@@ -8,7 +8,7 @@
     "test:config": "node --test config.test.mjs",
     "check:cf": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run",
     "check:cf:pilot": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run --mode phase2-pilot",
-    "test": "npm run stage && node --test config.test.mjs integration.test.mjs"
+    "test": "npm run stage && node --test authority-preflight.test.mjs config.test.mjs integration.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/build-output-utils": "0.8.2",

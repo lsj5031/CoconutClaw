@@ -399,18 +399,82 @@ The tested boundary is a stopped handoff with the current launcher pin and with
 old workers and executors quiesced before the pin advances. Worker bindings
 remain fixed for a running instance. Copies from the same generation share
 the same eligibility, and restoring the pin or booting with old deployment
-bindings can make the old ledger authoritative again. A restored executor also
-relies on trusted TLS routing to the fenced gateway. The rehearsal covers
-synthetic credentials and loopback effects. Production needs a monotonic
-authority outside both restore domains, enforced by writer startup and routing,
-with verified retirement of old deployments, unexpired grants and Telegram
-credential access before the successor can write or send.
+bindings can make the old ledger authoritative again unless startup and routing
+exclude those copies. A restored executor also relies on trusted TLS routing
+to the fenced gateway.
+
+## Production Handoff Preflight
+
+`authority-preflight.mjs` checks a proposed activation target against the
+independently read current authority record for a stopped handoff. Run it
+from `crates/coconutclaw-gateway` with Node 24.
+
+```sh
+node authority-preflight.mjs CURRENT_AUTHORITY.json CANDIDATE.json
+```
+
+The candidate identifies the exact `generation`, Git `revision`, Cloudflare
+`deployment` (account/Worker/deployment/version), TLS `hostname`, SQLite DO
+`objectId`, SHA-256 `custodyDigest` of the verified handoff manifest,
+`telegramCredentialVersion` (an issuer or custody identifier), and
+`executorKey` (the enrolled public key in hex). Collect candidate values from
+the proposed artifact, routing and held ledger. The current authority record
+has a `target` with those same fields and a `retirement` object with the
+predecessor `generation` and four evidence references. Generation 1 uses
+predecessor 0 for legacy-only authority. The command exits nonzero on missing,
+malformed or conflicting data. Its success output reports the checked
+generation and makes no runtime changes.
+
+| Evidence reference | Required operator evidence |
+| --- | --- |
+| `writers` | Record the legacy freeze and terminal writer acknowledgments. Identify the account, Worker, deployment and version IDs, DO namespace/object, hosts/routes and bindings. Show that the old version has no traffic or callable route, including preview URLs, direct routes and service bindings, that old alarms and in-flight handlers are stopped or safely accounted for, and that restore and deploy principals cannot reactivate retired writers outside the handoff procedure. Verify the only destination for both webhook and executor TLS traffic is the chosen version and object. Record negative probes of the retired paths and controls. |
+| `executorGrants` | Inventory every runner and outstanding grant. Preserve original signed terminal evidence, or prove exclusion of the old runner and expiry of its last possible launch authorization at a trusted clock, including skew. Keep possible prior launches Unknown until reconciled. Account for disconnected runners and downstream authorities, and verify the successor rejects predecessor keys and generation-scoped requests. |
+| `telegram` | Record issuer-confirmed invalidation of the old Bot token for API and file access, exclusive custody of the replacement version, and verification of the exact HTTPS webhook and new webhook secret. Include intermediary access and pre-revocation requests or queued deliveries in reconciliation. |
+| `custody` | Bind the frozen baseline, final delta, import acknowledgment, ledger identity and rechecked ingress/schedule watermarks to the candidate manifest digest. Record possible lost acknowledged updates and the disposition of each held attempt or delivery. Verify the original production `#23` record and preserve Unknown. Keep ambiguous work held for reconciliation. |
+
+The checker compares identifiers and requires references. The operator must
+authenticate and inspect the referenced evidence, including exclusion of any
+older authority that could still act. The current record must come from a
+single-writer control plane outside both restore domains with an independently
+enforced high-water mark. Serialize publication and activation under that
+control and recheck the current record immediately before opening traffic or
+installing effect credentials. On any restore, including a same-generation
+copy, leave routes and credentials closed until an independently authorized
+higher generation completes the handoff. A restored copy of the current file,
+a Worker binding, and a signed historical approval all lack freshness on
+their own.
+
+The loopback regression publishes the checked successor pin and rejects
+startup of the restored predecessor with its old target. It also opens an
+independent stale store under the current pin to exercise ingress, signed
+Start, due delivery alarms and an independently restored executor journal.
+Missing or malformed pins stop loopback ingress before DO forwarding and
+stop the DO before ledger initialization on direct requests and alarms.
+Requests for an unrecognized hostname or object are rejected. The checked-in
+Cloudflare configuration keeps the cutover routes disabled and declares one
+SQLite DO class. Production requires startup integration with the independent
+record, the operator evidence above, and a separate end-to-end retirement and
+restore drill under production routing.
+
+Validate the disabled bundle from `crates/coconutclaw-gateway` after the disk
+check and `npm run stage`.
+
+```sh
+GATEWAY_LOCAL_EXECUTOR="$PWD/../../target/native-gateway/debug/gateway-local-executor" \
+COCONUTCLAW_CUTOVER_CLI="$PWD/../../target/native-gateway/debug/coconutclaw" \
+  node --test --test-concurrency=1 authority-preflight.test.mjs config.test.mjs integration.test.mjs
+CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run
+```
+
+The cold-start test caught the `cargo mutants` replacement of `!=` with `==`
+in `LocalPhase::authority_pin`. The mutation admitted update `41` without a
+pin.
 
 ## BigFur Readiness
 
-- Run the hosted acceptance gate on Mars with official `cf` and
-  `cloudflare.config.ts`. Verify real Telegram ingress and same-topic delivery
-  and real Codex execution and cancellation through the isolated pilot.
+- Verify production Telegram ingress and same-topic Bot API delivery under
+  separately authorized identities. Real Codex execution and cancellation
+  require separate containment and lifecycle evidence.
 - Reconcile the frozen production export across all live writer paths and
   verify `#23` directly from the authorized source. Gateway activation still
   requires a production authority transfer, a disposition for each held
