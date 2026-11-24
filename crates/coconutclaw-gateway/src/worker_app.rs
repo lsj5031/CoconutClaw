@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use worker::*;
 
-use crate::executor_wire::{self, Event, Evidence, evidence_bytes, request_bytes};
+use crate::executor_wire::{self, Event, Evidence, evidence_bytes_for, request_bytes};
 use crate::ledger::{Delivery, Ledger, Receipt, Reply, ScheduleInput, conflict};
 use crate::protocol::{Agent, BODY_LIMIT, Command, Fixture, INSTANCE, telegram_input, valid_text};
 
@@ -35,13 +35,22 @@ extern "C" {
 enum LocalPhase {
     Protocol,
     Executor,
+    Pilot,
 }
+
+const PILOT_INSTANCE: &str = "hosted-synthetic-pilot";
+const PILOT_UPDATE: i64 = 23001;
+const PILOT_TASK: &str = "telegram:23001";
+const PILOT_TOPIC: i32 = 37;
+const PILOT_PROMPT: &str = "synthetic pilot";
+const PILOT_RESULT: &str = "pilot: SYNTHETIC PILOT";
 
 impl LocalPhase {
     fn from_env(env: &Env) -> Option<Self> {
         match env.var("PHASE").ok()?.to_string().as_str() {
             "phase1-local" => Some(Self::Protocol),
             "phase2-local" => Some(Self::Executor),
+            "phase2-pilot" => Some(Self::Pilot),
             _ => None,
         }
     }
@@ -50,7 +59,12 @@ impl LocalPhase {
         match self {
             Self::Protocol => INSTANCE,
             Self::Executor => executor_wire::INSTANCE,
+            Self::Pilot => PILOT_INSTANCE,
         }
+    }
+
+    fn executor(self) -> bool {
+        self != Self::Protocol
     }
 }
 
@@ -72,20 +86,29 @@ fn unavailable() -> Result<Response> {
     Reply::error(503, "unavailable").response()
 }
 
-fn local_route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
+fn route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
+    let Some(phase) = LocalPhase::from_env(env) else {
+        return Ok(None);
+    };
     let url = req.url()?;
-    Ok((req.method() == Method::Post
-        && url.scheme() == "https"
-        && url.host_str() == Some("127.0.0.1")
-        && url.query().is_none()
-        && matches!(url.path(), "/v1/telegram" | "/v1/agent" | "/v1/fixture"))
-    .then(|| LocalPhase::from_env(env))
-    .flatten())
+    if req.method() != Method::Post || url.scheme() != "https" || url.query().is_some() {
+        return Ok(None);
+    }
+    let valid = if phase == LocalPhase::Pilot {
+        matches!(
+            url.path(),
+            "/v1/pilot/telegram" | "/v1/pilot/agent" | "/v1/pilot/fixture"
+        )
+    } else {
+        url.host_str() == Some("127.0.0.1")
+            && matches!(url.path(), "/v1/telegram" | "/v1/agent" | "/v1/fixture")
+    };
+    Ok(valid.then_some(phase))
 }
 
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    let Some(phase) = local_route(&req, &env)? else {
+    let Some(phase) = route(&req, &env)? else {
         return Reply::error(404, "not_found").response();
     };
     match forward(req, env, phase).await {
@@ -118,9 +141,18 @@ impl DurableObject for BotLedger {
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
-        let Some(phase) = local_route(&req, &self.env)? else {
+        let Some(phase) = route(&req, &self.env)? else {
             return Reply::error(404, "not_found").response();
         };
+        if phase == LocalPhase::Pilot
+            && self.state.id()
+                != self
+                    .env
+                    .durable_object("BOTS")?
+                    .id_from_name(phase.instance())?
+        {
+            return Reply::error(404, "not_found").response();
+        }
         match self.handle(req, phase).await {
             Ok(reply) => reply.response(),
             Err(_) => unavailable(),
@@ -146,6 +178,12 @@ impl DurableObject for BotLedger {
                     storage.sync().await
                 }
                 LocalPhase::Executor => self.deliver(&storage, &ledger).await,
+                LocalPhase::Pilot => {
+                    let alarm = ledger
+                        .transaction(&storage, || ledger.deliver_synthetic(&storage, now()))?;
+                    settle_alarm(alarm).await?;
+                    storage.sync().await
+                }
             }
         }
         .await;
@@ -164,6 +202,9 @@ impl BotLedger {
         let ledger = Ledger::new(storage, measure.then_some(scope));
         if self.initialized.get().is_none() {
             ledger.initialize()?;
+            if phase == LocalPhase::Pilot {
+                ledger.initialize_synthetic_delivery()?;
+            }
             self.initialized
                 .set(())
                 .map_err(|_| "storage already initialized")?;
@@ -188,23 +229,30 @@ impl BotLedger {
     }
 
     async fn handle(&self, mut req: Request, phase: LocalPhase) -> Result<Reply> {
-        let executor = phase == LocalPhase::Executor;
+        let executor = phase.executor();
+        let pilot = phase == LocalPhase::Pilot;
         let path = req.path();
-        let (scope, auth) = match path.as_str() {
-            "/v1/telegram" => (
+        let operation = if pilot {
+            path.strip_prefix("/v1/pilot/")
+        } else {
+            path.strip_prefix("/v1/")
+        };
+        let (scope, auth) = match operation {
+            Some("telegram") => (
                 "telegram",
-                authorized(
-                    &req,
-                    &self.env,
-                    "x-telegram-bot-api-secret-token",
-                    "WEBHOOK_SECRET",
-                ),
+                pilot
+                    || authorized(
+                        &req,
+                        &self.env,
+                        "x-telegram-bot-api-secret-token",
+                        "WEBHOOK_SECRET",
+                    ),
             ),
-            "/v1/fixture" => (
+            Some("fixture") => (
                 "fixture",
-                authorized(&req, &self.env, "x-fixture-secret", "FIXTURE_SECRET"),
+                pilot || authorized(&req, &self.env, "x-fixture-secret", "FIXTURE_SECRET"),
             ),
-            "/v1/agent" => ("agent", true),
+            Some("agent") => ("agent", true),
             _ => return Ok(Reply::error(404, "not_found")),
         };
         let storage = self.state.storage();
@@ -232,13 +280,13 @@ impl BotLedger {
             Ok(bytes) => bytes,
             Err(reply) => return Ok(reply),
         };
-        let fault = if authorized(&req, &self.env, "x-fixture-secret", "FIXTURE_SECRET") {
+        let fault = if !pilot && authorized(&req, &self.env, "x-fixture-secret", "FIXTURE_SECRET") {
             req.headers().get("x-fixture-fault")?
         } else {
             None
         };
-        let (reply, drop_reply) = match path.as_str() {
-            "/v1/telegram" => {
+        let (reply, drop_reply) = match scope {
+            "telegram" => {
                 let Ok(update) = serde_json::from_slice::<Value>(&bytes) else {
                     return Ok(bad_input());
                 };
@@ -250,6 +298,11 @@ impl BotLedger {
                 };
                 let input = telegram_input(&update)
                     .map(|(route, text)| (route.chat_id, route.message_thread_id, text));
+                if pilot
+                    && (id != PILOT_UPDATE || input != Some((321, Some(PILOT_TOPIC), PILOT_PROMPT)))
+                {
+                    return Ok(bad_input());
+                }
                 let reply = ledger.transaction(&storage, || {
                     ledger.ingest(
                         id,
@@ -260,7 +313,7 @@ impl BotLedger {
                 })?;
                 (reply, fault.as_deref() == Some("after_commit"))
             }
-            "/v1/agent" => {
+            "agent" => {
                 let Ok(agent) = serde_json::from_slice::<Agent>(&bytes) else {
                     return Ok(bad_input());
                 };
@@ -278,11 +331,18 @@ impl BotLedger {
                         return Ok(bad_input());
                     };
                     if !valid_attempt(evidence.attempt)
-                        || matches!(&evidence.event, Event::Result { text } if !valid_text(text))
+                        || matches!(&evidence.event, Event::Result { text }
+                            if !valid_text(text) || (pilot && text != PILOT_RESULT))
                     {
                         return Ok(bad_input());
                     }
-                    if !signed_by(&key, &proof.signature, &evidence_bytes(&proof.payload)).await {
+                    if !signed_by(
+                        &key,
+                        &proof.signature,
+                        &evidence_bytes_for(phase.instance(), &proof.payload),
+                    )
+                    .await
+                    {
                         return Ok(Reply::error(401, "unauthorized"));
                     }
                     Some(evidence)
@@ -298,15 +358,23 @@ impl BotLedger {
                         Command::Start { .. } | Command::Report { .. }
                     );
                 let (reply, alarm) = ledger.transaction(&storage, || {
-                    ledger.mutate_agent(agent, now(), executor, evidence, &storage)
+                    ledger.mutate_agent(agent, now(), executor, evidence, &storage, pilot)
                 })?;
                 settle_alarm(alarm).await?;
                 (reply, drop_reply)
             }
-            "/v1/fixture" => {
+            "fixture" => {
                 let Ok(fixture) = serde_json::from_slice(&bytes) else {
                     return Ok(bad_input());
                 };
+                if pilot {
+                    return match fixture {
+                        Fixture::DeliveryStatus { task } if task == PILOT_TASK => {
+                            ledger.synthetic_delivery_status(&task)
+                        }
+                        _ => Ok(Reply::error(404, "not_found")),
+                    };
+                }
                 if executor
                     && matches!(
                         fixture,
@@ -344,14 +412,16 @@ impl BotLedger {
         phase: LocalPhase,
     ) -> Option<Vec<u8>> {
         if agent.at_ms.abs_diff(now()) > 30_000
-            || (phase == LocalPhase::Executor && agent.device.name() != executor_wire::DEVICE)
+            || (phase.executor() && agent.device.name() != executor_wire::DEVICE)
         {
             return None;
         }
-        let binding = if phase == LocalPhase::Executor {
-            "EXECUTOR_ALPHA_KEY".to_owned()
-        } else {
-            format!("DEVICE_{}_KEY", agent.device.name().to_ascii_uppercase())
+        let binding = match phase {
+            LocalPhase::Pilot => "PILOT_ALPHA_KEY".to_owned(),
+            LocalPhase::Executor => "EXECUTOR_ALPHA_KEY".to_owned(),
+            LocalPhase::Protocol => {
+                format!("DEVICE_{}_KEY", agent.device.name().to_ascii_uppercase())
+            }
         };
         let key = self
             .env

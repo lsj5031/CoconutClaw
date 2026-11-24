@@ -160,6 +160,19 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn initialize_synthetic_delivery(&self) -> Result<()> {
+        self.write(
+            "CREATE TABLE IF NOT EXISTS synthetic_delivery (
+                slot INTEGER PRIMARY KEY CHECK (slot=1),
+                task TEXT NOT NULL REFERENCES outbox(task),
+                chat_id INTEGER NOT NULL,
+                message_thread_id INTEGER NOT NULL,
+                text TEXT NOT NULL
+            ) STRICT",
+            [],
+        )
+    }
+
     pub fn transaction<T>(&self, storage: &Storage, run: impl FnOnce() -> Result<T>) -> Result<T> {
         let mut output = None;
         let mut run = Some(run);
@@ -375,6 +388,7 @@ impl Ledger {
         executor: bool,
         evidence: Option<Evidence>,
         storage: &Storage,
+        single_attempt: bool,
     ) -> Result<(Reply, Option<js_sys::Promise>)> {
         let mut alarm = None;
         let device = agent.device;
@@ -387,6 +401,14 @@ impl Ledger {
         )?;
         let sequence = agent.sequence;
         let reply = match agent.command {
+            Command::Claim { .. }
+                if single_attempt
+                    && self
+                        .number("SELECT id AS value FROM attempts LIMIT 1", [])?
+                        .is_some() =>
+            {
+                Ok(conflict())
+            }
             Command::Claim { task } => self.claim(device, now, &task, executor),
             Command::Start { attempt } => self.update_attempt(device, attempt, |row| {
                 if row.cancel_requested != 0 {
@@ -740,11 +762,13 @@ impl Ledger {
         storage: &Storage,
         now: i64,
     ) -> Result<(Option<Delivery>, Option<js_sys::Promise>)> {
+        let (delivery, until) = self.take_delivery(now)?;
+        Ok((delivery, self.arm_delivery(storage, now, until)?))
+    }
+
+    fn take_delivery(&self, now: i64) -> Result<(Option<Delivery>, i64)> {
         if !self.take_pilot_request(now, true)? {
-            return Ok((
-                None,
-                self.arm_delivery(storage, now, self.pilot_reset_at()?)?,
-            ));
+            return Ok((None, self.pilot_reset_at()?));
         }
         let flight = self.in_flight_at()?;
         let delivery = if flight.is_some_and(|deadline| deadline <= now) {
@@ -777,7 +801,7 @@ impl Ledger {
         } else {
             None
         };
-        Ok((delivery, self.arm_delivery(storage, now, now)?))
+        Ok((delivery, now))
     }
 
     pub fn settle_delivery(
@@ -792,6 +816,38 @@ impl Ledger {
         }
         self.finish_send(&delivery.task, receipt, delivery.sends, now)?;
         self.arm_delivery(storage, now, now)
+    }
+
+    pub fn deliver_synthetic(
+        &self,
+        storage: &Storage,
+        now: i64,
+    ) -> Result<Option<js_sys::Promise>> {
+        let (delivery, until) = self.take_delivery(now)?;
+        let Some(delivery) = delivery else {
+            return self.arm_delivery(storage, now, until);
+        };
+        self.write(
+            "INSERT INTO synthetic_delivery VALUES(1,?,?,?,?)",
+            [
+                delivery.task.as_str().into(),
+                delivery.chat_id.into(),
+                delivery.thread_id.into(),
+                delivery.text.as_str().into(),
+            ],
+        )?;
+        self.settle_delivery(storage, delivery, Receipt::Delivered(1), now)
+    }
+
+    pub fn synthetic_delivery_status(&self, task: &str) -> Result<Reply> {
+        let mut status = self.delivery_state(task, true)?;
+        if let Some(delivery) = self.row::<Value, 1>(
+            "SELECT chat_id,message_thread_id,text FROM synthetic_delivery WHERE task=?",
+            [task.into()],
+        )? {
+            status.1["delivery"] = delivery;
+        }
+        Ok(status)
     }
 
     fn delay_sends_until(&self, at: i64) -> Result<()> {

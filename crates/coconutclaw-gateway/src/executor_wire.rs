@@ -19,7 +19,11 @@ pub struct SignedEvidence {
 }
 
 pub fn evidence_bytes(payload: &str) -> Vec<u8> {
-    format!("coconutclaw-evidence-v1\n{INSTANCE}\n{DEVICE}\n{payload}").into_bytes()
+    evidence_bytes_for(INSTANCE, payload)
+}
+
+pub fn evidence_bytes_for(instance: &str, payload: &str) -> Vec<u8> {
+    format!("coconutclaw-evidence-v1\n{instance}\n{DEVICE}\n{payload}").into_bytes()
 }
 
 #[derive(Deserialize, Serialize)]

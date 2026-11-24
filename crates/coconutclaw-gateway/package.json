@@ -4,8 +4,10 @@
   "type": "module",
   "scripts": {
     "stage": "sh build.sh && node stage.mjs",
+    "stage:pilot": "sh build.sh && node stage.mjs phase2-pilot",
     "test:config": "node --test config.test.mjs",
     "check:cf": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run",
+    "check:cf:pilot": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run --mode phase2-pilot",
     "test": "npm run stage && node --test config.test.mjs integration.test.mjs"
   },
   "devDependencies": {
