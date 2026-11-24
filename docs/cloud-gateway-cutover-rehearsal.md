@@ -1,40 +1,72 @@
 # Synthetic cutover rehearsal
 
-The test seeds a disposable legacy SQLite file with `sql/schema.sql` and stages a
-versioned snapshot in the stopped Miniflare Worker’s SQLite ledger. The sole
-legacy fixture writer commits one more task and closes its connection. A read-only
-connection rejects ingress, schedule, dispatch, delivery, and result writes, then
-exports the frozen projection. The final import verifies both SHA-256 digests,
-requires an ordered append to the exact staged baseline, and commits the delta
-and freeze record together. The test interrupts and retries both imports.
+The test stages a baseline from a disposable legacy SQLite database into a
+stopped Miniflare Worker. Staging holds gateway admission closed. The legacy
+fixture commits one more task, records delivery of an in-flight reply and
+advances a schedule watermark. It commits the admission freeze before the
+read-only final export. The final import verifies both SHA-256 digests against
+the staged baseline and commits the appended task, delivery acknowledgment,
+archived watermark and gateway activation together. The test interrupts and
+retries both imports and rejects changed task identities and regressed watermarks.
 
-Synthetic `legacy:23` keeps run `24`, topic `37`, and the source record of the
-Unknown outcome. Other imported rows include two running attempts, an in-flight
-send, and a pending send. The Worker rejects claims and starts for the quarantined
-attempts and keeps both sends Unknown with their original send counts.
+Synthetic `legacy:23` keeps run `24`, topic `37` and its original Unknown
+record. Two running attempts stay held. The acknowledged send for `legacy:26`
+retains message `42` and its original send count. The pending send for
+`legacy:27` stays Unknown at zero sends. The imported schedule watermark is
+retained in the snapshot, with no active gateway schedule.
 
 The Worker accepts update `200` in topic `37`, commits its signed result, and
 loses the acknowledgment. After restart the delta, update, and signed result are
 replayed. The task has one attempt and produces one mock Telegram receipt.
-The Worker then stops. A transaction returns the settled update, task, and result
-to the legacy fixture as run `29` with completed ingress and a delivered payload.
-It retains the gateway task ID, attempt, signed result, public key, and delivery
-receipt. The test interrupts and retries that transaction, reopens the legacy file,
-deduplicates update `200`, and accepts a fresh fixture update.
+The gateway then freezes with a second issued grant for update `209`. The
+frozen gateway accepts the exact signed Start and Result for custody. A lost
+acknowledgment and restart leave one result and zero sends for that task.
+After signed terminal verification, the next generation stays inactive on
+the return leg. The old Worker rejects ingress when reopened. One transaction
+returns both updates as runs `29` and `30`, preserving their gateway task IDs,
+attempts, routes, signed Start and Result, and the settled delivery receipt.
+Run `30` stays held as Unknown. An interrupted transaction keeps legacy
+admission frozen. After commit and reopen, the legacy fixture deduplicates both
+returned updates and accepts a fresh one.
 
-The forward delta covers appended rows in the fixture’s task projection. The
-return covers one settled result. The legacy side uses SQLite connections and
-fixture writes. The Worker side uses the real loopback protocol with a mock sender.
+The native executor rehearsal uses the original journal and a loopback TLS
+fixture. An expired grant with only a signed Start blocks advancement. A late
+Result arrives after freeze and is durably acknowledged on exact replay after
+restart. The transition rejects a wrong verification key and rolls back on
+an interrupted generation write. The reopened old Worker rejects requests,
+and the new Worker rejects old signatures and attempts. The executor rejects
+a grant carrying the previous generation even when its attempt and request
+sequence match. Its persistent journal rejects a request to resume the old
+generation after adoption. The new generation launches and delivers one
+same-topic result.
 
-Run from `crates/coconutclaw-gateway` with the existing locally staged Worker
-bundle and dependencies. If needed, `npm run stage` stages the bundle from
-`cloudflare.config.ts` with the lane’s existing Wasm tools and cache. The test
-prints the fixture version, frozen inbox sequence, digests, and signed evidence.
+The version `coconutclaw-synthetic-cutover-v2` fixture has frozen inbox
+sequence `6`, schedule `7` advanced from `1000` to `2000`, and these digests.
+
+- Baseline `be37ff556cc12db351e583f36f29cb4b632c919bd68b36824b30681afcc8e8a5`
+- Final `fcbf0a6bc9eecbda10044839cfbed6ee8471f6fad3d4d6d3e2a07088df2e7c7a`
+
+Run from `crates/coconutclaw-gateway` with the locally staged Worker,
+dependencies and `gateway-local-executor` binary. Use the existing cache and
+disk checks below for each build. `npm run stage` reads `cloudflare.config.ts`.
+The test prints signed evidence and the run IDs.
 
 ```sh
-env -u GATEWAY_LOCAL_EXECUTOR node --test --test-concurrency=1 \
+GATEWAY_LOCAL_EXECUTOR="$PWD/../../target/native-gateway/debug/gateway-local-executor" \
+  node --test --test-concurrency=1 \
   --test-name-pattern='synthetic cutover' integration.test.mjs
 ```
+
+`cargo mutants` generated an `Executor::launch` mutation that allowed an old
+generation grant through when the attempt and request sequence matched. The
+generation rehearsal caught it at the executor's first request after receiving
+the grant.
+
+The November 25 rehearsal on Leo-Claw passed both cutover tests three times
+and all 18 loopback and configuration tests. The legacy authority checks
+passed four focused unit tests and one CLI test. The workspace suite passed
+587 tests with five ignored. Rust formatting, native and Wasm Clippy, and
+`git diff --check` passed.
 
 ## Legacy admission fence
 
@@ -109,12 +141,12 @@ for this exchange if a newer build rejects the old pairing revision. The seal
 verifies the historical signatures from SQLite without a network request.
 
 The HTTPS `gateway-local-executor` requires `--loopback-fixture`. Its signed
-requests and signed receipts are scoped to that fixture. Its TLS grant reply
-binds the attempt, request sequence, and launch deadline. The executor checks
-the deadline again at the spawn boundary and consumes the attempt in its own
-journal. Expiry leaves the effect Unknown when launch cannot be ruled out.
-Production gateway-generation rotation and fencing old gateway grants across
-restore and failback remain separate gates.
+requests and receipts are scoped to the fixture generation. Its TLS grant
+reply binds the generation, attempt, request sequence and launch deadline.
+The executor checks the deadline again at the spawn boundary and consumes
+the attempt in its journal. Expiry leaves the effect Unknown when launch
+cannot be ruled out. Generation advancement requires the original journal
+with terminal evidence acknowledged and no unresolved intent or consumption.
 
 Run the following from the repository root with more than 15 GiB free on both
 the checkout filesystem and `/tmp`. The existing `tmp/gateway-tools` supplies
@@ -218,17 +250,21 @@ cargo-mutants mutants --in-place --baseline skip --build-timeout 180 --timeout 3
 
 ## BigFur Readiness
 
-Leo has authorized the BigFur cutover. Readiness gates still apply. Usage, quota,
-and billing queries are out of scope.
-
-- Prove the live writer fence across ingress, schedules, dispatch, sends, and
-  result handling. Route or buffer late signed receipts durably. Fence old
-  gateway generations and Start grants, including for disconnected executors.
-- Export and reconcile the real final delta, including changed rows, stable IDs,
-  routes, attempts, signed receipts, outbox state, and schedule watermarks.
-  Verify and retain the original live `#23` Unknown record.
-- Verify real Telegram webhook and same-topic delivery and real Codex
-  execution and cancellation through the isolated pilot gates.
-- Rehearse live failback with credential and generation rotation. Reconcile
-  unsettled effects before resuming consumption. Record versions, high-water
-  marks, signed evidence, recovery time, and the acknowledged-update loss window.
+- Run the hosted acceptance gate on Mars with official `cf` and
+  `cloudflare.config.ts`. Verify real Telegram ingress and same-topic delivery
+  and real Codex execution and cancellation through the isolated pilot.
+- Capture and reconcile the live final delta across all writer paths. The
+  fixture covers one delivery transition and one archived schedule watermark.
+  The live exporter still needs full attempt lineage, pending ingress,
+  schedules and occurrences, outbox and route state, and transport and
+  acknowledgment of exact legacy `node_signed_receipts` at the new authority.
+  Verify the live `#23` Unknown record from the source.
+- Prove generation and credential exclusion across independent stores and
+  stale restores. The local fence relies on retaining the same ledger and
+  executor journal, and the loopback TLS trust is provisioned by the fixture.
+  A disconnected legacy runner with an unresolved `Begin` still blocks the
+  seal. It needs the original signed terminal evidence or a separately proven
+  retirement mechanism.
+- Rehearse live failback and reconcile unsettled effects before resuming
+  consumption. Record versions, high-water marks, signed evidence, recovery
+  time and the acknowledged-update loss window.

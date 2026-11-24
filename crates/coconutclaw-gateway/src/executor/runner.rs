@@ -7,7 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
-use coconutclaw_gateway::executor_wire::{CancelEvidence, Event, Grant, Phase, Status};
+use coconutclaw_gateway::executor_wire::{
+    CancelEvidence, Event, Grant, Phase, Status, fixture_instance,
+};
 use coconutclaw_provider::{ChildBoundary, ChildExit, run_single_child};
 use ed25519_dalek::SigningKey;
 use rand::Rng;
@@ -34,7 +36,7 @@ struct Executor {
 
 pub fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "--loopback-fixture init|resume <https-origin> <CA PEM> <32-byte key file> <journal directory> [hold|crash-before-spawn|crash-after-spawn]";
+    let usage = "--loopback-fixture init|resume <https-origin> <CA PEM> <32-byte key file> <journal directory> [--generation N] [hold|crash-before-spawn|crash-after-spawn]";
     ensure!(
         args.next().is_some_and(|arg| arg == "--loopback-fixture"),
         "{usage}"
@@ -48,7 +50,19 @@ pub fn run() -> Result<()> {
     let cert = args.next().context(usage)?;
     let key_path = args.next().context(usage)?;
     let dir = PathBuf::from(args.next().context(usage)?);
-    let fixture = match args.next() {
+    let mut behavior = args.next();
+    let generation = if behavior.as_deref().is_some_and(|arg| arg == "--generation") {
+        let generation = args
+            .next()
+            .and_then(|arg| arg.to_str()?.parse::<u32>().ok())
+            .filter(|generation| *generation > 0)
+            .context(usage)?;
+        behavior = args.next();
+        generation
+    } else {
+        1
+    };
+    let fixture = match behavior {
         None => Fixture::Normal,
         Some(arg) if arg == "hold" => Fixture::Hold,
         Some(arg) if arg == "crash-before-spawn" => Fixture::CrashBeforeSpawn,
@@ -60,8 +74,13 @@ pub fn run() -> Result<()> {
         .try_into()
         .map_err(|_| anyhow::anyhow!("expected a disposable 32-byte device key"))?;
     let key = SigningKey::from_bytes(&seed);
-    let link = Link::new(origin.to_str().context(usage)?, &fs::read(cert)?, key)?;
-    let journal = Journal::open(&dir, &link.key, init)?;
+    let link = Link::new(
+        origin.to_str().context(usage)?,
+        &fs::read(cert)?,
+        key,
+        fixture_instance(generation),
+    )?;
+    let journal = Journal::open(&dir, &link.key, init, generation)?;
     Executor {
         link,
         journal,
@@ -167,7 +186,10 @@ impl Executor {
         else {
             return Ok(true);
         };
-        if grant.attempt != attempt || grant.request_sequence != sequence {
+        if grant.instance != self.link.instance
+            || grant.attempt != attempt
+            || grant.request_sequence != sequence
+        {
             return Err(Unavailable.into());
         }
         let status = self.link.status(attempt)?;
@@ -206,6 +228,7 @@ impl Executor {
                     return Ok(false);
                 }
                 Phase::Authorized => Some(Event::Unknown),
+                Phase::Unknown if status.start_until.is_some() => Some(Event::Unknown),
                 Phase::Unknown | Phase::Expired => None,
                 _ => bail!("unexpected ledger phase for unconsumed attempt"),
             }

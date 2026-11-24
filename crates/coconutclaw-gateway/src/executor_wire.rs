@@ -5,6 +5,14 @@ pub const DEVICE: &str = "alpha";
 pub const BODY_LIMIT: usize = 16 * 1024;
 pub const TEXT_LIMIT: usize = 4096;
 
+pub fn fixture_instance(generation: u32) -> String {
+    if generation == 1 {
+        INSTANCE.to_owned()
+    } else {
+        format!("{INSTANCE}:{generation}")
+    }
+}
+
 pub fn request_bytes(instance: &str, body: &[u8]) -> Vec<u8> {
     let mut signed = format!("coconutclaw-v1\n{instance}\nPOST\n/v1/agent\n").into_bytes();
     signed.extend_from_slice(body);
@@ -16,10 +24,6 @@ pub fn request_bytes(instance: &str, body: &[u8]) -> Vec<u8> {
 pub struct SignedEvidence {
     pub payload: String,
     pub signature: String,
-}
-
-pub fn evidence_bytes(payload: &str) -> Vec<u8> {
-    evidence_bytes_for(INSTANCE, payload)
 }
 
 pub fn evidence_bytes_for(instance: &str, payload: &str) -> Vec<u8> {
@@ -89,6 +93,7 @@ pub struct Status {
 
 #[derive(Deserialize, Serialize)]
 pub struct Grant {
+    pub instance: String,
     pub attempt: i64,
     pub start_until: i64,
     pub request_sequence: i64,

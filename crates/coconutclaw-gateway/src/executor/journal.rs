@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 use coconutclaw_gateway::executor_wire::{
-    Event, Evidence, INSTANCE, SignedEvidence, evidence_bytes,
+    Event, Evidence, SignedEvidence, evidence_bytes_for, fixture_instance,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use fs2::FileExt;
@@ -24,6 +24,7 @@ pub struct Pending {
 pub struct Journal {
     db: Connection,
     _lock: File,
+    instance: String,
 }
 
 const SCHEMA: &str = "
@@ -53,7 +54,8 @@ const SCHEMA: &str = "
 ";
 
 impl Journal {
-    pub fn open(dir: &Path, key: &SigningKey, init: bool) -> Result<Self> {
+    pub fn open(dir: &Path, key: &SigningKey, init: bool, generation: u32) -> Result<Self> {
+        let instance = fixture_instance(generation);
         if init {
             DirBuilder::new().mode(0o700).create(dir)?;
         }
@@ -75,7 +77,7 @@ impl Journal {
             txn.execute_batch(SCHEMA)?;
             txn.execute(
                 "INSERT INTO identity VALUES(1,?,?,0)",
-                params![INSTANCE, public_key],
+                params![instance, public_key],
             )?;
             txn.commit()?;
         }
@@ -89,10 +91,37 @@ impl Journal {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         ensure!(
-            identity == (INSTANCE.to_owned(), public_key),
+            identity.1 == public_key,
             "executor journal identity mismatch"
         );
-        Ok(Self { db, _lock: lock })
+        if identity.0 != instance {
+            ensure!(
+                generation.checked_sub(1).is_some_and(
+                    |previous| previous > 0 && identity.0 == fixture_instance(previous)
+                ),
+                "executor generation must advance exactly once"
+            );
+            let txn = db.transaction()?;
+            ensure!(
+                txn.query_row(
+                    "SELECT NOT EXISTS(SELECT 1 FROM attempts WHERE phase!='sealed')
+                       AND NOT EXISTS(SELECT 1 FROM evidence WHERE acknowledged=0)",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )?,
+                "executor has unresolved launch authority or unacknowledged evidence"
+            );
+            txn.execute(
+                "UPDATE identity SET instance=? WHERE singleton=1",
+                [&instance],
+            )?;
+            txn.commit()?;
+        }
+        Ok(Self {
+            db,
+            _lock: lock,
+            instance,
+        })
     }
 
     pub fn sync_sequence(&self, floor: i64) -> Result<()> {
@@ -181,7 +210,10 @@ impl Journal {
         for event in events {
             let name = event.name();
             let payload = serde_json::to_string(&Evidence { attempt, event })?;
-            let signature = hex::encode(key.sign(&evidence_bytes(&payload)).to_bytes());
+            let signature = hex::encode(
+                key.sign(&evidence_bytes_for(&self.instance, &payload))
+                    .to_bytes(),
+            );
             txn.execute(
                 "INSERT INTO evidence(attempt,event,payload,signature) VALUES(?,?,?,?)",
                 params![attempt, name, payload, signature],

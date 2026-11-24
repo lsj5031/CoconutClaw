@@ -2,7 +2,7 @@ use std::io::Read;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail, ensure};
-use coconutclaw_gateway::executor_wire::{BODY_LIMIT, DEVICE, INSTANCE, Status, request_bytes};
+use coconutclaw_gateway::executor_wire::{BODY_LIMIT, DEVICE, Status, request_bytes};
 use ed25519_dalek::{Signer, SigningKey};
 use reqwest::blocking::Client;
 use reqwest::{Certificate, StatusCode, Url, redirect};
@@ -45,10 +45,16 @@ pub struct Link {
     client: Client,
     url: Url,
     pub key: SigningKey,
+    pub instance: String,
 }
 
 impl Link {
-    pub fn new(origin: &str, certificate: &[u8], key: SigningKey) -> Result<Self> {
+    pub fn new(
+        origin: &str,
+        certificate: &[u8],
+        key: SigningKey,
+        instance: String,
+    ) -> Result<Self> {
         let mut url = Url::parse(origin).context("invalid loopback origin")?;
         ensure!(
             url.scheme() == "https"
@@ -69,7 +75,12 @@ impl Link {
             .add_root_certificate(Certificate::from_pem(certificate)?)
             .timeout(Duration::from_millis(750))
             .build()?;
-        Ok(Self { client, url, key })
+        Ok(Self {
+            client,
+            url,
+            key,
+            instance,
+        })
     }
 
     pub fn hello(&self, journal: &Journal) -> Result<()> {
@@ -84,7 +95,7 @@ impl Link {
         let hello: Hello = self.read(json!({"op":"hello"}))?;
         ensure!(
             hello.protocol == 1
-                && hello.instance == INSTANCE
+                && hello.instance == self.instance
                 && hello.device == DEVICE
                 && hello.capabilities == ["text"]
                 && (0..=i64::from(i32::MAX)).contains(&hello.last_sequence),
@@ -113,7 +124,7 @@ impl Link {
             "device":DEVICE, "at_ms":now_ms()?, "sequence":sequence, "command":command,
         }))?;
         ensure!(body.len() <= BODY_LIMIT, "fixture request exceeds body cap");
-        let signature = self.key.sign(&request_bytes(INSTANCE, &body));
+        let signature = self.key.sign(&request_bytes(&self.instance, &body));
         let response = self
             .client
             .post(self.url.clone())

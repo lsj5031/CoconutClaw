@@ -8,7 +8,9 @@ use wasm_bindgen_futures::JsFuture;
 use worker::*;
 
 use crate::executor_wire::{self, Event, Evidence, evidence_bytes_for, request_bytes};
-use crate::ledger::{Delivery, Ledger, Receipt, Reply, ScheduleInput, conflict};
+use crate::ledger::{
+    Delivery, Execution, Ledger, LocalAuthority, Receipt, Reply, ScheduleInput, conflict,
+};
 use crate::protocol::{Agent, BODY_LIMIT, Command, Fixture, INSTANCE, telegram_input, valid_text};
 
 #[wasm_bindgen(inline_js = "
@@ -170,6 +172,13 @@ impl DurableObject for BotLedger {
         let storage = self.state.storage();
         let result = async {
             let ledger = self.ledger(&storage, phase, "alarm")?;
+            if phase == LocalPhase::Executor
+                && !self
+                    .local_authority(&ledger)?
+                    .is_some_and(|authority| authority.active == 1)
+            {
+                return Ok(());
+            }
             match phase {
                 LocalPhase::Protocol => {
                     let (_, alarm) =
@@ -193,6 +202,15 @@ impl DurableObject for BotLedger {
 }
 
 impl BotLedger {
+    fn local_authority(&self, ledger: &Ledger) -> Result<Option<LocalAuthority>> {
+        let configured = match self.env.var("LOCAL_GENERATION") {
+            Ok(var) => var.to_string().parse::<u32>().ok(),
+            Err(_) => Some(1),
+        };
+        let durable = ledger.local_authority()?;
+        Ok((configured == Some(durable.generation)).then_some(durable))
+    }
+
     fn ledger(&self, storage: &Storage, phase: LocalPhase, scope: &'static str) -> Result<Ledger> {
         let measure = phase == LocalPhase::Executor
             && self
@@ -257,11 +275,29 @@ impl BotLedger {
         };
         let storage = self.state.storage();
         let ledger = self.ledger(&storage, phase, scope)?;
+        let authority = if phase == LocalPhase::Executor {
+            let Some(authority) = self.local_authority(&ledger)? else {
+                return Ok(Reply::error(503, "inactive_generation"));
+            };
+            Some(authority)
+        } else {
+            None
+        };
+        let frozen = authority
+            .as_ref()
+            .is_some_and(|authority| authority.active == 0);
+        let instance = authority.as_ref().map_or_else(
+            || phase.instance().to_owned(),
+            |authority| executor_wire::fixture_instance(authority.generation),
+        );
+        if frozen && scope == "telegram" {
+            return Ok(Reply::error(503, "frozen_generation"));
+        }
         if executor {
             let at = now();
             let (admitted, alarm) = ledger.transaction(&storage, || {
                 let admitted = ledger.take_pilot_request(at, false)?;
-                let alarm = if admitted {
+                let alarm = if admitted && !frozen {
                     ledger.bootstrap_delivery(&storage, at)?
                 } else {
                     None
@@ -317,7 +353,10 @@ impl BotLedger {
                 let Ok(agent) = serde_json::from_slice::<Agent>(&bytes) else {
                     return Ok(bad_input());
                 };
-                let Some(key) = self.verify_agent(&req, &agent, &bytes, phase).await else {
+                let Some(key) = self
+                    .verify_agent(&req, &agent, &bytes, phase, &instance)
+                    .await
+                else {
                     return Ok(Reply::error(401, "unauthorized"));
                 };
                 if !agent.command.available(executor) {
@@ -339,7 +378,7 @@ impl BotLedger {
                     if !signed_by(
                         &key,
                         &proof.signature,
-                        &evidence_bytes_for(phase.instance(), &proof.payload),
+                        &evidence_bytes_for(&instance, &proof.payload),
                     )
                     .await
                     {
@@ -349,7 +388,23 @@ impl BotLedger {
                 } else {
                     None
                 };
-                if let Some(reply) = ledger.read_agent(&agent, now(), phase.instance())? {
+                if let Some(authority) = authority {
+                    if frozen {
+                        match agent.command {
+                            Command::Next => return Ok(Reply::ok(json!({"task":null}))),
+                            Command::Hello | Command::Status { .. } | Command::Report { .. } => (),
+                            _ => return Ok(Reply::error(503, "frozen_generation")),
+                        }
+                    }
+                    let attempt = match agent.command {
+                        Command::Start { attempt } => Some(attempt),
+                        _ => evidence.as_ref().map(|evidence| evidence.attempt),
+                    };
+                    if attempt.is_some_and(|attempt| attempt <= authority.attempt_floor) {
+                        return Ok(conflict());
+                    }
+                }
+                if let Some(reply) = ledger.read_agent(&agent, now(), &instance)? {
                     return Ok(reply);
                 }
                 let drop_reply = fault.as_deref() == Some("after_commit")
@@ -357,8 +412,16 @@ impl BotLedger {
                         agent.command,
                         Command::Start { .. } | Command::Report { .. }
                     );
+                let execution = match phase {
+                    LocalPhase::Protocol => None,
+                    LocalPhase::Executor => Some(Execution::Local {
+                        instance: &instance,
+                        reconcile_only: frozen,
+                    }),
+                    LocalPhase::Pilot => Some(Execution::HostedPilot),
+                };
                 let (reply, alarm) = ledger.transaction(&storage, || {
-                    ledger.mutate_agent(agent, now(), executor, evidence, &storage, pilot)
+                    ledger.mutate_agent(agent, now(), execution, evidence, &storage)
                 })?;
                 settle_alarm(alarm).await?;
                 (reply, drop_reply)
@@ -367,6 +430,9 @@ impl BotLedger {
                 let Ok(fixture) = serde_json::from_slice(&bytes) else {
                     return Ok(bad_input());
                 };
+                if frozen && !matches!(fixture, Fixture::DeliveryStatus { .. }) {
+                    return Ok(Reply::error(503, "frozen_generation"));
+                }
                 if pilot {
                     return match fixture {
                         Fixture::DeliveryStatus { task } if task == PILOT_TASK => {
@@ -410,6 +476,7 @@ impl BotLedger {
         agent: &Agent,
         bytes: &[u8],
         phase: LocalPhase,
+        instance: &str,
     ) -> Option<Vec<u8>> {
         if agent.at_ms.abs_diff(now()) > 30_000
             || (phase.executor() && agent.device.name() != executor_wire::DEVICE)
@@ -430,7 +497,7 @@ impl BotLedger {
             .and_then(|var| hex::decode(var.to_string()).ok())
             .filter(|key| key.len() == 32)?;
         let signature = req.headers().get("x-agent-signature").ok().flatten()?;
-        signed_by(&key, &signature, &request_bytes(phase.instance(), bytes))
+        signed_by(&key, &signature, &request_bytes(instance, bytes))
             .await
             .then_some(key)
     }

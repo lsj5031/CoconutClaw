@@ -11,8 +11,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Log, LogLevel, Miniflare } from "miniflare";
 import {
-    admitLegacyFixtureUpdate, appendRunningFixtureTask, cutoverSnapshot, importCutoverDelta,
-    importCutoverFixture, returnSettledFixtureTask, seedCutoverSource,
+    admitLegacyFixtureUpdate, advanceGatewayFixture, appendRunningFixtureTask, cutoverSnapshot,
+    freezeGatewayFixture, importCutoverDelta,
+    importCutoverFixture, returnFixtureTasks, seedCutoverSource,
 } from "./cutover-fixture.mjs";
 
 const { workers: { default: { bundleDir, config } } } = await readBuildOutput(import.meta.dirname);
@@ -55,14 +56,18 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
     let url;
     let calls = 0;
     let stopped = true;
+    let generation = 1;
+    let drainProxy = async () => {};
     async function stop() {
+        stopped = true;
+        await drainProxy();
         await service?.dispose();
         service = undefined;
-        stopped = true;
     }
-    async function restart(edit) {
+    async function restart(edit, nextGeneration = generation) {
         await stop();
         if (edit) await edit();
+        generation = nextGeneration;
         service = new Miniflare({
             host: "127.0.0.1",
             port: 0,
@@ -90,6 +95,7 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
                     publicHex(device),
                 ])),
                 ...(executor ? { EXECUTOR_ALPHA_KEY: publicHex("alpha") } : {}),
+                ...(executor && generation !== 1 ? { LOCAL_GENERATION: String(generation) } : {}),
                 ...(inspect ? { LOCAL_SQL_METRICS: "1" } : {}),
             },
             durableObjects,
@@ -117,7 +123,7 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
         assert.equal(url.hostname, "127.0.0.1");
     }
     context.after(async () => {
-        await service?.dispose();
+        await stop();
         await rm(persistence, { recursive: true, force: true });
         assert.doesNotMatch(logs.join(""), /synthetic-webhook|synthetic-operator|sensitive synthetic task/);
     });
@@ -159,7 +165,10 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
         return response.value;
     }
 
-    function signed(device, command, { at = Date.now(), prefix = executor ? executorPrefix : signingPrefix, seq } = {}) {
+    function signed(device, command, { at = Date.now(), prefix, seq } = {}) {
+        prefix ??= executor
+            ? (generation === 1 ? executorPrefix : executorPrefix.replace("fixture\n", `fixture:${generation}\n`))
+            : signingPrefix;
         const mutating = !["hello", "next", "status"].includes(command.op);
         const body = JSON.stringify({
             device, at_ms: at, sequence: seq ?? (mutating ? ++sequence[device] : 0), command,
@@ -198,7 +207,12 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
         return Array.from(logs.join("\n").matchAll(/pilot_sql (\w+) (\d+) (\d+) (\d+)/g),
             ([, scope, read, written, ms]) => ({ scope, read: +read, written: +written, ms: +ms }));
     }
-    return { agent, fixture, post, rawPost, stop, restart, sends, sendTimes, signed, wire, keys, sql, editLedger, scheduledAlarm, metrics };
+    function registerProxyDrain(drain) {
+        drainProxy = drain;
+        return () => stopped;
+    }
+    return { agent, fixture, post, rawPost, stop, restart, sends, sendTimes, signed, wire, keys, sql,
+        editLedger, scheduledAlarm, metrics, registerProxyDrain };
 }
 
 function update(id, topic = 7, text = `synthetic task ${id}`) {
@@ -246,6 +260,8 @@ async function attachExecutor(context, client) {
         "-days", "1", "-extfile", extensions, "-out", cert);
     const processes = [];
     const packets = [];
+    const forwarding = new Set();
+    const workerStopped = client.registerProxyDrain(() => Promise.allSettled(forwarding));
     const proxy = { offline: false, transform: async ({ response }) => response };
     let proxyError;
     const server = createServer({ key: await readFile(tlsKey), cert: await readFile(cert) }, async (req, res) => {
@@ -259,8 +275,10 @@ async function attachExecutor(context, client) {
             const envelope = JSON.parse(body);
             packets.push(envelope);
             assert.ok(packets.length <= 160, "executor request budget");
-            if (proxy.offline) return res.writeHead(503).end();
-            const response = await client.rawPost("agent", body, packet.headers);
+            if (proxy.offline || workerStopped()) return res.writeHead(503).end();
+            const forwarded = client.rawPost("agent", body, packet.headers);
+            forwarding.add(forwarded);
+            const response = await forwarded.finally(() => forwarding.delete(forwarded));
             const delivered = await proxy.transform({ response, envelope, packet });
             if (!delivered) return req.socket.destroy();
             res.writeHead(delivered.status, { "content-type": "application/json" }).end(JSON.stringify(delivered.value));
@@ -279,8 +297,9 @@ async function attachExecutor(context, client) {
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     const origin = `https://127.0.0.1:${server.address().port}`;
-    function run(mode, behavior, endpoint = origin) {
-        const child = spawn(executable, ["--loopback-fixture", mode, endpoint, ca, seed, dir, ...(behavior ? [behavior] : [])],
+    function run(mode, behavior, endpoint = origin, generation = 1) {
+        const child = spawn(executable, ["--loopback-fixture", mode, endpoint, ca, seed, dir,
+            ...(generation === 1 ? [] : ["--generation", String(generation)]), ...(behavior ? [behavior] : [])],
             { env: {}, stdio: ["ignore", "ignore", "pipe"] });
         let stderr = "";
         child.stderr.setEncoding("utf8").on("data", data => { stderr += data; });
@@ -519,7 +538,7 @@ async function reportResult(client, task, text, drop = false) {
     return { task, result };
 }
 
-test("synthetic cutover fences writers, imports the final delta, and returns a settled task", timeout, async context => {
+test("synthetic cutover imports the final delta and returns settled and held work", timeout, async context => {
     const client = await runFixture(context, { executor: true, inspect: true });
     await client.agent("alpha", "hello");
     await client.stop();
@@ -567,9 +586,21 @@ test("synthetic cutover fences writers, imports the final delta, and returns a s
     });
     const lastLegacy = update(205, 59, "synthetic last legacy dispatch");
     lastLegacy.message.chat.id = 321;
-    legacy(db => appendRunningFixtureTask(db, 28, lastLegacy));
+    await client.restart();
+    await client.post("telegram", update(205), webhook, 503);
+    await client.stop();
+    legacy(db => {
+        appendRunningFixtureTask(db, 28, lastLegacy);
+        db.exec(`
+            UPDATE task_payloads SET delivered=1,
+                delivery_state=json_set(delivery_state,'$.text_plan.phase','done','$.text_plan.messageId',42)
+                WHERE task_run_id=26;
+            UPDATE runtime_schedules SET next_due=2000 WHERE id=7;
+            INSERT INTO legacy_admission_freeze VALUES(1);
+        `);
+        assert.throws(() => admitLegacyFixtureUpdate(db, update(206)), /legacy is frozen/);
+    });
     const frozen = legacy(db => {
-        assert.throws(() => admitLegacyFixtureUpdate(db, update(206)), /readonly/);
         for (const write of [
             "UPDATE scheduled_tasks SET done=1",
             "UPDATE task_runs SET status='running' WHERE id=23",
@@ -586,7 +617,8 @@ test("synthetic cutover fences writers, imports the final delta, and returns a s
             [baseline, JSON.stringify({ ...frozenEnvelope, payload: `${frozenEnvelope.payload} ` }), /checksum mismatch/],
             [baseline, baseline, /missing fixture delta/],
             [baseline, changedSnapshot(frozen, fixture => { fixture.tasks.reverse(); }), /sequence must increase/],
-            [baseline, changedSnapshot(frozen, fixture => { fixture.tasks[0].error += " changed"; }), /fixture delta must append/],
+            [baseline, changedSnapshot(frozen, fixture => { fixture.tasks[0].error += " changed"; }), /changed stable task data/],
+            [baseline, changedSnapshot(frozen, fixture => { fixture.schedules[0].next_due = 999; }), /schedule regressed/],
             [baseline, changedSnapshot(frozen, fixture => { fixture.tasks.at(-1).ingress.update_id = 201; }), /duplicate fixture update/],
             [wrongBaseline, frozen, /wrong fixture baseline/],
         ];
@@ -597,6 +629,8 @@ test("synthetic cutover fences writers, imports the final delta, and returns a s
         assert.equal(db.prepare("SELECT snapshot FROM synthetic_cutover").get().snapshot, baseline);
         assert.equal(db.prepare("SELECT 1 FROM inbox WHERE update_id=205").get(), undefined);
         assert.equal(db.prepare("SELECT 1 FROM tasks WHERE id='legacy:28'").get(), undefined);
+        assert.equal(db.prepare("SELECT 1 FROM delivery_receipts WHERE task='legacy:26'").get(), undefined);
+        assert.equal(db.prepare("SELECT active FROM local_authority").get().active, 0);
         db.exec("DROP TRIGGER fail_delta");
         assert.equal(importCutoverDelta(db, baseline, frozen), "imported");
     }));
@@ -619,7 +653,7 @@ test("synthetic cutover fences writers, imports the final delta, and returns a s
             await client.agent("alpha", "start", { attempt }, 409);
             await client.wire(client.signed("alpha", signedReport(client, attempt, { kind: "started" })), 409);
         }
-        assert.deepEqual(await client.fixture("delivery_status", { task: "legacy:26" }), { phase: "unknown", sends: 1 });
+        assert.deepEqual(await client.fixture("delivery_status", { task: "legacy:26" }), { phase: "delivered", sends: 1, message_id: 42 });
         assert.deepEqual(await client.fixture("delivery_status", { task: "legacy:27" }), { phase: "unknown", sends: 0 });
         assert.equal((await client.post("telegram", update(201, 99), webhook)).disposition, "duplicate");
         assert.equal((await client.post("telegram", update(205, 99), webhook)).disposition, "duplicate");
@@ -631,6 +665,7 @@ test("synthetic cutover fences writers, imports the final delta, and returns a s
     assert.deepEqual(await client.post("telegram", ingress, webhook), { disposition: "task", task: "telegram:200" });
     const { task, result } = await reportResult(client, "telegram:200", "new synthetic reply", true);
     await client.restart(() => client.editLedger(db => {
+        assert.equal(importCutoverFixture(db, baseline), "already imported");
         assert.equal(importCutoverDelta(db, baseline, frozen), "already imported");
         const conflicting = changedSnapshot(frozen, fixture => { fixture.tasks.at(-1).ingress.message.text = "conflicting fixture"; });
         assert.throws(() => importCutoverDelta(db, baseline, conflicting), /wrong fixture baseline/);
@@ -642,42 +677,79 @@ test("synthetic cutover fences writers, imports the final delta, and returns a s
     await quarantined();
     await until(async () => (await client.fixture("delivery_status", { task })).phase === "delivered", "new reply alarm");
     assert.deepEqual(await client.fixture("delivery_status", { task }), { phase: "delivered", sends: 1, message_id: 1 });
+    const lateIngress = update(209, 41);
+    const lateTask = "telegram:209";
+    await client.post("telegram", lateIngress, webhook);
+    const { attempt: lateAttempt } = await client.agent("alpha", "claim", { task: lateTask });
+    await client.agent("alpha", "start", { attempt: lateAttempt });
+    const lateStart = signedReport(client, lateAttempt, { kind: "started" });
+    const lateResult = signedReport(client, lateAttempt, { kind: "result", text: "held late result" });
     await client.stop();
     await assert.rejects(() => client.post("telegram", update(207), webhook), { code: "ECONNREFUSED" });
-    const [receipt] = await client.sql(`
+    const publicKey = client.keys.alpha.publicKey;
+    await client.restart(() => client.editLedger(db => {
+        assert.equal(freezeGatewayFixture(db, 1), "frozen");
+        assert.throws(() => advanceGatewayFixture(db, 2, publicKey, false), /requires signed terminal evidence/);
+    }));
+    await client.wire(client.signed("alpha", lateStart));
+    assert.deepEqual(await client.sql("SELECT phase FROM attempts WHERE id=?", lateAttempt), [{ phase: "unknown" }]);
+    const latePacket = client.signed("alpha", lateResult);
+    Object.assign(latePacket.headers, operator, { "x-fixture-fault": "after_commit" });
+    await client.wire(latePacket, 503);
+    await client.restart();
+    assert.deepEqual(await client.wire(client.signed("alpha", lateResult)), { event: "result" });
+    await client.wire(client.signed("alpha", signedReport(client, lateAttempt, { kind: "unknown" })), 409);
+    await client.restart(() => client.editLedger(db => {
+        assert.equal(advanceGatewayFixture(db, 2, publicKey, false), "advanced");
+        assert.equal(advanceGatewayFixture(db, 2, publicKey, false), "already advanced");
+        assert.throws(() => advanceGatewayFixture(db, 2, publicKey, true), /conflicting fixture generation replay/);
+    }));
+    await client.post("telegram", update(207), webhook, 503);
+    await client.stop();
+    const [receipt, lateReceipt] = await client.sql(`
         SELECT t.id AS task,i.update_id,t.chat_id,t.thread_id,t.prompt,
             a.id AS attempt,a.phase AS attempt_phase,e.payload,e.signature,
+            s.payload AS start_payload,s.signature AS start_signature,
             o.text,o.phase AS delivery_phase,o.sends,d.message_id
         FROM tasks t JOIN inbox i ON t.sequence=i.sequence JOIN attempts a ON t.current_attempt=a.id
-        JOIN executor_evidence e ON a.id=e.attempt AND e.event='result'
-        JOIN outbox o ON t.id=o.task JOIN delivery_receipts d ON o.task=d.task WHERE t.id=?
-    `, task);
+        LEFT JOIN executor_evidence e ON a.id=e.attempt AND e.event='result'
+        LEFT JOIN executor_evidence s ON a.id=s.attempt AND s.event='started'
+        LEFT JOIN outbox o ON t.id=o.task LEFT JOIN delivery_receipts d ON o.task=d.task
+        WHERE t.id LIKE 'telegram:%' ORDER BY t.sequence
+    `);
+    assert.deepEqual(await client.sql("SELECT id FROM tasks WHERE id LIKE 'telegram:%' ORDER BY sequence"),
+        [{ id: task }, { id: lateTask }]);
     assert.equal(receipt.payload, result.proof.payload);
     assert.equal(receipt.signature, result.proof.signature);
+    assert.equal(lateReceipt.payload, lateResult.proof.payload);
+    assert.equal(lateReceipt.signature, lateResult.proof.signature);
     assert.deepEqual(await client.sql("SELECT id FROM attempts WHERE task=?", task), [{ id: receipt.attempt }]);
-    const publicKey = client.keys.alpha.publicKey;
+    const entries = [
+        { taskId: 30, ingress: lateIngress, receipt: lateReceipt },
+        { taskId: 29, ingress, receipt },
+    ];
+    function returnTasks(db, anchor = frozen, changed = {}) {
+        return returnFixtureTasks(db, anchor, [entries[0], { ...entries[1], ...changed }], publicKey);
+    }
     legacy(db => {
-        assert.throws(() => returnSettledFixtureTask(db, frozen, 29, ingress,
-            { ...receipt, delivery_phase: "unknown" }, publicKey), /requires a settled/);
-        assert.throws(() => returnSettledFixtureTask(db, frozen, 29, ingress,
-            { ...receipt, signature: "00".repeat(64) }, publicKey), /invalid return result signature/);
-        assert.throws(() => returnSettledFixtureTask(db, frozen, 29, ingress,
-            { ...receipt, text: "other result" }, publicKey), /result does not match delivery/);
-        assert.throws(() => returnSettledFixtureTask(db, baseline, 29, ingress, receipt, publicKey),
-            /changed after freeze/);
+        assert.throws(() => returnTasks(db, frozen, { receipt: { ...receipt, delivery_phase: "unknown" } }), /requires a settled/);
+        assert.throws(() => returnTasks(db, frozen, { receipt: { ...receipt, signature: "00".repeat(64) } }), /invalid return evidence signature/);
+        assert.throws(() => returnTasks(db, frozen, { receipt: { ...receipt, text: "other result" } }), /result does not match delivery/);
+        assert.throws(() => returnTasks(db, baseline), /changed after freeze/);
         db.exec(`CREATE TEMP TRIGGER fail_return BEFORE INSERT ON task_payloads
                  BEGIN SELECT RAISE(ABORT, 'interrupted fixture return'); END`);
-        assert.throws(() => returnSettledFixtureTask(db, frozen, 29, ingress, receipt, publicKey),
-            /interrupted fixture return/);
+        assert.throws(() => returnTasks(db), /interrupted fixture return/);
         assert.equal(cutoverSnapshot(db), frozen);
+        assert.throws(() => admitLegacyFixtureUpdate(db, update(207)), /legacy is frozen/);
         db.exec("DROP TRIGGER fail_return");
-        assert.equal(returnSettledFixtureTask(db, frozen, 29, ingress, receipt, publicKey), "imported");
+        assert.equal(returnTasks(db), "imported");
     });
     legacy(db => {
-        assert.equal(returnSettledFixtureTask(db, frozen, 29, ingress, receipt, publicKey), "already imported");
-        assert.throws(() => returnSettledFixtureTask(db, baseline, 29, ingress, receipt, publicKey),
-            /conflicting fixture return/);
+        assert.equal(returnTasks(db), "already imported");
+        assert.throws(() => returnTasks(db, frozen, { taskId: 31 }), /conflicting fixture return/);
+        assert.throws(() => returnTasks(db, baseline), /conflicting fixture return/);
         assert.equal(admitLegacyFixtureUpdate(db, update(200, 99)), "duplicate");
+        assert.equal(admitLegacyFixtureUpdate(db, update(209, 99)), "duplicate");
         assert.equal(admitLegacyFixtureUpdate(db, update(207, 37)), "accepted");
         assert.deepEqual({ ...db.prepare(`
             SELECT g.state,t.current_run_id,r.status,r.result_summary,r.source_thread_id,p.delivered
@@ -691,6 +763,12 @@ test("synthetic cutover fences writers, imports the final delta, and returns a s
         const { key, ...record } = JSON.parse(db.prepare("SELECT record FROM synthetic_return WHERE task_run_id=29").get().record);
         assert.equal(key, publicKey.export({ type: "spki", format: "der" }).toString("hex"));
         assert.deepEqual(record, { frozen: frozenEnvelope.sha256, ingress, ...receipt });
+        assert.deepEqual(JSON.parse(db.prepare("SELECT record FROM synthetic_return WHERE task=?").get(lateTask).record),
+            { frozen: frozenEnvelope.sha256, ingress: lateIngress, ...lateReceipt, key });
+        assert.deepEqual({ ...db.prepare(`SELECT r.status,r.error_summary,p.delivered FROM task_runs r
+            LEFT JOIN task_payloads p ON p.task_run_id=r.id WHERE r.id=30`).get() }, {
+            status: "failed", error_summary: "effect outcome unknown at handoff; do not automatically retry", delivered: null,
+        });
         assert.equal(db.prepare("SELECT error_summary FROM task_runs WHERE id=24").get().error_summary,
             "runtime restarted; outcome unknown, do not automatically retry");
         assert.equal(db.prepare("SELECT current_run_id FROM runtime_tasks WHERE task_id=23").get().current_run_id, 24);
@@ -700,9 +778,123 @@ test("synthetic cutover fences writers, imports the final delta, and returns a s
         recordedAt: new Date().toISOString(),
         version: frozenPayload.version,
         baseline: JSON.parse(baseline).sha256, frozen: frozenEnvelope.sha256,
-        frozenSequence: frozenPayload.tasks.at(-1).sequence, returnedRun: 29, receipt,
+        frozenSequence: frozenPayload.tasks.at(-1).sequence, returnedRuns: [29, 30], receipt, lateReceipt,
         publicKey: publicKey.export({ type: "spki", format: "der" }).toString("hex"),
     }));
+});
+
+test("synthetic cutover requires late signed terminal evidence before executor generation change", nativeTimeout, async context => {
+    const client = await runFixture(context, { executor: true, inspect: true });
+    const { proxy, run, launches, query, verifyProof, packets } = await attachExecutor(context, client);
+    const publicKey = client.keys.alpha.publicKey;
+    const oldTask = "telegram:211";
+    let late;
+    let oldGrant;
+    proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op === "start") oldGrant ??= response.value;
+        if (envelope.command.op === "report" && JSON.parse(envelope.command.proof.payload).event.kind === "started") {
+            proxy.offline = true;
+        }
+        return response;
+    };
+    await client.post("telegram", update(211, 37), webhook);
+    const original = run("init");
+    await until(() => oldGrant, "old Start grant");
+    await until(() => query("SELECT acknowledged FROM evidence WHERE event='started'")[0]?.acknowledged,
+        "old Start custody");
+    await original.stop();
+    const attempt = oldGrant.attempt;
+    assert.deepEqual(await launches(), [attempt]);
+    await client.post("telegram", update(213, 37), webhook);
+    const { last_sequence: floor } = await client.agent("alpha", "hello");
+    const unissued = await client.wire(client.signed("alpha", { op: "claim", task: "telegram:213" }, { seq: floor + 1 }));
+    await client.restart(() => client.editLedger(db => {
+        assert.equal(freezeGatewayFixture(db, 1), "frozen");
+        assert.equal(freezeGatewayFixture(db, 1), "already frozen");
+        db.prepare("UPDATE attempts SET start_until=1 WHERE id=?").run(attempt);
+        assert.throws(() => advanceGatewayFixture(db, 2, publicKey, true), /requires signed terminal evidence/);
+        assert.deepEqual({ ...db.prepare("SELECT generation,active FROM local_authority").get() }, { generation: 1, active: 0 });
+    }));
+    assert.match(await run("resume", null, undefined, 2).exit(1), /unacknowledged evidence/);
+    await client.post("telegram", update(212), webhook, 503);
+    await client.agent("alpha", "start", { attempt }, 503);
+    const bogusStart = signedReport(client, unissued.attempt, { kind: "started" });
+    assert.deepEqual(await client.wire(client.signed("alpha", bogusStart, { seq: floor + 2 }), 409),
+        { error: "state_conflict" });
+    assert.deepEqual(await client.agent("alpha", "next"), { task: null });
+    assert.deepEqual(await client.sql("SELECT event FROM executor_evidence WHERE attempt=?", attempt), [{ event: "started" }]);
+    proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op === "report" && !late) {
+            assert.equal(response.status, 200);
+            late = envelope.command.proof;
+            proxy.offline = true;
+            return null;
+        }
+        return response;
+    };
+    proxy.offline = false;
+    const disconnectedAgain = run("resume");
+    await until(() => late, "late result committed without acknowledgement");
+    await disconnectedAgain.stop();
+    assert.deepEqual(verifyProof(late), {
+        attempt, event: { kind: "result", text: "fixture output: synthetic task 211" },
+    });
+    assert.deepEqual(await client.sql("SELECT phase FROM attempts WHERE id=?", attempt), [{ phase: "unknown" }]);
+    assert.deepEqual(await client.sql("SELECT * FROM outbox WHERE task=?", oldTask), []);
+    await client.restart();
+    proxy.offline = false;
+    const resumed = run("resume");
+    await until(() => query("SELECT acknowledged FROM evidence WHERE event='result'")[0]?.acknowledged,
+        "exact late receipt acknowledged after restart");
+    await resumed.stop();
+    assert.deepEqual(await client.sql("SELECT payload,signature FROM executor_evidence WHERE attempt=? AND event='result'", attempt), [late]);
+    assert.deepEqual(await launches(), [attempt]);
+    const oldPacket = client.signed("alpha", { op: "start", attempt });
+    await client.restart(() => client.editLedger(db => {
+        db.exec(`CREATE TEMP TRIGGER interrupt_rotation BEFORE UPDATE ON local_authority
+            BEGIN SELECT RAISE(ABORT,'interrupted rotation'); END`);
+        assert.throws(() => advanceGatewayFixture(db, 2, publicKey, true), /interrupted rotation/);
+        db.exec("DROP TRIGGER interrupt_rotation");
+        assert.throws(() => advanceGatewayFixture(db, 2, client.keys.beta.publicKey, true), /invalid signed evidence/);
+        assert.equal(advanceGatewayFixture(db, 2, publicKey, true), "advanced");
+    }));
+    await client.wire(oldPacket, 503);
+    await client.restart(undefined, 2);
+    await client.wire(oldPacket, 401);
+    await client.agent("alpha", "start", { attempt }, 409);
+    await client.wire(client.signed("alpha", { op: "report", proof: late }), 401);
+    assert.equal((await client.post("telegram", update(211, 99), webhook)).disposition, "duplicate");
+    await client.post("telegram", update(212, 37), webhook);
+    let replayedGrant;
+    let packetsAtReplay;
+    let checkedReplay = false;
+    proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op === "start" && response.status === 200 && !replayedGrant) {
+            replayedGrant = response.value;
+            packetsAtReplay = packets.length;
+            return { ...response, value: { ...replayedGrant, instance: oldGrant.instance } };
+        }
+        if (replayedGrant && !checkedReplay && envelope.command.op === "hello") {
+            return { status: 503, value: {} };
+        }
+        return response;
+    };
+    const next = run("resume", null, undefined, 2);
+    await until(() => replayedGrant, "old generation response replayed against a new request");
+    const afterReplay = await until(() => packets[packetsAtReplay], "executor response to old generation grant");
+    assert.equal(afterReplay.command.op, "hello", "executor must reconnect without checking the old grant");
+    assert.deepEqual(await launches(), [attempt]);
+    checkedReplay = true;
+    await until(() => query("SELECT acknowledged FROM evidence WHERE attempt=? AND event='result'", replayedGrant.attempt)[0]?.acknowledged,
+        "new generation result acknowledged");
+    await next.stop();
+    assert.equal(replayedGrant.instance, "local-executor-fixture:2");
+    assert.deepEqual(await launches(), [attempt, replayedGrant.attempt]);
+    assert.match(await run("resume").exit(1), /generation must advance exactly once/);
+    await until(async () => (await client.fixture("delivery_status", { task: "telegram:212" })).phase === "delivered",
+        "new generation same-topic reply");
+    assert.deepEqual(client.sends, [{ chat_id: 321, message_thread_id: 37, text: "fixture output: synthetic task 212" }]);
+    context.diagnostic(JSON.stringify({ from: 1, to: 2, oldTask, attempt, late, nextAttempt: replayedGrant.attempt }));
 });
 
 test("Phase 2 alarm survives a pending restart and a duplicated result with one same-topic receipt", timeout, async context => {

@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS agent_sequences (
     device TEXT PRIMARY KEY,
     sequence INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS local_authority (
+    slot INTEGER PRIMARY KEY CHECK (slot = 1),
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    attempt_floor INTEGER NOT NULL CHECK (attempt_floor >= 0),
+    active INTEGER NOT NULL CHECK (active IN (0, 1))
+) STRICT;
 CREATE TABLE IF NOT EXISTS executor_evidence (
     attempt INTEGER NOT NULL REFERENCES attempts(id),
     event TEXT NOT NULL CHECK (event IN ('started', 'unknown', 'result', 'cancelled')),

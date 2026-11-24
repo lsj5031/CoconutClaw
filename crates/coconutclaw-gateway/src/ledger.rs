@@ -9,6 +9,22 @@ use worker::{Response, Result, SqlStorage, SqlStorageValue, Storage};
 use crate::executor_wire::{Event, Evidence, Grant, SignedEvidence, Status};
 use crate::protocol::{Agent, CancelEvidence, Command, Device, LEASE_MS, Phase, START_MS};
 
+#[derive(Clone, Copy)]
+pub enum Execution<'a> {
+    Local {
+        instance: &'a str,
+        reconcile_only: bool,
+    },
+    HostedPilot,
+}
+
+#[derive(Deserialize)]
+pub struct LocalAuthority {
+    pub generation: u32,
+    pub attempt_floor: i64,
+    pub active: u8,
+}
+
 #[wasm_bindgen(inline_js = "
 export function transaction(storage, callback) { storage.transactionSync(callback); }
 export function stageAlarm(storage, at) {
@@ -381,15 +397,28 @@ impl Ledger {
             .unwrap_or(0))
     }
 
+    pub fn local_authority(&self) -> Result<LocalAuthority> {
+        Ok(self
+            .row(
+                "SELECT generation,attempt_floor,active FROM local_authority WHERE slot=1",
+                [],
+            )?
+            .unwrap_or(LocalAuthority {
+                generation: 1,
+                attempt_floor: 0,
+                active: 1,
+            }))
+    }
+
     pub fn mutate_agent(
         &self,
         agent: Agent,
         now: i64,
-        executor: bool,
+        execution: Option<Execution<'_>>,
         evidence: Option<Evidence>,
         storage: &Storage,
-        single_attempt: bool,
     ) -> Result<(Reply, Option<js_sys::Promise>)> {
+        let executor = execution.is_some();
         let mut alarm = None;
         let device = agent.device;
         if self.last_sequence(device)? >= agent.sequence {
@@ -402,7 +431,7 @@ impl Ledger {
         let sequence = agent.sequence;
         let reply = match agent.command {
             Command::Claim { .. }
-                if single_attempt
+                if matches!(execution, Some(Execution::HostedPilot))
                     && self
                         .number("SELECT id AS value FROM attempts LIMIT 1", [])?
                         .is_some() =>
@@ -428,19 +457,32 @@ impl Ledger {
                     }
                     _ => return Ok(conflict()),
                 };
-                Ok(Reply::ok(if executor {
-                    json!(Grant {
+                Ok(Reply::ok(match execution {
+                    Some(Execution::Local { instance, .. }) => json!(Grant {
+                        instance: instance.to_owned(),
                         attempt,
                         start_until: until,
                         request_sequence: sequence,
-                    })
-                } else {
-                    json!({"phase":"authorized", "attempt":attempt, "start_until":until})
+                    }),
+                    Some(Execution::HostedPilot) => {
+                        json!({"attempt":attempt, "start_until":until, "request_sequence":sequence})
+                    }
+                    None => json!({"phase":"authorized", "attempt":attempt, "start_until":until}),
                 }))
             }),
             Command::Report { proof } => {
-                let (reply, queued) =
-                    self.report(device, proof, evidence.ok_or("missing verified evidence")?)?;
+                let (reply, queued) = self.report(
+                    device,
+                    proof,
+                    evidence.ok_or("missing verified evidence")?,
+                    matches!(
+                        execution,
+                        Some(Execution::Local {
+                            reconcile_only: true,
+                            ..
+                        })
+                    ),
+                )?;
                 if queued {
                     alarm = self.arm_delivery(storage, now, now)?;
                 }
@@ -456,6 +498,7 @@ impl Ledger {
         device: Device,
         proof: SignedEvidence,
         evidence: Evidence,
+        reconcile_only: bool,
     ) -> Result<(Reply, bool)> {
         let attempt = evidence.attempt;
         let event = evidence.event.name();
@@ -473,8 +516,33 @@ impl Ledger {
                     },
                 );
             }
+            if self
+                .number(
+                    "SELECT 1 AS value FROM executor_evidence WHERE attempt=? AND event!='started' LIMIT 1",
+                    [attempt.into()],
+                )?
+                .is_some()
+            {
+                return Ok(conflict());
+            }
+            if reconcile_only
+                && row.start_until.is_none()
+                && !matches!(evidence.event, Event::Cancelled { .. })
+            {
+                return Ok(conflict());
+            }
             let reply = match evidence.event {
+                Event::Started if reconcile_only && row.phase.has_grant() => {
+                    self.write("UPDATE attempts SET started_evidence=1 WHERE id=?", [attempt.into()])?;
+                    Reply::ok(json!({}))
+                }
                 Event::Started => self.apply_evidence(device, Command::Started { attempt })?,
+                Event::Result { .. } if reconcile_only && row.started_evidence != 0
+                    && row.phase.has_grant() =>
+                {
+                    self.set_phase(attempt, "unknown")?;
+                    Reply::ok(json!({}))
+                }
                 Event::Result { text } if row.started_evidence != 0 => {
                     queued = row.phase.has_grant();
                     self.apply_evidence(device, Command::Result { attempt, text })?
