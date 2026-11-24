@@ -10,7 +10,10 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Log, LogLevel, Miniflare } from "miniflare";
-import { cutoverSnapshot, importCutoverFixture } from "./cutover-fixture.mjs";
+import {
+    admitLegacyFixtureUpdate, appendRunningFixtureTask, cutoverSnapshot, importCutoverDelta,
+    importCutoverFixture, returnSettledFixtureTask, seedCutoverSource,
+} from "./cutover-fixture.mjs";
 
 const { workers: { default: { bundleDir, config } } } = await readBuildOutput(import.meta.dirname);
 const { mainModule, modules } = config.manifest;
@@ -52,9 +55,13 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
     let url;
     let calls = 0;
     let stopped = true;
-    async function restart(edit) {
+    async function stop() {
         await service?.dispose();
+        service = undefined;
         stopped = true;
+    }
+    async function restart(edit) {
+        await stop();
         if (edit) await edit();
         service = new Miniflare({
             host: "127.0.0.1",
@@ -191,7 +198,7 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
         return Array.from(logs.join("\n").matchAll(/pilot_sql (\w+) (\d+) (\d+) (\d+)/g),
             ([, scope, read, written, ms]) => ({ scope, read: +read, written: +written, ms: +ms }));
     }
-    return { agent, fixture, post, rawPost, restart, sends, sendTimes, signed, wire, keys, sql, editLedger, scheduledAlarm, metrics };
+    return { agent, fixture, post, rawPost, stop, restart, sends, sendTimes, signed, wire, keys, sql, editLedger, scheduledAlarm, metrics };
 }
 
 function update(id, topic = 7, text = `synthetic task ${id}`) {
@@ -512,34 +519,86 @@ async function reportResult(client, task, text, drop = false) {
     return { task, result };
 }
 
-test("synthetic cutover preserves task identity and quarantines ambiguous effects across restart", timeout, async context => {
+test("synthetic cutover fences writers, imports the final delta, and returns a settled task", timeout, async context => {
     const client = await runFixture(context, { executor: true, inspect: true });
-    const snapshot = cutoverSnapshot();
-    assert.equal(cutoverSnapshot(), snapshot);
-    const { sha256, payload } = JSON.parse(snapshot);
-    function changedSnapshot(change) {
+    await client.agent("alpha", "hello");
+    await client.stop();
+
+    const root = await mkdtemp(join(import.meta.dirname, "build", "legacy-"));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const legacyPath = join(root, "legacy.sqlite");
+    function legacy(use, readOnly = false) {
+        const db = new DatabaseSync(legacyPath, { readOnly });
+        try {
+            return use(db);
+        } finally {
+            db.close();
+        }
+    }
+    const baseline = legacy(db => {
+        seedCutoverSource(db);
+        return cutoverSnapshot(db);
+    });
+    function changedSnapshot(snapshot, change) {
+        const { payload } = JSON.parse(snapshot);
         const fixture = JSON.parse(payload);
         change(fixture);
         const changed = JSON.stringify(fixture);
         return JSON.stringify({ sha256: createHash("sha256").update(changed).digest("hex"), payload: changed });
     }
-    await client.agent("alpha", "hello");
-    await client.restart(() => client.editLedger(db => {
+    await client.editLedger(db => {
+        const { sha256, payload } = JSON.parse(baseline);
         const invalid = [
             [JSON.stringify({ sha256, payload: `${payload} ` }), /checksum mismatch/],
-            [changedSnapshot(fixture => { fixture.version = "unsupported"; }), /unsupported fixture version/],
-            [changedSnapshot(fixture => { fixture.tasks[1].taskId = 23; }), /duplicate fixture taskId/],
-            [changedSnapshot(fixture => { fixture.tasks[0].ingress.message.message_thread_id = 99; }), /conflicting fixture route/],
+            [changedSnapshot(baseline, fixture => { fixture.version = "unsupported"; }), /unsupported fixture version/],
+            [changedSnapshot(baseline, fixture => { fixture.tasks[1].taskId = 23; }), /duplicate fixture taskId/],
+            [changedSnapshot(baseline, fixture => { fixture.tasks[0].ingress.message.message_thread_id = 99; }), /conflicting fixture route/],
         ];
         for (const [bytes, error] of invalid) assert.throws(() => importCutoverFixture(db, bytes), error);
         db.exec(`CREATE TEMP TRIGGER fail_cutover BEFORE INSERT ON outbox
                  BEGIN SELECT RAISE(ABORT, 'interrupted fixture import'); END`);
-        assert.throws(() => importCutoverFixture(db, snapshot), /interrupted fixture import/);
+        assert.throws(() => importCutoverFixture(db, baseline), /interrupted fixture import/);
         for (const table of ["inbox", "tasks", "attempts", "outbox"]) {
             assert.equal(db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get(), undefined);
         }
         db.exec("DROP TRIGGER fail_cutover");
-        assert.equal(importCutoverFixture(db, snapshot), "imported");
+        assert.equal(importCutoverFixture(db, baseline), "imported");
+        assert.equal(importCutoverFixture(db, baseline), "already imported");
+    });
+    const lastLegacy = update(205, 59, "synthetic last legacy dispatch");
+    lastLegacy.message.chat.id = 321;
+    legacy(db => appendRunningFixtureTask(db, 28, lastLegacy));
+    const frozen = legacy(db => {
+        assert.throws(() => admitLegacyFixtureUpdate(db, update(206)), /readonly/);
+        for (const write of [
+            "UPDATE scheduled_tasks SET done=1",
+            "UPDATE task_runs SET status='running' WHERE id=23",
+            "UPDATE task_payloads SET delivered=1 WHERE task_run_id=26",
+            "UPDATE task_runs SET status='completed' WHERE id=28",
+        ]) assert.throws(() => db.exec(write), /readonly/);
+        return cutoverSnapshot(db);
+    }, true);
+    const frozenEnvelope = JSON.parse(frozen);
+    const frozenPayload = JSON.parse(frozenEnvelope.payload);
+    await client.restart(() => client.editLedger(db => {
+        const wrongBaseline = changedSnapshot(baseline, fixture => { fixture.tasks.pop(); });
+        const invalid = [
+            [baseline, JSON.stringify({ ...frozenEnvelope, payload: `${frozenEnvelope.payload} ` }), /checksum mismatch/],
+            [baseline, baseline, /missing fixture delta/],
+            [baseline, changedSnapshot(frozen, fixture => { fixture.tasks.reverse(); }), /sequence must increase/],
+            [baseline, changedSnapshot(frozen, fixture => { fixture.tasks[0].error += " changed"; }), /fixture delta must append/],
+            [baseline, changedSnapshot(frozen, fixture => { fixture.tasks.at(-1).ingress.update_id = 201; }), /duplicate fixture update/],
+            [wrongBaseline, frozen, /wrong fixture baseline/],
+        ];
+        for (const [before, after, error] of invalid) assert.throws(() => importCutoverDelta(db, before, after), error);
+        db.exec(`CREATE TEMP TRIGGER fail_delta BEFORE INSERT ON attempts
+                 BEGIN SELECT RAISE(ABORT, 'interrupted fixture delta'); END`);
+        assert.throws(() => importCutoverDelta(db, baseline, frozen), /interrupted fixture delta/);
+        assert.equal(db.prepare("SELECT snapshot FROM synthetic_cutover").get().snapshot, baseline);
+        assert.equal(db.prepare("SELECT 1 FROM inbox WHERE update_id=205").get(), undefined);
+        assert.equal(db.prepare("SELECT 1 FROM tasks WHERE id='legacy:28'").get(), undefined);
+        db.exec("DROP TRIGGER fail_delta");
+        assert.equal(importCutoverDelta(db, baseline, frozen), "imported");
     }));
 
     async function quarantined() {
@@ -552,9 +611,10 @@ test("synthetic cutover preserves task identity and quarantines ambiguous effect
             { id: "legacy:25", run: 25, phase: "unknown", start_until: null, chat_id: 321, thread_id: 41, update_id: 203 },
             { id: "legacy:26", run: 26, phase: "completed", start_until: null, chat_id: 321, thread_id: 53, update_id: 202 },
             { id: "legacy:27", run: 27, phase: "completed", start_until: null, chat_id: 321, thread_id: null, update_id: 204 },
+            { id: "legacy:28", run: 28, phase: "unknown", start_until: null, chat_id: 321, thread_id: 59, update_id: 205 },
         ]);
         assert.deepEqual(await client.agent("alpha", "next"), { task: null });
-        for (const [task, attempt] of [["legacy:23", 24], ["legacy:25", 25]]) {
+        for (const [task, attempt] of [["legacy:23", 24], ["legacy:25", 25], ["legacy:28", 28]]) {
             await client.agent("alpha", "claim", { task }, 409);
             await client.agent("alpha", "start", { attempt }, 409);
             await client.wire(client.signed("alpha", signedReport(client, attempt, { kind: "started" })), 409);
@@ -562,20 +622,87 @@ test("synthetic cutover preserves task identity and quarantines ambiguous effect
         assert.deepEqual(await client.fixture("delivery_status", { task: "legacy:26" }), { phase: "unknown", sends: 1 });
         assert.deepEqual(await client.fixture("delivery_status", { task: "legacy:27" }), { phase: "unknown", sends: 0 });
         assert.equal((await client.post("telegram", update(201, 99), webhook)).disposition, "duplicate");
-        assert.deepEqual(await client.sql("SELECT snapshot FROM synthetic_cutover"), [{ snapshot }]);
+        assert.equal((await client.post("telegram", update(205, 99), webhook)).disposition, "duplicate");
+        assert.deepEqual(await client.sql("SELECT snapshot FROM synthetic_cutover"), [{ snapshot: frozen }]);
     }
     await quarantined();
-    await client.post("telegram", update(200, 37), webhook);
-    const { task } = await reportResult(client, "telegram:200", "new synthetic reply");
-    await until(async () => (await client.fixture("delivery_status", { task })).phase === "delivered", "new reply alarm");
+    assert.deepEqual(client.sends, []);
+    const ingress = update(200, 37);
+    assert.deepEqual(await client.post("telegram", ingress, webhook), { disposition: "task", task: "telegram:200" });
+    const { task, result } = await reportResult(client, "telegram:200", "new synthetic reply", true);
     await client.restart(() => client.editLedger(db => {
-        assert.equal(importCutoverFixture(db, snapshot), "already imported");
-        const conflicting = changedSnapshot(fixture => { fixture.tasks[0].ingress.message.text = "conflicting fixture"; });
-        assert.throws(() => importCutoverFixture(db, conflicting), /conflicting fixture snapshot/);
+        assert.equal(importCutoverDelta(db, baseline, frozen), "already imported");
+        const conflicting = changedSnapshot(frozen, fixture => { fixture.tasks.at(-1).ingress.message.text = "conflicting fixture"; });
+        assert.throws(() => importCutoverDelta(db, baseline, conflicting), /wrong fixture baseline/);
     }));
+    assert.equal((await client.post("telegram", update(200, 99), webhook)).disposition, "duplicate");
+    assert.deepEqual(await client.wire(client.signed("alpha", result)), { event: "result" });
+    await client.agent("alpha", "claim", { task }, 409);
+    await client.agent("alpha", "start", { attempt: JSON.parse(result.proof.payload).attempt }, 409);
     await quarantined();
+    await until(async () => (await client.fixture("delivery_status", { task })).phase === "delivered", "new reply alarm");
     assert.deepEqual(await client.fixture("delivery_status", { task }), { phase: "delivered", sends: 1, message_id: 1 });
+    await client.stop();
+    await assert.rejects(() => client.post("telegram", update(207), webhook), { code: "ECONNREFUSED" });
+    const [receipt] = await client.sql(`
+        SELECT t.id AS task,i.update_id,t.chat_id,t.thread_id,t.prompt,
+            a.id AS attempt,a.phase AS attempt_phase,e.payload,e.signature,
+            o.text,o.phase AS delivery_phase,o.sends,d.message_id
+        FROM tasks t JOIN inbox i ON t.sequence=i.sequence JOIN attempts a ON t.current_attempt=a.id
+        JOIN executor_evidence e ON a.id=e.attempt AND e.event='result'
+        JOIN outbox o ON t.id=o.task JOIN delivery_receipts d ON o.task=d.task WHERE t.id=?
+    `, task);
+    assert.equal(receipt.payload, result.proof.payload);
+    assert.equal(receipt.signature, result.proof.signature);
+    assert.deepEqual(await client.sql("SELECT id FROM attempts WHERE task=?", task), [{ id: receipt.attempt }]);
+    const publicKey = client.keys.alpha.publicKey;
+    legacy(db => {
+        assert.throws(() => returnSettledFixtureTask(db, frozen, 29, ingress,
+            { ...receipt, delivery_phase: "unknown" }, publicKey), /requires a settled/);
+        assert.throws(() => returnSettledFixtureTask(db, frozen, 29, ingress,
+            { ...receipt, signature: "00".repeat(64) }, publicKey), /invalid return result signature/);
+        assert.throws(() => returnSettledFixtureTask(db, frozen, 29, ingress,
+            { ...receipt, text: "other result" }, publicKey), /result does not match delivery/);
+        assert.throws(() => returnSettledFixtureTask(db, baseline, 29, ingress, receipt, publicKey),
+            /changed after freeze/);
+        db.exec(`CREATE TEMP TRIGGER fail_return BEFORE INSERT ON task_payloads
+                 BEGIN SELECT RAISE(ABORT, 'interrupted fixture return'); END`);
+        assert.throws(() => returnSettledFixtureTask(db, frozen, 29, ingress, receipt, publicKey),
+            /interrupted fixture return/);
+        assert.equal(cutoverSnapshot(db), frozen);
+        db.exec("DROP TRIGGER fail_return");
+        assert.equal(returnSettledFixtureTask(db, frozen, 29, ingress, receipt, publicKey), "imported");
+    });
+    legacy(db => {
+        assert.equal(returnSettledFixtureTask(db, frozen, 29, ingress, receipt, publicKey), "already imported");
+        assert.throws(() => returnSettledFixtureTask(db, baseline, 29, ingress, receipt, publicKey),
+            /conflicting fixture return/);
+        assert.equal(admitLegacyFixtureUpdate(db, update(200, 99)), "duplicate");
+        assert.equal(admitLegacyFixtureUpdate(db, update(207, 37)), "accepted");
+        assert.deepEqual({ ...db.prepare(`
+            SELECT g.state,t.current_run_id,r.status,r.result_summary,r.source_thread_id,p.delivered
+            FROM task_runs r JOIN runtime_tasks t ON t.task_id=r.id
+            JOIN telegram_ingress g ON g.update_id=r.update_id JOIN task_payloads p ON p.task_run_id=r.id
+            WHERE r.id=29
+        `).get() }, {
+            state: "done", current_run_id: 29, status: "completed", result_summary: receipt.text,
+            source_thread_id: "37", delivered: 1,
+        });
+        const { key, ...record } = JSON.parse(db.prepare("SELECT record FROM synthetic_return WHERE task_run_id=29").get().record);
+        assert.equal(key, publicKey.export({ type: "spki", format: "der" }).toString("hex"));
+        assert.deepEqual(record, { frozen: frozenEnvelope.sha256, ingress, ...receipt });
+        assert.equal(db.prepare("SELECT error_summary FROM task_runs WHERE id=24").get().error_summary,
+            "runtime restarted; outcome unknown, do not automatically retry");
+        assert.equal(db.prepare("SELECT current_run_id FROM runtime_tasks WHERE task_id=23").get().current_run_id, 24);
+    });
     assert.deepEqual(client.sends, [{ chat_id: 321, message_thread_id: 37, text: "new synthetic reply" }]);
+    context.diagnostic(JSON.stringify({
+        recordedAt: new Date().toISOString(),
+        version: frozenPayload.version,
+        baseline: JSON.parse(baseline).sha256, frozen: frozenEnvelope.sha256,
+        frozenSequence: frozenPayload.tasks.at(-1).sequence, returnedRun: 29, receipt,
+        publicKey: publicKey.export({ type: "spki", format: "der" }).toString("hex"),
+    }));
 });
 
 test("Phase 2 alarm survives a pending restart and a duplicated result with one same-topic receipt", timeout, async context => {
