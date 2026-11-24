@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:https";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -42,7 +42,10 @@ const operator = { "x-fixture-secret": "synthetic-operator" };
 const signingPrefix = "coconutclaw-v1\nlocal-fixture\nPOST\n/v1/agent\n";
 const executorPrefix = signingPrefix.replace("local-fixture", "local-executor-fixture");
 
-async function runFixture(context, { enabled = true, executor = false, inspect = false, mock } = {}) {
+async function runFixture(context, {
+    enabled = true, executor = false, inspect = false, mock, restore, generationPin,
+    keys = Object.fromEntries(["alpha", "beta"].map(device => [device, generateKeyPairSync("ed25519")])),
+} = {}) {
     const persistence = await mkdtemp(join(import.meta.dirname, "build", "sqlite-"));
     const sends = [];
     const sendTimes = [];
@@ -50,7 +53,6 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
     const log = new Log(LogLevel.INFO);
     log.log = message => logs.push(message);
     const sequence = { alpha: 0, beta: 0 };
-    const keys = Object.fromEntries(["alpha", "beta"].map(device => [device, generateKeyPairSync("ed25519")]));
     const publicHex = device => keys[device].publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
     let service;
     let url;
@@ -68,6 +70,7 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
         await stop();
         if (edit) await edit();
         generation = nextGeneration;
+        const pin = generationPin ? await generationPin() : String(generation);
         service = new Miniflare({
             host: "127.0.0.1",
             port: 0,
@@ -95,7 +98,7 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
                     publicHex(device),
                 ])),
                 ...(executor ? { EXECUTOR_ALPHA_KEY: publicHex("alpha") } : {}),
-                ...(executor && generation !== 1 ? { LOCAL_GENERATION: String(generation) } : {}),
+                ...(executor && pin !== undefined ? { LOCAL_GENERATION: pin } : {}),
                 ...(inspect ? { LOCAL_SQL_METRICS: "1" } : {}),
             },
             durableObjects,
@@ -127,7 +130,12 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
         await rm(persistence, { recursive: true, force: true });
         assert.doesNotMatch(logs.join(""), /synthetic-webhook|synthetic-operator|sensitive synthetic task/);
     });
+    if (restore) await cp(restore, persistence, { recursive: true });
     await restart();
+    async function snapshot(destination) {
+        assert.ok(stopped);
+        await cp(persistence, destination, { recursive: true, errorOnExist: true, force: false });
+    }
 
     async function rawPost(path, body, headers, chunked = false) {
         assert.ok(++calls <= (executor ? 160 : 72), "test request budget");
@@ -214,7 +222,7 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
         drainProxy = drain;
         return () => stopped;
     }
-    return { agent, fixture, post, rawPost, stop, restart, sends, sendTimes, signed, wire, keys, sql,
+    return { agent, fixture, post, rawPost, stop, restart, snapshot, sends, sendTimes, signed, wire, keys, sql,
         editLedger, ledgerPath: () => fixtureDbPath(ledgerFile), scheduledAlarm, metrics, registerProxyDrain };
 }
 
@@ -300,8 +308,8 @@ async function attachExecutor(context, client) {
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
     const origin = `https://127.0.0.1:${server.address().port}`;
-    function run(mode, behavior, endpoint = origin, generation = 1) {
-        const child = spawn(executable, ["--loopback-fixture", mode, endpoint, ca, seed, dir,
+    function run(mode, behavior, endpoint = origin, generation = 1, { journal = dir, key = seed } = {}) {
+        const child = spawn(executable, ["--loopback-fixture", mode, endpoint, ca, key, journal,
             ...(generation === 1 ? [] : ["--generation", String(generation)]), ...(behavior ? [behavior] : [])],
             { env: {}, stdio: ["ignore", "ignore", "pipe"] });
         let stderr = "";
@@ -329,8 +337,8 @@ async function attachExecutor(context, client) {
             db.close();
         }
     }
-    async function launches() {
-        const contents = await readFile(join(dir, "launches"), "utf8").catch(error => {
+    async function launches(journal = dir) {
+        const contents = await readFile(join(journal, "launches"), "utf8").catch(error => {
             if (error.code !== "ENOENT") throw error;
             return "";
         });
@@ -345,7 +353,7 @@ async function attachExecutor(context, client) {
             client.keys.alpha.publicKey, Buffer.from(proof.signature, "hex")));
         return JSON.parse(proof.payload);
     }
-    return { proxy, run, launches, proofs, verifyProof, query, packets };
+    return { proxy, run, launches, proofs, verifyProof, query, packets, dir, seed };
 }
 
 test("native executor retains result across lost receipt, reconnects, and replies in the original topic", nativeTimeout, async context => {
@@ -551,6 +559,8 @@ test("the gateway holds a legacy CLI import after restart", {
     await client.stop();
     const root = await mkdtemp(join(import.meta.dirname, "build", "archive-"));
     context.after(() => rm(root, { recursive: true, force: true }));
+    const beforeImport = join(root, "before-import");
+    await client.snapshot(beforeImport);
     const data = join(root, "source");
     const baseline = join(root, "baseline.json");
     const delta = join(root, "final.json");
@@ -600,14 +610,28 @@ test("the gateway holds a legacy CLI import after restart", {
     assert.deepEqual(await client.sql("SELECT generation,attempt_floor,active FROM local_authority"),
         [{ generation: 1, attempt_floor: 0, active: 0 }]);
     const [{ projection }] = await client.sql("SELECT CAST(projection AS TEXT) AS projection FROM local_legacy_cutover");
-    assert.match(JSON.parse(projection).task_runs[0].error_summary, /outcome unknown/);
-    assert.equal(JSON.parse(projection).telegram_ingress[0].state, "pending");
+    const archived = JSON.parse(projection);
+    assert.equal(archived.task_runs[0].id, 23);
+    assert.equal(archived.task_runs[0].error_summary, "runtime restarted; outcome unknown, do not automatically retry");
+    assert.equal(archived.telegram_ingress[0].state, "pending");
     assert.deepEqual(await client.sql(`SELECT (SELECT count(*) FROM inbox)+(SELECT count(*) FROM tasks)
         +(SELECT count(*) FROM attempts)+(SELECT count(*) FROM outbox) AS work`), [{ work: 0 }]);
     assert.deepEqual(await client.scheduledAlarm(), []);
     assert.deepEqual(client.sends, []);
     await client.stop();
     assert.equal(importArchive(), ack);
+    let pin;
+    const restored = await runFixture(context, {
+        executor: true, inspect: true, restore: beforeImport, generationPin: () => pin,
+    });
+    assert.deepEqual(await restored.sql("SELECT * FROM local_legacy_cutover"), []);
+    for (const configured of [undefined, "invalid", "0", "2"]) {
+        pin = configured;
+        await restored.restart();
+        assert.deepEqual(await restored.post("telegram", update(202), webhook, 503), { error: "inactive_generation" });
+    }
+    assert.deepEqual(await restored.sql("SELECT * FROM inbox"), []);
+    assert.deepEqual(restored.sends, []);
 });
 
 test("synthetic cutover imports the final delta and returns settled and held work", timeout, async context => {
@@ -967,6 +991,150 @@ test("synthetic cutover requires late signed terminal evidence before executor g
         "new generation same-topic reply");
     assert.deepEqual(client.sends, [{ chat_id: 321, message_thread_id: 37, text: "fixture output: synthetic task 212" }]);
     context.diagnostic(JSON.stringify({ from: 1, to: 2, oldTask, attempt, late, nextAttempt: replayedGrant.attempt }));
+});
+
+test("stale restore fences independent ledgers and executor journals after generation change", nativeTimeout, async context => {
+    const root = await mkdtemp(join(import.meta.dirname, "build", "restore-"));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const anchor = join(root, "generation");
+    const generationPin = () => readFile(anchor, "utf8");
+    async function publishGeneration(generation) {
+        const pending = `${anchor}.next`;
+        assert.equal(generation, Number(await generationPin().catch(error => {
+            if (error.code !== "ENOENT") throw error;
+            return "0";
+        })) + 1);
+        await writeFile(pending, String(generation), { mode: 0o600, flag: "wx", flush: true });
+        await rename(pending, anchor);
+        const directory = await open(root);
+        try {
+            await directory.sync();
+        } finally {
+            await directory.close();
+        }
+    }
+    await publishGeneration(1);
+    const options = { executor: true, inspect: true, generationPin };
+    const source = await runFixture(context, options);
+    const original = await attachExecutor(context, source);
+    await source.agent("alpha", "hello");
+    await source.restart(() => source.sql("UPDATE pilot_delivery SET not_before=?", Date.now() + 6000));
+    await source.post("telegram", update(214, 37), webhook);
+    const predecessor = original.run("init");
+    await until(async () => (await original.launches()).length, "predecessor launched");
+    const [oldAttempt] = await until(() => {
+        const rows = original.query("SELECT attempt FROM evidence WHERE event='result' AND acknowledged=1");
+        return rows.length && rows.map(row => row.attempt);
+    }, "predecessor terminal evidence acknowledged");
+    await predecessor.stop();
+    assert.deepEqual(await original.launches(), [oldAttempt]);
+    assert.deepEqual(await source.fixture("delivery_status", { task: "telegram:214" }), { phase: "pending", sends: 0 });
+    await source.post("telegram", update(215, 37), webhook);
+    const { last_sequence: claimFloor } = await source.agent("alpha", "hello");
+    const { attempt: heldAttempt } = await source.wire(source.signed("alpha", { op: "claim", task: "telegram:215" },
+        { seq: claimFloor + 1 }));
+    const { last_sequence: oldSequence } = await source.agent("alpha", "hello");
+    const staleStore = join(root, "stale-store");
+    const restoredJournal = join(root, "restored-journal");
+    await source.stop();
+    await source.editLedger(db => {
+        db.prepare("INSERT INTO local_authority VALUES(1,1,0,1)").run();
+        db.prepare("UPDATE attempts SET lease_until=? WHERE id=?").run(Date.now() + 30_000, heldAttempt);
+    });
+    await source.snapshot(staleStore);
+    await cp(original.dir, restoredJournal, { recursive: true });
+    const journalDb = join(restoredJournal, "executor.sqlite3");
+    const originalJournal = await readFile(journalDb);
+    const outbox = "SELECT task,phase,sends FROM outbox ORDER BY task";
+    const held = "SELECT phase,start_until FROM attempts WHERE id=?";
+    await source.editLedger(db => freezeGatewayFixture(db, 1));
+    const transfer = join(root, "frozen-transfer");
+    await source.snapshot(transfer);
+    const successor = await runFixture(context, { ...options, restore: transfer });
+    await successor.stop();
+    await successor.editLedger(db => {
+        assert.equal(advanceGatewayFixture(db, 2, source.keys.alpha.publicKey, true), "advanced");
+        db.exec("UPDATE pilot_delivery SET not_before=0");
+    });
+    await publishGeneration(2);
+    await successor.restart(undefined, 2);
+    assert.notEqual(await source.ledgerPath(), await successor.ledgerPath());
+    assert.notDeepEqual(source.keys.alpha.publicKey.export({ format: "der", type: "spki" }),
+        successor.keys.alpha.publicKey.export({ format: "der", type: "spki" }));
+    const stale = await runFixture(context, { ...options, restore: staleStore, keys: source.keys });
+    assert.notEqual(await stale.ledgerPath(), await source.ledgerPath());
+    assert.notEqual(await stale.ledgerPath(), await successor.ledgerPath());
+    assert.deepEqual(await stale.sql("SELECT generation,active FROM local_authority"), [{ generation: 1, active: 1 }]);
+    assert.deepEqual(await stale.sql(outbox), [{ task: "telegram:214", phase: "pending", sends: 0 }]);
+    assert.deepEqual(await stale.sql(held, heldAttempt), [{ phase: "claimed", start_until: null }]);
+    const budget = await stale.sql("SELECT * FROM pilot_budget");
+    const inactive = { error: "inactive_generation" };
+    assert.deepEqual(await stale.post("telegram", update(216, 37), webhook, 503), inactive);
+    assert.deepEqual(await stale.fixture("cancel", { task: "telegram:215" }, 503), inactive);
+    assert.deepEqual(await stale.wire(stale.signed("alpha", { op: "start", attempt: heldAttempt },
+        { seq: oldSequence + 1 }), 503), inactive);
+    const staleExecutor = await attachExecutor(context, stale);
+    const replies = [];
+    staleExecutor.proxy.transform = async ({ response }) => {
+        replies.push(response);
+        return response;
+    };
+    const retrying = staleExecutor.run("resume", undefined, undefined, 1, { journal: restoredJournal });
+    await until(() => replies.length >= 2, "restored executor received two stale-generation replies");
+    await retrying.stop();
+    assert.ok(replies.every(({ status, value }) => status === 503 && value.error === inactive.error));
+    assert.ok(staleExecutor.packets.every(({ command }) => command.op === "hello"));
+    const alarm = await until(() => stale.metrics().find(row => row.scope === "alarm"), "restored delivery alarm ran");
+    assert.deepEqual(stale.sends, [], "restored alarm made no mock Telegram request");
+    assert.equal(alarm.written, 0);
+    assert.deepEqual(await stale.sql(outbox), [{ task: "telegram:214", phase: "pending", sends: 0 }]);
+    assert.deepEqual(await stale.sql(held, heldAttempt), [{ phase: "claimed", start_until: null }]);
+    assert.deepEqual(await stale.sql("SELECT update_id FROM inbox ORDER BY update_id"), [{ update_id: 214 }, { update_id: 215 }]);
+    assert.deepEqual(await stale.sql("SELECT sequence FROM agent_sequences"), [{ sequence: oldSequence }]);
+    assert.deepEqual(await stale.sql("SELECT * FROM pilot_budget"), budget);
+    assert.deepEqual(await stale.sql("SELECT * FROM delivery_receipts"), []);
+
+    const current = await attachExecutor(context, successor);
+    assert.deepEqual(await successor.wire(stale.signed("alpha", { op: "hello" }), 401), { error: "unauthorized" });
+    const oldGeneration = current.run("resume", undefined, undefined, 1, {
+        journal: restoredJournal, key: original.seed,
+    });
+    assert.match(await oldGeneration.exit(1), /fixture request rejected with HTTP 401/);
+    assert.deepEqual(await readFile(journalDb), originalJournal);
+    const oldCredential = current.run("resume", undefined, undefined, 2, {
+        journal: restoredJournal, key: original.seed,
+    });
+    assert.match(await oldCredential.exit(1), /fixture request rejected with HTTP 401/);
+    assert.deepEqual(current.packets.map(({ command }) => command.op), ["hello", "hello"]);
+    assert.deepEqual(await current.launches(restoredJournal), [oldAttempt]);
+    assert.deepEqual(await readFile(join(original.dir, "executor.sqlite3")), originalJournal);
+
+    assert.equal((await successor.post("telegram", update(214, 99), webhook)).disposition, "duplicate");
+    await successor.post("telegram", update(216, 37), webhook);
+    const active = current.run("init", undefined, undefined, 2);
+    await until(async () => (await current.launches()).length, "successor launched");
+    const [result] = await until(() => {
+        const rows = current.query("SELECT attempt FROM evidence WHERE event='result' AND acknowledged=1");
+        return rows.length && rows;
+    }, "successor terminal evidence acknowledged");
+    await active.stop();
+    assert.ok(result.attempt > heldAttempt);
+    assert.deepEqual(await current.launches(), [result.attempt]);
+    await until(async () => (await successor.fixture("delivery_status", { task: "telegram:216" })).phase === "delivered",
+        "successor mock Telegram receipt committed");
+    assert.deepEqual(await successor.fixture("delivery_status", { task: "telegram:216" }),
+        { phase: "delivered", sends: 1, message_id: 1 });
+    assert.deepEqual(successor.sends, [{ chat_id: 321, message_thread_id: 37, text: "fixture output: synthetic task 216" }]);
+    assert.deepEqual(await successor.sql(outbox), [
+        { task: "telegram:214", phase: "unknown", sends: 0 },
+        { task: "telegram:216", phase: "delivered", sends: 1 },
+    ]);
+    assert.deepEqual(await successor.sql(held, heldAttempt), [{ phase: "unknown", start_until: null }]);
+    assert.deepEqual(source.sends, []);
+    context.diagnostic(JSON.stringify({
+        generation: Number(await generationPin()), staleGeneration: 1, oldAttempt, heldAttempt,
+        nextAttempt: result.attempt, staleLaunches: 0, staleSends: stale.sends.length, successorSends: successor.sends.length,
+    }));
 });
 
 test("Phase 2 alarm survives a pending restart and a duplicated result with one same-topic receipt", timeout, async context => {

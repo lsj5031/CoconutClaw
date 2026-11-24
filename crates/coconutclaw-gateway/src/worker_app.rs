@@ -1,4 +1,5 @@
 use std::cell::OnceCell;
+use std::num::NonZeroU32;
 
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -203,12 +204,16 @@ impl DurableObject for BotLedger {
 
 impl BotLedger {
     fn local_authority(&self, ledger: &Ledger) -> Result<Option<LocalAuthority>> {
-        let configured = match self.env.var("LOCAL_GENERATION") {
-            Ok(var) => var.to_string().parse::<u32>().ok(),
-            Err(_) => Some(1),
+        let Some(configured) = self
+            .env
+            .var("LOCAL_GENERATION")
+            .ok()
+            .and_then(|var| var.to_string().parse::<NonZeroU32>().ok())
+        else {
+            return Ok(None);
         };
         let durable = ledger.local_authority()?;
-        Ok((configured == Some(durable.generation)).then_some(durable))
+        Ok((configured.get() == durable.generation).then_some(durable))
     }
 
     fn ledger(&self, storage: &Storage, phase: LocalPhase, scope: &'static str) -> Result<Ledger> {

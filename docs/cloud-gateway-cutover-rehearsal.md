@@ -346,6 +346,66 @@ accepted both prebuilt artifacts in separate dry runs from
 `cloudflare.config.ts`. The gateway import test caught the `cargo mutants`
 variant that replaced receipt verification with `Ok(())`.
 
+## Stale restore rehearsal
+
+The loopback Worker requires an explicit, positive `LOCAL_GENERATION` binding.
+A missing, malformed, zero or mismatched pin denies requests with
+`503 inactive_generation` and prevents delivery alarm work. A ledger with a
+legacy archive still returns `503 legacy_cutover_held` and skips alarm work.
+The import test opens an independent pre-import backup without the archive.
+None of the four unusable pin values admits the held ingress. The intact
+archive retains the exact synthetic `#23` Unknown record, pending ingress,
+empty live work tables and the same import acknowledgment on replay.
+
+The generation test places its pin in a separate file outside the Worker and
+executor snapshots. The fixture launcher reads it at each Worker startup.
+A single fixture writer advances the pin from `1` to `2` using a flushed file,
+atomic rename and directory sync. It stops the source, freezes it under the
+existing SQLite authority row and advances a separate copy only after verifying
+the original signed terminal evidence. It stops both Workers before publishing
+the new pin, then opens the successor and the older active backup in independent
+Miniflare stores. The executor journals are also independent. The successor
+uses a fresh journal and synthetic signing key.
+
+| Probe | Observed |
+| --- | --- |
+| Restore the generation 1 store with `active=1`, a pending outbox row and a claimed attempt | Authorized Telegram ingress, fixture cancellation and a freshly signed Start return `503 inactive_generation`. The inbox, request budget, agent sequence and attempt stay unchanged, with no launch deadline issued. |
+| Wake its persisted, due delivery alarm | The alarm runs and writes zero ledger rows. The pending reply stays at zero sends with no receipt and no request to the mock Telegram endpoint. |
+| Resume the separately restored generation 1 journal against the restored Worker | TLS Hello receives `503 inactive_generation` twice. The executor never reaches Start and adds no launch or journal evidence. |
+| Point that journal at the successor with the predecessor signing key | The successor returns `401 unauthorized` on Hello with either generation. Even local adoption of generation 2 in the clean restored journal gives the old key no authority. The original journal remains byte-identical. |
+| Admit update `216` at generation 2 | The new journal launches attempt `3` once. Its signed result is acknowledged and produces one mock Telegram receipt in topic `37`. Update `214` deduplicates and its outbox remains Unknown at zero sends. Attempt `2` remains Unknown with no grant. |
+
+Run from `crates/coconutclaw-gateway` with the locally staged disabled bundle,
+the existing cache and the disk check before each build.
+
+```sh
+GATEWAY_LOCAL_EXECUTOR="$PWD/../../target/native-gateway/debug/gateway-local-executor" \
+COCONUTCLAW_CUTOVER_CLI="$PWD/../../target/native-gateway/debug/coconutclaw" \
+  node --test --test-concurrency=1 \
+  --test-name-pattern='stale restore|holds a legacy CLI import|synthetic cutover' integration.test.mjs
+```
+
+The baseline accepted update `202` on the pre-import backup when the pin was
+missing. The regression now rejects it. A `cargo mutants` change from `||` to
+`&&` in the alarm guard made the restored Worker send update `214`'s reply to
+the mock endpoint. The stale alarm assertion caught the send.
+
+On November 25, 2026, Leo-Claw passed 20 disabled-bundle tests, six
+pilot-bundle tests and 591 workspace tests with five ignored. Formatting,
+workspace Clippy, native executor Clippy and Wasm Clippy passed. Official `cf`
+validated each bundle in a separate prebuilt dry run from `cloudflare.config.ts`.
+
+The tested boundary is a stopped handoff with the current launcher pin and with
+old workers and executors quiesced before the pin advances. Worker bindings
+remain fixed for a running instance. Copies from the same generation share
+the same eligibility, and restoring the pin or booting with old deployment
+bindings can make the old ledger authoritative again. A restored executor also
+relies on trusted TLS routing to the fenced gateway. The rehearsal covers
+synthetic credentials and loopback effects. Production needs a monotonic
+authority outside both restore domains, enforced by writer startup and routing,
+with verified retirement of old deployments, unexpired grants and Telegram
+credential access before the successor can write or send.
+
 ## BigFur Readiness
 
 - Run the hosted acceptance gate on Mars with official `cf` and
@@ -355,14 +415,12 @@ variant that replaced receipt verification with `Ok(())`.
   verify `#23` directly from the authorized source. Gateway activation still
   requires a production authority transfer, a disposition for each held
   record and unresolved effect, and verification against the live gateway.
-- Prove generation and credential exclusion across independent stores and
-  stale restores. Restoring a database from before the import can remove the
-  local hold. A custody acknowledgment applies to the ledger that committed it.
-  The local executor fence relies on retaining the same ledger and executor
-  journal, and the loopback TLS trust is provisioned by the fixture.
-  A disconnected legacy runner with an unresolved `Begin` still blocks the
-  seal. It needs the original signed terminal evidence or a separately proven
-  retirement mechanism.
+- Provision and verify the production authority and credential fence described
+  in the stale restore rehearsal across independent stores, executor journals
+  and deployments. A custody acknowledgment applies to the ledger that
+  committed it. A disconnected legacy runner with an unresolved `Begin`
+  blocks the seal until it supplies the original signed terminal evidence or
+  a separately proven retirement mechanism.
 - Rehearse live failback. Fence gateway writers and reconcile ingress
   cursors, schedule watermarks, signed executor evidence and unsettled sends
   before resuming legacy consumption. Record versions, recovery time and the
