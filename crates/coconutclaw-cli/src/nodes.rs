@@ -770,6 +770,10 @@ impl Runner {
         let card = paired(&self.store, peer)?;
         ensure!(card.role == Role::Coordinator, "not coordinator");
         bundle.validate(peer, self.key.public())?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.store.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         let exists: bool = self.store.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM node_claims WHERE origin=?1)",
             [bundle.origin.hash()?],
@@ -779,6 +783,7 @@ impl Runner {
             self.evidence(bundle)?;
             return Ok(None);
         }
+        self.store.require_open_legacy_admission()?;
         ensure!(
             self.active.is_empty(),
             "runner busy; assignment not admitted"
@@ -797,6 +802,7 @@ impl Runner {
             "INSERT INTO node_claims(origin,bundle,start) VALUES(?1,?2,?3)",
             params![bundle.origin.hash()?, serde_json::to_string(bundle)?, start],
         )?;
+        tx.commit()?;
         let flag = Arc::new(AtomicBool::new(false));
         self.active.insert(bundle.origin.hash()?, flag.clone());
         Ok(Some(flag))
@@ -1038,6 +1044,9 @@ pub(crate) fn execute(
             &store.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        if store.legacy_admission_frozen()? {
+            return Ok(true);
+        }
         let source = store
             .get_task_run(run)?
             .context("remote source run absent")?;
@@ -1070,7 +1079,10 @@ pub(crate) fn execute(
     let result = transport::runtime()?.block_on(async {
         let endpoint = transport::coordinator(cfg).await?;
         async {
-            transport::call(&endpoint, &card, Request::Begin(bundle.clone())).await?;
+            let reply = transport::call(&endpoint, &card, Request::Begin(bundle.clone())).await?;
+            if accept(store, run, &bundle, reply, &cfg.timezone)? {
+                return Ok(());
+            }
             loop {
                 if cancel.load(Ordering::SeqCst)
                     || store
@@ -1131,37 +1143,59 @@ fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str
     let Reply::Evidence { start, result } = reply else {
         anyhow::bail!("runner refused evidence")
     };
-    let Some(result) = result else {
-        return Ok(false);
-    };
+    ensure!(
+        matches!(
+            SignedEvent::parse(&start)?.event.action,
+            Action::Start { assignment: 1 }
+        ),
+        "start absent"
+    );
     let history = History::replay(
         &bundle.origin,
         bundle.origin.origin.owner,
         bundle.origin.origin.namespace,
-        [bundle.assignment.clone(), start.clone(), result.clone()],
+        [bundle.assignment.clone(), start.clone()]
+            .into_iter()
+            .chain(result.iter().cloned()),
     )?;
-    let (outcome, output) = history
-        .jobs
-        .get(&1)
-        .and_then(|j| j.result.as_ref())
-        .context("result absent")?;
-    let status = match outcome {
-        Outcome::Completed => TaskRunStatus::Completed,
-        Outcome::Cancelled => TaskRunStatus::Cancelled,
-        _ => TaskRunStatus::Failed,
-    };
-    let tx = store.conn.unchecked_transaction()?;
-    store.custody_runtime_result(
+    let tx = rusqlite::Transaction::new_unchecked(
+        &store.conn,
+        rusqlite::TransactionBehavior::Immediate,
+    )?;
+    store.custody_node_receipt(
         run,
+        &bundle.origin.hash()?,
+        &bundle.assignment,
         &start,
-        &result,
-        (status, *outcome == Outcome::Unknown),
-        output,
-        &crate::iso_now(timezone),
+        result.as_deref(),
     )?;
+    if let Some(result) = &result {
+        let (outcome, output) = history
+            .jobs
+            .get(&1)
+            .and_then(|job| job.result.as_ref())
+            .context("result absent")?;
+        if !store.legacy_admission_frozen()? {
+            let status = match outcome {
+                Outcome::Completed => TaskRunStatus::Completed,
+                Outcome::Cancelled => TaskRunStatus::Cancelled,
+                _ => TaskRunStatus::Failed,
+            };
+            store.custody_runtime_result(
+                run,
+                &start,
+                result,
+                (status, *outcome == Outcome::Unknown),
+                output,
+                &crate::iso_now(timezone),
+            )?;
+        }
+    }
     tx.commit()?;
-    store.apply_runtime_results(&crate::iso_now(timezone))?;
-    Ok(true)
+    if result.is_some() {
+        store.apply_runtime_results(&crate::iso_now(timezone))?;
+    }
+    Ok(result.is_some())
 }
 async fn reconcile(cfg: &RuntimeConfig, store: &Store, run: i64) -> Result<()> {
     let json: String = store.conn.query_row(
@@ -1178,7 +1212,7 @@ async fn reconcile(cfg: &RuntimeConfig, store: &Store, run: i64) -> Result<()> {
         .context("runner absent")?;
     let card = paired(store, runner)?;
     let _instance = cfg.acquire_instance_lock()?;
-    let endpoint = transport::coordinator(cfg).await?;
+    let endpoint = transport::endpoint(key(cfg)?, local(cfg)?.card.address).await?;
     let result = async {
         let reply = transport::call(&endpoint, &card, Request::Status(bundle.clone())).await?;
         ensure!(

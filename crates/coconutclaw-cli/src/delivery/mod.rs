@@ -157,6 +157,24 @@ pub(crate) enum DeliveryKey {
     Telegram(i64),
     Notification(i64),
 }
+
+pub(crate) fn reserve_telegram_delivery(
+    store: &Store,
+    key: DeliveryKey,
+    state: &DeliveryState,
+) -> Result<bool> {
+    let tx = rusqlite::Transaction::new_unchecked(
+        &store.conn,
+        rusqlite::TransactionBehavior::Immediate,
+    )?;
+    if store.legacy_admission_frozen()? {
+        return Ok(false);
+    }
+    persist_delivery_state(store, key, state)?;
+    tx.commit()?;
+    Ok(true)
+}
+
 pub(crate) fn persist_delivery_state(
     store: &Store,
     key: DeliveryKey,
@@ -191,6 +209,9 @@ pub(crate) fn persist_delivery_state(
 /// Shares the scheduler's existing delivery lock and native durable sender.
 /// Freeze bounded candidates and release the SQLite read before any HTTP.
 pub(crate) fn deliver_notifications(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+    if store.legacy_admission_frozen()? {
+        return Ok(());
+    }
     let rows=store.conn.prepare(
         "SELECT id,target,output,delivery_state FROM runtime_notifications WHERE disposition='pending' ORDER BY id LIMIT 32")?
         .query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?

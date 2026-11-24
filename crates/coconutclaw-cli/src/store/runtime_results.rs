@@ -17,6 +17,7 @@ impl Store {
             !self.conn.is_autocommit(),
             "reservation requires assignment transaction"
         );
+        self.require_open_legacy_admission()?;
         let run = self.get_task_run(id)?.context("source run absent")?;
         let request: String = self.conn.query_row(
             "SELECT request FROM task_payloads WHERE task_run_id=?1",
@@ -54,6 +55,7 @@ impl Store {
     ) -> Result<()> {
         let (status, uncertain) = outcome;
         ensure!(!self.conn.is_autocommit(), "custody requires transaction");
+        self.require_open_legacy_admission()?;
         ensure!(
             matches!(
                 status,
@@ -89,6 +91,53 @@ impl Store {
                 uncertain,
                 output.into()
             ),
+            "remote custody conflict"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn custody_node_receipt(
+        &self,
+        id: i64,
+        origin: &str,
+        assignment: &[u8],
+        start: &[u8],
+        result: Option<&[u8]>,
+    ) -> Result<()> {
+        ensure!(!self.conn.is_autocommit(), "custody requires transaction");
+        let bound: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_remote_runs
+               WHERE task_run_id=?1 AND origin=?2 AND assignment=?3)",
+            params![id, origin, assignment],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            bound && self.runtime_result_is_literal(id)?,
+            "foreign source attempt"
+        );
+        let projected = self
+            .conn
+            .query_row(
+                "SELECT start,result FROM runtime_remote_results WHERE task_run_id=?1",
+                [id],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?;
+        if let Some((old_start, old_result)) = projected {
+            ensure!(
+                old_start == start && result.is_none_or(|result| result == old_result),
+                "remote custody conflict"
+            );
+        }
+        ensure!(
+            self.conn.execute(
+                "INSERT INTO node_signed_receipts(task_run_id,start,result) VALUES(?1,?2,?3)
+                 ON CONFLICT(task_run_id) DO UPDATE SET result=coalesce(node_signed_receipts.result,excluded.result)
+                 WHERE node_signed_receipts.start=excluded.start
+                    AND (node_signed_receipts.result IS NULL OR excluded.result IS NULL
+                         OR node_signed_receipts.result=excluded.result)",
+                params![id, start, result],
+            )? == 1,
             "remote custody conflict"
         );
         Ok(())
@@ -146,6 +195,9 @@ impl Store {
     /// acknowledgments. No provider, queue admission or HTTP occurs in this tx.
     pub(crate) fn apply_runtime_results(&self, now: &str) -> Result<usize> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        if self.legacy_admission_frozen()? {
+            return Ok(0);
+        }
         let mut stmt = self.conn.prepare(
             "SELECT c.task_run_id,c.status,c.uncertain,c.output
           FROM runtime_remote_results c JOIN runtime_remote_runs m ON m.task_run_id=c.task_run_id

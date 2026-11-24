@@ -56,6 +56,8 @@ enum Commands {
     Once(TurnArgs),
     /// Listen for Telegram requests and scheduled tasks.
     Run(TurnArgs),
+    /// Record that the frozen local runtime has stopped.
+    SealLegacyCutover,
     /// Check local setup without contacting Telegram or Codex.
     Doctor(DoctorArgs),
     /// Manage the background service for this user.
@@ -163,6 +165,9 @@ fn main() -> Result<()> {
     if let Commands::Service(args) = &command {
         return service::run_service(&cfg, &overrides, args.clone());
     }
+    if matches!(command, Commands::SealLegacyCutover) {
+        return Store::seal_legacy_cutover(&cfg);
+    }
 
     let _instance_lock = cfg.acquire_instance_lock()?;
     let mut store = Store::open(&cfg)?;
@@ -170,6 +175,7 @@ fn main() -> Result<()> {
     match command {
         Commands::Once(args) => commands::run_once(&cfg, &mut store, &args),
         Commands::Run(args) => commands::run_run(&cfg, &mut store, &args),
+        Commands::SealLegacyCutover => unreachable!("cutover seal checks execution ownership"),
         Commands::Doctor(_) => unreachable!("doctor handled before layout/lock/store setup"),
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
         Commands::ImportOpenclaw(_) => unreachable!("import handled before store setup"),

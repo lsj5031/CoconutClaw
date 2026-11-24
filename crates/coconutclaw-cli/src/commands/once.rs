@@ -11,6 +11,10 @@ pub(crate) fn run_once(
     store: &mut Store,
     args: &crate::TurnArgs,
 ) -> Result<()> {
+    anyhow::ensure!(
+        !store.legacy_admission_frozen()?,
+        "legacy admission is frozen"
+    );
     let input = crate::turn::resolve_turn_input(
         cfg,
         store,

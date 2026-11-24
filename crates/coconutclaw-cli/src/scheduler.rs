@@ -157,6 +157,7 @@ impl SessionScheduler {
         let created_at = iso_now(&self.inner.cfg.timezone);
         let store = Store::connect(&self.inner.cfg)?;
         let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+        store.require_open_legacy_admission()?;
         let key = request
             .update_id
             .as_ref()
@@ -568,6 +569,9 @@ impl SessionScheduler {
         let started_at = iso_now(&self.inner.cfg.timezone);
         {
             let tx = Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate)?;
+            if store.legacy_admission_frozen()? {
+                return Ok(TaskCompletion::WaitingRemote);
+            }
             if store.runtime_result_is_literal(task_id)? {
                 tx.commit()?;
                 return Ok(TaskCompletion::WaitingRemote);
@@ -1012,6 +1016,9 @@ impl SessionScheduler {
             else {
                 return;
             };
+            if store.require_open_legacy_admission().is_err() {
+                return;
+            }
             let Ok(blocked) = store.blocked_telegram_sessions() else {
                 return;
             };
@@ -1179,6 +1186,9 @@ impl SessionScheduler {
             return Ok(());
         }
         let store = Store::connect(&self.inner.cfg)?;
+        if store.legacy_admission_frozen()? {
+            return Ok(());
+        }
         let mut stmt = store.conn.prepare(
             "SELECT task_run_id,request,output FROM task_payloads WHERE delivered=0 AND output IS NOT NULL ORDER BY task_run_id")?;
         let rows = stmt
@@ -1210,10 +1220,13 @@ impl SessionScheduler {
     }
 
     pub(crate) fn recover(&self) -> Result<()> {
+        let store = Store::connect(&self.inner.cfg)?;
+        if store.legacy_admission_frozen()? {
+            return Ok(());
+        }
         self.inner
             .recovering
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let store = Store::connect(&self.inner.cfg)?;
         store.apply_runtime_results(&iso_now(&self.inner.cfg.timezone))?;
         crate::nodes::recover(&store, &iso_now(&self.inner.cfg.timezone))?;
         store.mark_stale_task_runs_failed(&iso_now(&self.inner.cfg.timezone))?;

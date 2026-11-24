@@ -63,6 +63,7 @@ impl Store {
     pub(crate) fn claim_telegram(&self, seq: i64) -> Result<bool> {
         Ok(self.conn.execute(
             "UPDATE telegram_ingress AS e SET state='applying' WHERE seq=?1 AND state='pending'
+             AND NOT EXISTS(SELECT 1 FROM legacy_admission_freeze)
              AND (EXISTS(SELECT 1 FROM telegram_ui_observations o WHERE o.seq=e.seq)
              OR NOT EXISTS(SELECT 1 FROM telegram_ingress older WHERE older.session_id=e.session_id
                  AND older.seq<e.seq AND (older.state IN ('pending','applying')

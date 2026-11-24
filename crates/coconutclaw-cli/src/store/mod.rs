@@ -152,17 +152,39 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    pub(crate) fn legacy_admission_frozen(&self) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM legacy_admission_freeze WHERE singleton=1)",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     pub(crate) fn require_open_legacy_admission(&self) -> Result<()> {
         ensure!(
             !self.conn.is_autocommit(),
             "legacy admission requires a write transaction"
         );
-        let frozen = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM legacy_admission_freeze WHERE singleton=1)",
-            [],
-            |row| row.get::<_, bool>(0),
+        ensure!(
+            !self.legacy_admission_frozen()?,
+            "legacy admission is frozen"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn seal_legacy_cutover(cfg: &RuntimeConfig) -> Result<()> {
+        let _owner = cfg.acquire_instance_lock()?;
+        let store = Self::connect(cfg)?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &store.conn,
+            rusqlite::TransactionBehavior::Immediate,
         )?;
-        ensure!(!frozen, "legacy admission is frozen");
+        ensure!(
+            store.legacy_admission_frozen()?,
+            "freeze legacy admission first"
+        );
+        tx.execute("INSERT OR IGNORE INTO legacy_cutover_seal VALUES(1)", [])?;
+        tx.commit()?;
         Ok(())
     }
 

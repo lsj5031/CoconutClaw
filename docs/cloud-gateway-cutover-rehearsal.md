@@ -49,15 +49,37 @@ connections.
 
 | Path | Covered | Remaining |
 | --- | --- | --- |
-| Ingress | Poll processing and the webhook reducer share `Store::admit_telegram`. The check precedes raw custody and `last_update_id` advancement. The same check rejects legacy `inflight_update_json` import before its checkpoint is cleared. | The poll loop can still fetch using the frozen cursor. A handler that already committed custody can continue through `claim_telegram` and its effects. Startup recovery and retention can still write. Local `once` and other direct `SessionScheduler::enqueue` calls bypass raw Telegram custody. |
-| Schedule materialization | `Store::due_schedule_events` checks before occurrence allocation, inbox and task creation, or any `next_due` advancement, including missed-run skips. | `create_schedule`, `edit_schedule` and `set_schedule_state` still write. An occurrence committed before the fence can still be queued and dispatched. |
-| Dispatch and Start | | `dispatch_ready` reserves a lane and releases its transaction before `spawn_task`. The worker can write `update_task_run_started` and invoke Codex. `nodes::execute` can persist a remote assignment and issue `Begin` to a runner with separate state. Runner admission and already issued Starts still need an authority and generation fence. |
-| Outbox claim and send | | `retry_deliveries` and `deliver_telegram_acks` still select and send work. The delivery plan's `sending` transition and immediate progress and callback calls are outside the fence. HTTP already issued can still take effect and return late. |
-| Result custody | | Local `persist_result` still writes. The normal remote path through `nodes::accept`, including `nodes reconcile`, verifies the signed Start and Result, commits them to `runtime_remote_results` with their `runtime_inbox` event, and can then project them through `apply_runtime_results`. Those writes still target the legacy database. Cutover needs a durable destination for late verified receipts, coverage for receipts that arrive after the final delta, and a separate guard on result projection. |
+| Ingress | `Store::admit_telegram` fences custody, cursor advancement, and legacy checkpoint import. `claim_telegram` fences new reducer claims. | The running poll loop can fetch using the frozen cursor. Already-claimed reducers and the poll loop's retention writes drain when the service stops. |
+| Schedule materialization | The freeze precedes occurrence allocation, inbox and task creation, and due-cursor advancement. The scheduler fences occurrence dispatch. | `create_schedule`, `edit_schedule` and `set_schedule_state` remain administrative writers. |
+| Dispatch and Start | `enqueue` and dependency resumption fence durable admission. `dispatch_ready` checks before reserving a lane. The worker rechecks in its durable Start transaction. `nodes::execute` checks in the assignment transaction that precedes `Begin`. `Runner::admit` checks its own database before creating a new signed Start. | A coordinator freeze cannot revoke a `Begin` whose assignment committed first. Runners have separate databases. Generation rotation and fencing disconnected runners remain open. |
+| Outbox claim and send | Task replies, ingress acknowledgments, and notifications use the shared durable sender. The freeze orders against `sending` for each rich, chunk, or media operation and the checkpoints for UI callbacks and standalone progress cleanup. The immediate ingress progress message has its own fenced `sending` write. | A reserved operation can finish after freeze, including bounded fallback after a rejected edit and cleanup attached to an acknowledged reply. Active provider progress edits drain with the started task. |
+| Result custody | `Begin` and `Status` replies through `nodes::accept`, including `nodes reconcile`, retain the verified Start and optional Result under the exact original run and assignment. Frozen receipt custody writes to `node_signed_receipts`; `apply_runtime_results` leaves the legacy projection untouched. | Already-started local tasks can persist ordinary results during drain. Late receipts require export, acknowledgment at the new authority, and continued reconciliation after final delta. The development task adapter uses its own receipt journal and has no frozen ingress into the local receipt buffer. |
 
-The fence establishes an order for the two covered database transactions. A
-final snapshot still requires stopping the remaining business writers and
-reconciling external effects already in flight.
+### Local seal
+
+Activate the existing freeze on the initialized legacy database, then stop the
+local coordinator and wait for it to exit. `coconutclaw --data-dir DATA_DIR
+seal-legacy-cutover` records the local boundary while holding the same
+instance lock as `run` and `once`. It fails while the service owns that lock
+and succeeds idempotently after release. Frozen `run` and `once` refuse
+startup before provider or Telegram calls. Keep administrative writers
+stopped for the final projection.
+
+The freeze permits effects reserved before it and the seal preserves their
+last durable evidence. Treat unfinished started runs, reserved remote
+assignments without a reconciled outcome, and `sending` operations without
+durable acknowledgment as Unknown. Preserve their original IDs, receipts,
+and send counts. Hold queued and pending work for explicit reconciliation.
+Frozen recovery neither starts queued work nor resumes sends. The seal covers
+local process ownership. HTTP already issued and work on another host can
+still complete after it.
+
+Keep the original node assignment, signing authority, and receipt buffer
+together for reconciliation. `nodes reconcile RUN_ID` can collect the exact
+signed Start before a Result exists, and repeat after restart. It sends
+`Status` only. Exact replays retain one record and conflicting evidence fails
+validation. The buffer remains writable after the seal and is outside the
+frozen business projection.
 
 Run the following from the repository root with more than 15 GiB free on both
 the checkout filesystem and `/tmp`. The existing `tmp/gateway-tools` supplies
@@ -100,6 +122,51 @@ run passed all 442 CLI unit tests, with four ignored. It stopped at
 `successful_flush_survives_external_immediate_sigkill` in `coconutclaw-sync`
 after the publisher timed out waiting for a flush acknowledgment. The same
 compiled test passed on its isolated rerun.
+
+### Local seal rehearsal
+
+The focused tests use a disposable SQLite database, a loopback Telegram
+sender, and a paired loopback runner with synthetic signing keys. One test
+freezes during an HTTP send, loses the response, and verifies across restart
+that the ambiguous send keeps its original attempt count and a second send
+stays held. Another freezes before dispatch and re-enters the worker's Start
+path with a pre-freeze request. The receipt test uses `nodes reconcile` across
+reopen and checks a late Start, late Result, exact replay, valid but conflicting
+evidence, and a separate pending projection that stays held.
+
+Use the cache settings above. Before each build, run `df -B1 . /tmp` and
+require at least 16,106,127,360 available bytes on both filesystems. Stop and
+retain the test data if either check fails or the build reports `ENOSPC`.
+
+```sh
+cargo test --offline --locked -p coconutclaw --bin coconutclaw -- --test-threads=1 \
+  legacy_cutover_ legacy_admission_ \
+  ingress_concurrent_exact_webhook_replays_share_one_control_and_reply \
+  calendar_occurrence_payload_cursor_and_inbox_roll_back_and_replay_together
+cargo test --offline --locked -p coconutclaw --test topics_rich -- \
+  --exact polling_raw_turn_recovery_excludes_reasoning_effects_in_both_crash_windows
+cargo fmt --all -- --check
+git diff --check
+cargo clippy --offline --workspace --all-targets --locked -- -D warnings
+cargo test --offline --workspace --all-targets --locked -- --test-threads=4
+```
+
+All seven focused tests and the reply-recovery regression passed. Formatting,
+diff checks, and Clippy passed. The final workspace suite passed 586 tests,
+with five ignored. The local Worker rehearsal passed using the staged bundle
+and mock transport, with synthetic task `#23` still Unknown.
+`cargo mutants` caught the `Store::custody_node_receipt` replacement with
+`Ok(())` in `legacy_cutover_reconcile`. When using the existing target cache,
+wait for the entire workspace suite before starting a mutation run. Several
+process tests relaunch their own binary.
+
+```sh
+cargo-mutants mutants --in-place --baseline skip --build-timeout 180 --timeout 30 \
+  --output "$TMPDIR" --file crates/coconutclaw-cli/src/store/runtime_results.rs \
+  --re 'replace Store::custody_node_receipt .* with Ok\(\(\)\)' \
+  -C=--offline -C=--locked --test-package coconutclaw \
+  --cargo-test-arg=--bin --cargo-test-arg=coconutclaw -- legacy_cutover_reconcile
+```
 
 ## BigFur Readiness
 

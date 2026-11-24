@@ -1014,6 +1014,264 @@ fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {
     scheduler.shutdown().unwrap();
 }
 
+#[test]
+fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() {
+    let (_core_root, core) = fixture(Role::Coordinator, 111);
+    let (_node_root, node) = fixture(Role::Runner, 112);
+    pair(&core, &node);
+    pair(&node, &core);
+    let store = Store::open(&core).unwrap();
+    let source = request();
+    let run = admit(&store, &source);
+    let other_source = TaskRequest {
+        update_id: Some("ordinary-2".into()),
+        ..source.clone()
+    };
+    let other = admit(&store, &other_source);
+    let core_key = key(&core).unwrap();
+    let node_key = key(&node).unwrap();
+    let assignment = bundle(&core_key, node_key.public(), &source.input.user_text).unwrap();
+    let tx = store.conn.unchecked_transaction().unwrap();
+    tx.execute(
+        "INSERT INTO node_assignments VALUES(?1,?2)",
+        params![run, serde_json::to_string(&assignment).unwrap()],
+    )
+    .unwrap();
+    store
+        .reserve_runtime_run(
+            run,
+            &assignment.origin.hash().unwrap(),
+            &assignment.assignment,
+        )
+        .unwrap();
+    let other_assignment = bundle(&core_key, node_key.public(), &source.input.user_text).unwrap();
+    store
+        .reserve_runtime_run(
+            other,
+            &other_assignment.origin.hash().unwrap(),
+            &other_assignment.assignment,
+        )
+        .unwrap();
+    tx.commit().unwrap();
+
+    let mut runner = Runner::open(node.clone()).unwrap();
+    let ingress = store
+        .admit_telegram("54321", "{}", Some(&source.session.id()), "fixture")
+        .unwrap();
+    runner
+        .admit(core_key.public(), &other_assignment)
+        .unwrap()
+        .unwrap();
+    runner
+        .finish(&other_assignment, Outcome::Completed, "before freeze")
+        .unwrap();
+    assert!(
+        accept(
+            &store,
+            other,
+            &other_assignment,
+            runner.evidence(&other_assignment).unwrap(),
+            "UTC"
+        )
+        .unwrap()
+    );
+    let tx = store.conn.unchecked_transaction().unwrap();
+    assert!(store.claim_telegram(ingress).unwrap());
+    store
+        .finish_telegram(
+            ingress,
+            &crate::ProcessOutcome {
+                should_ack: true,
+                update_id: Some("54321".into()),
+                chat_id: None,
+                output: None,
+                cleanup_path: None,
+                progress_message_id: None,
+            },
+        )
+        .unwrap();
+    tx.commit().unwrap();
+
+    runner
+        .admit(core_key.public(), &assignment)
+        .unwrap()
+        .unwrap();
+    let Reply::Evidence {
+        start,
+        result: None,
+    } = runner.evidence(&assignment).unwrap()
+    else {
+        panic!("missing original start");
+    };
+    let state = Arc::new(Mutex::new(runner));
+    let runtime = transport::runtime().unwrap();
+    let router = runtime.block_on(async {
+        iroh::protocol::Router::builder(
+            transport::endpoint(node_key.clone(), local(&node).unwrap().card.address)
+                .await
+                .unwrap(),
+        )
+        .accept(ALPN, transport::Handler::new(state.clone()))
+        .spawn()
+    });
+    store
+        .conn
+        .execute("INSERT INTO legacy_admission_freeze VALUES(1)", [])
+        .unwrap();
+    Store::seal_legacy_cutover(&core).unwrap();
+    let action = Args {
+        action: Command::Reconcile { run },
+    };
+    assert!(
+        super::run(&core, &action)
+            .unwrap_err()
+            .to_string()
+            .contains("runner still active")
+    );
+    let saved = |store: &Store| {
+        store
+            .conn
+            .query_row(
+                "SELECT start,result FROM node_signed_receipts WHERE task_run_id=?1",
+                [run],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(saved(&store), (start.clone(), None));
+    drop(store);
+
+    let mut runner = state.lock().unwrap();
+    runner
+        .store
+        .conn
+        .execute("INSERT INTO legacy_admission_freeze VALUES(1)", [])
+        .unwrap();
+    let foreign = bundle(&core_key, node_key.public(), "foreign attempt").unwrap();
+    assert!(
+        runner
+            .admit(core_key.public(), &foreign)
+            .unwrap_err()
+            .to_string()
+            .contains("frozen")
+    );
+    assert!(
+        runner
+            .admit(core_key.public(), &assignment)
+            .unwrap()
+            .is_none()
+    );
+    runner
+        .finish(&assignment, Outcome::Completed, "late signed output")
+        .unwrap();
+    let Reply::Evidence {
+        result: Some(result),
+        ..
+    } = runner.evidence(&assignment).unwrap()
+    else {
+        panic!("missing original result");
+    };
+    drop(runner);
+
+    let reopened = Store::connect(&core).unwrap();
+    let foreign_receipt = || Reply::Evidence {
+        start: start.clone(),
+        result: Some(result.clone()),
+    };
+    assert!(accept(&reopened, other, &assignment, foreign_receipt(), "UTC").is_err());
+    let mut corrupt = result.clone();
+    corrupt[0] ^= 1;
+    assert!(
+        accept(
+            &reopened,
+            run,
+            &assignment,
+            Reply::Evidence {
+                start: start.clone(),
+                result: Some(corrupt),
+            },
+            "UTC"
+        )
+        .is_err()
+    );
+    assert_eq!(saved(&reopened), (start.clone(), None));
+    super::run(&core, &action).unwrap();
+    super::run(&core, &action).unwrap();
+    let history = History::replay(
+        &assignment.origin,
+        core_key.public(),
+        assignment.origin.origin.namespace,
+        [assignment.assignment.clone(), start.clone()],
+    )
+    .unwrap();
+    let conflicting = SignedEvent::sign(
+        history
+            .next(
+                &assignment.origin,
+                node_key.public(),
+                Action::Result {
+                    assignment: 1,
+                    outcome: Outcome::Completed,
+                    output: "conflicting output".into(),
+                },
+            )
+            .unwrap(),
+        &node_key,
+    )
+    .unwrap()
+    .bytes()
+    .unwrap();
+    assert!(
+        accept(
+            &reopened,
+            run,
+            &assignment,
+            Reply::Evidence {
+                start: start.clone(),
+                result: Some(conflicting),
+            },
+            "UTC"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("custody conflict")
+    );
+    assert!(
+        !accept(
+            &reopened,
+            run,
+            &assignment,
+            Reply::Evidence {
+                start: start.clone(),
+                result: None,
+            },
+            "UTC"
+        )
+        .unwrap()
+    );
+    assert_eq!(saved(&reopened), (start, Some(result)));
+    assert_eq!(
+        reopened.get_task_run(run).unwrap().unwrap().status,
+        "waiting_remote"
+    );
+    let counts: (i64, i64, i64) = reopened
+        .conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM node_signed_receipts),
+                (SELECT count(*) FROM runtime_remote_results WHERE task_run_id=?1 AND state='pending'),
+                (SELECT count(*) FROM runtime_inbox WHERE kind='result' AND task_run_id=?2)",
+            [other, run],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (2, 1, 0));
+    assert_eq!(
+        reopened.get_task_run(other).unwrap().unwrap().status,
+        "waiting_remote"
+    );
+    runtime.block_on(router.shutdown()).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn cancellation_over_production_handler_stops_owned_fake_provider_once() {
