@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { generateKeyPairSync, sign, verify } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:https";
@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Log, LogLevel, Miniflare } from "miniflare";
+import { cutoverSnapshot, importCutoverFixture } from "./cutover-fixture.mjs";
 
 const { workers: { default: { bundleDir, config } } } = await readBuildOutput(import.meta.dirname);
 const { mainModule, modules } = config.manifest;
@@ -165,25 +166,32 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
     const fixture = (op, fields, status, fault) => post("fixture", { op, ...fields }, {
         ...operator, ...(fault ? { "x-fixture-fault": fault } : {}),
     }, status);
-    async function queryFixture(filePattern, query, args) {
+    async function withFixtureDb(filePattern, use) {
         assert.ok(inspect);
         const files = (await readdir(persistence, { recursive: true })).filter(file => filePattern.test(file));
         assert.equal(files.length, 1, files.join(", "));
         const db = new DatabaseSync(join(persistence, files[0]), { readOnly: !stopped });
         try {
             db.exec("PRAGMA busy_timeout=500");
-            return db.prepare(query).all(...args).map(row => ({ ...row }));
+            return use(db);
         } finally {
             db.close();
         }
     }
-    const sql = (query, ...args) => queryFixture(/[a-f0-9]{64}\.sqlite$/, query, args);
+    const ledgerFile = /[a-f0-9]{64}\.sqlite$/;
+    const queryFixture = (filePattern, query, args) =>
+        withFixtureDb(filePattern, db => db.prepare(query).all(...args).map(row => ({ ...row })));
+    const editLedger = use => {
+        assert.ok(stopped);
+        return withFixtureDb(ledgerFile, use);
+    };
+    const sql = (query, ...args) => queryFixture(ledgerFile, query, args);
     const scheduledAlarm = () => queryFixture(/metadata\.sqlite$/, "SELECT scheduled_time/1000000 AS scheduled_time FROM _cf_ALARM", []);
     function metrics() {
         return Array.from(logs.join("\n").matchAll(/pilot_sql (\w+) (\d+) (\d+) (\d+)/g),
             ([, scope, read, written, ms]) => ({ scope, read: +read, written: +written, ms: +ms }));
     }
-    return { agent, fixture, post, rawPost, restart, sends, sendTimes, signed, wire, keys, sql, scheduledAlarm, metrics };
+    return { agent, fixture, post, rawPost, restart, sends, sendTimes, signed, wire, keys, sql, editLedger, scheduledAlarm, metrics };
 }
 
 function update(id, topic = 7, text = `synthetic task ${id}`) {
@@ -486,22 +494,89 @@ async function completed(client, id, text, { drop = false } = {}) {
     return reportResult(client, `telegram:${id}`, text, drop);
 }
 
+function signedReport(client, attempt, event) {
+    const payload = JSON.stringify({ attempt, event });
+    const signature = sign(null, Buffer.from(`coconutclaw-evidence-v1\nlocal-executor-fixture\nalpha\n${payload}`),
+        client.keys.alpha.privateKey).toString("hex");
+    return { op: "report", proof: { payload, signature } };
+}
+
 async function reportResult(client, task, text, drop = false) {
     const { attempt } = await client.agent("alpha", "claim", { task });
     await client.agent("alpha", "start", { attempt });
-    function report(event) {
-        const payload = JSON.stringify({ attempt, event });
-        const signature = sign(null, Buffer.from(`coconutclaw-evidence-v1\nlocal-executor-fixture\nalpha\n${payload}`),
-            client.keys.alpha.privateKey).toString("hex");
-        return { op: "report", proof: { payload, signature } };
-    }
-    await client.wire(client.signed("alpha", report({ kind: "started" })));
-    const result = report({ kind: "result", text });
+    await client.wire(client.signed("alpha", signedReport(client, attempt, { kind: "started" })));
+    const result = signedReport(client, attempt, { kind: "result", text });
     const packet = client.signed("alpha", result);
     if (drop) Object.assign(packet.headers, operator, { "x-fixture-fault": "after_commit" });
     await client.wire(packet, drop ? 503 : 200);
     return { task, result };
 }
+
+test("synthetic cutover preserves task identity and quarantines ambiguous effects across restart", timeout, async context => {
+    const client = await runFixture(context, { executor: true, inspect: true });
+    const snapshot = cutoverSnapshot();
+    assert.equal(cutoverSnapshot(), snapshot);
+    const { sha256, payload } = JSON.parse(snapshot);
+    function changedSnapshot(change) {
+        const fixture = JSON.parse(payload);
+        change(fixture);
+        const changed = JSON.stringify(fixture);
+        return JSON.stringify({ sha256: createHash("sha256").update(changed).digest("hex"), payload: changed });
+    }
+    await client.agent("alpha", "hello");
+    await client.restart(() => client.editLedger(db => {
+        const invalid = [
+            [JSON.stringify({ sha256, payload: `${payload} ` }), /checksum mismatch/],
+            [changedSnapshot(fixture => { fixture.version = "unsupported"; }), /unsupported fixture version/],
+            [changedSnapshot(fixture => { fixture.tasks[1].taskId = 23; }), /duplicate fixture taskId/],
+            [changedSnapshot(fixture => { fixture.tasks[0].ingress.message.message_thread_id = 99; }), /conflicting fixture route/],
+        ];
+        for (const [bytes, error] of invalid) assert.throws(() => importCutoverFixture(db, bytes), error);
+        db.exec(`CREATE TEMP TRIGGER fail_cutover BEFORE INSERT ON outbox
+                 BEGIN SELECT RAISE(ABORT, 'interrupted fixture import'); END`);
+        assert.throws(() => importCutoverFixture(db, snapshot), /interrupted fixture import/);
+        for (const table of ["inbox", "tasks", "attempts", "outbox"]) {
+            assert.equal(db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get(), undefined);
+        }
+        db.exec("DROP TRIGGER fail_cutover");
+        assert.equal(importCutoverFixture(db, snapshot), "imported");
+    }));
+
+    async function quarantined() {
+        assert.deepEqual(await client.sql(`
+            SELECT t.id, a.id AS run, a.phase, a.start_until, t.chat_id, t.thread_id, i.update_id
+            FROM tasks t JOIN attempts a ON t.current_attempt=a.id JOIN inbox i ON i.sequence=t.sequence
+            WHERE t.id LIKE 'legacy:%' ORDER BY t.sequence
+        `), [
+            { id: "legacy:23", run: 24, phase: "unknown", start_until: null, chat_id: 321, thread_id: 37, update_id: 201 },
+            { id: "legacy:25", run: 25, phase: "unknown", start_until: null, chat_id: 321, thread_id: 41, update_id: 203 },
+            { id: "legacy:26", run: 26, phase: "completed", start_until: null, chat_id: 321, thread_id: 53, update_id: 202 },
+            { id: "legacy:27", run: 27, phase: "completed", start_until: null, chat_id: 321, thread_id: null, update_id: 204 },
+        ]);
+        assert.deepEqual(await client.agent("alpha", "next"), { task: null });
+        for (const [task, attempt] of [["legacy:23", 24], ["legacy:25", 25]]) {
+            await client.agent("alpha", "claim", { task }, 409);
+            await client.agent("alpha", "start", { attempt }, 409);
+            await client.wire(client.signed("alpha", signedReport(client, attempt, { kind: "started" })), 409);
+        }
+        assert.deepEqual(await client.fixture("delivery_status", { task: "legacy:26" }), { phase: "unknown", sends: 1 });
+        assert.deepEqual(await client.fixture("delivery_status", { task: "legacy:27" }), { phase: "unknown", sends: 0 });
+        assert.equal((await client.post("telegram", update(201, 99), webhook)).disposition, "duplicate");
+        assert.deepEqual(await client.sql("SELECT snapshot FROM synthetic_cutover"), [{ snapshot }]);
+    }
+    await quarantined();
+    await client.post("telegram", update(200, 37), webhook);
+    const { task } = await reportResult(client, "telegram:200", "new synthetic reply");
+    await until(async () => (await client.fixture("delivery_status", { task })).phase === "delivered", "new reply alarm");
+    await client.restart(() => client.editLedger(db => {
+        assert.equal(importCutoverFixture(db, snapshot), "already imported");
+        const conflicting = changedSnapshot(fixture => { fixture.tasks[0].ingress.message.text = "conflicting fixture"; });
+        assert.throws(() => importCutoverFixture(db, conflicting), /conflicting fixture snapshot/);
+    }));
+    await quarantined();
+    assert.deepEqual(await client.fixture("delivery_status", { task }), { phase: "delivered", sends: 1, message_id: 1 });
+    assert.deepEqual(client.sends, [{ chat_id: 321, message_thread_id: 37, text: "new synthetic reply" }]);
+});
 
 test("Phase 2 alarm survives a pending restart and a duplicated result with one same-topic receipt", timeout, async context => {
     const client = await runFixture(context, { executor: true, inspect: true });
