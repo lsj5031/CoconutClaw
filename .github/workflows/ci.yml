@@ -152,6 +152,25 @@ jobs:
             native-calendar/
           if-no-files-found: warn
 
+  gateway-phase-1:
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install pinned wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.130 --locked
+      - name: Install locked gateway dependencies
+        run: npm --prefix crates/coconutclaw-gateway ci --ignore-scripts
+      - name: Stage and exercise the gateway locally
+        run: npm --prefix crates/coconutclaw-gateway test
+      - name: Validate the prebuilt bundle with Cloudflare cf
+        run: npm --prefix crates/coconutclaw-gateway run check:cf
+
   windows-build:
     runs-on: windows-latest
     env: &windows-profile

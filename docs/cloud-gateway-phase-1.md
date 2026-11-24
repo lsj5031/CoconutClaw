@@ -1,11 +1,12 @@
 # Cloud gateway protocol v1
 
-`coconutclaw-gateway` builds a Workers Rust Wasm module. The configuration declares
-one Worker and one SQLite Durable Object class. The single synthetic Bot maps
-to the `local-fixture` object. The checked-in phase is `disabled`. The integration
-harness sets `phase1-local` and admits only HTTPS requests to `127.0.0.1`.
-The sender targets `telegram.invalid` and the harness intercepts its fetch.
-The existing polling runtime uses the same private-chat topic parser.
+`coconutclaw-gateway` builds a Workers Rust Wasm module. `cloudflare.config.ts`
+defines one Worker and one SQLite Durable Object class. The single synthetic Bot
+maps to the `local-fixture` object. The checked-in phase is `disabled`. The
+integration harness sets `phase1-local` for the enabled cases and admits only
+HTTPS requests to `127.0.0.1`. The sender targets `telegram.invalid` and the
+harness intercepts its fetch. The existing polling runtime uses the same
+private-chat topic parser.
 
 ## Wire contract
 
@@ -70,11 +71,40 @@ alarms. A scheduled task follows the same claim protocol as an inbox task.
 
 ## Local evidence
 
-Use Node 22 or later, a Rust toolchain with `wasm32-unknown-unknown`, and
-`wasm-bindgen` CLI `0.2.130` on `PATH`. Run these commands from the repository root.
+Use Node 22.18 or later (CI uses Node 24), a Rust toolchain with
+`wasm32-unknown-unknown`, and `wasm-bindgen` CLI `0.2.130` on `PATH`.
+Run these commands from the repository root.
 
 ```sh
 npm --prefix crates/coconutclaw-gateway ci --ignore-scripts
+npm --prefix crates/coconutclaw-gateway run stage
+npm --prefix crates/coconutclaw-gateway run test:config
+npm --prefix crates/coconutclaw-gateway run check:cf
+```
+
+`stage` compiles the locked Rust target, runs wasm-bindgen, and uses Cloudflare's
+config and Build Output libraries to stage `cloudflare.config.ts`, the Worker
+entrypoint, generated JavaScript modules and Wasm as prebuilt output. The
+config test checks the staged modules and disabled metadata, including the
+self-binding to the single SQLite class and the disabled public and preview
+URLs. The checked-in config is the source for both the dry run and Miniflare.
+
+`check:cf` runs `CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run` from
+the gateway directory with the locked official CLI `1.0.0-beta.5`. This beta
+reads `.cloudflare/output/v0/` with no mode recorded. Current `cf` documentation
+describes `v1`. Recheck the output format when updating the CLI and its libraries.
+The dry run validated the staged bundle and listed `BOTS` and `PHASE="disabled"`
+without credentials or network connections. It does not measure cloud quotas,
+verify account eligibility, apply a SQLite class lifecycle change, or start the
+Worker. Miniflare exercises the Worker and local SQLite. The Mars CLI and
+account checks are coordinator-owned. See the [Cloudflare CLI project commands](https://developers.cloudflare.com/cf/projects/).
+
+`cf build` and `cf dev` delegate to a configured build tool. This Rust project
+provides its own staging command and uses only the prebuilt dry-run path. Use the
+following to run the five loopback cases together with the config test and
+the Rust checks.
+
+```sh
 npm --prefix crates/coconutclaw-gateway test
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -82,8 +112,8 @@ cargo clippy -p coconutclaw-gateway --target wasm32-unknown-unknown --locked -- 
 cargo test --workspace --all-targets --locked
 ```
 
-The harness consumes the checked-in Worker entry, binding and SQLite migration
-configuration. It uses Miniflare `4.20260730.0` with workerd `1.20261123.1`.
+The harness consumes the staged modules, bindings and SQLite class declaration.
+It uses Miniflare `4.20260730.0` with workerd `1.20261123.1`.
 The newer workerd is pinned because the bundled July runtime stalled on
 workers-rs `0.9.0` requests. The test client accepts Miniflare's fixture
 certificate on loopback and generates disposable Ed25519 keys. Restart
@@ -112,7 +142,7 @@ corresponding integration assertions. They bypassed the disabled-phase gate,
 text bounds, grant requirement, claim deadline, Start deadline, send retry cap,
 or missed-run window. To repeat a variant, use
 `cargo mutants --Zmutate-file <rust-file> --list --diff --json`, apply its
-`diff` in a disposable copy, rebuild with `sh build.sh` in the gateway
+`diff` in a disposable copy, rebuild with `npm run stage` in the gateway
 directory, and run the corresponding `node --test --test-name-pattern`
 case in `integration.test.mjs`. This was a targeted sample.
 
@@ -143,7 +173,7 @@ Cloudflare's Free allowance lists 100,000 Worker requests per day and
 requests, 13,000 GB-s, five million rows read and 100,000 rows written per
 day, and 5 GB total storage with a 1 GB cap per object. These are account
 and platform limits. The local fixture caps are separate from metered use.
-The Worker bundle is roughly 280 KB gzipped for the Wasm module alone.
+The complete Worker upload is about 288 KiB gzipped in the local `cf` dry run.
 [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) · [DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) · [DO limits](https://developers.cloudflare.com/durable-objects/platform/limits/)
 
 ## Phase 2 handoff

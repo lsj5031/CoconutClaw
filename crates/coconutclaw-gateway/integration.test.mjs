@@ -1,14 +1,34 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { request } from "node:https";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Log, LogLevel, Miniflare } from "miniflare";
-import { parse } from "smol-toml";
 
-const config = parse(await readFile(new URL("wrangler.toml", import.meta.url), "utf8"));
+const { workers: { default: { bundleDir, config } } } = await readBuildOutput(import.meta.dirname);
+const { mainModule, modules } = config.manifest;
+const moduleTypes = { esm: "ESModule", wasm: "CompiledWasm" };
+const workerModules = [mainModule, ...Object.keys(modules).filter(name => name !== mainModule)].map(name => ({
+    path: join(bundleDir, name),
+    type: moduleTypes[modules[name].type],
+}));
+const variables = {};
+const durableObjects = {};
+for (const [name, binding] of Object.entries(config.env)) {
+    if (binding.type === "text") {
+        variables[name] = binding.value;
+    } else {
+        assert.equal(binding.type, "durable-object");
+        assert.equal(binding.worker, config.name);
+        durableObjects[name] = {
+            className: binding.exportName,
+            useSQLite: config.exports[binding.exportName].storage === "sqlite",
+        };
+    }
+}
 const webhook = { "x-telegram-bot-api-secret-token": "synthetic-webhook" };
 const operator = { "x-fixture-secret": "synthetic-operator" };
 const keys = Object.fromEntries(["alpha", "beta"].map(device => [device, generateKeyPairSync("ed25519")]));
@@ -39,16 +59,12 @@ async function runFixture(context, { enabled = true } = {}) {
                     stream.on("data", chunk => logs.push(chunk));
                 }
             },
-            modules: true,
-            modulesRoot: import.meta.dirname,
-            modulesRules: [
-                { type: "ESModule", include: ["build/worker/**/*.js"] },
-                { type: "CompiledWasm", include: ["**/*.wasm"] },
-            ],
-            scriptPath: join(import.meta.dirname, config.main),
-            compatibilityDate: config.compatibility_date,
+            modules: workerModules,
+            modulesRoot: bundleDir,
+            compatibilityDate: config.compatibilityDate,
+            compatibilityFlags: config.compatibilityFlags,
             bindings: {
-                ...config.vars,
+                ...variables,
                 ...(enabled ? { PHASE: "phase1-local" } : {}),
                 WEBHOOK_SECRET: webhook["x-telegram-bot-api-secret-token"],
                 FIXTURE_SECRET: operator["x-fixture-secret"],
@@ -57,13 +73,7 @@ async function runFixture(context, { enabled = true } = {}) {
                     pair.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"),
                 ])),
             },
-            durableObjects: Object.fromEntries(config.durable_objects.bindings.map(binding => [
-                binding.name,
-                {
-                    className: binding.class_name,
-                    useSQLite: config.migrations[0].new_sqlite_classes.includes(binding.class_name),
-                },
-            ])),
+            durableObjects,
             durableObjectsPersist: persistence,
             outboundService: async req => {
                 assert.equal(req.url, "https://telegram.invalid/sendMessage");
