@@ -11,6 +11,10 @@ use crate::protocol::{Agent, CancelEvidence, Command, Device, LEASE_MS, Phase, S
 
 #[derive(Clone, Copy)]
 pub enum Execution<'a> {
+    Cutover {
+        instance: &'a str,
+        valid_until: i64,
+    },
     Local {
         instance: &'a str,
         reconcile_only: bool,
@@ -50,6 +54,13 @@ impl Reply {
 
     pub fn error(status: u16, code: &'static str) -> Self {
         Self(status, json!({"error": code}))
+    }
+
+    pub fn authority_deadline(mut self, until: i64) -> Self {
+        if self.0 == 200 {
+            self.1["authority_valid_until"] = json!(until);
+        }
+        self
     }
 
     pub fn response(self) -> Result<Response> {
@@ -173,6 +184,17 @@ impl Ledger {
 
     pub fn initialize_local_cutover(&self) -> Result<()> {
         self.initialize_schema(include_str!("local-cutover.sql"))
+    }
+
+    pub fn initialize_cutover_custody(&self) -> Result<()> {
+        self.write(
+            "CREATE TABLE IF NOT EXISTS cutover_custody (
+                slot INTEGER PRIMARY KEY CHECK (slot = 1) REFERENCES local_legacy_cutover(slot),
+                generation INTEGER NOT NULL CHECK (generation >= 1),
+                digest TEXT NOT NULL CHECK (length(digest) = 64)
+            ) STRICT",
+            [],
+        )
     }
 
     fn initialize_schema(&self, schema: &str) -> Result<()> {
@@ -427,6 +449,30 @@ impl Ledger {
             }))
     }
 
+    pub fn cutover_authority(
+        &self,
+        generation: u32,
+        digest: &str,
+    ) -> Result<Option<LocalAuthority>> {
+        self.row(
+            "SELECT a.generation,a.attempt_floor,a.active FROM local_authority a
+             JOIN cutover_custody c ON c.slot=a.slot AND c.generation=a.generation
+             JOIN local_legacy_cutover l ON l.slot=a.slot
+             WHERE a.slot=1 AND a.active=1 AND a.generation=? AND c.digest=?",
+            [i64::from(generation).into(), digest.into()],
+        )
+    }
+
+    pub fn grant_current(&self, attempt: i64, now: i64) -> Result<bool> {
+        Ok(self
+            .number(
+                "SELECT id AS value FROM attempts
+             WHERE id=? AND phase='authorized' AND cancel_requested=0 AND start_until>?",
+                [attempt.into(), now.into()],
+            )?
+            .is_some())
+    }
+
     pub fn mutate_agent(
         &self,
         agent: Agent,
@@ -462,20 +508,28 @@ impl Ledger {
                 }
                 let until = match row.phase {
                     Phase::Claimed if row.lease_until > now => {
-                        let until = now + if executor { 5000 } else { START_MS };
+                        let until = match execution {
+                            Some(Execution::Cutover { valid_until, .. }) => valid_until,
+                            _ => now + if executor { 5000 } else { START_MS },
+                        };
                         self.write(
                             "UPDATE attempts SET phase='authorized',start_until=? WHERE id=?",
                             [until.into(), attempt.into()],
                         )?;
                         until
                     }
-                    Phase::Authorized if row.start_until.is_some_and(|until| until > now) => {
+                    Phase::Authorized
+                        if !matches!(execution, Some(Execution::Cutover { .. }))
+                            && row.start_until.is_some_and(|until| until > now) =>
+                    {
                         row.start_until.ok_or("missing start deadline")?
                     }
                     _ => return Ok(conflict()),
                 };
                 Ok(Reply::ok(match execution {
-                    Some(Execution::Local { instance, .. }) => json!(Grant {
+                    Some(
+                        Execution::Local { instance, .. } | Execution::Cutover { instance, .. },
+                    ) => json!(Grant {
                         instance: instance.to_owned(),
                         attempt,
                         start_until: until,
@@ -501,6 +555,9 @@ impl Ledger {
                     ),
                 )?;
                 if queued {
+                    if matches!(execution, Some(Execution::Cutover { .. })) {
+                        self.initialize_delivery()?;
+                    }
                     alarm = self.arm_delivery(storage, now, now)?;
                 }
                 Ok(reply)
@@ -838,8 +895,12 @@ impl Ledger {
         {
             return Ok(None);
         }
-        self.write("INSERT INTO pilot_delivery VALUES(1,0)", [])?;
+        self.initialize_delivery()?;
         self.arm_delivery(storage, now, now)
+    }
+
+    fn initialize_delivery(&self) -> Result<()> {
+        self.write("INSERT OR IGNORE INTO pilot_delivery VALUES(1,0)", [])
     }
 
     pub fn wake_delivery(

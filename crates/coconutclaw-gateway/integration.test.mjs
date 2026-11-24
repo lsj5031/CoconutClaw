@@ -11,6 +11,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Log, LogLevel, Miniflare } from "miniflare";
 import { checkAuthorityHandoff } from "./authority-preflight.mjs";
+import { authorityFixture, bearer, hostname, origin } from "./runtime-authority-fixture.mjs";
 import {
     admitLegacyFixtureUpdate, advanceGatewayFixture, appendRunningFixtureTask, cutoverSnapshot,
     freezeGatewayFixture, importCutoverDelta,
@@ -44,7 +45,7 @@ const signingPrefix = "coconutclaw-v1\nlocal-fixture\nPOST\n/v1/agent\n";
 const executorPrefix = signingPrefix.replace("local-fixture", "local-executor-fixture");
 
 async function runFixture(context, {
-    enabled = true, executor = false, inspect = false, mock, restore, generationPin,
+    enabled = true, executor = false, inspect = false, mock, restore, generationPin, cutover,
     keys = Object.fromEntries(["alpha", "beta"].map(device => [device, generateKeyPairSync("ed25519")])),
 } = {}) {
     const persistence = await mkdtemp(join(import.meta.dirname, "build", "sqlite-"));
@@ -101,10 +102,19 @@ async function runFixture(context, {
                 ...(executor ? { EXECUTOR_ALPHA_KEY: publicHex("alpha") } : {}),
                 ...(executor && pin !== undefined ? { LOCAL_GENERATION: pin } : {}),
                 ...(inspect ? { LOCAL_SQL_METRICS: "1" } : {}),
+                ...(cutover ? {
+                    PHASE: "phase2-cutover",
+                    CUTOVER_TARGET: JSON.stringify(cutover.target?.pin ?? {}),
+                    CF_VERSION_METADATA: { id: cutover.versionId ?? cutover.target?.versionId ?? "unset" },
+                    CUTOVER_AUTHORITY_ORIGIN: origin,
+                    CUTOVER_AUTHORITY_BEARER: bearer,
+                    CUTOVER_CANCEL_SECRET: operator["x-fixture-secret"],
+                } : {}),
             },
             durableObjects,
             durableObjectsPersist: persistence,
             outboundService: async req => {
+                if (cutover) return cutover.fetch(req);
                 assert.equal(req.url, "https://telegram.invalid/sendMessage");
                 assert.equal(req.method, "POST");
                 const body = await req.json();
@@ -141,6 +151,12 @@ async function runFixture(context, {
     async function rawPost(path, body, headers, chunked = false) {
         assert.ok(++calls <= (executor ? 160 : 72), "test request budget");
         const bytes = typeof body === "string" ? body : JSON.stringify(body);
+        if (cutover) {
+            const res = await service.dispatchFetch(`https://${hostname}/v1/${path}`, {
+                method: "POST", headers, body: bytes,
+            });
+            return { status: res.status, headers: res.headers, value: await res.json() };
+        }
         const response = await new Promise((resolve, reject) => {
             const req = request(new URL(`/v1/${path}`, url), {
                 method: "POST",
@@ -176,13 +192,20 @@ async function runFixture(context, {
 
     async function directIngress(objectName, update) {
         const bots = await service.getDurableObjectNamespace("BOTS");
-        return bots.get(bots.idFromName(objectName)).fetch(new URL("/v1/telegram", url), {
+        const requestOrigin = cutover ? `https://${hostname}/` : url;
+        return bots.get(bots.idFromName(objectName)).fetch(new URL("/v1/telegram", requestOrigin), {
             method: "POST", headers: webhook, body: JSON.stringify(update),
         });
     }
 
+    async function objectId(name) {
+        return (await service.getDurableObjectNamespace("BOTS")).idFromName(name).toString();
+    }
+
     function signed(device, command, { at = Date.now(), prefix, seq } = {}) {
-        prefix ??= executor
+        prefix ??= cutover
+            ? `coconutclaw-v1\nbigfur:${cutover.target.pin.generation}:${cutover.target.pin.objectId}\nPOST\n/v1/agent\n`
+            : executor
             ? (generation === 1 ? executorPrefix : executorPrefix.replace("fixture\n", `fixture:${generation}\n`))
             : signingPrefix;
         const mutating = !["hello", "next", "status"].includes(command.op);
@@ -190,7 +213,10 @@ async function runFixture(context, {
             device, at_ms: at, sequence: seq ?? (mutating ? ++sequence[device] : 0), command,
         });
         const signature = sign(null, Buffer.from(prefix + body), keys[device].privateKey).toString("hex");
-        return { body, headers: { "x-agent-signature": signature } };
+        return { body, headers: {
+            "x-agent-signature": signature,
+            ...(cutover ? { "x-executor-incarnation": cutover.runner } : {}),
+        } };
     }
 
     const wire = (packet, status) => post("agent", packet.body, packet.headers, status);
@@ -213,14 +239,16 @@ async function runFixture(context, {
             db.close();
         }
     }
-    const ledgerFile = /[a-f0-9]{64}\.sqlite$/;
+    const ledgerFile = () => cutover
+        ? new RegExp(`/${cutover.target.pin.objectId}\\.sqlite$`)
+        : /[a-f0-9]{64}\.sqlite$/;
     const queryFixture = (filePattern, query, args) =>
         withFixtureDb(filePattern, db => db.prepare(query).all(...args).map(row => ({ ...row })));
     const editLedger = use => {
         assert.ok(stopped);
-        return withFixtureDb(ledgerFile, use);
+        return withFixtureDb(ledgerFile(), use);
     };
-    const sql = (query, ...args) => queryFixture(ledgerFile, query, args);
+    const sql = (query, ...args) => queryFixture(ledgerFile(), query, args);
     const scheduledAlarm = () => queryFixture(/metadata\.sqlite$/, "SELECT scheduled_time/1000000 AS scheduled_time FROM _cf_ALARM", []);
     function metrics() {
         return Array.from(logs.join("\n").matchAll(/pilot_sql (\w+) (\d+) (\d+) (\d+)/g),
@@ -230,8 +258,8 @@ async function runFixture(context, {
         drainProxy = drain;
         return () => stopped;
     }
-    return { agent, fixture, post, rawPost, directIngress, stop, restart, snapshot, sends, sendTimes, signed, wire, keys, sql,
-        editLedger, ledgerPath: () => fixtureDbPath(ledgerFile), scheduledAlarm, metrics, registerProxyDrain };
+    return { agent, fixture, post, rawPost, directIngress, objectId, stop, restart, snapshot, sends, sendTimes, signed, wire, keys, sql,
+        editLedger, ledgerPath: () => fixtureDbPath(ledgerFile()), scheduledAlarm, metrics, registerProxyDrain };
 }
 
 function update(id, topic = 7, text = `synthetic task ${id}`) {
@@ -1082,7 +1110,7 @@ test("stale restore fences independent ledgers and executor journals after gener
             generation: 1,
             writers: "synthetic/stopped-predecessor",
             executorGrants: "synthetic/terminal-proof",
-            telegram: "synthetic/isolated-mock",
+            telegram: { disposition: "exclusive-existing-token", evidence: "synthetic/isolated-mock" },
             custody: "synthetic/frozen-transfer",
         },
     };
@@ -1347,6 +1375,187 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
         assert.ok(row.read <= 320 && row.written <= 40, JSON.stringify(row));
     }
     assert.ok(warmSamples.every(row => row.written <= 10), "warm writes stay below 10 rows per operation");
+});
+
+test("BigFur authority fences restored writers and is checked at effect boundaries", timeout, async context => {
+    const external = await mkdtemp(join(import.meta.dirname, "build", "authority-"));
+    const controlFile = join(external, "control.sqlite");
+    let mock = authorityFixture(controlFile);
+    context.after(async () => {
+        mock.close();
+        await rm(external, { recursive: true, force: true });
+    });
+    const objectName = "hosted-synthetic-pilot";
+    const digest = "b".repeat(64);
+    const oldRunner = "c".repeat(64);
+    const runner = "d".repeat(64);
+    const cutover = { fetch: request => mock.fetch(request), runner };
+    const client = await runFixture(context, { inspect: true, cutover });
+    const objectId = await client.objectId(objectName);
+    const setTarget = generation => {
+        cutover.target = {
+            pin: {
+                generation, revision: "e".repeat(40), hostname, objectId, custodyDigest: digest,
+                telegramCredentialVersion: "synthetic-existing-token",
+                executorKey: client.keys.alpha.publicKey.export({ format: "der", type: "spki" })
+                    .subarray(-32).toString("hex"),
+            },
+            versionId: `synthetic-worker-${generation}`,
+        };
+    };
+    const held = { error: "legacy_cutover_held" };
+    const inactive = { error: "inactive_generation" };
+    const ingress = (id, status = 200) => client.post("telegram", update(id, 37), webhook, status);
+    const cancel = (task, status = 200) => client.post("cancel", { task }, {
+        "x-cutover-operator": operator["x-fixture-secret"],
+    }, status);
+    setTarget(1);
+    await client.restart();
+    const oldTarget = cutover.target;
+    assert.deepEqual(await ingress(41, 503), inactive);
+    assert.ok(mock.checks.length, "authority received the preparation request");
+    mock.publish(oldTarget, mock.checks.at(-1).objectIncarnation, oldRunner);
+    assert.deepEqual(await ingress(41, 503), held);
+    const originalUnknown = { id: 23, run: 24, topic: 37, outcome: "Unknown" };
+    mock.retire();
+    await client.stop();
+    const seed = join(import.meta.dirname, "build", "authority-seed-");
+    const snapshotRoot = await mkdtemp(seed);
+    context.after(() => rm(snapshotRoot, { recursive: true, force: true }));
+    await client.editLedger(db => {
+        db.exec("INSERT INTO local_authority VALUES(1,2,0,1)");
+        db.prepare("INSERT INTO local_legacy_cutover VALUES(1,?,?,?)").run(
+            Buffer.from("synthetic baseline"), Buffer.from("synthetic delta"),
+            Buffer.from(JSON.stringify(originalUnknown)),
+        );
+        db.prepare("INSERT INTO cutover_custody VALUES(1,2,?)").run(digest);
+    });
+    const saved = join(snapshotRoot, "before");
+    await client.snapshot(saved);
+    setTarget(2);
+    await client.restart();
+    assert.deepEqual(await ingress(42, 503), inactive);
+    const activeIncarnation = mock.checks.at(-1).objectIncarnation;
+    mock.publish(cutover.target, activeIncarnation, runner);
+    mock.close();
+    mock = authorityFixture(controlFile);
+    assert.throws(() => mock.publish(cutover.target, activeIncarnation, runner));
+    assert.throws(() => mock.publish(oldTarget, activeIncarnation, oldRunner));
+
+    for (const [field, bad] of [
+        ["highWater", 1], ["nonce", "replayed"], ["validUntil", Date.now() - 1000],
+        ["objectIncarnation", "other-object-process"],
+        ["target", { ...cutover.target, versionId: "older-version" }],
+    ]) {
+        mock.beforeReply = response => Response.json({ ...response, [field]: bad });
+        assert.deepEqual(await ingress(42, 503), inactive, field);
+    }
+    mock.beforeReply = () => Response.error();
+    assert.deepEqual(await ingress(42, 503), inactive);
+    mock.beforeReply = undefined;
+    assert.deepEqual(await client.sql("SELECT update_id FROM inbox"), []);
+    assert.equal((await client.directIngress("other-object", update(42))).status, 404);
+    await client.post("fixture", { op: "cancel", task: "telegram:42" }, operator, 404);
+    assert.equal((await ingress(42)).disposition, "task");
+    const hello = await client.agent("alpha", "hello");
+    assert.equal(hello.instance, `bigfur:2:${objectId}`);
+    const task = "telegram:42";
+    const { attempt } = await client.agent("alpha", "claim", { task });
+
+    const restored = await runFixture(context, {
+        inspect: true, restore: saved, keys: client.keys, cutover: { ...cutover },
+    });
+    assert.deepEqual(await restored.post("telegram", update(42), webhook, 503), inactive);
+    assert.notEqual(mock.checks.at(-1).objectIncarnation, activeIncarnation);
+    assert.deepEqual(await restored.agent("alpha", "start", { attempt }, 503), inactive);
+    const staleDeployment = { ...cutover, versionId: oldTarget.versionId };
+    const staleVersion = await runFixture(context, {
+        restore: saved, keys: client.keys, cutover: staleDeployment,
+    });
+    assert.deepEqual(await staleVersion.post("telegram", update(42), webhook, 503), inactive);
+    assert.equal(mock.checks.at(-1).target.versionId, oldTarget.versionId);
+    staleDeployment.target = oldTarget;
+    await staleVersion.restart();
+    assert.deepEqual(await staleVersion.post("telegram", update(42), webhook, 503), inactive);
+    assert.equal(mock.checks.at(-1).target.pin.generation, 1);
+    const start = client.signed("alpha", { op: "start", attempt });
+    assert.deepEqual(await client.wire({
+        ...start, headers: { ...start.headers, "x-executor-incarnation": oldRunner },
+    }, 503), inactive);
+    assert.deepEqual(await client.wire({ ...start, headers: {} }, 503), inactive);
+    assert.deepEqual(await client.sql("SELECT phase,start_until FROM attempts"), [
+        { phase: "claimed", start_until: null },
+    ]);
+
+    let checks = 0;
+    const failCheck = ordinal => {
+        checks = 0;
+        mock.beforeReply = () => ++checks === ordinal ? new Response(null, { status: 503 }) : undefined;
+    };
+    failCheck(2);
+    assert.deepEqual(await ingress(43, 503), inactive);
+    assert.deepEqual(await client.sql("SELECT update_id FROM inbox"), [{ update_id: 42 }]);
+    failCheck(2);
+    assert.deepEqual(await cancel(task, 503), inactive);
+    assert.deepEqual(await client.sql("SELECT phase,cancel_requested FROM attempts"), [
+        { phase: "claimed", cancel_requested: 0 },
+    ]);
+    failCheck(2);
+    assert.deepEqual(await client.wire(start, 503), inactive);
+    assert.deepEqual(await client.sql("SELECT phase,start_until FROM attempts"), [
+        { phase: "claimed", start_until: null },
+    ]);
+    mock.beforeReply = undefined;
+    const grant = await client.wire(start);
+    assert.equal(grant.instance, hello.instance);
+    assert.ok(grant.start_until > Date.now());
+    assert.ok(grant.authority_valid_until > Date.now());
+    assert.deepEqual(await client.agent("alpha", "start", { attempt }, 409), { error: "state_conflict" });
+    const proof = (attempt, event) => {
+        const payload = JSON.stringify({ attempt, event });
+        const message = `coconutclaw-evidence-v1\n${hello.instance}\nalpha\n${payload}`;
+        return { payload, signature: sign(null, Buffer.from(message), client.keys.alpha.privateKey).toString("hex") };
+    };
+    const report = (attempt, event, status) => client.agent("alpha", "report", { proof: proof(attempt, event) }, status);
+    await report(attempt, { kind: "started" });
+    await report(attempt, { kind: "result", text: "same topic" });
+    await until(async () => (await client.sql("SELECT message_id FROM delivery_receipts")).length,
+        "authority sends and durably records the receipt");
+    const delivered = [{ task, sendNumber: 1, chatId: 321, messageThreadId: 37, text: "same topic" }];
+    assert.deepEqual(mock.sends, delivered);
+
+    await ingress(43);
+    const lost = await client.agent("alpha", "claim", { task: "telegram:43" });
+    failCheck(3);
+    assert.deepEqual(await client.agent("alpha", "start", { attempt: lost.attempt }, 503), inactive);
+    mock.beforeReply = undefined;
+    assert.deepEqual(await client.agent("alpha", "start", { attempt: lost.attempt }, 409), { error: "state_conflict" });
+    assert.equal((await client.agent("alpha", "status", { attempt: lost.attempt })).phase, "authorized");
+    await report(lost.attempt, { kind: "unknown" });
+
+    await ingress(44);
+    const interrupted = await client.agent("alpha", "claim", { task: "telegram:44" });
+    await client.agent("alpha", "start", { attempt: interrupted.attempt });
+    await report(interrupted.attempt, { kind: "started" });
+    mock.beforeSend = () => mock.retire();
+    await report(interrupted.attempt, { kind: "result", text: "reservation without egress" }, [200, 503]);
+    await until(() => mock.current.closed, "revoke between reservation and Telegram boundary");
+    assert.deepEqual(mock.sends, delivered);
+    const interruptedDelivery = () => client.sql("SELECT phase,sends FROM outbox WHERE task='telegram:44'");
+    assert.deepEqual(await interruptedDelivery(), [{ phase: "in_flight", sends: 1 }]);
+    assert.deepEqual(await ingress(45, 503), inactive);
+    assert.deepEqual(await cancel(task, 503), inactive);
+    assert.deepEqual(await client.agent("alpha", "start", { attempt }, 503), inactive);
+    const [{ projection }] = await client.sql("SELECT projection FROM local_legacy_cutover");
+    assert.deepEqual(JSON.parse(Buffer.from(projection)), originalUnknown);
+    await client.stop();
+    await client.restart();
+    assert.deepEqual(await ingress(45, 503), inactive);
+    const afterReopen = mock.checks.length;
+    await until(() => mock.checks.slice(afterReopen).some(check => check.runnerIncarnation === null),
+        "a persisted delivery alarm reaches the authority gate");
+    assert.deepEqual(await interruptedDelivery(), [{ phase: "in_flight", sends: 1 }]);
+    assert.deepEqual(mock.sends, delivered);
 });
 
 test("checked-in phase gate disables webhook, agent and fixture routes", timeout, async context => {

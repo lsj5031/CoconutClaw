@@ -27,10 +27,14 @@ export function checkAuthorityHandoff(current, candidate) {
     if (retirement?.generation !== candidate.generation - 1) {
         throw new Error("missing or mismatched predecessor generation");
     }
-    for (const field of ["writers", "executorGrants", "telegram", "custody"]) {
+    for (const field of ["writers", "executorGrants", "custody"]) {
         if (!reference(retirement[field])) {
             throw new Error(`missing independently verified evidence: ${field}`);
         }
+    }
+    if (!["exclusive-existing-token", "issuer-invalidated"].includes(retirement.telegram?.disposition)
+        || !reference(retirement.telegram?.evidence)) {
+        throw new Error("missing independently verified evidence: telegram");
     }
     return candidate.generation;
 }

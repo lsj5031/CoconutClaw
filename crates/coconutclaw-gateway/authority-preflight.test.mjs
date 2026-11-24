@@ -21,13 +21,21 @@ const retirement = {
     generation: 1,
     writers: "evidence/writers",
     executorGrants: "evidence/executor",
-    telegram: "evidence/telegram",
+    telegram: { disposition: "exclusive-existing-token", evidence: "evidence/telegram" },
     custody: "evidence/custody",
 };
 const current = { target, retirement };
 
 test("preflight binds the candidate to the current target and complete predecessor evidence", () => {
     assert.equal(checkAuthorityHandoff(current, { ...target }), 2);
+    for (const disposition of ["exclusive-existing-token", "issuer-invalidated"]) {
+        const telegram = { ...retirement.telegram, disposition };
+        assert.equal(checkAuthorityHandoff({ target, retirement: { ...retirement, telegram } }, target), 2);
+    }
+    const incompleteTelegram = { disposition: "exclusive-existing-token" };
+    assert.throws(() => checkAuthorityHandoff({
+        target, retirement: { ...retirement, telegram: incompleteTelegram },
+    }, target), /missing independently verified evidence: telegram/);
     for (const [field, different] of Object.entries({
         generation: 1,
         revision: "e".repeat(40),

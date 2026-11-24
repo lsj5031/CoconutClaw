@@ -429,7 +429,7 @@ generation and makes no runtime changes.
 | --- | --- |
 | `writers` | Record the legacy freeze and terminal writer acknowledgments. Identify the account, Worker, deployment and version IDs, DO namespace/object, hosts/routes and bindings. Show that the old version has no traffic or callable route, including preview URLs, direct routes and service bindings, that old alarms and in-flight handlers are stopped or safely accounted for, and that restore and deploy principals cannot reactivate retired writers outside the handoff procedure. Verify the only destination for both webhook and executor TLS traffic is the chosen version and object. Record negative probes of the retired paths and controls. |
 | `executorGrants` | Inventory every runner and outstanding grant. Preserve original signed terminal evidence, or prove exclusion of the old runner and expiry of its last possible launch authorization at a trusted clock, including skew. Keep possible prior launches Unknown until reconciled. Account for disconnected runners and downstream authorities, and verify the successor rejects predecessor keys and generation-scoped requests. |
-| `telegram` | Record issuer-confirmed invalidation of the old Bot token for API and file access, exclusive custody of the replacement version, and verification of the exact HTTPS webhook and new webhook secret. Include intermediary access and pre-revocation requests or queued deliveries in reconciliation. |
+| `telegram` | Supply `{disposition, evidence}`. Use `exclusive-existing-token` after proving exclusive host-side custody of the existing Bot token, or `issuer-invalidated` after verifying the old token is invalid for API and file access and recording exclusive custody of the replacement. Both branches require verification of the exact HTTPS webhook, a distinct successor webhook secret, and reconciliation of intermediary access, outstanding requests and queued updates. |
 | `custody` | Bind the frozen baseline, final delta, import acknowledgment, ledger identity and rechecked ingress/schedule watermarks to the candidate manifest digest. Record possible lost acknowledged updates and the disposition of each held attempt or delivery. Verify the original production `#23` record and preserve Unknown. Keep ambiguous work held for reconciliation. |
 
 The checker compares identifiers and requires references. The operator must
@@ -452,9 +452,7 @@ Missing or malformed pins stop loopback ingress before DO forwarding and
 stop the DO before ledger initialization on direct requests and alarms.
 Requests for an unrecognized hostname or object are rejected. The checked-in
 Cloudflare configuration keeps the cutover routes disabled and declares one
-SQLite DO class. Production requires startup integration with the independent
-record, the operator evidence above, and a separate end-to-end retirement and
-restore drill under production routing.
+SQLite DO class.
 
 Validate the disabled bundle from `crates/coconutclaw-gateway` after the disk
 check and `npm run stage`.
@@ -470,8 +468,163 @@ The cold-start test caught the `cargo mutants` replacement of `!=` with `==`
 in `LocalPhase::authority_pin`. The mutation admitted update `41` without a
 pin.
 
+## BigFur runtime authority
+
+The gated `phase2-cutover` code uses the existing `BotLedger` class and
+`hosted-synthetic-pilot` object name. The checked-in `cloudflare.config.ts`
+keeps this phase unreachable in every mode. The runtime uses outbound HTTPS
+to an independent control host. It needs no additional Cloudflare storage,
+service binding, or paid feature. The existing pilot mode is separate.
+
+`CUTOVER_TARGET` is the preflight target with `deployment` omitted. The runtime
+sends it as `target.pin`, with `target.versionId` read from Cloudflare's
+`CF_VERSION_METADATA` version-metadata binding at runtime. The host checks the
+exact tuple and relates the version to the operator-verified account, Worker
+and deployment. The Worker checks the HTTPS hostname and the DO checks its
+actual object ID. A successful check permits the SQLite ledger to be opened.
+Effects additionally require an explicit active `local_authority` row and
+matching generation and `custodyDigest` in `cutover_custody`, linked to the held
+archive. The archive remains outside the active queue. Production preparation
+must verify the custody artifacts before writing those rows, quarantine old
+live-table work and set the attempt floor. Operators set the activation rows
+during that preparation. The production archive must contain the original
+Unknown record for `#23`.
+
+An **incarnation** is a random value for one running object or executor.
+The DO generates its incarnation in memory. Preflight and a first denied
+check let the operator identify the candidate before enrolling that exact
+incarnation. The operator must establish which instance made the request
+using exclusive routing, the authentic version and a private control channel.
+The first caller never enrolls itself. One enrollment is allowed per
+generation. A cold restart, including ordinary DO eviction, loses the
+incarnation and closes the runtime until an explicitly authorized higher
+generation. A same-generation restore or an independently booted copy
+therefore stays closed even with identical bindings and object ID. Cloudflare
+documents both loss of in-memory state on eviction and restoration of SQLite
+storage on the next DO restart. Verify the same behavior in the production
+restore drill. Routes and effect custody must be closed before initiating any
+restore, including administrative restore paths outside this runtime.
+[DO lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)
+· [SQLite restore API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#onnextsessionrestorebookmark)
+· [Worker version metadata](https://developers.cloudflare.com/workers/runtime-apis/bindings/version-metadata/)
+
+An executor must hold a separately enrolled, random 32-byte incarnation
+secret as lowercase hex in `x-executor-incarnation`, outside the journal,
+deployment pin, backups and diagnostics. Its Ed25519 request and receipt
+domain is `bigfur:<generation>:<objectId>`. A saved signing key or matching
+journal sequence alone cannot obtain a Start or cancellation status. A Start
+is issued once per attempt, even when the committed grant response was lost.
+The grant's original deadline is capped by the precommit permit. At spawn the
+production executor must check the attempt, instance, sequence and original
+deadline, consume from its journal once, and obtain then enforce fresh
+uncancelled status and its `authority_valid_until` at the spawn boundary.
+Pending cancellation also needs fresh status and its deadline immediately
+before signaling a process. Process timeouts and local shutdown remain local
+safety controls. Keep the current loopback-only executor separate. Production
+runner support and containment evidence are still gates.
+
+### Control host
+
+Use an existing independently administered, always-on host with a dedicated
+local SQLite database and HTTPS endpoint. The host and its storage are outside
+the Worker deployment, DO snapshots and executor restore procedures. Worker
+`fetch` supports HTTPS subrequests and `cache: "no-store"`. A single SQLite
+writer using `BEGIN IMMEDIATE` and `synchronous=FULL` can durably serialize
+publication and send reservations without a Cloudflare binding. This is the
+adapter boundary. Provisioning, production code or a service implementing the
+contract, host availability, disk durability and operator access still need
+verification. If an independently maintained host is unavailable, keep the
+routes closed.
+[Workers fetch](https://developers.cloudflare.com/workers/runtime-apis/fetch/)
+· [SQLite transactions](https://sqlite.org/lang_transaction.html)
+· [SQLite synchronous setting](https://sqlite.org/pragma.html#pragma_synchronous)
+
+- Store append-only generation publications and irreversible retirement
+  under one writer, with the highest committed generation as the high-water
+  mark. Reject re-enrollment and regression even after the host process
+  restarts. The authority store itself is excluded from rollback. If it is
+  lost or suspected restored, stop and recover the latest verified high-water
+  mark independently before a higher publication. Never bootstrap an empty
+  store from a deployment, DO, journal or historical receipt.
+- Authenticate `POST` to `CUTOVER_AUTHORITY_ORIGIN` using the
+  `CUTOVER_AUTHORITY_BEARER` secret. Both endpoints receive `nonce`, `target`,
+  `objectIncarnation`, `runnerIncarnation` and `delivery`. Match the current
+  active record and high-water mark on every request. `runnerIncarnation` is
+  `null` for non-agent paths. Keep the bearer and runner secret out of logs.
+  Return a non-200 response on denial or unavailable durable authority.
+- `/v1/check` takes `delivery: null`. It returns `nonce`, `target`,
+  `highWater`, `objectIncarnation`, `runnerIncarnation` and `validUntil`
+  (epoch milliseconds) from the live decision. The client rejects redirects,
+  mismatches, stale nonces and deadlines outside its two-second window. The
+  DO rechecks after body and signature reads and again after durability
+  waits before a mutating request returns success. Alarm reservation needs a
+  fresh permit. Any already-issued permit may still be used until expiry.
+  Close publication first, then wait out the maximum permit and verified clock
+  skew, account for in-flight handlers and outstanding grants, and verify
+  retirement before enrolling a successor. Expiry proves no further use of
+  that permit. Previously started or ambiguous work still needs reconciliation.
+- `/v1/send` takes a `delivery` with `task`, `sendNumber`, `chatId`,
+  `messageThreadId` and `text`. The host must serialize durable reservation of
+  `(generation, task, sendNumber)` and dispatch with retirement at the actual
+  Telegram send boundary. It alone holds the Bot token and makes the Bot API
+  call. It returns `{nonce, messageId}` only for a confirmed positive Telegram
+  receipt. A repeated reservation, timeout, revoked authority or uncertain
+  response cannot cause a resend. Already-issued HTTP can still complete.
+  The Worker can leave an in-flight row held if authority disappears during
+  the send. Treat it as Unknown until reconciled. An alarm denied during a
+  host outage can leave work held pending operator reconciliation.
+
+Existing-token reuse requires affirmative proof that the control host is
+the sole place able to use the token. Account for the old poller and sender,
+old deployments, environment files, secret managers, backups and restore
+principals, proxies, queued work, and any holder of API or file URLs containing
+the token. Custody can be exclusive if old holders have verifiably lost access
+and old workloads cannot regain either the token or sender access after
+restore. If any previous copy or direct API access cannot be excluded, revoke
+at the issuer and verify that the old token fails for Bot API and file access
+before enabling production. Telegram authenticates those calls with the Bot
+token. Updating the webhook secret authenticates inbound updates and leaves
+an existing Bot token usable. Reconcile in-flight polling, sends and file
+requests with either disposition.
+[Telegram Bot API authorization, webhook and file endpoints](https://core.telegram.org/bots/api)
+· [BotFather token controls](https://core.telegram.org/bots/features#botfather)
+
+The Miniflare regression uses a disposable SQLite control store outside the
+simulated DO stores and a test-only `.invalid` endpoint with synthetic
+credentials. It exercises monotonic publication, exclusive enrollment,
+same-generation restore, restored pin and runner identity, freshness failures,
+revocation between reservation and mock Telegram dispatch, and a persisted
+alarm after reopen. Production retirement and custody need independently
+verified operator evidence. `cargo mutants` inverted the high-water comparison.
+The test caught the variant when the matching current generation remained
+inactive.
+
+From the source root, use the cached tools, Wasm sysroot and native and Wasm
+targets documented above. Run the disk check before each build.
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --offline --workspace --all-targets --locked -- -D warnings
+cargo clippy --offline --locked -p coconutclaw-gateway --features local-executor --all-targets -- -D warnings
+cargo test --offline --workspace --all-targets --locked -- --test-threads=4
+cargo clippy --offline --locked -p coconutclaw-gateway --target wasm32-unknown-unknown -- -D warnings
+npm --prefix crates/coconutclaw-gateway run stage
+GATEWAY_LOCAL_EXECUTOR="$PWD/target/native-gateway/debug/gateway-local-executor" \
+COCONUTCLAW_CUTOVER_CLI="$PWD/target/native-gateway/debug/coconutclaw" \
+  node --test --test-concurrency=1 crates/coconutclaw-gateway/{authority-preflight,config,integration}.test.mjs
+node --test --test-concurrency=1 --test-name-pattern='BigFur authority' \
+  crates/coconutclaw-gateway/integration.test.mjs
+(cd crates/coconutclaw-gateway && CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run)
+git diff --check
+```
+
 ## BigFur Readiness
 
+- Provision the independent control host, verify its persistence and
+  serialized dispatch, and complete the stopped production handoff and restore
+  drill with authenticated operator evidence. Verify the exclusive ingress
+  route, actual version and object identity, runner incarnation issuance and
+  expiry, and the Telegram custody disposition before opening the routes.
 - Verify production Telegram ingress and same-topic Bot API delivery under
   separately authorized identities. Real Codex execution and cancellation
   require separate containment and lifecycle evidence.

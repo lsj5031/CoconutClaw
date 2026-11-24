@@ -13,6 +13,7 @@ use crate::ledger::{
     Delivery, Execution, Ledger, LocalAuthority, Receipt, Reply, ScheduleInput, conflict,
 };
 use crate::protocol::{Agent, BODY_LIMIT, Command, Fixture, INSTANCE, telegram_input, valid_text};
+use crate::runtime_authority::{Authority, Pin, nonce};
 
 #[wasm_bindgen(inline_js = "
 export async function verify(key, signature, message) {
@@ -39,6 +40,7 @@ enum LocalPhase {
     Protocol,
     Executor,
     Pilot,
+    Cutover,
 }
 
 const PILOT_INSTANCE: &str = "hosted-synthetic-pilot";
@@ -54,6 +56,7 @@ impl LocalPhase {
             "phase1-local" => Some(Self::Protocol),
             "phase2-local" => Some(Self::Executor),
             "phase2-pilot" => Some(Self::Pilot),
+            "phase2-cutover" => Some(Self::Cutover),
             _ => None,
         }
     }
@@ -62,7 +65,7 @@ impl LocalPhase {
         match self {
             Self::Protocol => INSTANCE,
             Self::Executor => executor_wire::INSTANCE,
-            Self::Pilot => PILOT_INSTANCE,
+            Self::Pilot | Self::Cutover => PILOT_INSTANCE,
         }
     }
 
@@ -92,7 +95,7 @@ fn authorized(req: &Request, env: &Env, header: &str, binding: &str) -> bool {
     }
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     js_sys::Date::now() as i64
 }
 
@@ -112,7 +115,14 @@ fn route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
     if req.method() != Method::Post || url.scheme() != "https" || url.query().is_some() {
         return Ok(None);
     }
-    let valid = if phase == LocalPhase::Pilot {
+    let valid = if phase == LocalPhase::Cutover {
+        let Some(pin) = Pin::read(env) else {
+            return Ok(None);
+        };
+        url.host_str() == Some(&pin.hostname)
+            && url.port().is_none()
+            && matches!(url.path(), "/v1/telegram" | "/v1/agent" | "/v1/cancel")
+    } else if phase == LocalPhase::Pilot {
         matches!(
             url.path(),
             "/v1/pilot/telegram" | "/v1/pilot/agent" | "/v1/pilot/fixture"
@@ -150,6 +160,7 @@ pub struct BotLedger {
     state: State,
     env: Env,
     initialized: OnceCell<()>,
+    incarnation: OnceCell<String>,
 }
 
 impl DurableObject for BotLedger {
@@ -158,6 +169,7 @@ impl DurableObject for BotLedger {
             state,
             env,
             initialized: OnceCell::new(),
+            incarnation: OnceCell::new(),
         }
     }
 
@@ -177,7 +189,12 @@ impl DurableObject for BotLedger {
         {
             return Reply::error(404, "not_found").response();
         }
-        match self.handle(req, phase, pin).await {
+        let reply = if phase == LocalPhase::Cutover {
+            self.handle_cutover(req).await
+        } else {
+            self.handle(req, phase, pin).await
+        };
+        match reply {
             Ok(reply) => reply.response(),
             Err(_) => unavailable(),
         }
@@ -196,6 +213,9 @@ impl DurableObject for BotLedger {
         }
         let storage = self.state.storage();
         let result = async {
+            if phase == LocalPhase::Cutover {
+                return self.cutover_alarm(&storage).await;
+            }
             let ledger = self.ledger(&storage, phase, "alarm")?;
             if let Some(pin) = pin
                 && (ledger.legacy_cutover_held()?
@@ -211,13 +231,14 @@ impl DurableObject for BotLedger {
                     settle_alarm(alarm).await?;
                     storage.sync().await
                 }
-                LocalPhase::Executor => self.deliver(&storage, &ledger).await,
+                LocalPhase::Executor => self.deliver(&storage, &ledger, None).await,
                 LocalPhase::Pilot => {
                     let alarm = ledger
                         .transaction(&storage, || ledger.deliver_synthetic(&storage, now()))?;
                     settle_alarm(alarm).await?;
                     storage.sync().await
                 }
+                LocalPhase::Cutover => unreachable!(),
             }
         }
         .await;
@@ -243,8 +264,11 @@ impl BotLedger {
             ledger.initialize()?;
             if phase == LocalPhase::Pilot {
                 ledger.initialize_synthetic_delivery()?;
-            } else if phase == LocalPhase::Executor {
+            } else if matches!(phase, LocalPhase::Executor | LocalPhase::Cutover) {
                 ledger.initialize_local_cutover()?;
+            }
+            if phase == LocalPhase::Cutover {
+                ledger.initialize_cutover_custody()?;
             }
             self.initialized
                 .set(())
@@ -253,13 +277,26 @@ impl BotLedger {
         Ok(ledger)
     }
 
-    async fn deliver(&self, storage: &Storage, ledger: &Ledger) -> Result<()> {
+    async fn deliver(
+        &self,
+        storage: &Storage,
+        ledger: &Ledger,
+        authority: Option<&Authority<'_>>,
+    ) -> Result<()> {
         let (delivery, alarm) =
             ledger.transaction(storage, || ledger.wake_delivery(storage, now()))?;
         settle_alarm(alarm).await?;
         storage.sync().await?;
         if let Some(delivery) = delivery {
-            let receipt = send_telegram(&delivery).await.unwrap_or(Receipt::Unknown);
+            let receipt = if let Some(authority) = authority {
+                let receipt = authority.send(&delivery).await;
+                if authority.check().await.is_none() {
+                    return Ok(());
+                }
+                receipt
+            } else {
+                send_telegram(&delivery).await.unwrap_or(Receipt::Unknown)
+            };
             let alarm = ledger.transaction(storage, || {
                 ledger.settle_delivery(storage, delivery, receipt, now())
             })?;
@@ -267,6 +304,188 @@ impl BotLedger {
             storage.sync().await?;
         }
         Ok(())
+    }
+
+    fn cutover_authority(&self, runner: Option<String>) -> Option<Authority<'_>> {
+        let authority = Authority::read(&self.env, self.incarnation.get_or_init(nonce), runner)?;
+        (authority.pin().object_id == self.state.id().to_string()).then_some(authority)
+    }
+
+    async fn cutover_alarm(&self, storage: &Storage) -> Result<()> {
+        let Some(authority) = self.cutover_authority(None) else {
+            return Ok(());
+        };
+        if authority.check().await.is_none() {
+            return Ok(());
+        }
+        let pin = authority.pin();
+        let ledger = self.ledger(storage, LocalPhase::Cutover, "alarm")?;
+        if ledger
+            .cutover_authority(pin.generation.get(), &pin.custody_digest)?
+            .is_some()
+        {
+            self.deliver(storage, &ledger, Some(&authority)).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_cutover(&self, mut req: Request) -> Result<Reply> {
+        let path = req.path();
+        let runner = match path.as_str() {
+            "/v1/agent" => {
+                let Some(runner) = req.headers().get("x-executor-incarnation")? else {
+                    return Ok(inactive_generation());
+                };
+                Some(runner)
+            }
+            "/v1/telegram" => {
+                if !authorized(
+                    &req,
+                    &self.env,
+                    "x-telegram-bot-api-secret-token",
+                    "WEBHOOK_SECRET",
+                ) {
+                    return Ok(Reply::error(401, "unauthorized"));
+                }
+                None
+            }
+            "/v1/cancel" => {
+                if !authorized(
+                    &req,
+                    &self.env,
+                    "x-cutover-operator",
+                    "CUTOVER_CANCEL_SECRET",
+                ) {
+                    return Ok(Reply::error(401, "unauthorized"));
+                }
+                None
+            }
+            _ => return Ok(Reply::error(404, "not_found")),
+        };
+        let Some(authority) = self.cutover_authority(runner) else {
+            return Ok(inactive_generation());
+        };
+        if authority.check().await.is_none() {
+            return Ok(inactive_generation());
+        }
+        let bytes = match bounded_body(&mut req).await {
+            Ok(bytes) => bytes,
+            Err(reply) => return Ok(reply),
+        };
+        let pin = authority.pin();
+        let instance = pin.agent_instance();
+        let agent = if path == "/v1/agent" {
+            match self
+                .decode_agent(
+                    &req,
+                    &bytes,
+                    LocalPhase::Cutover,
+                    &instance,
+                    Some(&pin.executor_key),
+                )
+                .await
+            {
+                Ok(agent) => Some(agent),
+                Err(reply) => return Ok(reply),
+            }
+        } else {
+            None
+        };
+        let Some(valid_until) = authority.check().await else {
+            return Ok(inactive_generation());
+        };
+        let storage = self.state.storage();
+        let ledger = self.ledger(&storage, LocalPhase::Cutover, "cutover")?;
+        let Some(custody) = ledger.cutover_authority(pin.generation.get(), &pin.custody_digest)?
+        else {
+            return Ok(Reply::error(503, "legacy_cutover_held"));
+        };
+        let mut start = None;
+        let (reply, alarm) = if let Some((agent, evidence)) = agent {
+            start = match agent.command {
+                Command::Start { attempt } => Some(attempt),
+                _ => None,
+            };
+            let status = match agent.command {
+                Command::Status { attempt } => Some(attempt),
+                _ => None,
+            };
+            if start
+                .or(status)
+                .or_else(|| evidence.as_ref().map(|proof| proof.attempt))
+                .is_some_and(|attempt| attempt <= custody.attempt_floor)
+            {
+                return Ok(conflict());
+            }
+            if let Some(reply) = ledger.read_agent(&agent, now(), &instance)? {
+                return Ok(reply.authority_deadline(valid_until));
+            }
+            ledger.transaction(&storage, || {
+                let at = now();
+                if !ledger.take_pilot_request(at, false)? {
+                    return Ok((ledger.pilot_limit(at)?, None));
+                }
+                ledger.mutate_agent(
+                    agent,
+                    at,
+                    Some(Execution::Cutover {
+                        instance: &instance,
+                        valid_until,
+                    }),
+                    evidence,
+                    &storage,
+                )
+            })?
+        } else if path == "/v1/telegram" {
+            let Ok(update) = serde_json::from_slice::<Value>(&bytes) else {
+                return Ok(bad_input());
+            };
+            let Some(id) = update["update_id"]
+                .as_i64()
+                .filter(|id| (0..=i32::MAX as i64).contains(id))
+            else {
+                return Ok(bad_input());
+            };
+            let input = telegram_input(&update)
+                .map(|(route, text)| (route.chat_id, route.message_thread_id, text));
+            (
+                ledger.transaction(&storage, || {
+                    let at = now();
+                    if !ledger.take_pilot_request(at, false)? {
+                        return ledger.pilot_limit(at);
+                    }
+                    ledger.ingest(id, input, false, Some(at))
+                })?,
+                None,
+            )
+        } else {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Cancel {
+                task: String,
+            }
+            let Ok(cancel) = serde_json::from_slice::<Cancel>(&bytes) else {
+                return Ok(bad_input());
+            };
+            if cancel.task.is_empty() || cancel.task.len() > 64 {
+                return Ok(bad_input());
+            }
+            (
+                ledger.transaction(&storage, || ledger.cancel(&cancel.task))?,
+                None,
+            )
+        };
+        settle_alarm(alarm).await?;
+        storage.sync().await?;
+        let Some(valid_until) = authority.check().await else {
+            return Ok(inactive_generation());
+        };
+        if let Some(attempt) = start
+            && !ledger.grant_current(attempt, now())?
+        {
+            return Ok(conflict());
+        }
+        Ok(reply.authority_deadline(valid_until))
     }
 
     async fn handle(
@@ -381,43 +600,12 @@ impl BotLedger {
                 (reply, fault.as_deref() == Some("after_commit"))
             }
             "agent" => {
-                let Ok(agent) = serde_json::from_slice::<Agent>(&bytes) else {
-                    return Ok(bad_input());
-                };
-                let Some(key) = self
-                    .verify_agent(&req, &agent, &bytes, phase, &instance)
+                let (agent, evidence) = match self
+                    .decode_agent(&req, &bytes, phase, &instance, None)
                     .await
-                else {
-                    return Ok(Reply::error(401, "unauthorized"));
-                };
-                if !agent.command.available(executor) {
-                    return Ok(Reply::error(404, "not_found"));
-                }
-                if !valid_command(&agent) {
-                    return Ok(bad_input());
-                }
-                let evidence = if let Command::Report { proof } = &agent.command {
-                    let Ok(evidence) = serde_json::from_str::<Evidence>(&proof.payload) else {
-                        return Ok(bad_input());
-                    };
-                    if !valid_attempt(evidence.attempt)
-                        || matches!(&evidence.event, Event::Result { text }
-                            if !valid_text(text) || (pilot && text != PILOT_RESULT))
-                    {
-                        return Ok(bad_input());
-                    }
-                    if !signed_by(
-                        &key,
-                        &proof.signature,
-                        &evidence_bytes_for(&instance, &proof.payload),
-                    )
-                    .await
-                    {
-                        return Ok(Reply::error(401, "unauthorized"));
-                    }
-                    Some(evidence)
-                } else {
-                    None
+                {
+                    Ok(agent) => agent,
+                    Err(reply) => return Ok(reply),
                 };
                 if let Some(authority) = authority {
                     if frozen {
@@ -450,6 +638,7 @@ impl BotLedger {
                         reconcile_only: frozen,
                     }),
                     LocalPhase::Pilot => Some(Execution::HostedPilot),
+                    LocalPhase::Cutover => unreachable!(),
                 };
                 let (reply, alarm) = ledger.transaction(&storage, || {
                     ledger.mutate_agent(agent, now(), execution, evidence, &storage)
@@ -501,36 +690,78 @@ impl BotLedger {
         }
     }
 
-    async fn verify_agent(
+    async fn decode_agent(
         &self,
         req: &Request,
-        agent: &Agent,
         bytes: &[u8],
         phase: LocalPhase,
         instance: &str,
-    ) -> Option<Vec<u8>> {
+        cutover_key: Option<&str>,
+    ) -> std::result::Result<(Agent, Option<Evidence>), Reply> {
+        let unauthorized = || Reply::error(401, "unauthorized");
+        let agent = serde_json::from_slice::<Agent>(bytes).map_err(|_| bad_input())?;
         if agent.at_ms.abs_diff(now()) > 30_000
             || (phase.executor() && agent.device.name() != executor_wire::DEVICE)
         {
-            return None;
+            return Err(unauthorized());
         }
-        let binding = match phase {
-            LocalPhase::Pilot => "PILOT_ALPHA_KEY".to_owned(),
-            LocalPhase::Executor => "EXECUTOR_ALPHA_KEY".to_owned(),
-            LocalPhase::Protocol => {
-                format!("DEVICE_{}_KEY", agent.device.name().to_ascii_uppercase())
+        let key = match cutover_key {
+            Some(key) => key.to_owned(),
+            None => {
+                let binding = match phase {
+                    LocalPhase::Pilot => "PILOT_ALPHA_KEY".to_owned(),
+                    LocalPhase::Executor => "EXECUTOR_ALPHA_KEY".to_owned(),
+                    LocalPhase::Protocol => {
+                        format!("DEVICE_{}_KEY", agent.device.name().to_ascii_uppercase())
+                    }
+                    LocalPhase::Cutover => return Err(unauthorized()),
+                };
+                self.env
+                    .var(&binding)
+                    .map_err(|_| unauthorized())?
+                    .to_string()
             }
         };
-        let key = self
-            .env
-            .var(&binding)
+        let mut decoded = [0; 32];
+        hex::decode_to_slice(key, &mut decoded).map_err(|_| unauthorized())?;
+        let signature = req
+            .headers()
+            .get("x-agent-signature")
             .ok()
-            .and_then(|var| hex::decode(var.to_string()).ok())
-            .filter(|key| key.len() == 32)?;
-        let signature = req.headers().get("x-agent-signature").ok().flatten()?;
-        signed_by(&key, &signature, &request_bytes(instance, bytes))
+            .flatten()
+            .ok_or_else(unauthorized)?;
+        if !signed_by(&decoded, &signature, &request_bytes(instance, bytes)).await {
+            return Err(unauthorized());
+        }
+        if !agent.command.available(phase.executor()) {
+            return Err(Reply::error(404, "not_found"));
+        }
+        if !valid_command(&agent) {
+            return Err(bad_input());
+        }
+        let evidence = if let Command::Report { proof } = &agent.command {
+            let evidence =
+                serde_json::from_str::<Evidence>(&proof.payload).map_err(|_| bad_input())?;
+            if !valid_attempt(evidence.attempt)
+                || matches!(&evidence.event, Event::Result { text }
+                    if !valid_text(text) || (phase == LocalPhase::Pilot && text != PILOT_RESULT))
+            {
+                return Err(bad_input());
+            }
+            if !signed_by(
+                &decoded,
+                &proof.signature,
+                &evidence_bytes_for(instance, &proof.payload),
+            )
             .await
-            .then_some(key)
+            {
+                return Err(unauthorized());
+            }
+            Some(evidence)
+        } else {
+            None
+        };
+        Ok((agent, evidence))
     }
 
     async fn fixture(
@@ -661,7 +892,7 @@ async fn bounded_body(req: &mut Request) -> std::result::Result<Vec<u8>, Reply> 
     collect_body(req.stream().map_err(|_| bad_input())?).await
 }
 
-async fn collect_body(mut stream: ByteStream) -> std::result::Result<Vec<u8>, Reply> {
+pub(crate) async fn collect_body(mut stream: ByteStream) -> std::result::Result<Vec<u8>, Reply> {
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| bad_input())?;
