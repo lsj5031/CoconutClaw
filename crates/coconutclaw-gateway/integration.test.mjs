@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { generateKeyPairSync, sign, verify } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:https";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -37,9 +37,10 @@ const operator = { "x-fixture-secret": "synthetic-operator" };
 const signingPrefix = "coconutclaw-v1\nlocal-fixture\nPOST\n/v1/agent\n";
 const executorPrefix = signingPrefix.replace("local-fixture", "local-executor-fixture");
 
-async function runFixture(context, { enabled = true, executor = false } = {}) {
+async function runFixture(context, { enabled = true, executor = false, inspect = false, mock } = {}) {
     const persistence = await mkdtemp(join(import.meta.dirname, "build", "sqlite-"));
     const sends = [];
+    const sendTimes = [];
     const logs = [];
     const log = new Log(LogLevel.INFO);
     log.log = message => logs.push(message);
@@ -49,8 +50,11 @@ async function runFixture(context, { enabled = true, executor = false } = {}) {
     let service;
     let url;
     let calls = 0;
-    async function restart() {
+    let stopped = true;
+    async function restart(edit) {
         await service?.dispose();
+        stopped = true;
+        if (edit) await edit();
         service = new Miniflare({
             host: "127.0.0.1",
             port: 0,
@@ -78,6 +82,7 @@ async function runFixture(context, { enabled = true, executor = false } = {}) {
                     publicHex(device),
                 ])),
                 ...(executor ? { EXECUTOR_ALPHA_KEY: publicHex("alpha") } : {}),
+                ...(inspect ? { LOCAL_SQL_METRICS: "1" } : {}),
             },
             durableObjects,
             durableObjectsPersist: persistence,
@@ -86,7 +91,9 @@ async function runFixture(context, { enabled = true, executor = false } = {}) {
                 assert.equal(req.method, "POST");
                 const body = await req.json();
                 sends.push(body);
+                sendTimes.push(Date.now());
                 assert.ok(sends.length <= 8);
+                if (mock) return mock(body, sends.length);
                 if (body.text === "mock lost response") return new Response(null, { status: 502 });
                 if (body.text === "mock 429") {
                     return Response.json({
@@ -97,6 +104,7 @@ async function runFixture(context, { enabled = true, executor = false } = {}) {
             },
         });
         url = await service.ready;
+        stopped = false;
         assert.equal(url.protocol, "https:");
         assert.equal(url.hostname, "127.0.0.1");
     }
@@ -124,7 +132,7 @@ async function runFixture(context, { enabled = true, executor = false } = {}) {
                 try {
                     const chunks = [];
                     for await (const chunk of res) chunks.push(chunk);
-                    resolve({ status: res.statusCode, bytes: Buffer.concat(chunks).toString() });
+                    resolve({ status: res.statusCode, headers: res.headers, value: JSON.parse(Buffer.concat(chunks).toString()) });
                 } catch (error) {
                     reject(error);
                 }
@@ -134,7 +142,7 @@ async function runFixture(context, { enabled = true, executor = false } = {}) {
             if (chunked) req.write(bytes.slice(0, 9000));
             req.end(chunked ? bytes.slice(9000) : bytes);
         });
-        return { status: response.status, value: JSON.parse(response.bytes) };
+        return response;
     }
 
     async function post(path, body, headers, status = 200, chunked = false) {
@@ -157,7 +165,25 @@ async function runFixture(context, { enabled = true, executor = false } = {}) {
     const fixture = (op, fields, status, fault) => post("fixture", { op, ...fields }, {
         ...operator, ...(fault ? { "x-fixture-fault": fault } : {}),
     }, status);
-    return { agent, fixture, post, rawPost, restart, sends, signed, wire, keys };
+    async function queryFixture(filePattern, query, args) {
+        assert.ok(inspect);
+        const files = (await readdir(persistence, { recursive: true })).filter(file => filePattern.test(file));
+        assert.equal(files.length, 1, files.join(", "));
+        const db = new DatabaseSync(join(persistence, files[0]), { readOnly: !stopped });
+        try {
+            db.exec("PRAGMA busy_timeout=500");
+            return db.prepare(query).all(...args).map(row => ({ ...row }));
+        } finally {
+            db.close();
+        }
+    }
+    const sql = (query, ...args) => queryFixture(/[a-f0-9]{64}\.sqlite$/, query, args);
+    const scheduledAlarm = () => queryFixture(/metadata\.sqlite$/, "SELECT scheduled_time/1000000 AS scheduled_time FROM _cf_ALARM", []);
+    function metrics() {
+        return Array.from(logs.join("\n").matchAll(/pilot_sql (\w+) (\d+) (\d+) (\d+)/g),
+            ([, scope, read, written, ms]) => ({ scope, read: +read, written: +written, ms: +ms }));
+    }
+    return { agent, fixture, post, rawPost, restart, sends, sendTimes, signed, wire, keys, sql, scheduledAlarm, metrics };
 }
 
 function update(id, topic = 7, text = `synthetic task ${id}`) {
@@ -171,7 +197,7 @@ function update(id, topic = 7, text = `synthetic task ${id}`) {
 const timeout = { timeout: 20_000 };
 
 const executable = process.env.GATEWAY_LOCAL_EXECUTOR;
-const nativeTimeout = { timeout: 35_000, skip: !executable };
+const nativeTimeout = { timeout: 45_000, skip: !executable };
 
 async function until(check, message, timeoutMs = 10_000) {
     const deadline = Date.now() + timeoutMs;
@@ -339,10 +365,11 @@ test("native executor retains result across lost receipt, reconnects, and replie
     altered.signature = sign(null, Buffer.from(`coconutclaw-evidence-v1\nlocal-executor-fixture\nalpha\n${altered.payload}`),
         client.keys.alpha.privateKey).toString("hex");
     await client.wire(client.signed("alpha", { op: "report", proof: altered }, { seq: floor + 1 }), 409);
-    assert.deepEqual(await client.fixture("send", { task }), { phase: "delivered", sends: 1, message_id: 1 });
+    const delivered = { phase: "delivered", sends: 1, message_id: 1 };
+    await until(async () => (await client.fixture("delivery_status", { task })).phase === "delivered", "automatic reply");
     await client.restart();
-    assert.deepEqual(await client.fixture("recover_send", { task }), { phase: "delivered", sends: 1, message_id: 1 });
-    await client.fixture("send", { task }, 409);
+    assert.deepEqual(await client.fixture("delivery_status", { task }), delivered);
+    await client.fixture("send", { task }, 404);
     assert.deepEqual(client.sends, [{ chat_id: 321, message_thread_id: 37, text: event.text }]);
 });
 
@@ -431,14 +458,14 @@ test("native executor fences replayed and late grants and confirms both kinds of
     await client.post("telegram", update(122), webhook);
     await until(() => proofs("cancelled").length === 1
         && query("SELECT acknowledged FROM evidence WHERE attempt=? AND event='cancelled'", cancelledBefore)[0]?.acknowledged,
-    "delayed grant fenced by cancel");
+    "delayed grant fenced by cancel", 15_000);
     assert.deepEqual(await launches(), []);
     assert.equal((await client.agent("alpha", "status", { attempt: cancelledBefore })).phase, "cancelled_before_start");
     await client.post("telegram", update(123), webhook);
     const running = (await until(async () => {
         const ids = await launches();
         return ids.length ? ids : null;
-    }, "fixture child starts"))[0];
+    }, "fixture child starts", 15_000))[0];
     assert.equal((await client.fixture("cancel", { task: "telegram:123" })).phase, "cancel_requested");
     await until(() => query("SELECT acknowledged FROM evidence WHERE attempt=? AND event='cancelled'", running)[0]?.acknowledged,
         "reaped child cancellation acknowledgement");
@@ -452,6 +479,205 @@ test("native executor fences replayed and late grants and confirms both kinds of
         [expiredAttempt, expiredAttempt, expiredAttempt, cancelledBefore, running]);
     assert.deepEqual(proofs("result"), []);
     await first.stop();
+});
+
+async function completed(client, id, text, { drop = false } = {}) {
+    await client.post("telegram", update(id, id), webhook);
+    return reportResult(client, `telegram:${id}`, text, drop);
+}
+
+async function reportResult(client, task, text, drop = false) {
+    const { attempt } = await client.agent("alpha", "claim", { task });
+    await client.agent("alpha", "start", { attempt });
+    function report(event) {
+        const payload = JSON.stringify({ attempt, event });
+        const signature = sign(null, Buffer.from(`coconutclaw-evidence-v1\nlocal-executor-fixture\nalpha\n${payload}`),
+            client.keys.alpha.privateKey).toString("hex");
+        return { op: "report", proof: { payload, signature } };
+    }
+    await client.wire(client.signed("alpha", report({ kind: "started" })));
+    const result = report({ kind: "result", text });
+    const packet = client.signed("alpha", result);
+    if (drop) Object.assign(packet.headers, operator, { "x-fixture-fault": "after_commit" });
+    await client.wire(packet, drop ? 503 : 200);
+    return { task, result };
+}
+
+test("Phase 2 alarm survives a pending restart and a duplicated result with one same-topic receipt", timeout, async context => {
+    const client = await runFixture(context, { executor: true, inspect: true });
+    await client.agent("alpha", "hello");
+    await client.restart(() => client.sql("UPDATE pilot_delivery SET not_before=?", Date.now() + 2500));
+    const { task, result } = await completed(client, 130, "alarm result", { drop: true });
+    assert.deepEqual(await client.fixture("delivery_status", { task }), { phase: "pending", sends: 0 });
+    await client.restart();
+    await Promise.all([client.wire(client.signed("alpha", result)), client.fixture("send", { task }, 404)]);
+    await until(async () => (await client.fixture("delivery_status", { task })).phase === "delivered", "pending alarm after restart");
+    await client.restart();
+    await client.wire(client.signed("alpha", result));
+    assert.deepEqual(await client.fixture("delivery_status", { task }), { phase: "delivered", sends: 1, message_id: 1 });
+    assert.deepEqual(client.sends, [{ chat_id: 321, message_thread_id: 130, text: "alarm result" }]);
+});
+
+test("Phase 2 recovers an interrupted send as Unknown and never resends it", timeout, async context => {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    context.after(() => release());
+    const client = await runFixture(context, {
+        executor: true, inspect: true,
+        async mock(body, message_id) {
+            if (body.text === "receipt lost") await held;
+            return Response.json({ ok: true, result: { message_id } });
+        },
+    });
+    const { task, result } = await completed(client, 131, "receipt lost");
+    await until(() => client.sends.length === 1, "mock accepted the first send");
+    assert.deepEqual(await client.fixture("delivery_status", { task }), { phase: "in_flight", sends: 1 });
+    const queued = await completed(client, 132, "next result");
+    assert.deepEqual(client.sends.map(body => body.text), ["receipt lost"]);
+    await client.restart();
+    release();
+    await client.wire(client.signed("alpha", result));
+    await until(async () => (await client.sql("SELECT phase FROM outbox WHERE task=?", queued.task))[0]?.phase === "delivered",
+        "watchdog recovers and unblocks the next send");
+    assert.ok(client.sendTimes[1] - client.sendTimes[0] >= 4700, "next send waited for the persisted watchdog");
+    assert.deepEqual(await client.fixture("delivery_status", { task }), { phase: "unknown", sends: 1 });
+    assert.deepEqual(await client.fixture("delivery_status", { task: queued.task }), { phase: "delivered", sends: 1, message_id: 2 });
+    await client.fixture("recover_send", { task }, 404);
+    assert.deepEqual(client.sends.map(body => body.message_thread_id), [131, 132]);
+});
+
+test("Phase 2 honors Bot-wide 429 cooldown across restart and stops after the second rejection", timeout, async context => {
+    const client = await runFixture(context, {
+        executor: true, inspect: true,
+        mock(body, message_id) {
+            return body.text === "limited" ? Response.json({
+                ok: false, error_code: 429, parameters: { retry_after: 5 },
+            }, { status: 429 }) : Response.json({ ok: true, result: { message_id } });
+        },
+    });
+    const limited = await completed(client, 133, "limited");
+    await until(async () => (await client.sql("SELECT sends,phase FROM outbox WHERE task=?", limited.task))[0]?.sends === 1
+        && (await client.fixture("delivery_status", { task: limited.task })).phase === "pending", "first rejection settled");
+    const other = await completed(client, 134, "other topic");
+    await client.restart();
+    await until(async () => (await client.sql("SELECT phase FROM outbox WHERE task=?", limited.task))[0]?.phase === "failed",
+        "second rejection settled", 14_000);
+    assert.deepEqual(client.sends.map(body => body.message_thread_id), [133, 134, 133]);
+    assert.ok(client.sendTimes[1] - client.sendTimes[0] >= 4900, "429 delays all topics");
+    assert.ok(client.sendTimes[2] - client.sendTimes[1] >= 3900, "single Bot send pacing");
+    assert.deepEqual(await client.fixture("delivery_status", { task: other.task }), { phase: "delivered", sends: 1, message_id: 2 });
+    await client.wire(client.signed("alpha", limited.result));
+    assert.deepEqual(await client.fixture("delivery_status", { task: limited.task }), { phase: "failed", sends: 2 });
+});
+
+test("Phase 2 admits 20 distinct tasks per UTC day and fails closed at persistent request limits", timeout, async context => {
+    const client = await runFixture(context, { executor: true, inspect: true });
+    const utcDay = Math.floor(Date.now() / 86_400_000);
+    const pending = await completed(client, 140, "reserved alarm budget");
+    for (let id = 141; id < 159; id++) await client.post("telegram", update(id), webhook);
+    await client.post("telegram", update(159), { ...webhook, ...operator, "x-fixture-fault": "rollback" }, 503);
+    const last = await Promise.all([159, 160].map(id => client.rawPost("telegram", update(id), webhook)));
+    assert.deepEqual(last.map(reply => reply.status).sort(), [200, 429]);
+    const winner = last[0].status === 200 ? 159 : 160;
+    const rejected = winner === 159 ? 160 : 159;
+    assert.equal((await client.post("telegram", update(winner), webhook)).disposition, "duplicate");
+    await client.restart();
+    assert.equal((await client.post("telegram", update(rejected), webhook, 429)).error, "pilot_task_limit");
+    assert.deepEqual(await client.sql("SELECT tasks FROM pilot_budget"), [{ tasks: 20 }]);
+    assert.deepEqual(await client.sql("SELECT update_id FROM inbox WHERE update_id=?", rejected), []);
+    await until(async () => (await client.sql("SELECT phase FROM outbox WHERE task=?", pending.task))[0]?.phase === "delivered",
+        "initial result delivered");
+    const { task: delayed } = await reportResult(client, `telegram:${winner}`, "alarm allowance");
+    await client.restart(() => client.sql("UPDATE pilot_budget SET requests=9799"));
+    const hits = await Promise.all([
+        client.rawPost("fixture", { op: "delivery_status", task: delayed }, operator),
+        client.rawPost("fixture", { op: "delivery_status", task: pending.task }, operator),
+    ]);
+    assert.deepEqual(hits.map(({ status }) => status).sort(), [200, 429]);
+    const packet = client.signed("alpha", { op: "next" });
+    const blocked = await client.rawPost("agent", packet.body, packet.headers);
+    assert.equal(blocked.value.error, "pilot_request_limit");
+    assert.ok(+blocked.headers["retry-after"] > 0);
+    await client.restart();
+    assert.equal((await client.agent("alpha", "hello", {}, 429)).error, "pilot_request_limit");
+    await until(async () => (await client.sql("SELECT phase FROM outbox WHERE task=?", delayed))[0]?.phase === "delivered",
+        "alarm uses its reserved allowance");
+    assert.deepEqual(await client.sql("SELECT requests FROM pilot_budget"), [{ requests: 9801 }]);
+    await client.restart(() => client.sql("UPDATE pilot_budget SET day=?", utcDay + 1));
+    assert.equal((await client.agent("alpha", "hello", {}, 429)).error, "pilot_request_limit");
+    await client.restart(() => client.sql("UPDATE pilot_budget SET day=?", utcDay - 1));
+    await client.post("telegram", update(rejected), webhook);
+    assert.deepEqual(await client.sql("SELECT day,requests,tasks FROM pilot_budget"), [{ day: utcDay, requests: 1, tasks: 1 }]);
+});
+
+test("Phase 2 at the hard alarm cap retains pending delivery and defers to the next UTC day", timeout, async context => {
+    const client = await runFixture(context, { executor: true, inspect: true });
+    const day = Math.floor(Date.now() / 86_400_000);
+    await client.agent("alpha", "hello");
+    await client.restart(() => client.sql("UPDATE pilot_delivery SET not_before=?", Date.now() + 1700));
+    const { task } = await completed(client, 161, "deferred result");
+    await client.restart(() => client.sql("UPDATE pilot_budget SET requests=10000"));
+    await until(() => client.metrics().find(row => row.scope === "alarm"), "alarm handled the exhausted budget");
+    assert.deepEqual(client.sends, []);
+    assert.deepEqual(await client.sql("SELECT phase,sends FROM outbox WHERE task=?", task), [{ phase: "pending", sends: 0 }]);
+    assert.deepEqual(await client.sql("SELECT requests FROM pilot_budget"), [{ requests: 10000 }]);
+    await client.restart();
+    assert.deepEqual(await client.scheduledAlarm(), [{ scheduled_time: (day + 1) * 86_400_000 }]);
+});
+
+test("Phase 2 full retained ledger stays within the measured SQL envelope", timeout, async context => {
+    const client = await runFixture(context, { executor: true, inspect: true });
+    await client.agent("alpha", "hello");
+    await client.restart(async () => {
+        const series = "WITH RECURSIVE numbers(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<127)";
+        await client.sql(`${series} INSERT INTO inbox(update_id,disposition) SELECT n,'task' FROM numbers`);
+        await client.sql(`${series} INSERT INTO tasks(id,chat_id,thread_id,prompt)
+            SELECT 'telegram:'||n,321,n,? FROM numbers`, "p".repeat(4096));
+        await client.sql(`INSERT INTO attempts(task,device,lease_until,phase)
+            SELECT tasks.id,'alpha',0,'expired' FROM tasks CROSS JOIN (SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3)`);
+        await client.sql(`INSERT INTO attempts(task,device,lease_until,phase)
+            SELECT tasks.id,'alpha',0,'expired' FROM tasks LIMIT 3`);
+        await client.sql(`INSERT INTO attempts(task,device,lease_until,start_until,phase,started_evidence)
+            SELECT tasks.id,'alpha',0,0,'completed',1 FROM tasks`);
+        await client.sql("UPDATE tasks SET current_attempt=384+sequence");
+        await client.sql(`INSERT INTO executor_evidence(attempt,event,payload,signature)
+            SELECT id,'started','{"event":{"kind":"started"}}',? FROM attempts WHERE phase='completed'
+            UNION ALL SELECT id,'unknown','{"event":{"kind":"unknown"}}',? FROM attempts WHERE phase='completed'
+            UNION ALL SELECT id,'result',?,? FROM attempts WHERE phase='completed'`,
+        "0".repeat(128), "0".repeat(128), JSON.stringify({ event: { kind: "result", text: "r".repeat(4096) } }), "0".repeat(128));
+        await client.sql("INSERT INTO outbox(task,text,phase,sends) SELECT id,?,'delivered',2 FROM tasks", "r".repeat(4096));
+        await client.sql("INSERT INTO delivery_receipts(task,message_id) SELECT id,sequence FROM tasks");
+    });
+    assert.deepEqual(await client.agent("alpha", "next"), { task: null });
+    await client.post("telegram", update(200, 200, "p".repeat(4096)), webhook);
+    assert.deepEqual(await client.agent("alpha", "next"), { task: "telegram:200" });
+    const { task, result } = await reportResult(client, "telegram:200", "r".repeat(4096));
+    await client.post("telegram", update(201), webhook, 503);
+    await client.wire(client.signed("alpha", result));
+    await until(async () => (await client.fixture("delivery_status", { task })).phase === "delivered",
+        "send from full ledger");
+    assert.deepEqual(await client.agent("alpha", "next"), { task: null });
+    await until(() => client.metrics().some(row => row.scope === "alarm"), "alarm SQL sample");
+    const samples = client.metrics();
+    const warmSamples = samples.slice(2);
+    const peak = Object.fromEntries(["agent", "telegram", "fixture", "alarm"].map(scope => {
+        const rows = samples.filter(row => row.scope === scope);
+        return [scope, Object.fromEntries(["read", "written", "ms"].map(key => [key, Math.max(...rows.map(row => row[key]))]))];
+    }));
+    const [{ page_count }] = await client.sql("PRAGMA page_count");
+    const [{ page_size }] = await client.sql("PRAGMA page_size");
+    const [{ index_bytes }] = await client.sql(
+        "SELECT sum(pgsize) AS index_bytes FROM dbstat WHERE name IN ('outbox_pending','outbox_in_flight')",
+    );
+    context.diagnostic(JSON.stringify({
+        peak, warmPeakWritten: Math.max(...warmSamples.map(row => row.written)),
+        indexBytes: index_bytes, sqliteBytes: page_count * page_size,
+    }));
+    assert.ok(samples.some(row => row.read >= 128), "captures the full candidate scan");
+    for (const row of samples) {
+        assert.ok(row.read <= 320 && row.written <= 40, JSON.stringify(row));
+    }
+    assert.ok(warmSamples.every(row => row.written <= 10), "warm writes stay below 10 rows per operation");
 });
 
 test("checked-in phase gate disables webhook, agent and fixture routes", timeout, async context => {

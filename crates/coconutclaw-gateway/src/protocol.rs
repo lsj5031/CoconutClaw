@@ -89,6 +89,9 @@ pub enum Fixture {
     RecoverSend {
         task: String,
     },
+    DeliveryStatus {
+        task: String,
+    },
     Schedule {
         version: i64,
         first_at: i64,

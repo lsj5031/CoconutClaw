@@ -48,6 +48,18 @@ CREATE TABLE IF NOT EXISTS delivery_receipts (
     task TEXT PRIMARY KEY REFERENCES outbox(task),
     message_id INTEGER NOT NULL CHECK (message_id > 0)
 ) STRICT;
+CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(ready_at) WHERE phase='pending';
+CREATE INDEX IF NOT EXISTS outbox_in_flight ON outbox(ready_at) WHERE phase='in_flight';
+CREATE TABLE IF NOT EXISTS pilot_budget (
+    slot INTEGER PRIMARY KEY CHECK (slot = 1),
+    day INTEGER NOT NULL,
+    requests INTEGER NOT NULL CHECK (requests BETWEEN 1 AND 10000),
+    tasks INTEGER NOT NULL CHECK (tasks BETWEEN 0 AND 20)
+) STRICT;
+CREATE TABLE IF NOT EXISTS pilot_delivery (
+    slot INTEGER PRIMARY KEY CHECK (slot = 1),
+    not_before INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS schedule (
     slot INTEGER PRIMARY KEY CHECK (slot = 1),
     version INTEGER NOT NULL,

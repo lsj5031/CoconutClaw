@@ -23,6 +23,17 @@ impl std::fmt::Display for Unavailable {
 
 impl std::error::Error for Unavailable {}
 
+#[derive(Debug)]
+pub struct PilotPaused(pub Duration);
+
+impl std::fmt::Display for PilotPaused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("loopback gateway request budget exhausted")
+    }
+}
+
+impl std::error::Error for PilotPaused {}
+
 pub fn now_ms() -> Result<i64> {
     Ok(SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)?
@@ -135,6 +146,16 @@ impl Link {
                 Ok(Some(serde_json::from_slice(&bytes).map_err(|_| {
                     anyhow::anyhow!("invalid fixture response")
                 })?))
+            }
+            StatusCode::TOO_MANY_REQUESTS => {
+                let seconds = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| (1..=86_400).contains(value))
+                    .unwrap_or(60);
+                Err(PilotPaused(Duration::from_secs(seconds)).into())
             }
             status if status.is_server_error() => Err(Unavailable.into()),
             status => bail!("fixture request rejected with HTTP {}", status.as_u16()),

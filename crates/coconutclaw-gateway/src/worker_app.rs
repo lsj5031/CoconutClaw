@@ -105,7 +105,7 @@ async fn forward(req: Request, env: Env, phase: LocalPhase) -> Result<Response> 
 pub struct BotLedger {
     state: State,
     env: Env,
-    ledger: OnceCell<Ledger>,
+    initialized: OnceCell<()>,
 }
 
 impl DurableObject for BotLedger {
@@ -113,7 +113,7 @@ impl DurableObject for BotLedger {
         Self {
             state,
             env,
-            ledger: OnceCell::new(),
+            initialized: OnceCell::new(),
         }
     }
 
@@ -128,15 +128,25 @@ impl DurableObject for BotLedger {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        if LocalPhase::from_env(&self.env) != Some(LocalPhase::Protocol) {
+        let Some(phase) = LocalPhase::from_env(&self.env) else {
+            return Reply::ok(json!({})).response();
+        };
+        let bots = self.env.durable_object("BOTS")?;
+        if self.state.id() != bots.id_from_name(phase.instance())? {
             return Reply::ok(json!({})).response();
         }
         let storage = self.state.storage();
         let result = async {
-            self.ledger(&storage)?;
-            let (_, alarm) = Ledger::transaction(&storage, |ledger| ledger.wake(&storage, now()))?;
-            settle_alarm(alarm).await?;
-            storage.sync().await
+            let ledger = self.ledger(&storage, phase, "alarm")?;
+            match phase {
+                LocalPhase::Protocol => {
+                    let (_, alarm) =
+                        ledger.transaction(&storage, || ledger.wake(&storage, now()))?;
+                    settle_alarm(alarm).await?;
+                    storage.sync().await
+                }
+                LocalPhase::Executor => self.deliver(&storage, &ledger).await,
+            }
         }
         .await;
         result.map_err(|_| worker::Error::from("alarm storage unavailable"))?;
@@ -145,30 +155,76 @@ impl DurableObject for BotLedger {
 }
 
 impl BotLedger {
-    fn ledger(&self, storage: &Storage) -> Result<&Ledger> {
-        if self.ledger.get().is_none() {
-            self.ledger
-                .set(Ledger::open(storage)?)
+    fn ledger(&self, storage: &Storage, phase: LocalPhase, scope: &'static str) -> Result<Ledger> {
+        let measure = phase == LocalPhase::Executor
+            && self
+                .env
+                .var("LOCAL_SQL_METRICS")
+                .is_ok_and(|var| var.to_string() == "1");
+        let ledger = Ledger::new(storage, measure.then_some(scope));
+        if self.initialized.get().is_none() {
+            ledger.initialize()?;
+            self.initialized
+                .set(())
                 .map_err(|_| "storage already initialized")?;
         }
-        self.ledger
-            .get()
-            .ok_or_else(|| "storage unavailable".into())
+        Ok(ledger)
+    }
+
+    async fn deliver(&self, storage: &Storage, ledger: &Ledger) -> Result<()> {
+        let (delivery, alarm) =
+            ledger.transaction(storage, || ledger.wake_delivery(storage, now()))?;
+        settle_alarm(alarm).await?;
+        storage.sync().await?;
+        if let Some(delivery) = delivery {
+            let receipt = send_telegram(&delivery).await.unwrap_or(Receipt::Unknown);
+            let alarm = ledger.transaction(storage, || {
+                ledger.settle_delivery(storage, delivery, receipt, now())
+            })?;
+            settle_alarm(alarm).await?;
+            storage.sync().await?;
+        }
+        Ok(())
     }
 
     async fn handle(&self, mut req: Request, phase: LocalPhase) -> Result<Reply> {
         let executor = phase == LocalPhase::Executor;
         let path = req.path();
-        let auth = match path.as_str() {
-            "/v1/telegram" => authorized(
-                &req,
-                &self.env,
-                "x-telegram-bot-api-secret-token",
-                "WEBHOOK_SECRET",
+        let (scope, auth) = match path.as_str() {
+            "/v1/telegram" => (
+                "telegram",
+                authorized(
+                    &req,
+                    &self.env,
+                    "x-telegram-bot-api-secret-token",
+                    "WEBHOOK_SECRET",
+                ),
             ),
-            "/v1/fixture" => authorized(&req, &self.env, "x-fixture-secret", "FIXTURE_SECRET"),
-            _ => true,
+            "/v1/fixture" => (
+                "fixture",
+                authorized(&req, &self.env, "x-fixture-secret", "FIXTURE_SECRET"),
+            ),
+            "/v1/agent" => ("agent", true),
+            _ => return Ok(Reply::error(404, "not_found")),
         };
+        let storage = self.state.storage();
+        let ledger = self.ledger(&storage, phase, scope)?;
+        if executor {
+            let at = now();
+            let (admitted, alarm) = ledger.transaction(&storage, || {
+                let admitted = ledger.take_pilot_request(at, false)?;
+                let alarm = if admitted {
+                    ledger.bootstrap_delivery(&storage, at)?
+                } else {
+                    None
+                };
+                Ok((admitted, alarm))
+            })?;
+            settle_alarm(alarm).await?;
+            if !admitted {
+                return ledger.pilot_limit(at);
+            }
+        }
         if !auth {
             return Ok(Reply::error(401, "unauthorized"));
         }
@@ -181,7 +237,6 @@ impl BotLedger {
         } else {
             None
         };
-        let storage = self.state.storage();
         let (reply, drop_reply) = match path.as_str() {
             "/v1/telegram" => {
                 let Ok(update) = serde_json::from_slice::<Value>(&bytes) else {
@@ -195,9 +250,13 @@ impl BotLedger {
                 };
                 let input = telegram_input(&update)
                     .map(|(route, text)| (route.chat_id, route.message_thread_id, text));
-                self.ledger(&storage)?;
-                let reply = Ledger::transaction(&storage, |ledger| {
-                    ledger.ingest(id, input, fault.as_deref() == Some("rollback"))
+                let reply = ledger.transaction(&storage, || {
+                    ledger.ingest(
+                        id,
+                        input,
+                        fault.as_deref() == Some("rollback"),
+                        executor.then(now),
+                    )
                 })?;
                 (reply, fault.as_deref() == Some("after_commit"))
             }
@@ -230,7 +289,6 @@ impl BotLedger {
                 } else {
                     None
                 };
-                let ledger = self.ledger(&storage)?;
                 if let Some(reply) = ledger.read_agent(&agent, now(), phase.instance())? {
                     return Ok(reply);
                 }
@@ -239,9 +297,10 @@ impl BotLedger {
                         agent.command,
                         Command::Start { .. } | Command::Report { .. }
                     );
-                let reply = Ledger::transaction(&storage, |ledger| {
-                    ledger.mutate_agent(agent, now(), executor, evidence)
+                let (reply, alarm) = ledger.transaction(&storage, || {
+                    ledger.mutate_agent(agent, now(), executor, evidence, &storage)
                 })?;
+                settle_alarm(alarm).await?;
                 (reply, drop_reply)
             }
             "/v1/fixture" => {
@@ -251,15 +310,18 @@ impl BotLedger {
                 if executor
                     && matches!(
                         fixture,
-                        Fixture::Schedule { .. } | Fixture::Disable { .. } | Fixture::Wake { .. }
+                        Fixture::Schedule { .. }
+                            | Fixture::Disable { .. }
+                            | Fixture::Wake { .. }
+                            | Fixture::Send { .. }
+                            | Fixture::RecoverSend { .. }
                     )
                 {
                     return Ok(Reply::error(404, "not_found"));
                 }
                 let drop_receipt = fault.as_deref() == Some("drop_receipt");
-                self.ledger(&storage)?;
                 (
-                    self.fixture(&storage, fixture, drop_receipt, executor)
+                    self.fixture(&ledger, &storage, fixture, drop_receipt)
                         .await?,
                     false,
                 )
@@ -305,22 +367,23 @@ impl BotLedger {
 
     async fn fixture(
         &self,
+        ledger: &Ledger,
         storage: &Storage,
         fixture: Fixture,
         drop_receipt: bool,
-        executor: bool,
     ) -> Result<Reply> {
         match fixture {
-            Fixture::Cancel { task } => Ledger::transaction(storage, |ledger| ledger.cancel(&task)),
+            Fixture::Cancel { task } => ledger.transaction(storage, || ledger.cancel(&task)),
             Fixture::Disconnect { attempt } => {
-                Ledger::transaction(storage, |ledger| ledger.disconnect(attempt))
+                ledger.transaction(storage, || ledger.disconnect(attempt))
             }
+            Fixture::DeliveryStatus { task } => ledger.delivery_state(&task, true),
             Fixture::RecoverSend { task } => {
-                Ledger::transaction(storage, |ledger| ledger.recover_send(&task, executor))
+                ledger.transaction(storage, || ledger.recover_send(&task, false))
             }
             Fixture::Send { task } => {
                 let Some(send) =
-                    Ledger::transaction(storage, |ledger| ledger.reserve_send(&task, now()))?
+                    ledger.transaction(storage, || ledger.reserve_send(&task, now()))?
                 else {
                     return Ok(conflict());
                 };
@@ -329,12 +392,13 @@ impl BotLedger {
                 if drop_receipt {
                     return Ok(Reply::error(503, "fixture_dropped_receipt"));
                 }
-                Ledger::transaction(storage, |ledger| {
-                    ledger.finish_send(&task, receipt, send.sends, now(), executor)
+                ledger.transaction(storage, || {
+                    ledger.finish_send(&task, receipt, send.sends, now())?;
+                    ledger.delivery_state(&task, false)
                 })
             }
             other => {
-                let (reply, alarm) = Ledger::transaction(storage, |ledger| match other {
+                let (reply, alarm) = ledger.transaction(storage, || match other {
                     Fixture::Schedule {
                         version,
                         first_at,
@@ -462,7 +526,7 @@ async fn send_telegram(delivery: &Delivery) -> Result<Receipt> {
         },
         429 if value["ok"] == false && value["error_code"] == 429 => {
             match value["parameters"]["retry_after"].as_i64() {
-                Some(seconds @ 1..=10) => Receipt::Retry(seconds * 1000),
+                Some(seconds @ 1..=2_147_483_647) => Receipt::RateLimited(seconds * 1000),
                 _ => Receipt::Rejected,
             }
         }

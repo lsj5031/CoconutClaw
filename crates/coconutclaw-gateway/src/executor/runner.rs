@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::journal::{Intent, Journal};
-use super::link::{Link, Unavailable, now_ms};
+use super::link::{Link, PilotPaused, Unavailable, now_ms};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Fixture {
@@ -88,13 +88,18 @@ impl Executor {
                 Ok(idle) => {
                     backoff_ms = 250;
                     if idle {
-                        thread::sleep(jitter(2000));
+                        thread::sleep(jitter(10_000));
                     }
                 }
                 Err(error) if error.is::<Unavailable>() => {
                     connected = false;
                     thread::sleep(jitter(backoff_ms));
                     backoff_ms = (backoff_ms * 2).min(6400);
+                }
+                Err(error) if error.is::<PilotPaused>() => {
+                    connected = false;
+                    let pause = error.downcast::<PilotPaused>()?;
+                    thread::sleep(pause.0);
                 }
                 Err(error) => return Err(error),
             }
@@ -288,13 +293,17 @@ fn run_child(
         let mut next_poll = Instant::now() + Duration::from_millis(250);
         while !child.is_finished() {
             if Instant::now() >= next_poll && !cancel.load(Ordering::Acquire) {
-                if link
-                    .status(attempt)
-                    .is_ok_and(|status| status.cancel_requested)
-                {
-                    cancel.store(true, Ordering::Release);
-                }
-                next_poll = Instant::now() + Duration::from_millis(250);
+                let delay = match link.status(attempt) {
+                    Ok(status) if status.cancel_requested => {
+                        cancel.store(true, Ordering::Release);
+                        Duration::from_millis(250)
+                    }
+                    Err(error) if error.is::<PilotPaused>() => error
+                        .downcast_ref::<PilotPaused>()
+                        .map_or(Duration::from_secs(60), |pause| pause.0),
+                    _ => Duration::from_millis(250),
+                };
+                next_poll = Instant::now() + delay;
             }
             thread::sleep(Duration::from_millis(25));
         }

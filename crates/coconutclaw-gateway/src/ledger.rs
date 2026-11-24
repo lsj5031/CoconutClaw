@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -35,7 +37,13 @@ impl Reply {
     }
 
     pub fn response(self) -> Result<Response> {
-        Ok(Response::from_json(&self.1)?.with_status(self.0))
+        let mut response = Response::from_json(&self.1)?.with_status(self.0);
+        if let Some(wait) = self.1["retry_after_seconds"].as_i64() {
+            response
+                .headers_mut()
+                .set("retry-after", &wait.to_string())?;
+        }
+        Ok(response)
     }
 }
 
@@ -79,6 +87,7 @@ struct Schedule {
 
 #[derive(Deserialize)]
 pub struct Delivery {
+    pub task: String,
     pub chat_id: i64,
     pub thread_id: Option<i32>,
     pub text: String,
@@ -88,11 +97,40 @@ pub struct Delivery {
 pub enum Receipt {
     Delivered(i64),
     Rejected,
-    Retry(i64),
+    RateLimited(i64),
     Unknown,
 }
 
-pub struct Ledger(SqlStorage);
+const DAY_MS: i64 = 86_400_000;
+const REQUEST_LIMIT: i64 = 10_000;
+const INGRESS_LIMIT: i64 = 9_800;
+const TASK_LIMIT: i64 = 20;
+const SEND_INTERVAL_MS: i64 = 4_000;
+const RECEIPT_DEADLINE_MS: i64 = 5_000;
+
+pub struct Ledger {
+    sql: SqlStorage,
+    meter: Option<Meter>,
+}
+
+struct Meter {
+    scope: &'static str,
+    started: f64,
+    rows: Cell<(usize, usize)>,
+}
+
+impl Drop for Meter {
+    fn drop(&mut self) {
+        let (read, written) = self.rows.get();
+        worker::console_log!(
+            "pilot_sql {} {} {} {}",
+            self.scope,
+            read,
+            written,
+            js_sys::Date::now() - self.started
+        );
+    }
+}
 
 type Bind = SqlStorageValue;
 
@@ -102,22 +140,31 @@ struct Number {
 }
 
 impl Ledger {
-    pub fn open(storage: &Storage) -> Result<Self> {
-        let ledger = Self(storage.sql());
-        for query in include_str!("schema.sql").split_terminator(';') {
-            if !query.trim().is_empty() {
-                ledger.write(query, [])?;
-            }
+    pub fn new(storage: &Storage, measure: Option<&'static str>) -> Self {
+        Self {
+            sql: storage.sql(),
+            meter: measure.map(|scope| Meter {
+                scope,
+                started: js_sys::Date::now(),
+                rows: Cell::default(),
+            }),
         }
-        Ok(ledger)
     }
 
-    pub fn transaction<T>(storage: &Storage, run: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
-        let ledger = Self(storage.sql());
+    pub fn initialize(&self) -> Result<()> {
+        for query in include_str!("schema.sql").split_terminator(';') {
+            if !query.trim().is_empty() {
+                self.write(query, [])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn transaction<T>(&self, storage: &Storage, run: impl FnOnce() -> Result<T>) -> Result<T> {
         let mut output = None;
         let mut run = Some(run);
         let mut callback = || -> std::result::Result<(), JsValue> {
-            let result = run.take().ok_or(JsValue::NULL)?(&ledger).map_err(JsValue::from)?;
+            let result = run.take().ok_or(JsValue::NULL)?().map_err(JsValue::from)?;
             output = Some(result);
             Ok(())
         };
@@ -128,8 +175,18 @@ impl Ledger {
     }
 
     fn write<const N: usize>(&self, query: &str, values: [Bind; N]) -> Result<()> {
-        self.0.exec(query, Some(values.into()))?;
+        let cursor = self.sql.exec(query, Some(values.into()))?;
+        self.record_sql(&cursor);
         Ok(())
+    }
+
+    fn record_sql(&self, cursor: &worker::SqlCursor) {
+        if let Some(meter) = &self.meter {
+            let (read, written) = meter.rows.get();
+            meter
+                .rows
+                .set((read + cursor.rows_read(), written + cursor.rows_written()));
+        }
     }
 
     fn row<T: DeserializeOwned, const N: usize>(
@@ -137,15 +194,57 @@ impl Ledger {
         query: &str,
         values: [Bind; N],
     ) -> Result<Option<T>> {
-        Ok(self
-            .0
-            .exec(query, Some(values.into()))?
-            .to_array::<T>()?
-            .pop())
+        let cursor = self.sql.exec(query, Some(values.into()))?;
+        let rows = cursor.to_array::<T>()?;
+        self.record_sql(&cursor);
+        Ok(rows.into_iter().last())
     }
 
     fn number<const N: usize>(&self, query: &str, values: [Bind; N]) -> Result<Option<i64>> {
         Ok(self.row::<Number, N>(query, values)?.map(|row| row.value))
+    }
+
+    pub fn take_pilot_request(&self, now: i64, alarm: bool) -> Result<bool> {
+        let day = now.div_euclid(DAY_MS);
+        let limit = if alarm { REQUEST_LIMIT } else { INGRESS_LIMIT };
+        Ok(self
+            .number(
+                "INSERT INTO pilot_budget(slot,day,requests,tasks) VALUES(1,?1,1,0)
+             ON CONFLICT(slot) DO UPDATE SET day=?1,
+               requests=CASE WHEN day=?1 THEN requests+1 ELSE 1 END,
+               tasks=CASE WHEN day=?1 THEN tasks ELSE 0 END
+             WHERE day<?1 OR (day=?1 AND requests<?2)
+             RETURNING requests AS value",
+                [day.into(), limit.into()],
+            )?
+            .is_some())
+    }
+
+    fn pilot_reset_at(&self) -> Result<i64> {
+        let day = self
+            .number("SELECT day AS value FROM pilot_budget", [])?
+            .ok_or("missing pilot day")?;
+        Ok((day + 1) * DAY_MS)
+    }
+
+    pub fn pilot_limit(&self, now: i64) -> Result<Reply> {
+        let wait = (self.pilot_reset_at()? - now + 999) / 1000;
+        Ok(Reply(
+            429,
+            json!({
+                "error": "pilot_request_limit", "retry_after_seconds": wait.clamp(1, 86_400)
+            }),
+        ))
+    }
+
+    fn take_pilot_task(&self, now: i64) -> Result<bool> {
+        Ok(self
+            .number(
+                "UPDATE pilot_budget SET tasks=tasks+1 WHERE slot=1 AND day=? AND tasks<?
+             RETURNING tasks AS value",
+                [now.div_euclid(DAY_MS).into(), TASK_LIMIT.into()],
+            )?
+            .is_some())
     }
 
     pub fn ingest(
@@ -153,6 +252,7 @@ impl Ledger {
         update: i64,
         input: Option<(i64, Option<i32>, &str)>,
         fail: bool,
+        pilot_now: Option<i64>,
     ) -> Result<Reply> {
         if self
             .number(
@@ -169,6 +269,12 @@ impl Ledger {
         )? >= Some(128)
         {
             return Ok(Reply::error(503, "inbox_capacity"));
+        }
+        if let Some(now) = pilot_now
+            && input.is_some()
+            && !self.take_pilot_task(now)?
+        {
+            return Ok(Reply::error(429, "pilot_task_limit"));
         }
         let disposition = if input.is_some() { "task" } else { "ignored" };
         self.write(
@@ -268,17 +374,19 @@ impl Ledger {
         now: i64,
         executor: bool,
         evidence: Option<Evidence>,
-    ) -> Result<Reply> {
+        storage: &Storage,
+    ) -> Result<(Reply, Option<js_sys::Promise>)> {
+        let mut alarm = None;
         let device = agent.device;
         if self.last_sequence(device)? >= agent.sequence {
-            return Ok(Reply::error(409, "replay"));
+            return Ok((Reply::error(409, "replay"), None));
         }
         self.write(
             "INSERT INTO agent_sequences(device,sequence) VALUES(?,?) ON CONFLICT(device) DO UPDATE SET sequence=excluded.sequence",
             [device.name().into(), agent.sequence.into()],
         )?;
         let sequence = agent.sequence;
-        match agent.command {
+        let reply = match agent.command {
             Command::Claim { task } => self.claim(device, now, &task, executor),
             Command::Start { attempt } => self.update_attempt(device, attempt, |row| {
                 if row.cancel_requested != 0 {
@@ -309,16 +417,28 @@ impl Ledger {
                 }))
             }),
             Command::Report { proof } => {
-                self.report(device, proof, evidence.ok_or("missing verified evidence")?)
+                let (reply, queued) =
+                    self.report(device, proof, evidence.ok_or("missing verified evidence")?)?;
+                if queued {
+                    alarm = self.arm_delivery(storage, now, now)?;
+                }
+                Ok(reply)
             }
             command => self.apply_evidence(device, command),
-        }
+        }?;
+        Ok((reply, alarm))
     }
 
-    fn report(&self, device: Device, proof: SignedEvidence, evidence: Evidence) -> Result<Reply> {
+    fn report(
+        &self,
+        device: Device,
+        proof: SignedEvidence,
+        evidence: Evidence,
+    ) -> Result<(Reply, bool)> {
         let attempt = evidence.attempt;
         let event = evidence.event.name();
-        self.update_attempt(device, attempt, |row| {
+        let mut queued = false;
+        let reply = self.update_attempt(device, attempt, |row| {
             if let Some(stored) = self.row::<SignedEvidence, 2>(
                 "SELECT payload,signature FROM executor_evidence WHERE attempt=? AND event=?",
                 [attempt.into(), event.into()],
@@ -334,6 +454,7 @@ impl Ledger {
             let reply = match evidence.event {
                 Event::Started => self.apply_evidence(device, Command::Started { attempt })?,
                 Event::Result { text } if row.started_evidence != 0 => {
+                    queued = row.phase.has_grant();
                     self.apply_evidence(device, Command::Result { attempt, text })?
                 }
                 Event::Cancelled {
@@ -364,7 +485,9 @@ impl Ledger {
                 ],
             )?;
             Ok(Reply::ok(json!({"event": event})))
-        })
+        })?;
+        queued &= reply.0 == 200;
+        Ok((reply, queued))
     }
 
     fn apply_evidence(&self, device: Device, command: Command) -> Result<Reply> {
@@ -561,8 +684,8 @@ impl Ledger {
 
     pub fn reserve_send(&self, task: &str, now: i64) -> Result<Option<Delivery>> {
         let delivery = self.row::<Delivery, 2>(
-            "SELECT t.chat_id,t.thread_id,o.text,o.sends+1 AS sends FROM outbox o
-             JOIN tasks t ON o.task=t.id WHERE o.task=? AND o.phase='pending' AND o.ready_at<=?",
+            "SELECT o.task,t.chat_id,t.thread_id,o.text,o.sends+1 AS sends FROM outbox o
+             JOIN tasks t ON o.task=t.id WHERE o.task=? AND o.phase='pending' AND o.ready_at<=? AND o.sends<2",
             [task.into(), now.into()],
         )?;
         if delivery.is_some() {
@@ -574,33 +697,140 @@ impl Ledger {
         Ok(delivery)
     }
 
-    pub fn finish_send(
-        &self,
-        task: &str,
-        receipt: Receipt,
-        sends: i64,
-        now: i64,
-        include_receipt: bool,
-    ) -> Result<Reply> {
+    pub fn finish_send(&self, task: &str, receipt: Receipt, sends: i64, now: i64) -> Result<()> {
         let (phase, ready_at) = match receipt {
             Receipt::Delivered(message_id) => {
                 self.write(
                     "INSERT INTO delivery_receipts(task,message_id)
-                     SELECT task,? FROM outbox WHERE task=? AND phase='in_flight'",
-                    [message_id.into(), task.into()],
+                     SELECT task,? FROM outbox WHERE task=? AND phase='in_flight' AND sends=?",
+                    [message_id.into(), task.into(), sends.into()],
                 )?;
                 ("delivered", 0)
             }
             Receipt::Rejected => ("failed", 0),
-            Receipt::Retry(delay) if sends == 1 => ("pending", now + delay),
-            Receipt::Retry(_) => ("failed", 0),
+            Receipt::RateLimited(delay) if sends == 1 && delay <= 10_000 => {
+                ("pending", now + delay)
+            }
+            Receipt::RateLimited(_) => ("failed", 0),
             Receipt::Unknown => ("unknown", 0),
         };
         self.write(
-            "UPDATE outbox SET phase=?,ready_at=? WHERE task=? AND phase='in_flight'",
-            [phase.into(), ready_at.into(), task.into()],
-        )?;
-        self.delivery_state(task, include_receipt)
+            "UPDATE outbox SET phase=?,ready_at=? WHERE task=? AND phase='in_flight' AND sends=?",
+            [phase.into(), ready_at.into(), task.into(), sends.into()],
+        )
+    }
+
+    pub fn bootstrap_delivery(
+        &self,
+        storage: &Storage,
+        now: i64,
+    ) -> Result<Option<js_sys::Promise>> {
+        if self
+            .number("SELECT not_before AS value FROM pilot_delivery", [])?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        self.write("INSERT INTO pilot_delivery VALUES(1,0)", [])?;
+        self.arm_delivery(storage, now, now)
+    }
+
+    pub fn wake_delivery(
+        &self,
+        storage: &Storage,
+        now: i64,
+    ) -> Result<(Option<Delivery>, Option<js_sys::Promise>)> {
+        if !self.take_pilot_request(now, true)? {
+            return Ok((
+                None,
+                self.arm_delivery(storage, now, self.pilot_reset_at()?)?,
+            ));
+        }
+        let flight = self.in_flight_at()?;
+        let delivery = if flight.is_some_and(|deadline| deadline <= now) {
+            self.write(
+                "UPDATE outbox SET phase='unknown',ready_at=0 WHERE rowid=(
+                    SELECT rowid FROM outbox WHERE phase='in_flight' AND ready_at<=?
+                    ORDER BY ready_at LIMIT 1
+                 )",
+                [now.into()],
+            )?;
+            None
+        } else if flight.is_none() && self.send_not_before()? <= now {
+            let next = self.row::<Delivery, 1>(
+                "SELECT o.task,t.chat_id,t.thread_id,o.text,o.sends+1 AS sends FROM outbox o
+                 JOIN tasks t ON o.task=t.id WHERE o.phase='pending' AND o.ready_at<=? AND o.sends<2
+                 ORDER BY o.ready_at,o.rowid LIMIT 1",
+                [now.into()],
+            )?;
+            if let Some(delivery) = &next {
+                self.write(
+                    "UPDATE outbox SET phase='in_flight',sends=sends+1,ready_at=? WHERE task=?",
+                    [
+                        (now + RECEIPT_DEADLINE_MS).into(),
+                        delivery.task.as_str().into(),
+                    ],
+                )?;
+                self.delay_sends_until(now + SEND_INTERVAL_MS)?;
+            }
+            next
+        } else {
+            None
+        };
+        Ok((delivery, self.arm_delivery(storage, now, now)?))
+    }
+
+    pub fn settle_delivery(
+        &self,
+        storage: &Storage,
+        delivery: Delivery,
+        receipt: Receipt,
+        now: i64,
+    ) -> Result<Option<js_sys::Promise>> {
+        if let Receipt::RateLimited(delay) = receipt {
+            self.delay_sends_until(now + delay)?;
+        }
+        self.finish_send(&delivery.task, receipt, delivery.sends, now)?;
+        self.arm_delivery(storage, now, now)
+    }
+
+    fn delay_sends_until(&self, at: i64) -> Result<()> {
+        self.write(
+            "UPDATE pilot_delivery SET not_before=max(not_before,?) WHERE slot=1",
+            [at.into()],
+        )
+    }
+
+    fn send_not_before(&self) -> Result<i64> {
+        self.number("SELECT not_before AS value FROM pilot_delivery", [])?
+            .ok_or_else(|| "missing pilot delivery state".into())
+    }
+
+    fn in_flight_at(&self) -> Result<Option<i64>> {
+        self.number(
+            "SELECT ready_at AS value FROM outbox WHERE phase='in_flight' ORDER BY ready_at LIMIT 1",
+            [],
+        )
+    }
+
+    fn arm_delivery(
+        &self,
+        storage: &Storage,
+        now: i64,
+        until: i64,
+    ) -> Result<Option<js_sys::Promise>> {
+        let due = if let Some(at) = self.in_flight_at()? {
+            Some(at)
+        } else if let Some(at) = self.number(
+            "SELECT ready_at AS value FROM outbox WHERE phase='pending' ORDER BY ready_at LIMIT 1",
+            [],
+        )? {
+            Some(at.max(self.send_not_before()?))
+        } else {
+            None
+        };
+        let at = due.map_or(0, |at| at.max(now + 100).max(until));
+        Ok(Some(Self::alarm(storage, at)?))
     }
 
     pub fn recover_send(&self, task: &str, include_receipt: bool) -> Result<Reply> {
@@ -611,7 +841,7 @@ impl Ledger {
         self.delivery_state(task, include_receipt)
     }
 
-    fn delivery_state(&self, task: &str, include_receipt: bool) -> Result<Reply> {
+    pub fn delivery_state(&self, task: &str, include_receipt: bool) -> Result<Reply> {
         #[derive(Deserialize)]
         struct DeliveryState {
             phase: String,
