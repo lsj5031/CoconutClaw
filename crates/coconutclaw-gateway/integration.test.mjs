@@ -182,11 +182,14 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
     const fixture = (op, fields, status, fault) => post("fixture", { op, ...fields }, {
         ...operator, ...(fault ? { "x-fixture-fault": fault } : {}),
     }, status);
-    async function withFixtureDb(filePattern, use) {
+    async function fixtureDbPath(filePattern) {
         assert.ok(inspect);
         const files = (await readdir(persistence, { recursive: true })).filter(file => filePattern.test(file));
         assert.equal(files.length, 1, files.join(", "));
-        const db = new DatabaseSync(join(persistence, files[0]), { readOnly: !stopped });
+        return join(persistence, files[0]);
+    }
+    async function withFixtureDb(filePattern, use) {
+        const db = new DatabaseSync(await fixtureDbPath(filePattern), { readOnly: !stopped });
         try {
             db.exec("PRAGMA busy_timeout=500");
             return use(db);
@@ -212,7 +215,7 @@ async function runFixture(context, { enabled = true, executor = false, inspect =
         return () => stopped;
     }
     return { agent, fixture, post, rawPost, stop, restart, sends, sendTimes, signed, wire, keys, sql,
-        editLedger, scheduledAlarm, metrics, registerProxyDrain };
+        editLedger, ledgerPath: () => fixtureDbPath(ledgerFile), scheduledAlarm, metrics, registerProxyDrain };
 }
 
 function update(id, topic = 7, text = `synthetic task ${id}`) {
@@ -537,6 +540,75 @@ async function reportResult(client, task, text, drop = false) {
     await client.wire(packet, drop ? 503 : 200);
     return { task, result };
 }
+
+const cutoverCli = process.env.COCONUTCLAW_CUTOVER_CLI;
+
+test("the gateway holds a legacy CLI import after restart", {
+    ...timeout, skip: !cutoverCli,
+}, async context => {
+    const client = await runFixture(context, { executor: true, inspect: true });
+    await client.agent("alpha", "hello");
+    await client.stop();
+    const root = await mkdtemp(join(import.meta.dirname, "build", "archive-"));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const data = join(root, "source");
+    const baseline = join(root, "baseline.json");
+    const delta = join(root, "final.json");
+    const baseDb = join(root, "baseline.sqlite");
+    const finalDb = join(root, "final.sqlite");
+    const cli = (...args) => execFileSync(cutoverCli, ["--data-dir", data, ...args], {
+        cwd: root, env: { PATH: process.env.PATH }, encoding: "utf8",
+    });
+    cli("nodes", "status");
+    const db = new DatabaseSync(join(data, "state.db"));
+    try {
+        db.exec(`INSERT INTO task_runs(id,session_id,channel,source_chat_id,source_thread_id,
+            update_id,prompt,status,created_at,error_summary)
+            VALUES (23,'telegram:321#37','telegram','321','37','201','synthetic held task',
+                'failed','t','runtime restarted; outcome unknown, do not automatically retry')`);
+        db.prepare("VACUUM INTO ?").run(baseDb);
+        db.exec(`INSERT INTO telegram_ingress(seq,update_id,payload,state,created_at)
+            VALUES(1,'202','{"update_id":202}','pending','t');
+            UPDATE kv SET value='202' WHERE key='last_update_id';
+            INSERT INTO legacy_admission_freeze VALUES(1)`);
+    } finally {
+        db.close();
+    }
+    const baselineDigest = cli("legacy-cutover", "baseline", "--source", baseDb, "--source-id",
+        "synthetic-local", "--output", baseline).trim();
+    cli("seal-legacy-cutover");
+    const sealed = new DatabaseSync(join(data, "state.db"));
+    try {
+        sealed.prepare("VACUUM INTO ?").run(finalDb);
+    } finally {
+        sealed.close();
+    }
+    const finalDigest = cli("legacy-cutover", "export-final", "--source", finalDb,
+        "--baseline", baseline, "--baseline-digest", baselineDigest, "--output", delta).trim();
+    const ledger = await client.ledgerPath();
+    const importArchive = () => cli("legacy-cutover", "import-gateway-local", "--ledger", ledger,
+        "--baseline", baseline, "--baseline-digest", baselineDigest, "--delta", delta, "--final-digest", finalDigest);
+    const ack = importArchive();
+    assert.deepEqual(JSON.parse(ack), {
+        source_id: "synthetic-local", baseline_digest: baselineDigest, final_digest: finalDigest,
+        projection_digest: JSON.parse(await readFile(delta, "utf8")).projection_digest, receipt_digests: {},
+    });
+    await client.restart();
+    assert.deepEqual(await client.post("telegram", update(202), webhook, 503), { error: "legacy_cutover_held" });
+    assert.deepEqual(await client.agent("alpha", "next", {}, 503), { error: "legacy_cutover_held" });
+    assert.deepEqual(await client.fixture("cancel", { task: "legacy:23" }, 503), { error: "legacy_cutover_held" });
+    assert.deepEqual(await client.sql("SELECT generation,attempt_floor,active FROM local_authority"),
+        [{ generation: 1, attempt_floor: 0, active: 0 }]);
+    const [{ projection }] = await client.sql("SELECT CAST(projection AS TEXT) AS projection FROM local_legacy_cutover");
+    assert.match(JSON.parse(projection).task_runs[0].error_summary, /outcome unknown/);
+    assert.equal(JSON.parse(projection).telegram_ingress[0].state, "pending");
+    assert.deepEqual(await client.sql(`SELECT (SELECT count(*) FROM inbox)+(SELECT count(*) FROM tasks)
+        +(SELECT count(*) FROM attempts)+(SELECT count(*) FROM outbox) AS work`), [{ work: 0 }]);
+    assert.deepEqual(await client.scheduledAlarm(), []);
+    assert.deepEqual(client.sends, []);
+    await client.stop();
+    assert.equal(importArchive(), ack);
+});
 
 test("synthetic cutover imports the final delta and returns settled and held work", timeout, async context => {
     const client = await runFixture(context, { executor: true, inspect: true });

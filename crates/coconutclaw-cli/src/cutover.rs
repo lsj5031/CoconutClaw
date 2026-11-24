@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod gateway;
 mod projection;
 use projection::{Projection, Replacements, capture, changes, receipt_binding, validate};
 
@@ -65,6 +66,19 @@ enum Action {
         #[arg(long)]
         final_digest: blake3::Hash,
     },
+    /// Import into a stopped local gateway ledger and leave its authority held.
+    ImportGatewayLocal {
+        #[arg(long)]
+        ledger: PathBuf,
+        #[arg(long)]
+        baseline: PathBuf,
+        #[arg(long)]
+        baseline_digest: blake3::Hash,
+        #[arg(long)]
+        delta: PathBuf,
+        #[arg(long)]
+        final_digest: blake3::Hash,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +108,12 @@ struct Acknowledgment {
     final_digest: String,
     projection_digest: String,
     receipt_digests: BTreeMap<i64, String>,
+}
+
+struct ValidatedFinal {
+    projection: Vec<u8>,
+    receipts: Vec<CutoverReceipt>,
+    ack: Acknowledgment,
 }
 
 pub(crate) fn run(args: &Args) -> Result<()> {
@@ -143,6 +163,22 @@ pub(crate) fn run(args: &Args) -> Result<()> {
         } => {
             let raw = read_pinned(delta, *final_digest)?;
             let ack = import_final(custody, &raw, *final_digest)?;
+            writeln!(std::io::stdout().lock(), "{}", serde_json::to_string(&ack)?)?;
+        }
+        Action::ImportGatewayLocal {
+            ledger,
+            baseline,
+            baseline_digest,
+            delta,
+            final_digest,
+        } => {
+            let ack = import_gateway_local(
+                ledger,
+                &fs::read(baseline)?,
+                *baseline_digest,
+                &fs::read(delta)?,
+                *final_digest,
+            )?;
             writeln!(std::io::stdout().lock(), "{}", serde_json::to_string(&ack)?)?;
         }
     }
@@ -299,18 +335,24 @@ fn staged_baseline(db: &Connection) -> Result<(String, Vec<u8>)> {
     )?)
 }
 
-fn import_final(path: &Path, raw: &[u8], digest: blake3::Hash) -> Result<Acknowledgment> {
-    let delta: Delta = serde_json::from_slice(raw)?;
-    let mut db = open_custody(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-    db.pragma_update(None, "synchronous", "EXTRA")?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (baseline_digest, baseline_raw) = staged_baseline(&tx)?;
+fn validate_final(
+    baseline_raw: &[u8],
+    baseline_digest: blake3::Hash,
+    raw: &[u8],
+    digest: blake3::Hash,
+) -> Result<ValidatedFinal> {
     ensure!(
-        blake3::hash(&baseline_raw).to_string() == baseline_digest
-            && delta.baseline_digest == baseline_digest,
+        blake3::hash(raw) == digest,
+        "final artifact digest mismatch"
+    );
+    let delta: Delta = serde_json::from_slice(raw)?;
+    let baseline_digest_hex = baseline_digest.to_string();
+    ensure!(
+        blake3::hash(baseline_raw) == baseline_digest
+            && delta.baseline_digest == baseline_digest_hex,
         "staged baseline digest mismatch"
     );
-    let baseline = parse_baseline(&baseline_raw)?;
+    let baseline = parse_baseline(baseline_raw)?;
     ensure!(
         delta.version == VERSION && delta.source_id == baseline.source_id,
         "wrong source identity or delta version"
@@ -328,7 +370,50 @@ fn import_final(path: &Path, raw: &[u8], digest: blake3::Hash) -> Result<Acknowl
         "final projection digest mismatch"
     );
     verify_receipts(&final_state, baseline.coordinator_key, &delta.receipts)?;
-    let final_digest = digest.to_string();
+    let receipt_digests = delta
+        .receipts
+        .iter()
+        .map(|receipt| {
+            Ok((
+                receipt.run,
+                blake3::hash(&serde_json::to_vec(receipt)?).to_string(),
+            ))
+        })
+        .collect::<Result<_>>()?;
+    Ok(ValidatedFinal {
+        projection,
+        receipts: delta.receipts,
+        ack: Acknowledgment {
+            source_id: delta.source_id,
+            baseline_digest: baseline_digest_hex,
+            final_digest: digest.to_string(),
+            projection_digest: delta.projection_digest,
+            receipt_digests,
+        },
+    })
+}
+
+fn import_gateway_local(
+    ledger: &Path,
+    baseline: &[u8],
+    baseline_digest: blake3::Hash,
+    delta: &[u8],
+    final_digest: blake3::Hash,
+) -> Result<Acknowledgment> {
+    let verified = validate_final(baseline, baseline_digest, delta, final_digest)?;
+    gateway::import(ledger, baseline, delta, verified)
+}
+
+fn import_final(path: &Path, raw: &[u8], digest: blake3::Hash) -> Result<Acknowledgment> {
+    let mut db = open_custody(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    db.pragma_update(None, "synchronous", "EXTRA")?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let (baseline_digest, baseline_raw) = staged_baseline(&tx)?;
+    let ValidatedFinal {
+        projection,
+        receipts,
+        ack,
+    } = validate_final(&baseline_raw, baseline_digest.parse()?, raw, digest)?;
     let previous: Option<(String, Vec<u8>, Vec<u8>)> = tx
         .query_row(
             "SELECT digest,artifact,projection FROM final_delta WHERE singleton=1",
@@ -338,7 +423,7 @@ fn import_final(path: &Path, raw: &[u8], digest: blake3::Hash) -> Result<Acknowl
         .optional()?;
     if let Some((stored_digest, stored_artifact, stored_projection)) = previous {
         ensure!(
-            stored_digest == final_digest
+            stored_digest == ack.final_digest
                 && stored_artifact == raw
                 && stored_projection == projection,
             "conflicting final delta replay"
@@ -346,9 +431,9 @@ fn import_final(path: &Path, raw: &[u8], digest: blake3::Hash) -> Result<Acknowl
     } else {
         tx.execute(
             "INSERT INTO final_delta VALUES(1,?1,?2,?3)",
-            params![final_digest, raw, projection],
+            params![ack.final_digest, raw, projection],
         )?;
-        for receipt in &delta.receipts {
+        for receipt in &receipts {
             tx.execute(
                 "INSERT INTO signed_receipts VALUES(?1,?2,?3)",
                 params![receipt.run, receipt.start, receipt.result],
@@ -366,24 +451,9 @@ fn import_final(path: &Path, raw: &[u8], digest: blake3::Hash) -> Result<Acknowl
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(statement);
-    ensure!(stored == delta.receipts, "stored receipt custody mismatch");
-    let receipt_digests = stored
-        .iter()
-        .map(|receipt| {
-            Ok((
-                receipt.run,
-                blake3::hash(&serde_json::to_vec(receipt)?).to_string(),
-            ))
-        })
-        .collect::<Result<_>>()?;
+    ensure!(stored == receipts, "stored receipt custody mismatch");
     tx.commit()?;
-    Ok(Acknowledgment {
-        source_id: delta.source_id,
-        baseline_digest,
-        final_digest,
-        projection_digest: delta.projection_digest,
-        receipt_digests,
-    })
+    Ok(ack)
 }
 
 #[cfg(test)]

@@ -251,3 +251,164 @@ fn frozen_final_delta_requires_pinned_coordinator_and_complete_terminal_evidence
     let error = export_final(&stale, &pinned, digest).err().unwrap();
     assert!(format!("{error:#}").contains("signed terminal receipt missing"));
 }
+
+#[test]
+fn gateway_local_cutover_commits_held_projection_and_exact_signed_bytes_together() {
+    let root = tempfile::tempdir().unwrap();
+    let (cfg, store) = fixture(root.path());
+    let base = root.path().join("base.sqlite");
+    let frozen = root.path().join("frozen.sqlite");
+    let ledger = root.path().join("ledger.sqlite");
+    backup(&store, &base);
+    add_final_work(&store);
+    let (key, receipt) = crate::nodes::tests::late_cutover_receipt(&store, 25);
+    Store::seal_legacy_cutover(&cfg).unwrap();
+    backup(&store, &frozen);
+    let (baseline, baseline_raw, baseline_digest) = baseline(&base, Some(key));
+    let delta = export_final(&frozen, &baseline, baseline_digest).unwrap();
+    let raw = serde_json::to_vec(&delta).unwrap();
+    let final_digest = blake3::hash(&raw);
+    let import =
+        || import_gateway_local(&ledger, &baseline_raw, baseline_digest, &raw, final_digest);
+    assert!(import().is_err());
+    assert!(!ledger.exists());
+
+    let db = Connection::open(&ledger).unwrap();
+    db.execute_batch(include_str!("../../../coconutclaw-gateway/src/schema.sql"))
+        .unwrap();
+    assert!(format!("{:#}", import().unwrap_err()).contains("phase2-local gateway ledger"));
+    db.execute_batch(include_str!(
+        "../../../coconutclaw-gateway/src/local-cutover.sql"
+    ))
+    .unwrap();
+    db.execute_batch(
+        "INSERT INTO local_authority VALUES(1,2,0,0);
+         INSERT INTO inbox(update_id,disposition) VALUES(200,'ignored');",
+    )
+    .unwrap();
+    assert!(format!("{:#}", import().unwrap_err()).contains("already contains work"));
+    db.execute("DELETE FROM inbox", []).unwrap();
+    assert!(format!("{:#}", import().unwrap_err()).contains("authority is already assigned"));
+    db.execute_batch(
+        "DELETE FROM local_authority;
+         CREATE TRIGGER interrupted BEFORE INSERT ON local_legacy_receipts
+         BEGIN SELECT RAISE(ABORT,'interrupted'); END;",
+    )
+    .unwrap();
+    assert!(format!("{:#}", import().unwrap_err()).contains("interrupted"));
+    db.execute_batch("DROP TRIGGER interrupted;").unwrap();
+
+    assert!(
+        import_gateway_local(
+            &ledger,
+            &baseline_raw,
+            baseline_digest,
+            &raw,
+            baseline_digest
+        )
+        .is_err()
+    );
+    let reject = |artifact: &Delta, expected: &str| {
+        let bytes = serde_json::to_vec(artifact).unwrap();
+        let error = import_gateway_local(
+            &ledger,
+            &baseline_raw,
+            baseline_digest,
+            &bytes,
+            blake3::hash(&bytes),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+    };
+    let mut altered: Delta = serde_json::from_slice(&raw).unwrap();
+    altered.source_id.push('x');
+    reject(&altered, "wrong source identity");
+    let mut altered: Delta = serde_json::from_slice(&raw).unwrap();
+    altered.baseline_digest = final_digest.to_string();
+    reject(&altered, "staged baseline digest mismatch");
+    let mut altered: Delta = serde_json::from_slice(&raw).unwrap();
+    altered.projection_digest = final_digest.to_string();
+    reject(&altered, "final projection digest mismatch");
+    let mut altered: Delta = serde_json::from_slice(&raw).unwrap();
+    altered.receipts.clear();
+    reject(&altered, "terminal receipt coverage mismatch");
+    let mut altered: Delta = serde_json::from_slice(&raw).unwrap();
+    altered.receipts[0].result = std::str::from_utf8(&receipt.result)
+        .unwrap()
+        .replace(
+            "late signed Unknown outcome",
+            "changed signed Unknown outcome",
+        )
+        .into_bytes();
+    assert_ne!(altered.receipts[0].result, receipt.result);
+    reject(&altered, "verify receipt for source run 25");
+    assert_eq!(
+        db.query_row(
+            "SELECT (SELECT count(*) FROM local_authority)
+                  + (SELECT count(*) FROM local_legacy_cutover)
+                  + (SELECT count(*) FROM local_legacy_receipts)",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    drop(db);
+
+    let ack = import().unwrap();
+    assert_eq!(ack.source_id, "fixture");
+    assert_eq!(ack.final_digest, final_digest.to_string());
+    assert_eq!(
+        ack.receipt_digests[&25],
+        blake3::hash(&serde_json::to_vec(&receipt).unwrap()).to_string()
+    );
+    assert_eq!(import().unwrap(), ack);
+    let mut conflicting = raw.clone();
+    conflicting.push(b'\n');
+    let error = import_gateway_local(
+        &ledger,
+        &baseline_raw,
+        baseline_digest,
+        &conflicting,
+        blake3::hash(&conflicting),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("conflicting gateway cutover replay"));
+    assert_eq!(import().unwrap(), ack);
+
+    let db = Connection::open(&ledger).unwrap();
+    let (archive, artifact): (Vec<u8>, Vec<u8>) = db
+        .query_row(
+            "SELECT projection,delta FROM local_legacy_cutover",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(artifact, raw);
+    assert_eq!(blake3::hash(&archive).to_string(), ack.projection_digest);
+    let archive: Value = serde_json::from_slice(&archive).unwrap();
+    let baseline = serde_json::to_value(baseline.projection).unwrap();
+    assert_eq!(archive["runtime_tasks"][0], baseline["runtime_tasks"][0]);
+    assert_eq!(archive["task_runs"][1], baseline["task_runs"][1]);
+    assert_eq!(archive["telegram_ingress"][0]["state"], "pending");
+    assert_eq!(archive["telegram_ingress"][1]["progress_state"], "sending");
+    assert_eq!(archive["runtime_schedules"][0]["next_due"], 2000);
+    assert_eq!(archive["schedule_occurrences"][0]["due"], 1000);
+    assert_eq!(archive["runtime_remote_results"], json!([]));
+    assert_eq!(archive["task_runs"][3]["status"], "running");
+    let stored: (i64, Vec<u8>, Vec<u8>) = db
+        .query_row(
+            "SELECT run,start,result FROM local_legacy_receipts",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (receipt.run, receipt.start, receipt.result));
+
+    db.execute("UPDATE local_authority SET active=1", [])
+        .unwrap();
+    assert!(format!("{:#}", import().unwrap_err()).contains("authority is no longer held"));
+    db.execute_batch("UPDATE local_authority SET active=0; DELETE FROM local_legacy_receipts;")
+        .unwrap();
+    assert!(format!("{:#}", import().unwrap_err()).contains("stored receipt custody mismatch"));
+}

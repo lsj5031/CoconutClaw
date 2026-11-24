@@ -309,23 +309,61 @@ ignored. `cargo mutants` bypassed `verify_receipts`. The tests caught the
 bypass when the importer accepted corrupt evidence and the exporter accepted
 an unpinned coordinator.
 
+## Held gateway import
+
+Use a disposable `phase2-local` SQLite ledger initialized by the loopback
+Worker. Stop Miniflare and any fixture writers before import. Point `--ledger`
+at the object database the Worker created. The importer requires the local
+cutover schema and refuses a ledger with prior work or assigned authority.
+
+```sh
+coconutclaw legacy-cutover import-gateway-local --ledger "$LOCAL_LEDGER" \
+  --baseline baseline.json --baseline-digest "$BASELINE_DIGEST" \
+  --delta final.json --final-digest "$FINAL_DIGEST"
+```
+
+The command revalidates both pinned artifacts and every signed Start and
+terminal Result. A single durable SQLite transaction installs inactive
+generation 1, the final projection, the original artifacts and the exact
+receipt bytes. A repeated command returns the same acknowledgment only when
+the artifacts, projection, receipts and held authority still agree. The
+archive is separate from the live queue. It preserves task `#23` as Unknown,
+pending ingress, schedule watermarks and unresolved delivery evidence.
+The Worker rejects requests and skips alarm work while the archive is present.
+Keep the gateway database and the pinned artifacts as private task data.
+
+Set `COCONUTCLAW_CUTOVER_CLI` to the freshly built `coconutclaw` binary for
+the Miniflare integration test. It drives the CLI against a stopped object,
+reopens the same SQLite store, checks the hold and compares the printed
+acknowledgments across processes. The Rust fixture supplies genuine synthetic
+runner signatures and checks a SQLite abort during receipt insertion, byte
+preservation, conflicting replay and damaged custody.
+
+On November 25, 2026, Leo-Claw passed formatting, workspace and Wasm Clippy,
+and 591 workspace tests with five ignored. The disabled artifact passed 19
+local tests and the separate pilot artifact passed six. Official `cf`
+accepted both prebuilt artifacts in separate dry runs from
+`cloudflare.config.ts`. The gateway import test caught the `cargo mutants`
+variant that replaced receipt verification with `Ok(())`.
+
 ## BigFur Readiness
 
 - Run the hosted acceptance gate on Mars with official `cf` and
   `cloudflare.config.ts`. Verify real Telegram ingress and same-topic delivery
   and real Codex execution and cancellation through the isolated pilot.
 - Reconcile the frozen production export across all live writer paths and
-  verify `#23` directly from the authorized source. Integrate durable legacy
-  receipt custody and the held projection with the gateway's authority,
-  including a policy for each unsupported record and unresolved effect.
-  Worker cutover is still a synthetic rehearsal. Gateway activation requires
-  its own authority and verification.
+  verify `#23` directly from the authorized source. Gateway activation still
+  requires a production authority transfer, a disposition for each held
+  record and unresolved effect, and verification against the live gateway.
 - Prove generation and credential exclusion across independent stores and
-  stale restores. The local fence relies on retaining the same ledger and
-  executor journal, and the loopback TLS trust is provisioned by the fixture.
+  stale restores. Restoring a database from before the import can remove the
+  local hold. A custody acknowledgment applies to the ledger that committed it.
+  The local executor fence relies on retaining the same ledger and executor
+  journal, and the loopback TLS trust is provisioned by the fixture.
   A disconnected legacy runner with an unresolved `Begin` still blocks the
   seal. It needs the original signed terminal evidence or a separately proven
   retirement mechanism.
-- Rehearse live failback and reconcile unsettled effects before resuming
-  consumption. Record versions, high-water marks, signed evidence, recovery
-  time and the acknowledged-update loss window.
+- Rehearse live failback. Fence gateway writers and reconcile ingress
+  cursors, schedule watermarks, signed executor evidence and unsettled sends
+  before resuming legacy consumption. Record versions, recovery time and the
+  acknowledged-update loss window.

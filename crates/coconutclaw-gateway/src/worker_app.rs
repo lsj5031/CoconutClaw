@@ -146,12 +146,11 @@ impl DurableObject for BotLedger {
         let Some(phase) = route(&req, &self.env)? else {
             return Reply::error(404, "not_found").response();
         };
-        if phase == LocalPhase::Pilot
-            && self.state.id()
-                != self
-                    .env
-                    .durable_object("BOTS")?
-                    .id_from_name(phase.instance())?
+        if self.state.id()
+            != self
+                .env
+                .durable_object("BOTS")?
+                .id_from_name(phase.instance())?
         {
             return Reply::error(404, "not_found").response();
         }
@@ -173,9 +172,10 @@ impl DurableObject for BotLedger {
         let result = async {
             let ledger = self.ledger(&storage, phase, "alarm")?;
             if phase == LocalPhase::Executor
-                && !self
-                    .local_authority(&ledger)?
-                    .is_some_and(|authority| authority.active == 1)
+                && (ledger.legacy_cutover_held()?
+                    || !self
+                        .local_authority(&ledger)?
+                        .is_some_and(|authority| authority.active == 1))
             {
                 return Ok(());
             }
@@ -222,6 +222,8 @@ impl BotLedger {
             ledger.initialize()?;
             if phase == LocalPhase::Pilot {
                 ledger.initialize_synthetic_delivery()?;
+            } else if phase == LocalPhase::Executor {
+                ledger.initialize_local_cutover()?;
             }
             self.initialized
                 .set(())
@@ -276,6 +278,9 @@ impl BotLedger {
         let storage = self.state.storage();
         let ledger = self.ledger(&storage, phase, scope)?;
         let authority = if phase == LocalPhase::Executor {
+            if ledger.legacy_cutover_held()? {
+                return Ok(Reply::error(503, "legacy_cutover_held"));
+            }
             let Some(authority) = self.local_authority(&ledger)? else {
                 return Ok(Reply::error(503, "inactive_generation"));
             };

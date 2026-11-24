@@ -168,12 +168,29 @@ impl Ledger {
     }
 
     pub fn initialize(&self) -> Result<()> {
-        for query in include_str!("schema.sql").split_terminator(';') {
+        self.initialize_schema(include_str!("schema.sql"))
+    }
+
+    pub fn initialize_local_cutover(&self) -> Result<()> {
+        self.initialize_schema(include_str!("local-cutover.sql"))
+    }
+
+    fn initialize_schema(&self, schema: &str) -> Result<()> {
+        for query in schema.split_terminator(';') {
             if !query.trim().is_empty() {
                 self.write(query, [])?;
             }
         }
         Ok(())
+    }
+
+    pub fn legacy_cutover_held(&self) -> Result<bool> {
+        Ok(self
+            .number(
+                "SELECT slot AS value FROM local_legacy_cutover WHERE slot=1",
+                [],
+            )?
+            .is_some())
     }
 
     pub fn initialize_synthetic_delivery(&self) -> Result<()> {
