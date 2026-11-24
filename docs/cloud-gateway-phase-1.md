@@ -200,3 +200,6 @@ The complete Worker upload is about 288 KiB gzipped in the local `cf` dry run.
    limits and synthetic clock are local protocol choices. Durable route and
    memory authorization, civil schedules, failover and migration have their
    own later phase gates.
+
+The [Phase 2 loopback executor](cloud-gateway-phase-2-local.md) records the
+next local slice and its remaining pilot gates.

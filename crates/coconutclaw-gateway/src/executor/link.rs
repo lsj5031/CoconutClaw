@@ -1,0 +1,143 @@
+use std::io::Read;
+use std::time::{Duration, SystemTime};
+
+use anyhow::{Context, Result, bail, ensure};
+use coconutclaw_gateway::executor_wire::{BODY_LIMIT, DEVICE, INSTANCE, Status, request_bytes};
+use ed25519_dalek::{Signer, SigningKey};
+use reqwest::blocking::Client;
+use reqwest::{Certificate, StatusCode, Url, redirect};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+
+use super::journal::Journal;
+
+#[derive(Debug)]
+pub struct Unavailable;
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("loopback gateway unavailable")
+    }
+}
+
+impl std::error::Error for Unavailable {}
+
+pub fn now_ms() -> Result<i64> {
+    Ok(SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?)
+}
+
+pub struct Link {
+    client: Client,
+    url: Url,
+    pub key: SigningKey,
+}
+
+impl Link {
+    pub fn new(origin: &str, certificate: &[u8], key: SigningKey) -> Result<Self> {
+        let mut url = Url::parse(origin).context("invalid loopback origin")?;
+        ensure!(
+            url.scheme() == "https"
+                && url.host_str() == Some("127.0.0.1")
+                && url.port().is_some()
+                && url.path() == "/"
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none(),
+            "expected an explicit HTTPS 127.0.0.1 fixture origin"
+        );
+        url.set_path("/v1/agent");
+        let client = Client::builder()
+            .no_proxy()
+            .redirect(redirect::Policy::none())
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(Certificate::from_pem(certificate)?)
+            .timeout(Duration::from_millis(750))
+            .build()?;
+        Ok(Self { client, url, key })
+    }
+
+    pub fn hello(&self, journal: &Journal) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Hello {
+            protocol: i64,
+            instance: String,
+            device: String,
+            capabilities: Vec<String>,
+            last_sequence: i64,
+        }
+        let hello: Hello = self.read(json!({"op":"hello"}))?;
+        ensure!(
+            hello.protocol == 1
+                && hello.instance == INSTANCE
+                && hello.device == DEVICE
+                && hello.capabilities == ["text"]
+                && (0..=i64::from(i32::MAX)).contains(&hello.last_sequence),
+            "unexpected fixture identity or capability"
+        );
+        journal.sync_sequence(hello.last_sequence)
+    }
+
+    pub fn status(&self, attempt: i64) -> Result<Status> {
+        let status: Status = self.read(json!({"op":"status", "attempt":attempt}))?;
+        ensure!(status.attempt == attempt, "status bound to another attempt");
+        Ok(status)
+    }
+
+    pub fn read<T: DeserializeOwned>(&self, command: Value) -> Result<T> {
+        self.post(command, 0)?.context("fixture read conflicted")
+    }
+
+    pub fn post<T: DeserializeOwned>(&self, command: Value, sequence: i64) -> Result<Option<T>> {
+        let timeout = if command["op"] == "start" {
+            Duration::from_secs(6)
+        } else {
+            Duration::from_millis(750)
+        };
+        let body = serde_json::to_vec(&json!({
+            "device":DEVICE, "at_ms":now_ms()?, "sequence":sequence, "command":command,
+        }))?;
+        ensure!(body.len() <= BODY_LIMIT, "fixture request exceeds body cap");
+        let signature = self.key.sign(&request_bytes(INSTANCE, &body));
+        let response = self
+            .client
+            .post(self.url.clone())
+            .timeout(timeout)
+            .header("content-type", "application/json")
+            .header("x-agent-signature", hex::encode(signature.to_bytes()))
+            .body(body)
+            .send()
+            .map_err(|_| Unavailable)?;
+        match response.status() {
+            StatusCode::OK | StatusCode::CONFLICT => {
+                let status = response.status();
+                let mut bytes = Vec::new();
+                response
+                    .take((BODY_LIMIT + 1) as u64)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| Unavailable)?;
+                ensure!(bytes.len() <= BODY_LIMIT, "oversized fixture response");
+                if status == StatusCode::CONFLICT {
+                    let error: Value = serde_json::from_slice(&bytes)?;
+                    if error["error"] == "replay" {
+                        return Err(Unavailable.into());
+                    }
+                    ensure!(
+                        error["error"] == "state_conflict",
+                        "unexpected fixture conflict"
+                    );
+                    return Ok(None);
+                }
+                Ok(Some(serde_json::from_slice(&bytes).map_err(|_| {
+                    anyhow::anyhow!("invalid fixture response")
+                })?))
+            }
+            status if status.is_server_error() => Err(Unavailable.into()),
+            status => bail!("fixture request rejected with HTTP {}", status.as_u16()),
+        }
+    }
+}

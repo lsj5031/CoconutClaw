@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { request } from "node:https";
+import { execFileSync, spawn } from "node:child_process";
+import { generateKeyPairSync, sign, verify } from "node:crypto";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, request } from "node:https";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
@@ -31,16 +34,18 @@ for (const [name, binding] of Object.entries(config.env)) {
 }
 const webhook = { "x-telegram-bot-api-secret-token": "synthetic-webhook" };
 const operator = { "x-fixture-secret": "synthetic-operator" };
-const keys = Object.fromEntries(["alpha", "beta"].map(device => [device, generateKeyPairSync("ed25519")]));
 const signingPrefix = "coconutclaw-v1\nlocal-fixture\nPOST\n/v1/agent\n";
+const executorPrefix = signingPrefix.replace("local-fixture", "local-executor-fixture");
 
-async function runFixture(context, { enabled = true } = {}) {
+async function runFixture(context, { enabled = true, executor = false } = {}) {
     const persistence = await mkdtemp(join(import.meta.dirname, "build", "sqlite-"));
     const sends = [];
     const logs = [];
     const log = new Log(LogLevel.INFO);
     log.log = message => logs.push(message);
     const sequence = { alpha: 0, beta: 0 };
+    const keys = Object.fromEntries(["alpha", "beta"].map(device => [device, generateKeyPairSync("ed25519")]));
+    const publicHex = device => keys[device].publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
     let service;
     let url;
     let calls = 0;
@@ -65,13 +70,14 @@ async function runFixture(context, { enabled = true } = {}) {
             compatibilityFlags: config.compatibilityFlags,
             bindings: {
                 ...variables,
-                ...(enabled ? { PHASE: "phase1-local" } : {}),
+                ...(enabled ? { PHASE: executor ? "phase2-local" : "phase1-local" } : {}),
                 WEBHOOK_SECRET: webhook["x-telegram-bot-api-secret-token"],
                 FIXTURE_SECRET: operator["x-fixture-secret"],
-                ...Object.fromEntries(Object.entries(keys).map(([device, pair]) => [
+                ...Object.fromEntries(Object.keys(keys).map(device => [
                     `DEVICE_${device.toUpperCase()}_KEY`,
-                    pair.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"),
+                    publicHex(device),
                 ])),
+                ...(executor ? { EXECUTOR_ALPHA_KEY: publicHex("alpha") } : {}),
             },
             durableObjects,
             durableObjectsPersist: persistence,
@@ -101,8 +107,8 @@ async function runFixture(context, { enabled = true } = {}) {
     });
     await restart();
 
-    async function post(path, body, headers, status = 200, chunked = false) {
-        assert.ok(++calls <= 72, "test request budget");
+    async function rawPost(path, body, headers, chunked = false) {
+        assert.ok(++calls <= (executor ? 160 : 72), "test request budget");
         const bytes = typeof body === "string" ? body : JSON.stringify(body);
         const response = await new Promise((resolve, reject) => {
             const req = request(new URL(`/v1/${path}`, url), {
@@ -128,14 +134,19 @@ async function runFixture(context, { enabled = true } = {}) {
             if (chunked) req.write(bytes.slice(0, 9000));
             req.end(chunked ? bytes.slice(9000) : bytes);
         });
-        assert.ok([status].flat().includes(response.status), `${path} HTTP ${response.status} ${response.bytes}`);
-        return JSON.parse(response.bytes);
+        return { status: response.status, value: JSON.parse(response.bytes) };
     }
 
-    function signed(device, command, { at = Date.now(), prefix = signingPrefix } = {}) {
-        const mutating = !["hello", "next"].includes(command.op);
+    async function post(path, body, headers, status = 200, chunked = false) {
+        const response = await rawPost(path, body, headers, chunked);
+        assert.ok([status].flat().includes(response.status), `${path} HTTP ${response.status} ${JSON.stringify(response.value)}`);
+        return response.value;
+    }
+
+    function signed(device, command, { at = Date.now(), prefix = executor ? executorPrefix : signingPrefix, seq } = {}) {
+        const mutating = !["hello", "next", "status"].includes(command.op);
         const body = JSON.stringify({
-            device, at_ms: at, sequence: mutating ? ++sequence[device] : 0, command,
+            device, at_ms: at, sequence: seq ?? (mutating ? ++sequence[device] : 0), command,
         });
         const signature = sign(null, Buffer.from(prefix + body), keys[device].privateKey).toString("hex");
         return { body, headers: { "x-agent-signature": signature } };
@@ -146,7 +157,7 @@ async function runFixture(context, { enabled = true } = {}) {
     const fixture = (op, fields, status, fault) => post("fixture", { op, ...fields }, {
         ...operator, ...(fault ? { "x-fixture-fault": fault } : {}),
     }, status);
-    return { agent, fixture, post, restart, sends, signed, wire };
+    return { agent, fixture, post, rawPost, restart, sends, signed, wire, keys };
 }
 
 function update(id, topic = 7, text = `synthetic task ${id}`) {
@@ -158,6 +169,290 @@ function update(id, topic = 7, text = `synthetic task ${id}`) {
 }
 
 const timeout = { timeout: 20_000 };
+
+const executable = process.env.GATEWAY_LOCAL_EXECUTOR;
+const nativeTimeout = { timeout: 35_000, skip: !executable };
+
+async function until(check, message, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    do {
+        const result = await check();
+        if (result) return result;
+        await sleep(50);
+    } while (Date.now() < deadline);
+    assert.fail(message);
+}
+
+async function attachExecutor(context, client) {
+    const root = await mkdtemp(join(import.meta.dirname, "build", "executor-"));
+    const dir = join(root, "journal");
+    const cert = join(root, "cert.pem");
+    const ca = join(root, "ca.pem");
+    const caKey = join(root, "ca-key.pem");
+    const tlsKey = join(root, "tls-key.pem");
+    const csr = join(root, "tls.csr");
+    const extensions = join(root, "tls.ext");
+    const seed = join(root, "device.seed");
+    await writeFile(seed, client.keys.alpha.privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32), { mode: 0o600 });
+    await writeFile(extensions, "basicConstraints=critical,CA:FALSE\nsubjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n");
+    const openssl = (...args) => execFileSync("openssl", args, { stdio: "ignore" });
+    openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+        "-subj", "/CN=CoconutClaw disposable fixture CA", "-addext", "basicConstraints=critical,CA:TRUE",
+        "-keyout", caKey, "-out", ca);
+    openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=CoconutClaw fixture",
+        "-keyout", tlsKey, "-out", csr);
+    openssl("x509", "-req", "-in", csr, "-CA", ca, "-CAkey", caKey, "-CAcreateserial",
+        "-days", "1", "-extfile", extensions, "-out", cert);
+    const processes = [];
+    const packets = [];
+    const proxy = { offline: false, transform: async ({ response }) => response };
+    let proxyError;
+    const server = createServer({ key: await readFile(tlsKey), cert: await readFile(cert) }, async (req, res) => {
+        try {
+            assert.equal(req.method, "POST");
+            assert.equal(req.url, "/v1/agent");
+            const chunks = [];
+            for await (const chunk of req) chunks.push(chunk);
+            const body = Buffer.concat(chunks).toString();
+            const packet = { body, headers: { "x-agent-signature": req.headers["x-agent-signature"] } };
+            const envelope = JSON.parse(body);
+            packets.push(envelope);
+            assert.ok(packets.length <= 160, "executor request budget");
+            if (proxy.offline) return res.writeHead(503).end();
+            const response = await client.rawPost("agent", body, packet.headers);
+            const delivered = await proxy.transform({ response, envelope, packet });
+            if (!delivered) return req.socket.destroy();
+            res.writeHead(delivered.status, { "content-type": "application/json" }).end(JSON.stringify(delivered.value));
+        } catch (error) {
+            proxyError ??= error;
+            if (!res.headersSent) res.writeHead(503).end();
+        }
+    });
+    context.after(async () => {
+        for (const process of processes) await process.stop();
+        server.closeAllConnections();
+        if (server.listening) await new Promise(resolve => server.close(resolve));
+        await rm(root, { recursive: true, force: true });
+        if (proxyError) throw proxyError;
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const origin = `https://127.0.0.1:${server.address().port}`;
+    function run(mode, behavior, endpoint = origin) {
+        const child = spawn(executable, ["--loopback-fixture", mode, endpoint, ca, seed, dir, ...(behavior ? [behavior] : [])],
+            { env: {}, stdio: ["ignore", "ignore", "pipe"] });
+        let stderr = "";
+        child.stderr.setEncoding("utf8").on("data", data => { stderr += data; });
+        const exited = once(child, "exit");
+        const process = {
+            async exit(expected) {
+                assert.deepEqual(await exited, [expected, null], stderr);
+                return stderr;
+            },
+            async stop() {
+                if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+                await exited;
+            },
+        };
+        processes.push(process);
+        return process;
+    }
+    function query(sql, ...bindings) {
+        const db = new DatabaseSync(join(dir, "executor.sqlite3"), { readOnly: true });
+        try {
+            db.exec("PRAGMA busy_timeout=500");
+            return db.prepare(sql).all(...bindings);
+        } finally {
+            db.close();
+        }
+    }
+    async function launches() {
+        const contents = await readFile(join(dir, "launches"), "utf8").catch(error => {
+            if (error.code !== "ENOENT") throw error;
+            return "";
+        });
+        return contents.trim().split("\n").filter(Boolean).map(Number);
+    }
+    function proofs(event) {
+        return packets.filter(({ command }) => command.op === "report"
+            && JSON.parse(command.proof.payload).event.kind === event);
+    }
+    function verifyProof(proof) {
+        assert.ok(verify(null, Buffer.from(`coconutclaw-evidence-v1\nlocal-executor-fixture\nalpha\n${proof.payload}`),
+            client.keys.alpha.publicKey, Buffer.from(proof.signature, "hex")));
+        return JSON.parse(proof.payload);
+    }
+    return { proxy, run, launches, proofs, verifyProof, query, packets };
+}
+
+test("native executor retains result across lost receipt, reconnects, and replies in the original topic", nativeTimeout, async context => {
+    const client = await runFixture(context, { executor: true });
+    const { proxy, run, launches, proofs, verifyProof, query, packets } = await attachExecutor(context, client);
+    const task = "telegram:101";
+    const prompt = "sensitive synthetic task";
+    assert.match(await run("init", null, "https://example.invalid:443").exit(1), /expected an explicit HTTPS/);
+    await client.agent("beta", "hello", {}, 401);
+    await client.fixture("wake", { at_ms: Date.now() }, 404);
+    await client.post("fixture", { op: "cancel", task }, {}, 401);
+    proxy.offline = true;
+    const first = run("init");
+    await until(() => packets.some(({ command }) => command.op === "hello"), "offline handshake");
+    assert.match(await run("resume").exit(1), /already in use/);
+    await client.post("telegram", update(101, 37, prompt), webhook);
+    await client.restart();
+    assert.equal((await client.post("telegram", update(101, 99, "different duplicate"), webhook)).disposition, "duplicate");
+    let lostResult;
+    proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op === "report" && JSON.parse(envelope.command.proof.payload).event.kind === "result" && !lostResult) {
+            assert.equal(response.status, 200);
+            lostResult = envelope;
+            proxy.offline = true;
+            return null;
+        }
+        if (envelope.command.op === "start") {
+            assert.equal(query("SELECT phase FROM attempts WHERE attempt=?", envelope.command.attempt)[0].phase, "intent");
+        }
+        return response;
+    };
+    proxy.offline = false;
+    await until(() => lostResult, "committed result reply was lost");
+    const proof = lostResult.command.proof;
+    const { attempt, event } = verifyProof(proof);
+    assert.deepEqual(event, { kind: "result", text: `fixture output: ${prompt}` });
+    assert.deepEqual(await launches(), [attempt]);
+    assert.equal(query("SELECT acknowledged FROM evidence WHERE event='result'")[0].acknowledged, 0);
+    assert.equal((await client.fixture("cancel", { task })).phase, "completed");
+    await first.stop();
+    await client.restart();
+    proxy.offline = false;
+    const resumed = run("resume");
+    await until(() => query("SELECT acknowledged FROM evidence WHERE event='result'")[0].acknowledged, "retained result acknowledgement");
+    await resumed.stop();
+    assert.equal(proofs("result").length, 2);
+    assert.deepEqual(proofs("result")[1].command.proof, proof);
+    assert.ok(proofs("result")[1].sequence > lostResult.sequence);
+    assert.deepEqual(await launches(), [attempt]);
+    const floor = (await client.agent("alpha", "hello", {})).last_sequence;
+    const altered = { ...proof, payload: proof.payload.replace("fixture output", "different result") };
+    const unsigned = client.signed("alpha", { op: "report", proof: altered }, { seq: floor + 1 });
+    await client.wire(unsigned, 401);
+    altered.signature = sign(null, Buffer.from(`coconutclaw-evidence-v1\nlocal-executor-fixture\nalpha\n${altered.payload}`),
+        client.keys.alpha.privateKey).toString("hex");
+    await client.wire(client.signed("alpha", { op: "report", proof: altered }, { seq: floor + 1 }), 409);
+    assert.deepEqual(await client.fixture("send", { task }), { phase: "delivered", sends: 1, message_id: 1 });
+    await client.restart();
+    assert.deepEqual(await client.fixture("recover_send", { task }), { phase: "delivered", sends: 1, message_id: 1 });
+    await client.fixture("send", { task }, 409);
+    assert.deepEqual(client.sends, [{ chat_id: 321, message_thread_id: 37, text: event.text }]);
+});
+
+test("native executor crashes on both sides of spawn and reconciles without relaunch", nativeTimeout, async context => {
+    const client = await runFixture(context, { executor: true });
+    const { proxy, run, launches, proofs, verifyProof, query, packets } = await attachExecutor(context, client);
+    await client.post("telegram", update(111), webhook);
+    let original;
+    proxy.transform = async ({ response, envelope, packet }) => {
+        if (envelope.command.op === "start" && !original) {
+            original = packet;
+            assert.equal((await client.wire(original, 409)).error, "replay");
+        }
+        return response;
+    };
+    await run("init", "crash-before-spawn").exit(72);
+    const first = packets.find(({ command }) => command.op === "start").command.attempt;
+    assert.deepEqual(await launches(), []);
+    assert.equal(query("SELECT phase FROM attempts WHERE attempt=?", first)[0].phase, "consumed");
+    await client.restart();
+    await client.wire(original, 409);
+    await client.post("telegram", update(112), webhook);
+    await run("resume", "crash-after-spawn").exit(73);
+    const second = packets.filter(({ command }) => command.op === "start").at(-1).command.attempt;
+    assert.notEqual(first, second);
+    await until(async () => (await launches()).includes(second), "child created before executor death");
+    assert.equal(query("SELECT phase FROM attempts WHERE attempt=?", second)[0].phase, "consumed");
+    await client.fixture("cancel", { task: "telegram:112" });
+    await client.restart();
+    const resumed = run("resume");
+    await until(() => query("SELECT COUNT(*) AS total FROM evidence WHERE event='unknown' AND acknowledged=1")[0].total === 2,
+        "both consumed attempts reconciled");
+    for (const attempt of [first, second]) {
+        assert.equal((await client.agent("alpha", "status", { attempt })).phase, "unknown");
+    }
+    assert.equal((await client.agent("alpha", "status", { attempt: second })).cancel_requested, true);
+    assert.deepEqual(proofs("unknown").map(({ command }) => verifyProof(command.proof).attempt), [first, second]);
+    assert.deepEqual(proofs("cancelled"), []);
+    assert.deepEqual(await launches(), [second]);
+    assert.deepEqual(await client.agent("alpha", "next"), { task: null });
+    await resumed.stop();
+});
+
+test("native executor fences replayed and late grants and confirms both kinds of cancellation", nativeTimeout, async context => {
+    const client = await runFixture(context, { executor: true });
+    const { proxy, run, launches, proofs, verifyProof, query, packets } = await attachExecutor(context, client);
+    let replayed;
+    let startCalls = 0;
+    let expiredAttempt;
+    proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op !== "start") return response;
+        if (++startCalls === 1) {
+            assert.equal(response.status, 200);
+            replayed = response;
+            return null;
+        }
+        if (startCalls === 2) {
+            assert.equal(response.status, 200);
+            assert.equal(replayed.value.start_until, response.value.start_until);
+            return replayed;
+        }
+        if (startCalls === 3) {
+            assert.equal(response.status, 200);
+            expiredAttempt = response.value.attempt;
+            await sleep(Math.max(0, response.value.start_until - Date.now() + 50));
+        }
+        return response;
+    };
+    await client.post("telegram", update(121), webhook);
+    const first = run("init", "hold");
+    await until(() => expiredAttempt && query("SELECT acknowledged FROM evidence WHERE event='unknown'")[0]?.acknowledged,
+        "late grant reconciled", 15_000);
+    assert.equal(startCalls, 3);
+    assert.equal((await client.agent("alpha", "status", { attempt: expiredAttempt })).phase, "unknown");
+    assert.deepEqual(await launches(), []);
+    let cancelledBefore;
+    proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op === "start" && !cancelledBefore) {
+            assert.equal(response.status, 200);
+            cancelledBefore = response.value.attempt;
+            assert.equal((await client.fixture("cancel", { task: "telegram:122" })).phase, "cancel_requested");
+            assert.equal((await client.fixture("cancel", { task: "telegram:122" })).phase, "cancel_requested");
+        }
+        return response;
+    };
+    await client.post("telegram", update(122), webhook);
+    await until(() => proofs("cancelled").length === 1
+        && query("SELECT acknowledged FROM evidence WHERE attempt=? AND event='cancelled'", cancelledBefore)[0]?.acknowledged,
+    "delayed grant fenced by cancel");
+    assert.deepEqual(await launches(), []);
+    assert.equal((await client.agent("alpha", "status", { attempt: cancelledBefore })).phase, "cancelled_before_start");
+    await client.post("telegram", update(123), webhook);
+    const running = (await until(async () => {
+        const ids = await launches();
+        return ids.length ? ids : null;
+    }, "fixture child starts"))[0];
+    assert.equal((await client.fixture("cancel", { task: "telegram:123" })).phase, "cancel_requested");
+    await until(() => query("SELECT acknowledged FROM evidence WHERE attempt=? AND event='cancelled'", running)[0]?.acknowledged,
+        "reaped child cancellation acknowledgement");
+    assert.equal((await client.agent("alpha", "status", { attempt: running })).phase, "cancelled_after_exit");
+    assert.deepEqual(proofs("cancelled").map(({ command }) => verifyProof(command.proof)), [
+        { attempt: cancelledBefore, event: { kind: "cancelled", evidence: "before_start" } },
+        { attempt: running, event: { kind: "cancelled", evidence: "process_exited" } },
+    ]);
+    assert.deepEqual(await launches(), [running]);
+    assert.deepEqual(packets.filter(({ command }) => command.op === "start").map(({ command }) => command.attempt),
+        [expiredAttempt, expiredAttempt, expiredAttempt, cancelledBefore, running]);
+    assert.deepEqual(proofs("result"), []);
+    await first.stop();
+});
 
 test("checked-in phase gate disables webhook, agent and fixture routes", timeout, async context => {
     const client = await runFixture(context, { enabled: false });

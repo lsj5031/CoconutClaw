@@ -30,12 +30,23 @@ CREATE TABLE IF NOT EXISTS agent_sequences (
     device TEXT PRIMARY KEY,
     sequence INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS executor_evidence (
+    attempt INTEGER NOT NULL REFERENCES attempts(id),
+    event TEXT NOT NULL CHECK (event IN ('started', 'unknown', 'result', 'cancelled')),
+    payload TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    PRIMARY KEY (attempt, event)
+) STRICT;
 CREATE TABLE IF NOT EXISTS outbox (
     task TEXT PRIMARY KEY REFERENCES tasks(id),
     text TEXT NOT NULL,
     phase TEXT NOT NULL CHECK (phase IN ('pending', 'in_flight', 'delivered', 'unknown', 'failed')),
     sends INTEGER NOT NULL DEFAULT 0 CHECK (sends BETWEEN 0 AND 2),
     ready_at INTEGER NOT NULL DEFAULT 0
+) STRICT;
+CREATE TABLE IF NOT EXISTS delivery_receipts (
+    task TEXT PRIMARY KEY REFERENCES outbox(task),
+    message_id INTEGER NOT NULL CHECK (message_id > 0)
 ) STRICT;
 CREATE TABLE IF NOT EXISTS schedule (
     slot INTEGER PRIMARY KEY CHECK (slot = 1),

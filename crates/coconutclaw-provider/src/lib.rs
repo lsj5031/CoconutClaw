@@ -315,7 +315,8 @@ fn run_provider_impl<P: ProviderRunner>(provider: &P, ctx: &ProviderCtx) -> Resu
                 ctx.timeout_secs.or(Some(ctx.config.provider_timeout_secs)),
                 ctx.config.provider_idle_timeout_secs,
                 ctx.config.provider_tool_idle_timeout_secs,
-            ),
+            )
+            .into(),
         )
     };
 
@@ -381,6 +382,59 @@ fn new_provider_command(bin_raw: &str) -> Command {
     cmd
 }
 
+pub struct ChildBoundary<'a> {
+    pub before_spawn: &'a dyn Fn() -> Result<()>,
+    pub after_spawn: &'a dyn Fn(),
+}
+
+pub enum ChildExit {
+    Success(String),
+    Cancelled,
+    Failed,
+}
+
+pub fn run_single_child(
+    command: Command,
+    stdin: &str,
+    cancel: &Arc<AtomicBool>,
+    timeout_secs: u64,
+    boundary: ChildBoundary<'_>,
+) -> Result<ChildExit> {
+    let result = run_provider_process(
+        command,
+        Some(stdin),
+        Some(cancel),
+        None,
+        None,
+        "local child",
+        ProcessOptions {
+            timeout: TimeoutPolicy::new(Some(timeout_secs), timeout_secs, timeout_secs),
+            boundary: Some(boundary),
+        },
+    )?;
+    Ok(if result.cancelled {
+        ChildExit::Cancelled
+    } else if !result.timed_out && result.status.success() {
+        ChildExit::Success(result.stdout_text)
+    } else {
+        ChildExit::Failed
+    })
+}
+
+struct ProcessOptions<'a> {
+    timeout: TimeoutPolicy,
+    boundary: Option<ChildBoundary<'a>>,
+}
+
+impl From<TimeoutPolicy> for ProcessOptions<'_> {
+    fn from(timeout: TimeoutPolicy) -> Self {
+        Self {
+            timeout,
+            boundary: None,
+        }
+    }
+}
+
 fn run_provider_process(
     mut cmd: Command,
     stdin_text: Option<&str>,
@@ -388,10 +442,13 @@ fn run_provider_process(
     progress_tx: Option<&Sender<String>>,
     progress_parser: Option<fn(&str) -> Option<String>>,
     bin_name: &str,
-    timeout: TimeoutPolicy,
+    options: ProcessOptions<'_>,
 ) -> Result<RunResult> {
     configure_child_command(&mut cmd);
 
+    if let Some(boundary) = &options.boundary {
+        (boundary.before_spawn)()?;
+    }
     #[cfg(windows)]
     let (mut child, job) = windows::spawn(&cmd, stdin_text.is_some())
         .with_context(|| format!("failed to contain/start {bin_name}"))?;
@@ -406,6 +463,9 @@ fn run_provider_process(
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to start {bin_name}"))?;
+    if let Some(boundary) = &options.boundary {
+        (boundary.after_spawn)();
+    }
     let _group = ActiveGroup::register(child.id());
     let io_stop = Arc::new(AtomicBool::new(false));
     let stdin_handle = if let Some(text) = stdin_text {
@@ -438,7 +498,7 @@ fn run_provider_process(
         progress_parser,
         format!("failed waiting for {bin_name} command"),
         format!("failed waiting after {bin_name} kill"),
-        timeout,
+        options.timeout,
         stdin_handle.as_ref(),
         io_stop.clone(),
         #[cfg(windows)]

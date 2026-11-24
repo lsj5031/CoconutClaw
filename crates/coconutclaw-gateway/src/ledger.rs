@@ -4,9 +4,8 @@ use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 use worker::{Response, Result, SqlStorage, SqlStorageValue, Storage};
 
-use crate::protocol::{
-    Agent, CancelEvidence, Command, Device, INSTANCE, LEASE_MS, Phase, START_MS,
-};
+use crate::executor_wire::{Event, Evidence, Grant, SignedEvidence, Status};
+use crate::protocol::{Agent, CancelEvidence, Command, Device, LEASE_MS, Phase, START_MS};
 
 #[wasm_bindgen(inline_js = "
 export function transaction(storage, callback) { storage.transactionSync(callback); }
@@ -87,7 +86,7 @@ pub struct Delivery {
 }
 
 pub enum Receipt {
-    Delivered,
+    Delivered(i64),
     Rejected,
     Retry(i64),
     Unknown,
@@ -221,15 +220,34 @@ impl Ledger {
         )
     }
 
-    pub fn read_agent(&self, agent: &Agent, now: i64) -> Result<Option<Reply>> {
+    pub fn read_agent(&self, agent: &Agent, now: i64, instance: &str) -> Result<Option<Reply>> {
         match agent.command {
             Command::Hello => Ok(Some(Reply::ok(json!({
-                "protocol": 1, "instance": INSTANCE, "device": agent.device, "capabilities": ["text"],
+                "protocol": 1, "instance": instance, "device": agent.device, "capabilities": ["text"],
                 "last_sequence": self.last_sequence(agent.device)?
             })))),
             Command::Next => {
                 let task = self.candidate(agent.device, now, None)?.map(|task| task.id);
                 Ok(Some(Reply::ok(json!({"task": task}))))
+            }
+            Command::Status { attempt } => {
+                let row = self.row::<Attempt, 2>(
+                    "SELECT * FROM attempts WHERE id=? AND device=?",
+                    [attempt.into(), agent.device.name().into()],
+                )?;
+                Ok(Some(match row {
+                    Some(row) => Reply::ok(json!(Status {
+                        attempt,
+                        phase: if row.phase == Phase::Claimed && row.lease_until <= now {
+                            Phase::Expired
+                        } else {
+                            row.phase
+                        },
+                        start_until: row.start_until,
+                        cancel_requested: row.cancel_requested != 0,
+                    })),
+                    None => conflict(),
+                }))
             }
             _ => Ok(None),
         }
@@ -244,7 +262,13 @@ impl Ledger {
             .unwrap_or(0))
     }
 
-    pub fn mutate_agent(&self, agent: Agent, now: i64) -> Result<Reply> {
+    pub fn mutate_agent(
+        &self,
+        agent: Agent,
+        now: i64,
+        executor: bool,
+        evidence: Option<Evidence>,
+    ) -> Result<Reply> {
         let device = agent.device;
         if self.last_sequence(device)? >= agent.sequence {
             return Ok(Reply::error(409, "replay"));
@@ -253,15 +277,16 @@ impl Ledger {
             "INSERT INTO agent_sequences(device,sequence) VALUES(?,?) ON CONFLICT(device) DO UPDATE SET sequence=excluded.sequence",
             [device.name().into(), agent.sequence.into()],
         )?;
+        let sequence = agent.sequence;
         match agent.command {
-            Command::Claim { task } => self.claim(device, now, &task),
+            Command::Claim { task } => self.claim(device, now, &task, executor),
             Command::Start { attempt } => self.update_attempt(device, attempt, |row| {
                 if row.cancel_requested != 0 {
                     return Ok(conflict());
                 }
                 let until = match row.phase {
                     Phase::Claimed if row.lease_until > now => {
-                        let until = now + START_MS;
+                        let until = now + if executor { 5000 } else { START_MS };
                         self.write(
                             "UPDATE attempts SET phase='authorized',start_until=? WHERE id=?",
                             [until.into(), attempt.into()],
@@ -273,10 +298,77 @@ impl Ledger {
                     }
                     _ => return Ok(conflict()),
                 };
-                Ok(Reply::ok(
-                    json!({"phase":"authorized", "attempt":attempt, "start_until":until}),
-                ))
+                Ok(Reply::ok(if executor {
+                    json!(Grant {
+                        attempt,
+                        start_until: until,
+                        request_sequence: sequence,
+                    })
+                } else {
+                    json!({"phase":"authorized", "attempt":attempt, "start_until":until})
+                }))
             }),
+            Command::Report { proof } => {
+                self.report(device, proof, evidence.ok_or("missing verified evidence")?)
+            }
+            command => self.apply_evidence(device, command),
+        }
+    }
+
+    fn report(&self, device: Device, proof: SignedEvidence, evidence: Evidence) -> Result<Reply> {
+        let attempt = evidence.attempt;
+        let event = evidence.event.name();
+        self.update_attempt(device, attempt, |row| {
+            if let Some(stored) = self.row::<SignedEvidence, 2>(
+                "SELECT payload,signature FROM executor_evidence WHERE attempt=? AND event=?",
+                [attempt.into(), event.into()],
+            )? {
+                return Ok(
+                    if stored.payload == proof.payload && stored.signature == proof.signature {
+                        Reply::ok(json!({"event": event}))
+                    } else {
+                        conflict()
+                    },
+                );
+            }
+            let reply = match evidence.event {
+                Event::Started => self.apply_evidence(device, Command::Started { attempt })?,
+                Event::Result { text } if row.started_evidence != 0 => {
+                    self.apply_evidence(device, Command::Result { attempt, text })?
+                }
+                Event::Cancelled {
+                    evidence: CancelEvidence::BeforeStart,
+                } if row.phase == Phase::CancelledBeforeStart => Reply::ok(json!({})),
+                Event::Cancelled { evidence }
+                    if matches!(evidence, CancelEvidence::BeforeStart)
+                        || row.started_evidence != 0 =>
+                {
+                    self.apply_evidence(device, Command::Cancelled { attempt, evidence })?
+                }
+                Event::Unknown if row.phase.has_grant() => {
+                    self.set_phase(attempt, "unknown")?;
+                    Reply::ok(json!({}))
+                }
+                _ => conflict(),
+            };
+            if reply.0 != 200 {
+                return Ok(reply);
+            }
+            self.write(
+                "INSERT INTO executor_evidence(attempt,event,payload,signature) VALUES(?,?,?,?)",
+                [
+                    attempt.into(),
+                    event.into(),
+                    proof.payload.into(),
+                    proof.signature.into(),
+                ],
+            )?;
+            Ok(Reply::ok(json!({"event": event})))
+        })
+    }
+
+    fn apply_evidence(&self, device: Device, command: Command) -> Result<Reply> {
+        match command {
             Command::Started { attempt } => self.update_attempt(device, attempt, |row| {
                 if !row.phase.has_grant() {
                     return Ok(conflict());
@@ -338,11 +430,11 @@ impl Ledger {
                     Ok(Reply::ok(json!({"phase":phase})))
                 })
             }
-            Command::Hello | Command::Next => Err("read command in mutation".into()),
+            _ => Err("unexpected evidence command".into()),
         }
     }
 
-    fn claim(&self, device: Device, now: i64, id: &str) -> Result<Reply> {
+    fn claim(&self, device: Device, now: i64, id: &str, executor: bool) -> Result<Reply> {
         let candidate = self.candidate(device, now, Some(id))?;
         let task = if let Some(task) = candidate {
             task
@@ -373,7 +465,7 @@ impl Ledger {
             "UPDATE attempts SET phase='expired' WHERE id=(SELECT current_attempt FROM tasks WHERE id=?)",
             [id.into()],
         )?;
-        let lease = now + LEASE_MS;
+        let lease = now + if executor { 5000 } else { LEASE_MS };
         let attempt = self.number(
             "INSERT INTO attempts(task,device,lease_until,phase) VALUES(?,?,?,'claimed') RETURNING id AS value",
             [id.into(), device.name().into(), lease.into()],
@@ -482,9 +574,23 @@ impl Ledger {
         Ok(delivery)
     }
 
-    pub fn finish_send(&self, task: &str, receipt: Receipt, sends: i64, now: i64) -> Result<Reply> {
+    pub fn finish_send(
+        &self,
+        task: &str,
+        receipt: Receipt,
+        sends: i64,
+        now: i64,
+        include_receipt: bool,
+    ) -> Result<Reply> {
         let (phase, ready_at) = match receipt {
-            Receipt::Delivered => ("delivered", 0),
+            Receipt::Delivered(message_id) => {
+                self.write(
+                    "INSERT INTO delivery_receipts(task,message_id)
+                     SELECT task,? FROM outbox WHERE task=? AND phase='in_flight'",
+                    [message_id.into(), task.into()],
+                )?;
+                ("delivered", 0)
+            }
             Receipt::Rejected => ("failed", 0),
             Receipt::Retry(delay) if sends == 1 => ("pending", now + delay),
             Receipt::Retry(_) => ("failed", 0),
@@ -494,29 +600,36 @@ impl Ledger {
             "UPDATE outbox SET phase=?,ready_at=? WHERE task=? AND phase='in_flight'",
             [phase.into(), ready_at.into(), task.into()],
         )?;
-        self.delivery_state(task)
+        self.delivery_state(task, include_receipt)
     }
 
-    pub fn recover_send(&self, task: &str) -> Result<Reply> {
+    pub fn recover_send(&self, task: &str, include_receipt: bool) -> Result<Reply> {
         self.write(
             "UPDATE outbox SET phase='unknown' WHERE task=? AND phase='in_flight'",
             [task.into()],
         )?;
-        self.delivery_state(task)
+        self.delivery_state(task, include_receipt)
     }
 
-    fn delivery_state(&self, task: &str) -> Result<Reply> {
+    fn delivery_state(&self, task: &str, include_receipt: bool) -> Result<Reply> {
         #[derive(Deserialize)]
         struct DeliveryState {
             phase: String,
             sends: i64,
+            message_id: Option<i64>,
         }
         Ok(
             match self.row::<DeliveryState, 1>(
-                "SELECT phase,sends FROM outbox WHERE task=?",
+                "SELECT phase,sends,message_id FROM outbox LEFT JOIN delivery_receipts USING(task) WHERE task=?",
                 [task.into()],
             )? {
-                Some(row) => Reply::ok(json!({"phase":row.phase,"sends":row.sends})),
+                Some(row) => {
+                    let mut body = json!({"phase":row.phase,"sends":row.sends});
+                    if include_receipt && let Some(id) = row.message_id {
+                        body["message_id"] = json!(id);
+                    }
+                    Reply::ok(body)
+                }
                 None => conflict(),
             },
         )

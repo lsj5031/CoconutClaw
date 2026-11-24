@@ -7,6 +7,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use worker::*;
 
+use crate::executor_wire::{self, Event, Evidence, evidence_bytes, request_bytes};
 use crate::ledger::{Delivery, Ledger, Receipt, Reply, ScheduleInput, conflict};
 use crate::protocol::{Agent, BODY_LIMIT, Command, Fixture, INSTANCE, telegram_input, valid_text};
 
@@ -30,9 +31,27 @@ extern "C" {
     fn mock_send(body: &str) -> js_sys::Promise;
 }
 
-fn local_phase(env: &Env) -> bool {
-    env.var("PHASE")
-        .is_ok_and(|var| var.to_string() == "phase1-local")
+#[derive(Clone, Copy, PartialEq)]
+enum LocalPhase {
+    Protocol,
+    Executor,
+}
+
+impl LocalPhase {
+    fn from_env(env: &Env) -> Option<Self> {
+        match env.var("PHASE").ok()?.to_string().as_str() {
+            "phase1-local" => Some(Self::Protocol),
+            "phase2-local" => Some(Self::Executor),
+            _ => None,
+        }
+    }
+
+    fn instance(self) -> &'static str {
+        match self {
+            Self::Protocol => INSTANCE,
+            Self::Executor => executor_wire::INSTANCE,
+        }
+    }
 }
 
 fn authorized(req: &Request, env: &Env, header: &str, binding: &str) -> bool {
@@ -53,30 +72,31 @@ fn unavailable() -> Result<Response> {
     Reply::error(503, "unavailable").response()
 }
 
-fn local_route(req: &Request, env: &Env) -> Result<bool> {
+fn local_route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
     let url = req.url()?;
-    Ok(local_phase(env)
-        && req.method() == Method::Post
+    Ok((req.method() == Method::Post
         && url.scheme() == "https"
         && url.host_str() == Some("127.0.0.1")
         && url.query().is_none()
         && matches!(url.path(), "/v1/telegram" | "/v1/agent" | "/v1/fixture"))
+    .then(|| LocalPhase::from_env(env))
+    .flatten())
 }
 
 #[event(fetch)]
 pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    if !local_route(&req, &env)? {
+    let Some(phase) = local_route(&req, &env)? else {
         return Reply::error(404, "not_found").response();
-    }
-    match forward(req, env).await {
+    };
+    match forward(req, env, phase).await {
         Ok(response) => Ok(response),
         Err(_) => unavailable(),
     }
 }
 
-async fn forward(req: Request, env: Env) -> Result<Response> {
+async fn forward(req: Request, env: Env, phase: LocalPhase) -> Result<Response> {
     env.durable_object("BOTS")?
-        .get_by_name(INSTANCE)?
+        .get_by_name(phase.instance())?
         .fetch_with_request(req)
         .await
 }
@@ -98,17 +118,17 @@ impl DurableObject for BotLedger {
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
-        if !local_route(&req, &self.env)? {
+        let Some(phase) = local_route(&req, &self.env)? else {
             return Reply::error(404, "not_found").response();
-        }
-        match self.handle(req).await {
+        };
+        match self.handle(req, phase).await {
             Ok(reply) => reply.response(),
             Err(_) => unavailable(),
         }
     }
 
     async fn alarm(&self) -> Result<Response> {
-        if !local_phase(&self.env) {
+        if LocalPhase::from_env(&self.env) != Some(LocalPhase::Protocol) {
             return Reply::ok(json!({})).response();
         }
         let storage = self.state.storage();
@@ -136,7 +156,8 @@ impl BotLedger {
             .ok_or_else(|| "storage unavailable".into())
     }
 
-    async fn handle(&self, mut req: Request) -> Result<Reply> {
+    async fn handle(&self, mut req: Request, phase: LocalPhase) -> Result<Reply> {
+        let executor = phase == LocalPhase::Executor;
         let path = req.path();
         let auth = match path.as_str() {
             "/v1/telegram" => authorized(
@@ -184,29 +205,64 @@ impl BotLedger {
                 let Ok(agent) = serde_json::from_slice::<Agent>(&bytes) else {
                     return Ok(bad_input());
                 };
-                if !self.verify_agent(&req, &agent, &bytes).await {
+                let Some(key) = self.verify_agent(&req, &agent, &bytes, phase).await else {
                     return Ok(Reply::error(401, "unauthorized"));
+                };
+                if !agent.command.available(executor) {
+                    return Ok(Reply::error(404, "not_found"));
                 }
                 if !valid_command(&agent) {
                     return Ok(bad_input());
                 }
+                let evidence = if let Command::Report { proof } = &agent.command {
+                    let Ok(evidence) = serde_json::from_str::<Evidence>(&proof.payload) else {
+                        return Ok(bad_input());
+                    };
+                    if !valid_attempt(evidence.attempt)
+                        || matches!(&evidence.event, Event::Result { text } if !valid_text(text))
+                    {
+                        return Ok(bad_input());
+                    }
+                    if !signed_by(&key, &proof.signature, &evidence_bytes(&proof.payload)).await {
+                        return Ok(Reply::error(401, "unauthorized"));
+                    }
+                    Some(evidence)
+                } else {
+                    None
+                };
                 let ledger = self.ledger(&storage)?;
-                if let Some(reply) = ledger.read_agent(&agent, now())? {
+                if let Some(reply) = ledger.read_agent(&agent, now(), phase.instance())? {
                     return Ok(reply);
                 }
                 let drop_reply = fault.as_deref() == Some("after_commit")
-                    && matches!(agent.command, Command::Start { .. });
-                let reply =
-                    Ledger::transaction(&storage, |ledger| ledger.mutate_agent(agent, now()))?;
+                    && matches!(
+                        agent.command,
+                        Command::Start { .. } | Command::Report { .. }
+                    );
+                let reply = Ledger::transaction(&storage, |ledger| {
+                    ledger.mutate_agent(agent, now(), executor, evidence)
+                })?;
                 (reply, drop_reply)
             }
             "/v1/fixture" => {
                 let Ok(fixture) = serde_json::from_slice(&bytes) else {
                     return Ok(bad_input());
                 };
+                if executor
+                    && matches!(
+                        fixture,
+                        Fixture::Schedule { .. } | Fixture::Disable { .. } | Fixture::Wake { .. }
+                    )
+                {
+                    return Ok(Reply::error(404, "not_found"));
+                }
                 let drop_receipt = fault.as_deref() == Some("drop_receipt");
                 self.ledger(&storage)?;
-                (self.fixture(&storage, fixture, drop_receipt).await?, false)
+                (
+                    self.fixture(&storage, fixture, drop_receipt, executor)
+                        .await?,
+                    false,
+                )
             }
             _ => return Ok(Reply::error(404, "not_found")),
         };
@@ -218,31 +274,33 @@ impl BotLedger {
         }
     }
 
-    async fn verify_agent(&self, req: &Request, agent: &Agent, bytes: &[u8]) -> bool {
-        if agent.at_ms.abs_diff(now()) > 30_000 {
-            return false;
+    async fn verify_agent(
+        &self,
+        req: &Request,
+        agent: &Agent,
+        bytes: &[u8],
+        phase: LocalPhase,
+    ) -> Option<Vec<u8>> {
+        if agent.at_ms.abs_diff(now()) > 30_000
+            || (phase == LocalPhase::Executor && agent.device.name() != executor_wire::DEVICE)
+        {
+            return None;
         }
-        let binding = format!("DEVICE_{}_KEY", agent.device.name().to_ascii_uppercase());
+        let binding = if phase == LocalPhase::Executor {
+            "EXECUTOR_ALPHA_KEY".to_owned()
+        } else {
+            format!("DEVICE_{}_KEY", agent.device.name().to_ascii_uppercase())
+        };
         let key = self
             .env
             .var(&binding)
             .ok()
-            .and_then(|var| hex::decode(var.to_string()).ok());
-        let signature = req
-            .headers()
-            .get("x-agent-signature")
-            .ok()
-            .flatten()
-            .filter(|sig| sig.len() == 128)
-            .and_then(|sig| hex::decode(sig).ok());
-        let (Some(key), Some(signature)) = (key.filter(|key| key.len() == 32), signature) else {
-            return false;
-        };
-        let mut signed = format!("coconutclaw-v1\n{INSTANCE}\nPOST\n/v1/agent\n").into_bytes();
-        signed.extend_from_slice(bytes);
-        JsFuture::from(verify(&key, &signature, &signed))
+            .and_then(|var| hex::decode(var.to_string()).ok())
+            .filter(|key| key.len() == 32)?;
+        let signature = req.headers().get("x-agent-signature").ok().flatten()?;
+        signed_by(&key, &signature, &request_bytes(phase.instance(), bytes))
             .await
-            .is_ok_and(|result| result.as_bool() == Some(true))
+            .then_some(key)
     }
 
     async fn fixture(
@@ -250,6 +308,7 @@ impl BotLedger {
         storage: &Storage,
         fixture: Fixture,
         drop_receipt: bool,
+        executor: bool,
     ) -> Result<Reply> {
         match fixture {
             Fixture::Cancel { task } => Ledger::transaction(storage, |ledger| ledger.cancel(&task)),
@@ -257,7 +316,7 @@ impl BotLedger {
                 Ledger::transaction(storage, |ledger| ledger.disconnect(attempt))
             }
             Fixture::RecoverSend { task } => {
-                Ledger::transaction(storage, |ledger| ledger.recover_send(&task))
+                Ledger::transaction(storage, |ledger| ledger.recover_send(&task, executor))
             }
             Fixture::Send { task } => {
                 let Some(send) =
@@ -271,7 +330,7 @@ impl BotLedger {
                     return Ok(Reply::error(503, "fixture_dropped_receipt"));
                 }
                 Ledger::transaction(storage, |ledger| {
-                    ledger.finish_send(&task, receipt, send.sends, now())
+                    ledger.finish_send(&task, receipt, send.sends, now(), executor)
                 })
             }
             other => {
@@ -321,17 +380,31 @@ fn bad_input() -> Reply {
     Reply::error(400, "bad_input")
 }
 
+async fn signed_by(key: &[u8], signature: &str, bytes: &[u8]) -> bool {
+    let mut decoded = [0; 64];
+    if hex::decode_to_slice(signature, &mut decoded).is_err() {
+        return false;
+    }
+    JsFuture::from(verify(key, &decoded, bytes))
+        .await
+        .is_ok_and(|result| result.as_bool() == Some(true))
+}
+
+fn valid_attempt(attempt: i64) -> bool {
+    (1..=i32::MAX as i64).contains(&attempt)
+}
+
 fn valid_command(agent: &Agent) -> bool {
     match &agent.command {
         Command::Hello | Command::Next => agent.sequence == 0,
+        Command::Status { attempt } => agent.sequence == 0 && valid_attempt(*attempt),
         _ if !(1..=i32::MAX as i64).contains(&agent.sequence) => false,
         Command::Claim { task } => !task.is_empty() && task.len() <= 64,
         Command::Start { attempt }
         | Command::Started { attempt }
-        | Command::Cancelled { attempt, .. } => (1..=i32::MAX as i64).contains(attempt),
-        Command::Result { attempt, text } => {
-            (1..=i32::MAX as i64).contains(attempt) && valid_text(text)
-        }
+        | Command::Cancelled { attempt, .. } => valid_attempt(*attempt),
+        Command::Result { attempt, text } => valid_attempt(*attempt) && valid_text(text),
+        Command::Report { .. } => true,
     }
 }
 
@@ -383,13 +456,10 @@ async fn send_telegram(delivery: &Delivery) -> Result<Receipt> {
         .map_err(|_| "invalid mock receipt")?;
     let value = serde_json::from_slice::<Value>(&bytes)?;
     Ok(match response.status_code() {
-        200 if value["ok"] == true
-            && value["result"]["message_id"]
-                .as_i64()
-                .is_some_and(|id| id > 0) =>
-        {
-            Receipt::Delivered
-        }
+        200 if value["ok"] == true => match value["result"]["message_id"].as_i64() {
+            Some(id) if id > 0 => Receipt::Delivered(id),
+            _ => Receipt::Unknown,
+        },
         429 if value["ok"] == false && value["error_code"] == 429 => {
             match value["parameters"]["retry_after"].as_i64() {
                 Some(seconds @ 1..=10) => Receipt::Retry(seconds * 1000),

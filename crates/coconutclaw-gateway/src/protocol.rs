@@ -2,9 +2,10 @@ use coconutclaw_telegram::{PrivateRoute, private_route};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::executor_wire::SignedEvidence;
+pub use crate::executor_wire::{BODY_LIMIT, CancelEvidence, Phase, TEXT_LIMIT};
+
 pub const INSTANCE: &str = "local-fixture";
-pub const BODY_LIMIT: usize = 16 * 1024;
-pub const TEXT_LIMIT: usize = 4096;
 pub const LEASE_MS: i64 = 1500;
 pub const START_MS: i64 = 1500;
 
@@ -38,6 +39,9 @@ pub struct Agent {
 pub enum Command {
     Hello,
     Next,
+    Status {
+        attempt: i64,
+    },
     Claim {
         task: String,
     },
@@ -55,13 +59,19 @@ pub enum Command {
         attempt: i64,
         evidence: CancelEvidence,
     },
+    Report {
+        proof: SignedEvidence,
+    },
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CancelEvidence {
-    BeforeStart,
-    ProcessExited,
+impl Command {
+    pub fn available(&self, executor: bool) -> bool {
+        match self {
+            Self::Status { .. } | Self::Report { .. } => executor,
+            Self::Started { .. } | Self::Result { .. } | Self::Cancelled { .. } => !executor,
+            _ => true,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -94,24 +104,6 @@ pub enum Fixture {
     Wake {
         at_ms: i64,
     },
-}
-
-#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Phase {
-    Claimed,
-    Authorized,
-    Started,
-    Unknown,
-    CancelledBeforeStart,
-    CancelledAfterExit,
-    Completed,
-}
-
-impl Phase {
-    pub fn has_grant(self) -> bool {
-        matches!(self, Self::Authorized | Self::Started | Self::Unknown)
-    }
 }
 
 pub fn valid_text(text: &str) -> bool {
