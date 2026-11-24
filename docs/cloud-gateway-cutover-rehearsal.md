@@ -529,12 +529,12 @@ Use an existing independently administered, always-on host with a dedicated
 local SQLite database and HTTPS endpoint. The host and its storage are outside
 the Worker deployment, DO snapshots and executor restore procedures. Worker
 `fetch` supports HTTPS subrequests and `cache: "no-store"`. A single SQLite
-writer using `BEGIN IMMEDIATE` and `synchronous=FULL` can durably serialize
-publication and send reservations without a Cloudflare binding. This is the
-adapter boundary. Provisioning, production code or a service implementing the
-contract, host availability, disk durability and operator access still need
-verification. If an independently maintained host is unavailable, keep the
-routes closed.
+writer using `BEGIN IMMEDIATE` and `synchronous=EXTRA` durably serializes
+publication, retirement and send reservations without a Cloudflare binding.
+The [control host runbook](gateway-authority-control.md) covers the Node 24
+service and its local rehearsal. Host availability, disk durability, TLS and
+operator access still need verification on an independently maintained host.
+Keep routes closed if that host is unavailable.
 [Workers fetch](https://developers.cloudflare.com/workers/runtime-apis/fetch/)
 · [SQLite transactions](https://sqlite.org/lang_transaction.html)
 · [SQLite synchronous setting](https://sqlite.org/pragma.html#pragma_synchronous)
@@ -589,15 +589,16 @@ requests with either disposition.
 [Telegram Bot API authorization, webhook and file endpoints](https://core.telegram.org/bots/api)
 · [BotFather token controls](https://core.telegram.org/bots/features#botfather)
 
-The Miniflare regression uses a disposable SQLite control store outside the
-simulated DO stores and a test-only `.invalid` endpoint with synthetic
-credentials. It exercises monotonic publication, exclusive enrollment,
-same-generation restore, restored pin and runner identity, freshness failures,
-revocation between reservation and mock Telegram dispatch, and a persisted
-alarm after reopen. Production retirement and custody need independently
-verified operator evidence. `cargo mutants` inverted the high-water comparison.
-The test caught the variant when the matching current generation remained
-inactive.
+The Miniflare regression forwards the test-only `.invalid` authority origin to
+the loopback control service. It exercises monotonic publication, exclusive
+enrollment, same-generation restore, restored pin and runner identity,
+freshness failures, revocation after Worker reservation and before host
+dispatch, and a persisted alarm after reopen. Separate process tests race
+retirement against the outbound request and kill the control process after the
+fake Telegram endpoint receives the request. The reservation survives and
+replay has no effect. Production retirement and custody need independently
+verified operator evidence. The previous `cargo mutants` check inverted the
+Worker's high-water comparison and the Miniflare test caught it.
 
 From the source root, use the cached tools, Wasm sysroot and native and Wasm
 targets documented above. Run the disk check before each build.
@@ -620,18 +621,33 @@ git diff --check
 
 ## BigFur Readiness
 
-- Provision the independent control host, verify its persistence and
-  serialized dispatch, and complete the stopped production handoff and restore
-  drill with authenticated operator evidence. Verify the exclusive ingress
-  route, actual version and object identity, runner incarnation issuance and
-  expiry, and the Telegram custody disposition before opening the routes.
-- Verify production Telegram ingress and same-topic Bot API delivery under
-  separately authorized identities. Real Codex execution and cancellation
-  require separate containment and lifecycle evidence.
+- Verify the independent host, TLS routing, persistent storage and control-store
+  continuity before enrollment. Verify the exclusive ingress route, actual
+  deployment version and DO identity, and Telegram custody disposition.
+- The checked-in configuration has no cutover mode or production version
+  metadata binding. The cutover webhook still uses `telegram_input`, which
+  admits only fixture chat and sender `321`. Its handler also applies the
+  fixture request budget. A production candidate needs explicit authorized
+  Telegram identities and routes, production budget policy, the cutover
+  bindings and a separately approved activation.
+- The runner binary still requires `--loopback-fixture`, pins a fixture CA and
+  loopback URL, derives a fixture signing domain and executes a shell fixture.
+  A production runner needs trusted HTTPS routing, `bigfur:<generation>:<objectId>`
+  signing and persistent generation adoption, and private
+  `x-executor-incarnation` provisioning outside the journal. It must bind the
+  grant to the exact instance, attempt, sequence and original deadline and
+  durably consume it once. Its current grant and status types do not carry
+  `authority_valid_until`. Enforce fresh uncancelled status and the shorter
+  deadline at process creation, and verify fresh cancellation authority at
+  the actual signal boundary. Prove Codex containment, native lifecycle and
+  exit evidence, crash recovery without relaunch, and predecessor rejection
+  with an independently restored journal.
 - Reconcile the frozen production export across all live writer paths and
-  verify `#23` directly from the authorized source. Gateway activation still
-  requires a production authority transfer, a disposition for each held
-  record and unresolved effect, and verification against the live gateway.
+  verify `#23` directly from the authorized source. The offline import command
+  targets a stopped local SQLite ledger. The production DO still needs a
+  verified held archive, matching custody digest, attempt floor, and explicit
+  activation backed by the production authority transfer. Verify each held
+  record and unresolved effect against that exact ledger.
 - Provision and verify the production authority and credential fence described
   in the stale restore rehearsal across independent stores, executor journals
   and deployments. A custody acknowledgment applies to the ledger that
@@ -641,4 +657,13 @@ git diff --check
 - Rehearse live failback. Fence gateway writers and reconcile ingress
   cursors, schedule watermarks, signed executor evidence and unsettled sends
   before resuming legacy consumption. Record versions, recovery time and the
+  acknowledged-update loss window.
+- The November 25, 2026 hosted synthetic acceptance and cleanup receipts
+  cover the completed pilot. The next hosted receipt requires separate
+  authorization and an operator-witnessed handoff, restore and failback on
+  the enrolled target. Bind the source and successor revisions, generation,
+  deployment, object and custody digest to evidence of legacy retirement,
+  rejection of restored authority, actual Telegram same-topic ingress and
+  delivery, and real Codex execution and cancellation. Include unresolved
+  effects, the original `#23` record, recovery timings and the measured
   acknowledged-update loss window.

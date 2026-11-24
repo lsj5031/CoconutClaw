@@ -1380,9 +1380,9 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
 test("BigFur authority fences restored writers and is checked at effect boundaries", timeout, async context => {
     const external = await mkdtemp(join(import.meta.dirname, "build", "authority-"));
     const controlFile = join(external, "control.sqlite");
-    let mock = authorityFixture(controlFile);
+    let mock = await authorityFixture(controlFile);
     context.after(async () => {
-        mock.close();
+        await mock.close();
         await rm(external, { recursive: true, force: true });
     });
     const objectName = "hosted-synthetic-pilot";
@@ -1437,8 +1437,8 @@ test("BigFur authority fences restored writers and is checked at effect boundari
     assert.deepEqual(await ingress(42, 503), inactive);
     const activeIncarnation = mock.checks.at(-1).objectIncarnation;
     mock.publish(cutover.target, activeIncarnation, runner);
-    mock.close();
-    mock = authorityFixture(controlFile);
+    await mock.close();
+    mock = await authorityFixture(controlFile);
     assert.throws(() => mock.publish(cutover.target, activeIncarnation, runner));
     assert.throws(() => mock.publish(oldTarget, activeIncarnation, oldRunner));
 
@@ -1539,7 +1539,7 @@ test("BigFur authority fences restored writers and is checked at effect boundari
     await report(interrupted.attempt, { kind: "started" });
     mock.beforeSend = () => mock.retire();
     await report(interrupted.attempt, { kind: "result", text: "reservation without egress" }, [200, 503]);
-    await until(() => mock.current.closed, "revoke between reservation and Telegram boundary");
+    await until(() => mock.status().retired, "revoke between Worker reservation and Telegram boundary");
     assert.deepEqual(mock.sends, delivered);
     const interruptedDelivery = () => client.sql("SELECT phase,sends FROM outbox WHERE task='telegram:44'");
     assert.deepEqual(await interruptedDelivery(), [{ phase: "in_flight", sends: 1 }]);
