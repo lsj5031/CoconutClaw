@@ -1015,7 +1015,7 @@ fn offline_node_preserves_assignment_unknown_and_never_falls_back_locally() {
 }
 
 #[test]
-fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() {
+fn legacy_cutover_reconcile_requires_terminal_evidence_and_keeps_projection_frozen() {
     let (_core_root, core) = fixture(Role::Coordinator, 111);
     let (_node_root, node) = fixture(Role::Runner, 112);
     pair(&core, &node);
@@ -1045,6 +1045,11 @@ fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() 
         )
         .unwrap();
     let other_assignment = bundle(&core_key, node_key.public(), &source.input.user_text).unwrap();
+    tx.execute(
+        "INSERT INTO node_assignments VALUES(?1,?2)",
+        params![other, serde_json::to_string(&other_assignment).unwrap()],
+    )
+    .unwrap();
     store
         .reserve_runtime_run(
             other,
@@ -1075,6 +1080,13 @@ fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() 
         )
         .unwrap()
     );
+    store
+        .conn
+        .execute(
+            "DELETE FROM node_signed_receipts WHERE task_run_id=?1",
+            [other],
+        )
+        .unwrap();
     let tx = store.conn.unchecked_transaction().unwrap();
     assert!(store.claim_telegram(ingress).unwrap());
     store
@@ -1118,7 +1130,6 @@ fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() 
         .conn
         .execute("INSERT INTO legacy_admission_freeze VALUES(1)", [])
         .unwrap();
-    Store::seal_legacy_cutover(&core).unwrap();
     let action = Args {
         action: Command::Reconcile { run },
     };
@@ -1139,6 +1150,27 @@ fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() 
             .unwrap()
     };
     assert_eq!(saved(&store), (start.clone(), None));
+    assert!(
+        format!("{:#}", Store::seal_legacy_cutover(&core).unwrap_err())
+            .contains("signed terminal receipt missing")
+    );
+    store
+        .conn
+        .execute(
+            "UPDATE node_signed_receipts SET result=start WHERE task_run_id=?1",
+            [run],
+        )
+        .unwrap();
+    assert!(
+        format!("{:#}", Store::seal_legacy_cutover(&core).unwrap_err()).contains("result absent")
+    );
+    store
+        .conn
+        .execute(
+            "UPDATE node_signed_receipts SET result=NULL WHERE task_run_id=?1",
+            [run],
+        )
+        .unwrap();
     drop(store);
 
     let mut runner = state.lock().unwrap();
@@ -1162,7 +1194,7 @@ fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() 
             .is_none()
     );
     runner
-        .finish(&assignment, Outcome::Completed, "late signed output")
+        .finish(&assignment, Outcome::Unknown, "late signed Unknown outcome")
         .unwrap();
     let Reply::Evidence {
         result: Some(result),
@@ -1197,6 +1229,8 @@ fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() 
     assert_eq!(saved(&reopened), (start.clone(), None));
     super::run(&core, &action).unwrap();
     super::run(&core, &action).unwrap();
+    Store::seal_legacy_cutover(&core).unwrap();
+    Store::seal_legacy_cutover(&core).unwrap();
     let history = History::replay(
         &assignment.origin,
         core_key.public(),
@@ -1264,7 +1298,7 @@ fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() 
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(counts, (2, 1, 0));
+    assert_eq!(counts, (1, 1, 0));
     assert_eq!(
         reopened.get_task_run(other).unwrap().unwrap().status,
         "waiting_remote"
@@ -1274,7 +1308,7 @@ fn legacy_cutover_reconcile_retains_original_start_and_late_result_after_seal() 
 
 #[cfg(unix)]
 #[test]
-fn cancellation_over_production_handler_stops_owned_fake_provider_once() {
+fn legacy_cutover_delayed_begin_blocks_seal_then_replays_after_runner_restart() {
     use std::os::unix::fs::PermissionsExt;
     let (_a, core) = fixture(Role::Coordinator, 101);
     let (_b, mut cfg) = fixture(Role::Runner, 102);
@@ -1284,27 +1318,69 @@ fn cancellation_over_production_handler_stops_owned_fake_provider_once() {
     fs::write(&script,"#!/bin/sh\nprintf 'called\\n' >> invocations\nmkfifo provider-gate\nprintf ready > started\nread answer < provider-gate\n").unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     cfg.codex.bin = script.to_string_lossy().into();
-    let rt = transport::runtime().unwrap();
-    let state = Arc::new(Mutex::new(Runner::open(cfg.clone()).unwrap()));
+    let store = Store::open(&core).unwrap();
+    let source = request();
+    let run = admit(&store, &source);
     let b = bundle(
         &key(&core).unwrap(),
         key(&cfg).unwrap().public(),
-        "owned cancellation task",
+        &source.input.user_text,
     )
     .unwrap();
+    let tx = store.conn.unchecked_transaction().unwrap();
+    tx.execute(
+        "INSERT INTO node_assignments VALUES(?1,?2)",
+        params![run, serde_json::to_string(&b).unwrap()],
+    )
+    .unwrap();
+    store
+        .reserve_runtime_run(run, &b.origin.hash().unwrap(), &b.assignment)
+        .unwrap();
+    tx.commit().unwrap();
+    store
+        .conn
+        .execute_batch(
+            "INSERT INTO legacy_admission_freeze VALUES(1);
+             INSERT INTO legacy_cutover_seal VALUES(1);",
+        )
+        .unwrap();
+    drop(store);
+    let blocked = || {
+        let failure = format!("{:#}", Store::seal_legacy_cutover(&core).unwrap_err());
+        assert!(failure.contains(&format!("legacy run {run} blocks executor seal")));
+        assert!(failure.contains("signed terminal receipt missing"));
+        let verified: bool = Store::connect(&core)
+            .unwrap()
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_executor_seal')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!verified);
+    };
+    blocked();
+    let rt = transport::runtime().unwrap();
+    let store = Store::connect(&core).unwrap();
     rt.block_on(async {
         let router = iroh::protocol::Router::builder(
             transport::endpoint(key(&cfg).unwrap(), local(&cfg).unwrap().card.address)
                 .await
                 .unwrap(),
         )
-        .accept(ALPN, transport::Handler::new(state.clone()))
+        .accept(
+            ALPN,
+            transport::Handler::new(Arc::new(Mutex::new(Runner::open(cfg.clone()).unwrap()))),
+        )
         .spawn();
         let endpoint = transport::coordinator(&core).await.unwrap();
         let card = local(&cfg).unwrap().card;
-        transport::call(&endpoint, &card, Request::Begin(b.clone()))
+        let start = transport::call(&endpoint, &card, Request::Begin(b.clone()))
             .await
             .unwrap();
+        assert!(!accept(&store, run, &b, start, "UTC").unwrap());
+        blocked();
         tokio::time::timeout(Duration::from_secs(10), async {
             while !cfg.instance_dir.join("started").exists() {
                 tokio::task::yield_now().await;
@@ -1350,23 +1426,37 @@ fn cancellation_over_production_handler_stops_owned_fake_provider_once() {
             history.jobs[&1].result.as_ref().unwrap().0,
             Outcome::Cancelled
         );
-        // Exact Begin after cancellation is evidence replay, never another FIFO
-        // creation or another provider invocation.
-        transport::call(&endpoint, &card, Request::Begin(b.clone()))
+        let terminal = transport::call(&endpoint, &card, Request::Status(b.clone()))
             .await
             .unwrap();
+        assert!(accept(&store, run, &b, terminal, "UTC").unwrap());
+        Store::seal_legacy_cutover(&core).unwrap();
         router.shutdown().await.unwrap();
+        drop(router);
+
+        let restarted = iroh::protocol::Router::builder(
+            transport::endpoint(key(&cfg).unwrap(), card.address)
+                .await
+                .unwrap(),
+        )
+        .accept(
+            ALPN,
+            transport::Handler::new(Arc::new(Mutex::new(Runner::open(cfg.clone()).unwrap()))),
+        )
+        .spawn();
+        let repeated = transport::call(&endpoint, &card, Request::Begin(b.clone()))
+            .await
+            .unwrap();
+        assert!(accept(&store, run, &b, repeated, "UTC").unwrap());
+        restarted.shutdown().await.unwrap();
     });
+    Store::seal_legacy_cutover(&core).unwrap();
+    assert_eq!(
+        store.get_task_run(run).unwrap().unwrap().status,
+        "waiting_remote"
+    );
     assert_eq!(
         fs::read_to_string(cfg.instance_dir.join("invocations")).unwrap(),
         "called\n"
-    );
-    drop(state);
-    let mut runner = Runner::open(cfg).unwrap();
-    assert!(
-        runner
-            .admit(key(&core).unwrap().public(), &b)
-            .unwrap()
-            .is_none()
     );
 }

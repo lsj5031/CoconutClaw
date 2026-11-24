@@ -124,8 +124,9 @@ fn legacy_cutover_seal_waits_for_sender_and_preserves_ambiguous_send() {
     assert_eq!(
         reopened
             .conn
-            .query_row("SELECT count(*) FROM legacy_cutover_seal", [], |row| row
-                .get::<_, i64>(0))
+            .query_row("SELECT singleton FROM legacy_executor_seal", [], |row| {
+                row.get::<_, i64>(0)
+            })
             .unwrap(),
         1
     );

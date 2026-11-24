@@ -56,7 +56,7 @@ enum Commands {
     Once(TurnArgs),
     /// Listen for Telegram requests and scheduled tasks.
     Run(TurnArgs),
-    /// Record that the frozen local runtime has stopped.
+    /// Seal a frozen coordinator after verifying remote launch authority is spent.
     SealLegacyCutover,
     /// Check local setup without contacting Telegram or Codex.
     Doctor(DoctorArgs),
@@ -166,7 +166,9 @@ fn main() -> Result<()> {
         return service::run_service(&cfg, &overrides, args.clone());
     }
     if matches!(command, Commands::SealLegacyCutover) {
-        return Store::seal_legacy_cutover(&cfg);
+        Store::seal_legacy_cutover(&cfg)?;
+        println!("Legacy executor seal verified.");
+        return Ok(());
     }
 
     let _instance_lock = cfg.acquire_instance_lock()?;

@@ -183,7 +183,15 @@ impl Store {
             store.legacy_admission_frozen()?,
             "freeze legacy admission first"
         );
+        crate::nodes::verify_cutover_authority(cfg, &tx)?;
         tx.execute("INSERT OR IGNORE INTO legacy_cutover_seal VALUES(1)", [])?;
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS legacy_executor_seal (
+                singleton INTEGER PRIMARY KEY REFERENCES legacy_cutover_seal(singleton)
+            )",
+            [],
+        )?;
+        tx.execute("INSERT OR IGNORE INTO legacy_executor_seal VALUES(1)", [])?;
         tx.commit()?;
         Ok(())
     }

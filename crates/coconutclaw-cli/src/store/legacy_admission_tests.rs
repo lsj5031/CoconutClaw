@@ -96,6 +96,8 @@ fn legacy_admission_ingress_writer_orders_with_freeze_and_restart() {
         )
         .unwrap();
     assert_eq!(ingress, (1, raw, "unknown".into(), "unknown".into()));
+    scheduler.shutdown().unwrap();
+    Store::seal_legacy_cutover(&cfg).unwrap();
     let outcome: (i64, String, String, String) = reopened
         .conn
         .query_row(
@@ -107,7 +109,6 @@ fn legacy_admission_ingress_writer_orders_with_freeze_and_restart() {
         )
         .unwrap();
     assert_eq!(outcome, (24, "37".into(), "failed".into(), UNKNOWN.into()));
-    scheduler.shutdown().unwrap();
 }
 
 #[test]
