@@ -248,17 +248,78 @@ cargo-mutants mutants --in-place --baseline skip --build-timeout 180 --timeout 3
   --cargo-test-arg=--bin --cargo-test-arg=coconutclaw -- legacy_cutover_reconcile
 ```
 
+## Frozen production-schema export
+
+`coconutclaw legacy-cutover` uses explicit paths and bypasses runtime setup.
+Exercise it with standalone rollback-mode SQLite backups of a disposable
+coordinator. `VACUUM INTO` from the fixture creates that form. The source must
+be a complete, detached backup with no concurrent writers or SQLite sidecars.
+Capture the baseline before the freeze. For the final backup, follow the
+local seal procedure and stop administrative writers. Keep both backups and
+the original runner journals.
+
+```sh
+coconutclaw legacy-cutover baseline --source baseline.sqlite \
+  --source-id "$SOURCE_ID" --coordinator-key "$COORDINATOR_PUBLIC_KEY" \
+  --output baseline.json
+coconutclaw legacy-cutover stage --custody custody.sqlite \
+  --baseline baseline.json --baseline-digest "$BASELINE_DIGEST"
+coconutclaw legacy-cutover export-final --source frozen.sqlite \
+  --baseline baseline.json --baseline-digest "$BASELINE_DIGEST" --output final.json
+coconutclaw legacy-cutover import-final --custody custody.sqlite \
+  --delta final.json --final-digest "$FINAL_DIGEST"
+```
+
+Pin the stable source ID, the original coordinator's public key, and the
+printed BLAKE3 artifact digests through a trusted handoff. Only sources
+without tracked remote assignments can omit the key. Protect the backups,
+artifacts and custody database as private task data. The exporter leaves
+scoped memory and native Codex session pointers in the legacy store.
+
+The delta contains replacements for changed tables, with the original
+logical tasks, runs, attempt ancestry, ingress, routes, schedule revisions,
+occurrences, and outbox evidence. Both captures must contain the exact
+Unknown record for task `#23`. The final export checks all three freeze and
+seal markers and re-verifies the exact Start and terminal Result against
+each reservation. Start-only or missing terminal evidence blocks export.
+The importer verifies the signatures again against the pinned coordinator
+and commits the final projection and signed bytes in one transaction. Its
+acknowledgment identifies the source, baseline, final artifact, projection
+and each signed receipt. Reopening the custody database and replaying the
+exact artifact yields the same acknowledgment. The offline acknowledgment
+records evidence custody only.
+
+All archived work is held. Raw states such as `applying`, `running` and
+`sending` retain their last durable evidence and represent ambiguous effects
+until reconciled. `pending` ingress and delivery remain held. Schedule
+watermarks and historical schedule rows remain inactive. Unknown schema,
+unresolved legacy ingress checkpoints, runner claim journals, and untracked
+remote reservations block this path. A receipt backfilled into the source
+buffer after sealing can repeat terminal evidence already required by the
+seal. Evidence changes require reconciliation.
+
+The `frozen_final_delta` tests exercise the runtime's schema and a late signed
+Unknown result from a disposable runner journal. They check precommit rollback,
+postcommit acknowledgment replay, source byte preservation, and rejection of
+missing, mismatched or corrupt authority and evidence.
+
+On November 25, 2026, Leo-Claw passed nine focused tests, the offline CLI
+rehearsal, formatting, workspace Clippy, and 590 workspace tests with five
+ignored. `cargo mutants` bypassed `verify_receipts`. The tests caught the
+bypass when the importer accepted corrupt evidence and the exporter accepted
+an unpinned coordinator.
+
 ## BigFur Readiness
 
 - Run the hosted acceptance gate on Mars with official `cf` and
   `cloudflare.config.ts`. Verify real Telegram ingress and same-topic delivery
   and real Codex execution and cancellation through the isolated pilot.
-- Capture and reconcile the live final delta across all writer paths. The
-  fixture covers one delivery transition and one archived schedule watermark.
-  The live exporter still needs full attempt lineage, pending ingress,
-  schedules and occurrences, outbox and route state, and transport and
-  acknowledgment of exact legacy `node_signed_receipts` at the new authority.
-  Verify the live `#23` Unknown record from the source.
+- Reconcile the frozen production export across all live writer paths and
+  verify `#23` directly from the authorized source. Integrate durable legacy
+  receipt custody and the held projection with the gateway's authority,
+  including a policy for each unsupported record and unresolved effect.
+  Worker cutover is still a synthetic rehearsal. Gateway activation requires
+  its own authority and verification.
 - Prove generation and credential exclusion across independent stores and
   stale restores. The local fence relies on retaining the same ledger and
   executor journal, and the loopback TLS trust is provisioned by the fixture.

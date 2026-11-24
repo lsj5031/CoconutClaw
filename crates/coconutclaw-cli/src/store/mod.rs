@@ -22,7 +22,11 @@ pub(crate) mod turns;
 #[cfg(test)]
 mod task_adapter;
 
-const SCHEMA_SQL: &str = include_str!("../../../../sql/schema.sql");
+pub(crate) const SCHEMA_SQL: &str = include_str!("../../../../sql/schema.sql");
+pub(crate) const LEGACY_EXECUTOR_SEAL_SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS legacy_executor_seal (
+    singleton INTEGER PRIMARY KEY REFERENCES legacy_cutover_seal(singleton)
+)";
 
 #[derive(Debug)]
 pub(crate) struct TurnRecord {
@@ -185,12 +189,7 @@ impl Store {
         );
         crate::nodes::verify_cutover_authority(cfg, &tx)?;
         tx.execute("INSERT OR IGNORE INTO legacy_cutover_seal VALUES(1)", [])?;
-        tx.execute(
-            "CREATE TABLE IF NOT EXISTS legacy_executor_seal (
-                singleton INTEGER PRIMARY KEY REFERENCES legacy_cutover_seal(singleton)
-            )",
-            [],
-        )?;
+        tx.execute(LEGACY_EXECUTOR_SEAL_SCHEMA, [])?;
         tx.execute("INSERT OR IGNORE INTO legacy_executor_seal VALUES(1)", [])?;
         tx.commit()?;
         Ok(())

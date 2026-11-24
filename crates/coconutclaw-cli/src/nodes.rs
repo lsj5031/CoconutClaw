@@ -28,7 +28,7 @@ pub(crate) mod desktop;
 pub(crate) mod desktop_host;
 mod probe;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod transport;
 
 const REVISION: &str = env!("COCONUTCLAW_REVISION");
@@ -279,14 +279,15 @@ fn validate_existing(cfg: &RuntimeConfig) -> Result<()> {
     }
     Ok(())
 }
-fn initialize(store: &Store) -> Result<()> {
-    store.conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS paired_nodes(id TEXT PRIMARY KEY,card TEXT NOT NULL,last_contact TEXT,last_error TEXT);
+pub(crate) const SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS paired_nodes(id TEXT PRIMARY KEY,card TEXT NOT NULL,last_contact TEXT,last_error TEXT);
          CREATE TABLE IF NOT EXISTS node_selection(session TEXT PRIMARY KEY,node TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS node_routes(run INTEGER PRIMARY KEY,node TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS node_assignments(run INTEGER PRIMARY KEY,bundle TEXT NOT NULL);
-         CREATE TABLE IF NOT EXISTS node_claims(origin TEXT PRIMARY KEY,bundle TEXT NOT NULL,start BLOB NOT NULL,result BLOB,cancelled INTEGER NOT NULL DEFAULT 0);"
-    )?;
+         CREATE TABLE IF NOT EXISTS node_claims(origin TEXT PRIMARY KEY,bundle TEXT NOT NULL,start BLOB NOT NULL,result BLOB,cancelled INTEGER NOT NULL DEFAULT 0);";
+
+fn initialize(store: &Store) -> Result<()> {
+    store.conn.execute_batch(SCHEMA)?;
     Ok(())
 }
 fn paired(store: &Store, id: EndpointId) -> Result<Card> {
@@ -1154,6 +1155,46 @@ pub(crate) fn verify_cutover_authority(
         );
     }
 
+    cutover_receipts(tx, None).map(|_| ())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CutoverReceipt {
+    pub(crate) run: i64,
+    pub(crate) start: Vec<u8>,
+    pub(crate) result: Vec<u8>,
+}
+
+impl CutoverReceipt {
+    pub(crate) fn verify(
+        &self,
+        bundle: &str,
+        origin: &str,
+        assignment: &[u8],
+        coordinator: Option<EndpointId>,
+    ) -> Result<()> {
+        let bundle: Bundle = serde_json::from_str(bundle)?;
+        let runner = *bundle
+            .origin
+            .origin
+            .runners
+            .first()
+            .context("runner absent")?;
+        bundle.validate(coordinator.unwrap_or(bundle.origin.origin.owner), runner)?;
+        ensure!(
+            origin == bundle.origin.hash()? && assignment == bundle.assignment,
+            "assignment reservation mismatch"
+        );
+        receipt_history(&bundle, &self.start, Some(&self.result))?;
+        Ok(())
+    }
+}
+
+pub(crate) fn cutover_receipts(
+    tx: &rusqlite::Transaction<'_>,
+    coordinator: Option<EndpointId>,
+) -> Result<Vec<CutoverReceipt>> {
     let has_assignments: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='node_assignments')",
         [],
@@ -1172,7 +1213,7 @@ pub(crate) fn verify_cutover_authority(
         anyhow::bail!("legacy run {run} has a remote reservation without a tracked Begin");
     }
     if !has_assignments {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let mut stmt = tx.prepare(
@@ -1184,24 +1225,10 @@ pub(crate) fn verify_cutover_authority(
          ORDER BY a.run",
     )?;
     let mut rows = stmt.query([])?;
+    let mut receipts = Vec::new();
     while let Some(row) = rows.next()? {
         let run: i64 = row.get(0)?;
-        let verify = || -> Result<()> {
-            let bundle: Bundle = serde_json::from_str(&row.get::<_, String>(1)?)?;
-            let origin = bundle.origin.hash()?;
-            let runner = *bundle
-                .origin
-                .origin
-                .runners
-                .first()
-                .context("runner absent")?;
-            bundle.validate(bundle.origin.origin.owner, runner)?;
-            ensure!(
-                row.get::<_, Option<String>>(2)?.as_deref() == Some(origin.as_str())
-                    && row.get::<_, Option<Vec<u8>>>(3)?.as_deref()
-                        == Some(bundle.assignment.as_slice()),
-                "assignment reservation mismatch"
-            );
+        let verify = || -> Result<CutoverReceipt> {
             let saved_start: Option<Vec<u8>> = row.get(4)?;
             let saved_result: Option<Vec<u8>> = row.get(5)?;
             let projected_start: Option<Vec<u8>> = row.get(6)?;
@@ -1224,12 +1251,20 @@ pub(crate) fn verify_cutover_authority(
             let start = saved_start
                 .or(projected_start)
                 .context("signed Start missing")?;
-            receipt_history(&bundle, &start, Some(&result))?;
-            Ok(())
+            let receipt = CutoverReceipt { run, start, result };
+            receipt.verify(
+                &row.get::<_, String>(1)?,
+                &row.get::<_, Option<String>>(2)?
+                    .context("reservation origin absent")?,
+                &row.get::<_, Option<Vec<u8>>>(3)?
+                    .context("reservation assignment absent")?,
+                coordinator,
+            )?;
+            Ok(receipt)
         };
-        verify().with_context(|| format!("legacy run {run} blocks executor seal"))?;
+        receipts.push(verify().with_context(|| format!("legacy run {run} blocks executor seal"))?);
     }
-    Ok(())
+    Ok(receipts)
 }
 
 fn receipt_history(bundle: &Bundle, start: &[u8], result: Option<&[u8]>) -> Result<History> {

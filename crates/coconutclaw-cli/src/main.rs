@@ -7,6 +7,7 @@ mod approval;
 mod cancel;
 mod commands;
 mod context;
+mod cutover;
 mod delivery;
 mod loops;
 mod markers;
@@ -58,6 +59,8 @@ enum Commands {
     Run(TurnArgs),
     /// Seal a frozen coordinator after verifying remote launch authority is spent.
     SealLegacyCutover,
+    /// Transfer frozen legacy state between offline cutover stores.
+    LegacyCutover(cutover::Args),
     /// Check local setup without contacting Telegram or Codex.
     Doctor(DoctorArgs),
     /// Manage the background service for this user.
@@ -115,6 +118,9 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if let Commands::LegacyCutover(args) = &cli.command {
+        return cutover::run(args);
+    }
     if let Commands::Desktop(args) = &cli.command {
         return nodes::desktop::run(args);
     }
@@ -178,6 +184,7 @@ fn main() -> Result<()> {
         Commands::Once(args) => commands::run_once(&cfg, &mut store, &args),
         Commands::Run(args) => commands::run_run(&cfg, &mut store, &args),
         Commands::SealLegacyCutover => unreachable!("cutover seal checks execution ownership"),
+        Commands::LegacyCutover(_) => unreachable!("offline cutover bypasses runtime setup"),
         Commands::Doctor(_) => unreachable!("doctor handled before layout/lock/store setup"),
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
         Commands::ImportOpenclaw(_) => unreachable!("import handled before store setup"),

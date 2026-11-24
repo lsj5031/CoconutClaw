@@ -69,6 +69,69 @@ fn pair(a: &RuntimeConfig, b: &RuntimeConfig) {
         )
         .unwrap();
 }
+
+pub(crate) fn admit_cutover_run(store: &Store) -> i64 {
+    let mut request = request();
+    request.update_id = Some("299".into());
+    admit(store, &request)
+}
+
+pub(crate) fn late_cutover_receipt(store: &Store, run: i64) -> (EndpointId, CutoverReceipt) {
+    let (_core_root, core_cfg) = fixture(Role::Coordinator, 173);
+    let (_node_root, node) = fixture(Role::Runner, 174);
+    pair(&node, &core_cfg);
+    let core = key(&core_cfg).unwrap();
+    let assignment = bundle(
+        &core,
+        key(&node).unwrap().public(),
+        &request().input.user_text,
+    )
+    .unwrap();
+    initialize(store).unwrap();
+    let tx = store.conn.unchecked_transaction().unwrap();
+    tx.execute(
+        "INSERT INTO node_assignments VALUES(?1,?2)",
+        params![run, serde_json::to_string(&assignment).unwrap()],
+    )
+    .unwrap();
+    store
+        .reserve_runtime_run(
+            run,
+            &assignment.origin.hash().unwrap(),
+            &assignment.assignment,
+        )
+        .unwrap();
+    tx.commit().unwrap();
+    let mut runner = Runner::open(node).unwrap();
+    runner.admit(core.public(), &assignment).unwrap().unwrap();
+    store
+        .conn
+        .execute("INSERT INTO legacy_admission_freeze VALUES(1)", [])
+        .unwrap();
+    assert!(
+        !accept(
+            store,
+            run,
+            &assignment,
+            runner.evidence(&assignment).unwrap(),
+            "UTC"
+        )
+        .unwrap()
+    );
+    runner
+        .finish(&assignment, Outcome::Unknown, "late signed Unknown outcome")
+        .unwrap();
+    let evidence = runner.evidence(&assignment).unwrap();
+    assert!(accept(store, run, &assignment, evidence, "UTC").unwrap());
+    let Reply::Evidence {
+        start,
+        result: Some(result),
+    } = runner.evidence(&assignment).unwrap()
+    else {
+        panic!("expected terminal evidence")
+    };
+    (core.public(), CutoverReceipt { run, start, result })
+}
 #[cfg(windows)]
 #[test]
 fn windows_rechecks_allowlist_custody_before_peer_dispatch() {
