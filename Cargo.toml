@@ -4,6 +4,8 @@ members = [
   "crates/coconutclaw-provider",
   "crates/coconutclaw-cli",
   "crates/coconutclaw-sync",
+  "crates/coconutclaw-telegram",
+  "crates/coconutclaw-gateway",
 ]
 resolver = "2"
 

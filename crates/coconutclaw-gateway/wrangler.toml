@@ -1,0 +1,19 @@
+name = "coconutclaw-phase1-test"
+main = "worker.mjs"
+compatibility_date = "2026-07-30"
+workers_dev = false
+preview_urls = false
+
+[build]
+command = "sh build.sh"
+
+[vars]
+PHASE = "disabled"
+
+[[durable_objects.bindings]]
+name = "BOTS"
+class_name = "BotLedger"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BotLedger"]

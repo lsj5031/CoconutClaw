@@ -1,0 +1,17 @@
+{
+  "name": "coconutclaw-gateway-local",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "sh build.sh && node --test integration.test.mjs"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260730.0",
+    "smol-toml": "1.4.2"
+  },
+  "overrides": {
+    "miniflare": {
+      "workerd": "1.20261123.1"
+    }
+  }
+}
