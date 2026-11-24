@@ -18,6 +18,7 @@ impl Store {
             .is_autocommit()
             .then(|| Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate))
             .transpose()?;
+        self.require_open_legacy_admission()?;
         let old: Option<(i64, String)> = self
             .conn
             .query_row(

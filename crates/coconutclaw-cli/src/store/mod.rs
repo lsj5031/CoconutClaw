@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use coconutclaw_config::RuntimeConfig;
 use rusqlite::{Connection, OpenFlags};
 use std::fs;
@@ -152,6 +152,20 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    pub(crate) fn require_open_legacy_admission(&self) -> Result<()> {
+        ensure!(
+            !self.conn.is_autocommit(),
+            "legacy admission requires a write transaction"
+        );
+        let frozen = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM legacy_admission_freeze WHERE singleton=1)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        ensure!(!frozen, "legacy admission is frozen");
+        Ok(())
+    }
+
     /// Bootstrap once at each process entry point, before starting workers.
     /// Ordinary runtime connections must use `connect` instead.
     pub(crate) fn open(cfg: &RuntimeConfig) -> Result<Self> {
@@ -214,3 +228,6 @@ mod tests;
 
 #[cfg(test)]
 mod startup_tests;
+
+#[cfg(test)]
+mod legacy_admission_tests;
