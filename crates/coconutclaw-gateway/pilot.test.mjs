@@ -22,13 +22,14 @@ const { rootConfig, workers, containers } = await readBuildOutput(import.meta.di
 const { config, bundleDir } = workers.default;
 const { mainModule, modules } = config.manifest;
 
-test("pilot prebuilt config has one private SQLite Worker and declares its gate", () => {
+test("pilot prebuilt config has one custom domain and one gated SQLite Worker", () => {
     assert.deepEqual(rootConfig, { buildContext: { isPreview: false, mode: "phase2-pilot" } });
     assert.deepEqual(Object.keys(workers), ["default"]);
     assert.deepEqual(containers, []);
     assert.equal(config.name, "coconutclaw-phase1-test");
     assert.equal(config.workersDev, false);
     assert.equal(config.previewUrls, false);
+    assert.deepEqual(config.domains, ["bigfur.liu.nz"]);
     assert.equal(config.routes, undefined);
     assert.equal(config.triggers, undefined);
     assert.deepEqual(config.exports, { BotLedger: { type: "durable-object", storage: "sqlite" } });

@@ -1,35 +1,26 @@
-# Phase 2 hosted synthetic pilot candidate
+# Phase 2 hosted synthetic pilot
 
 The default `cloudflare.config.ts` stages `coconutclaw-phase1-test` with
-`PHASE=disabled`. The explicit `phase2-pilot` mode selects one named
-SQLite `BotLedger`, `hosted-synthetic-pilot`, with its own agent and evidence
-signing domain. Both builds disable `workers.dev` and version previews and
-declare no routes or triggers. The base for this candidate is source commit
-`c3da96d39950c95575b3cf3ad9f1484875c30586`. The parent independently read back
-isolated Worker version `9bb8cd05-c44d-4b39-90be-bece54f83ee6` on Mars.
+`PHASE=disabled` with no hostname. Only non-preview `phase2-pilot` declares
+the Custom Domain `bigfur.liu.nz`. Both builds disable `workers.dev` and
+version previews, omit route patterns and triggers, and export one SQLite
+`BotLedger` class. The pilot uses the single named object
+`hosted-synthetic-pilot` with its own agent and evidence signing domain.
+Mars previously read back isolated Worker version
+`9bb8cd05-c44d-4b39-90be-bece54f83ee6`. Verify the active disabled version
+before using it as the rollback reference.
 
 ## Invocation
 
-Cloudflare documents private invocation through Service Bindings with
-another Worker as the caller. A trusted caller for this isolated service
-and a direct authenticated invocation from a local process both remain
-unverified. The `cf` and Workers Scripts API references distinguish
-deployment commands from version and preview URLs.
-[Service Bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/)
-· [cf project commands](https://developers.cloudflare.com/cf/projects/)
-· [Workers Scripts API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/)
-
-The documented no-paid fallback for a separately authorized hosted test is
-one Worker route on a dedicated, already-proxied hostname in an eligible
-Cloudflare Free zone. Use an exact-host custom rule to allow only the
-approved driver source IP and the exact POST paths. Use the Free WAF
-rate-limiting rule on those paths with a target of 16 requests per source IP
-per 10 seconds and a 10-second block. Keep `workers.dev` and version previews
-disabled. Free WAF rate limiting counts per IP and per data center, and
-enforcement can lag. An allowlisted network can share egress IPs. Route
-isolation, WAF rule attachment, and raw Worker traffic remain unverified on
-the hosted target.
-[Workers routes](https://developers.cloudflare.com/workers/configuration/routing/routes/)
+Cloudflare provisions DNS and TLS for a Custom Domain and sends all paths on
+that hostname to the Worker. Read back the edge rules that apply to the
+hostname before deployment. The documented pre-Worker rule matches the
+exact hostname, approved driver egress IP, and HTTPS POST to
+`/v1/pilot/telegram`, `/v1/pilot/agent` and `/v1/pilot/fixture` with no query.
+Its rate target is 16 per source IP per ten seconds with a ten-second block.
+Free WAF rate limiting counts per IP and per data center and enforcement
+can lag.
+[Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
 · [WAF custom rules](https://developers.cloudflare.com/waf/custom-rules/)
 · [WAF rate-limiting rules](https://developers.cloudflare.com/waf/rate-limiting-rules/)
 
@@ -42,8 +33,9 @@ window check. Missing or failing rate binding fails closed. This gate runs
 inside the Worker before the DO call. The platform limiter is approximate
 per Cloudflare location. Raw Worker hits reach the Worker before these
 guards, and authenticated requests with malformed protocol payloads can
-still reach the DO. The DO's existing persistent admission counters provide
-a separate budget after dispatch.
+still reach the DO. The DO caps admissions per UTC day at 9,800 for ingress
+and 10,000 including alarms. The singleton update, task, attempt and receipt
+bound the pilot's data rows.
 [Workers Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
 
 ## One run
@@ -73,7 +65,9 @@ missing limiter do not create an object.
 
 Use the compiler and Wasm tooling from the
 [Phase 2 loopback validation](cloud-gateway-phase-2-local.md#local-validation).
-Stage only one mode at a time in the local build output directory.
+Stage only one mode at a time in the local build output directory. Before each
+build, check `df -B1 "$PWD" /tmp` and stop below 16,106,127,360 bytes available
+on either filesystem or on `ENOSPC`.
 
 ```sh
 mise x -- npm --prefix crates/coconutclaw-gateway run stage:pilot
@@ -85,26 +79,164 @@ GATEWAY_LOCAL_EXECUTOR=/path/to/gateway-local-executor \
   mise x -- node --test crates/coconutclaw-gateway/{config,integration}.test.mjs
 ```
 
-On Leo-Claw, all six pilot tests and all 15 existing config and integration
-cases passed. The pilot suite includes the CLI over loopback with certificate
-verification and a second-claim rejection after lease expiration and restart.
-The project's pinned official `cf` CLI accepted both prebuilt modes at
-322.00 KiB gzipped. It reported the 16-per-ten-second limiter only in pilot
-mode. Staged metadata verifies the secret declarations. Hosted provisioning
-and binding behavior require separate acceptance.
+The config tests check the generated `.cloudflare/output/v0/` metadata and
+default, other and pilot modes with and without preview. The pilot suite
+includes the CLI over loopback with certificate verification and a
+second-claim rejection after lease expiration and restart. The pinned
+official `cf` `1.0.0-beta.5` accepted both prebuilt modes and reported the
+16-per-ten-second limiter only in pilot mode. The manifests verify hostname
+and secret declarations. Hosted DNS, TLS, bindings and receipt require readback
+on Mars.
 
-Two `cargo-mutants` 27.1.0 variants failed their matching pilot tests. A
-no-op synthetic delivery exhausted the receipt polls. Removing the
-single-attempt guard admitted a second claim after lease expiration.
+The ledger budget test caught a `cargo-mutants` 27.1.0 variant that bypassed
+persistent request accounting. Earlier variants also failed their matching
+tests for a no-op synthetic delivery and a second claim after lease expiration.
+
+## Mars deployment
+
+1. Confirm the accepted commit and the target account and active `liu.nz` zone.
+   Check DNS and Worker route patterns for conflicts on `bigfur.liu.nz`.
+   Confirm the isolated Worker has an active disabled version and a single
+   SQLite `BotLedger` namespace with no objects. Record that version ID and
+   namespace ID. Read back the hostname's edge controls.
+
+   From the accepted checkout, use the Mars Node version and the gateway's
+   locked dependencies. Install missing dependencies with `npm ci
+   --ignore-scripts` under the same Node version. Set `CLOUDFLARE_ACCOUNT_ID`
+   and `CLOUDFLARE_ZONE_ID` to the verified IDs, `DISABLED_VERSION_ID` to the
+   active version, and `PILOT_NAMESPACE_ID` to the verified namespace.
+
+   ```bash
+   cd crates/coconutclaw-gateway
+   pilot_node() { mise x node@26.10.0 -- "$@"; }
+   pilot_cf() { CF_SEND_TELEMETRY=false pilot_node ./node_modules/.bin/cf "$@"; }
+   : "${CLOUDFLARE_ACCOUNT_ID:?}" "${CLOUDFLARE_ZONE_ID:?}"
+   : "${DISABLED_VERSION_ID:?}" "${PILOT_NAMESPACE_ID:?}"
+   export CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID
+   worker=coconutclaw-phase1-test
+   pilot_cf --version
+   pilot_cf auth whoami
+   pilot_cf workers deployments list --worker "$worker"
+   pilot_cf workers versions get "$DISABLED_VERSION_ID" --worker-id "$worker"
+   pilot_cf durable-objects namespaces list
+   pilot_cf durable-objects namespaces objects list --id "$PILOT_NAMESPACE_ID"
+   ```
+
+2. Stage serially using the existing cache and the Rust and Wasm tooling
+   from local acceptance. Abort below 16,106,127,360 bytes available on the
+   checkout or `/tmp`, or on `ENOSPC`. Run the pilot tests and dry run.
+
+   ```bash
+   (set -o pipefail
+    df -B1 . /tmp | awk '1; NR > 1 && $4 < 16106127360 { low = 1 } END { exit low }' &&
+      CARGO_BUILD_JOBS=1 pilot_node npm run stage:pilot) &&
+     pilot_node node --test pilot.test.mjs &&
+     pilot_node npm run check:cf:pilot &&
+     jq . .cloudflare/output/v0/config.json &&
+     jq '{name, domains, workersDev, previewUrls, env, exports, manifest}' \
+       .cloudflare/output/v0/workers/default/worker.config.json
+   ```
+
+3. In a private shell with tracing off, create the disposable credentials
+   immediately before deploy. Go to cleanup on any failure after deployment
+   starts. Run the driver at most once and treat ambiguity as terminal.
+
+   ```bash
+   set +x
+   umask 077
+   pilot_dir=$(mktemp -d /tmp/coconutclaw-bigfur.XXXXXXXX)
+   pilot_node node --input-type=module - "$pilot_dir" <<'JS'
+   import { generateKeyPairSync, randomBytes } from "node:crypto";
+   import { writeFileSync } from "node:fs";
+   import { join } from "node:path";
+   const directory = process.argv[2];
+   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+   const start = Date.now();
+   writeFileSync(join(directory, "pilot.pem"),
+       privateKey.export({ type: "pkcs8", format: "pem" }), { flag: "wx", mode: 0o600 });
+   writeFileSync(join(directory, "secrets.json"), JSON.stringify({
+       PILOT_TOKEN: randomBytes(32).toString("hex"),
+       PILOT_WINDOW: `${start}:${start + 600_000}`,
+       PILOT_ALPHA_KEY: publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("hex"),
+   }), { flag: "wx", mode: 0o600 });
+   JS
+   pilot_cf deploy --prebuilt --mode phase2-pilot \
+     --zone "$CLOUDFLARE_ZONE_ID" --secrets-file "$pilot_dir/secrets.json"
+   pilot_cf workers deployments list --worker "$worker"
+   ```
+
+   Record `PILOT_VERSION_ID` from the deployment at 100% traffic. Read back
+   `PHASE=phase2-pilot`, the `BOTS` binding, rate limiter and the three
+   secret names. Under **Workers & Pages → coconutclaw-phase1-test → Settings →
+   Domains & Routes**, verify the sole Custom Domain is `bigfur.liu.nz`,
+   `workers.dev` and preview URLs are off, and TLS is ready within the window.
+   [cf project commands](https://developers.cloudflare.com/cf/projects/)
+
+   ```bash
+   pilot_cf workers versions get "$PILOT_VERSION_ID" --worker-id "$worker"
+   pilot_cf workers secrets list --worker "$worker"
+   COCONUTCLAW_PILOT_TOKEN="$(jq -er .PILOT_TOKEN "$pilot_dir/secrets.json")" \
+     pilot_node node pilot-driver.mjs https://bigfur.liu.nz "$pilot_dir/pilot.pem"
+   pilot_cf durable-objects namespaces objects list --id "$PILOT_NAMESPACE_ID"
+   ```
+
+   Expect one execution within 16 requests and one `delivered` receipt
+   with `sends=1`, chat `321`, topic `37` and `pilot: SYNTHETIC PILOT`.
+   The driver checks update deduplication and signed result replay.
+   Confirm exactly one object with stored data in the isolated namespace.
+
+## Mars cleanup
+
+1. Remove the `bigfur.liu.nz` Custom Domain under **Settings → Domains &
+   Routes** and confirm detachment before removing the pilot-specific edge
+   rules. Apply this step after success or failure. If detachment fails,
+   proceed with the disabled deployment and keep the edge rules in place.
+   [List domains](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/) ·
+   [Delete domain](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/delete/)
+
+2. Stage the disabled manifest from the existing generated modules. If they
+   are unavailable, recheck the disk gate and use `npm run stage`. Confirm
+   `PHASE=disabled`, only `BOTS` and `PHASE` bindings, and no domain, routes
+   or triggers before deployment.
+
+   ```bash
+   pilot_node node stage.mjs
+   pilot_node npm run check:cf
+   jq . .cloudflare/output/v0/workers/default/worker.config.json
+   pilot_cf deploy --prebuilt --zone "$CLOUDFLARE_ZONE_ID"
+   pilot_cf workers deployments list --worker "$worker"
+   ```
+
+   Set `CLOSED_VERSION_ID` from the disabled version at 100% traffic.
+   Recheck the detached domain and both disabled URL settings.
+
+   ```bash
+   pilot_cf workers versions get "$CLOSED_VERSION_ID" --worker-id "$worker"
+   pilot_cf workers secrets list --worker "$worker"
+   ```
+
+   For any retained pilot secret, run
+   `pilot_cf workers secrets delete NAME --worker "$worker"` with the
+   reported name and verify the active disabled version and secret list
+   again. If a pilot version was uploaded, verify its exact ID and that
+   it is inactive, then retire it with
+   `pilot_cf workers versions delete "$PILOT_VERSION_ID" --worker-id "$worker"`.
+   If the scratch directory was created, remove the local credentials with
+   `rm -f -- "$pilot_dir/secrets.json" "$pilot_dir/pilot.pem"` and
+   `rmdir -- "$pilot_dir"`.
+
+3. Disabling the Worker retains the retired SQLite object. Permanent removal
+   requires deletion of the isolated Worker and its namespace because this
+   pilot has no object reset endpoint. With approval for that deletion and
+   confirmation that the Worker and namespace contain only disposable data
+   and have no external references, run `pilot_cf workers delete "$worker"`.
+   Verify the Worker, namespace and domain mapping are absent.
+   [Durable Object storage cleanup](https://developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage/#remove-a-durable-object)
 
 ## Remaining gates
 
-- Hosted synthetic acceptance needs an authorized isolated route and proven
-  pre-Worker controls, or an authorized private caller. Provision the disposable
-  bearer and signing key and confirm the short window and isolated named ledger.
-  Run the driver once, verify the hosted receipt and replay behavior, then close
-  ingress and verify the disabled version. The independently verified isolated
-  version is the rollback reference.
+- Mars verifies the account, zone, hostname mapping and edge rules, runs the
+  hosted driver once, and verifies cleanup.
 - Real Codex success and cancellation remain blocked. The loopback executable
   only launches the fixed synthetic child with an empty environment. The
   provider has timeouts and owned-process-group cancellation. Its real
