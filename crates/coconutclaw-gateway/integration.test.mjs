@@ -1649,22 +1649,21 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
     assert.ok(warmSamples.every(row => row.written <= 10), "warm writes stay below 10 rows per operation");
 });
 
-test("BigFur production queues fresh Telegram work with the runner and control offline", timeout, async context => {
+async function productionAuthorityFixture(context) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "direct-retirement-"));
     const mock = await authorityFixture(join(root, "control.sqlite"));
     context.after(async () => {
         await mock.close();
         await rm(root, { recursive: true, force: true });
     });
-    let controlOnline = false;
-    let authorityCalls = 0;
     const owner = 5_123_456_789;
     const topic = 101550;
     const cutover = {
         production: true, scope: `${owner}:${topic}`, runner: "d".repeat(64),
+        controlOnline: false, authorityCalls: 0,
         fetch(request) {
-            authorityCalls++;
-            return controlOnline ? mock.fetch(request) : new Response(null, { status: 503 });
+            cutover.authorityCalls++;
+            return cutover.controlOnline ? mock.fetch(request) : new Response(null, { status: 503 });
         },
     };
     const client = await runFixture(context, { inspect: true, cutover });
@@ -1693,6 +1692,21 @@ test("BigFur production queues fresh Telegram work with the runner and control o
             text: `synthetic task ${id}` },
     });
     const ingress = (body, status = 200) => client.post("telegram", body, webhook, status);
+    return { root, mock, owner, topic, cutover, client, cancelHeaders, telegram, ingress };
+}
+
+async function reportProductionResult(client, grant, text) {
+    for (const event of [{ kind: "started" }, { kind: "result", text }]) {
+        const payload = JSON.stringify({ attempt: grant.attempt, event });
+        const message = `coconutclaw-evidence-v1\n${grant.instance}\nalpha\n${payload}`;
+        const signature = sign(null, Buffer.from(message), client.keys.alpha.privateKey).toString("hex");
+        await client.agent("alpha", "report", { proof: { payload, signature } });
+    }
+}
+
+test("BigFur production queues fresh Telegram work with the runner and control offline", timeout, async context => {
+    const { mock, owner, topic, cutover, client, cancelHeaders, telegram, ingress } =
+        await productionAuthorityFixture(context);
     const inactive = { error: "inactive_generation" };
     const ignored = { disposition: "ignored", task: null };
     const task = "telegram:41001";
@@ -1728,7 +1742,7 @@ test("BigFur production queues fresh Telegram work with the runner and control o
     const first = await Promise.all([ingress(telegram(41001)), ingress(telegram(41001))]);
     assert.deepEqual(first.map(result => result.disposition).sort(), ["duplicate", "task"]);
     assert.deepEqual(first.find(result => result.task), { disposition: "task", task });
-    assert.equal(authorityCalls, 0);
+    assert.equal(cutover.authorityCalls, 0);
     assert.deepEqual(await client.sql("SELECT name FROM sqlite_master WHERE name LIKE '%legacy%' OR name='cutover_custody'"), []);
     assert.deepEqual(await client.sql("SELECT * FROM attempts"), []);
     assert.deepEqual(await client.sql("SELECT update_id FROM inbox"), [{ update_id: 41001 }]);
@@ -1736,10 +1750,10 @@ test("BigFur production queues fresh Telegram work with the runner and control o
     await client.restart();
     assert.deepEqual(await ingress(telegram(41001)), { disposition: "duplicate" });
     assert.deepEqual(await ingress(telegram(41002)), { disposition: "task", task: "telegram:41002" });
-    assert.equal(authorityCalls, 0);
+    assert.equal(cutover.authorityCalls, 0);
     assert.deepEqual(await client.agent("alpha", "next", {}, 503), inactive);
     assert.deepEqual(await client.post("cancel", { task }, cancelHeaders, 503), inactive);
-    assert.ok(authorityCalls > 0);
+    assert.ok(cutover.authorityCalls > 0);
 
     const pin = cutover.target.pin;
     for (const change of [{ generation: 2 }, { custodyDigest: "c".repeat(64) },
@@ -1753,7 +1767,7 @@ test("BigFur production queues fresh Telegram work with the runner and control o
     cutover.target.pin = pin;
     cutover.scope = `${owner}:${topic}`;
     await client.restart();
-    controlOnline = true;
+    cutover.controlOnline = true;
     assert.deepEqual(await client.post("cancel", { task }, cancelHeaders, 503), inactive);
     mock.publish(cutover.target, mock.checks.at(-1).objectIncarnation, cutover.runner);
     cutover.runner = "a".repeat(64);
@@ -1763,20 +1777,15 @@ test("BigFur production queues fresh Telegram work with the runner and control o
     assert.equal(claimed.placement, "alpha");
     assert.equal(claimed.chat_id, owner);
     assert.equal(claimed.message_thread_id, topic);
-    controlOnline = false;
+    cutover.controlOnline = false;
     assert.deepEqual(await client.agent("alpha", "start", { attempt: claimed.attempt }, 503), inactive);
-    controlOnline = true;
+    cutover.controlOnline = true;
     const grant = await client.agent("alpha", "start", { attempt: claimed.attempt });
     assert.ok(grant.authority_valid_until > Date.now());
     assert.deepEqual(await client.sql("SELECT update_id FROM inbox ORDER BY sequence"), [
         { update_id: 41001 }, { update_id: 41002 },
     ]);
-    for (const event of [{ kind: "started" }, { kind: "result", text: "same topic" }]) {
-        const payload = JSON.stringify({ attempt: claimed.attempt, event });
-        const message = `coconutclaw-evidence-v1\n${grant.instance}\nalpha\n${payload}`;
-        const signature = sign(null, Buffer.from(message), client.keys.alpha.privateKey).toString("hex");
-        await client.agent("alpha", "report", { proof: { payload, signature } });
-    }
+    await reportProductionResult(client, grant, "same topic");
     await until(async () => (await client.sql("SELECT message_id FROM delivery_receipts")).length,
         "production alarm durably records the authority's send receipt");
     assert.deepEqual(mock.sends, [{
@@ -1785,6 +1794,74 @@ test("BigFur production queues fresh Telegram work with the runner and control o
     mock.retire();
     assert.deepEqual(await client.post("cancel", { task: "telegram:41002" }, cancelHeaders, 503), inactive);
     assert.equal((await ingress(telegram(41003))).disposition, "task");
+});
+
+test("BigFur production preserves queued work and pending delivery but fences both cold starts", timeout, async context => {
+    const { root, mock, cutover, client, cancelHeaders, telegram, ingress } =
+        await productionAuthorityFixture(context);
+    const inactive = { error: "inactive_generation" };
+    const first = "telegram:42001";
+    const pending = "telegram:42002";
+    const queued = "telegram:42003";
+    const outbox = "SELECT phase,sends FROM outbox WHERE task=?";
+    cutover.controlOnline = true;
+    await ingress(telegram(42001));
+    assert.deepEqual(await client.post("cancel", { task: first }, cancelHeaders, 503), inactive);
+    const enrolled = mock.checks.at(-1).objectIncarnation;
+    mock.publish(cutover.target, enrolled, cutover.runner);
+
+    const complete = async task => {
+        const { attempt } = await client.agent("alpha", "claim", { task });
+        const grant = await client.agent("alpha", "start", { attempt });
+        await reportProductionResult(client, grant, task);
+    };
+    await ingress(telegram(42002));
+    await ingress(telegram(42003));
+    await complete(first);
+    await until(async () => (await client.sql(outbox, first))[0]?.phase === "delivered",
+        "the enrolled writer sends the first reply");
+    await complete(pending);
+    assert.equal((await client.agent("alpha", "next", {})).task, queued);
+    assert.deepEqual(await client.sql(outbox, pending), [{ phase: "pending", sends: 0 }]);
+    assert.ok((await client.scheduledAlarm())[0].scheduled_time > Date.now());
+
+    await client.stop();
+    const saved = join(root, "saved");
+    await client.snapshot(saved);
+    const deliveries = mock.sends.slice();
+    assert.equal(deliveries.length, 1);
+    const expectedOutbox = [{ phase: "pending", sends: 0 }];
+    const verifyFenced = async (candidate, firstCheck) => {
+        assert.equal(await candidate.objectId("bigfur-production"), cutover.target.pin.objectId);
+        const claim = candidate.signed("alpha", { op: "claim", task: queued }, { seq: 100 });
+        assert.deepEqual(await candidate.wire(claim, 503), inactive);
+        await until(() => mock.checks.slice(firstCheck).some(check => check.runnerIncarnation === null),
+            "the persisted alarm reaches control after a cold start");
+        const checks = mock.checks.slice(firstCheck);
+        assert.ok(checks.some(check => check.runnerIncarnation === cutover.runner));
+        for (const check of checks) {
+            assert.deepEqual(check.target, cutover.target);
+            assert.notEqual(check.objectIncarnation, enrolled);
+            assert.equal(check.allowed, false);
+        }
+        assert.deepEqual(await candidate.sql("SELECT current_attempt FROM tasks WHERE id=?", queued),
+            [{ current_attempt: null }]);
+        assert.deepEqual(await candidate.sql(outbox, pending), expectedOutbox);
+        assert.deepEqual(mock.sends, deliveries);
+    };
+
+    const restoreChecks = mock.checks.length;
+    const restored = await runFixture(context, { inspect: true, restore: saved, cutover, keys: client.keys });
+    await verifyFenced(restored, restoreChecks);
+    await restored.stop();
+
+    const restartChecks = mock.checks.length;
+    await client.restart();
+    assert.deepEqual(await ingress(telegram(42003)), { disposition: "duplicate" });
+    assert.deepEqual(await ingress(telegram(42004)), { disposition: "task", task: "telegram:42004" });
+    await verifyFenced(client, restartChecks);
+    assert.deepEqual(await restored.sql("SELECT id FROM tasks WHERE id='telegram:42004'"), []);
+    assert.notEqual(mock.checks[restartChecks].objectIncarnation, mock.checks[restoreChecks].objectIncarnation);
 });
 
 test("BigFur authority fences restored writers and is checked at effect boundaries", timeout, async context => {
