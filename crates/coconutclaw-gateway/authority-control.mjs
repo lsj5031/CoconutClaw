@@ -129,8 +129,10 @@ class AuthorityStore {
         const current = this.current();
         if (!current || current.retired) throw new Denied(503);
         const enrolled = JSON.parse(current.publication);
-        if (!isDeepStrictEqual(target, wireTarget(enrolled)) ||
-            enrolled.target.telegramCredentialVersion !== credentialVersion ||
+        if (!isDeepStrictEqual(target, wireTarget(enrolled))) {
+            throw new Denied(503);
+        }
+        if (enrolled.target.telegramCredentialVersion !== credentialVersion ||
             (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation) ||
             (runnerIncarnation !== null && !equalSecret(runnerIncarnation, enrolled.runnerIncarnation))) {
             throw new Denied(503);
@@ -203,7 +205,7 @@ export function telegramSender(origin, token) {
         return new Promise((resolve, reject) => {
             const fail = () => reject(new Denied(502));
             const outgoing = request(url, {
-                method: "POST", agent: false, signal: AbortSignal.timeout(1000),
+                method: "POST", agent: false, signal: AbortSignal.timeout(10000),
                 headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
             }, async incoming => {
                 try {

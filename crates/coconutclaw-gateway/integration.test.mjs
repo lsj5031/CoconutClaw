@@ -1731,7 +1731,7 @@ async function reportProductionResult(client, grant, text) {
 }
 
 test("BigFur production queues fresh Telegram work with the runner and control offline", timeout, async context => {
-    const { mock, owner, topic, cutover, client, cancelHeaders, telegram, ingress } =
+    const { root, mock, owner, topic, cutover, client, cancelHeaders, telegram, ingress } =
         await productionAuthorityFixture(context);
     const inactive = { error: "inactive_generation" };
     const ignored = { disposition: "ignored", task: null };
@@ -1773,10 +1773,25 @@ test("BigFur production queues fresh Telegram work with the runner and control o
     assert.deepEqual(await client.sql("SELECT * FROM attempts"), []);
     assert.deepEqual(await client.sql("SELECT update_id FROM inbox"), [{ update_id: 41001 }]);
 
+    await client.stop();
+    const saved = join(root, "before-offline-ack");
+    await client.snapshot(saved);
+    const authorityBeforeAck = await readFile(join(root, "control.sqlite"));
     await client.restart();
     assert.deepEqual(await ingress(telegram(41001)), { disposition: "duplicate" });
     assert.deepEqual(await ingress(telegram(41002)), { disposition: "task", task: "telegram:41002" });
+    await client.restart();
+    assert.deepEqual(await ingress(telegram(41002)), { disposition: "duplicate" });
+
+    const restored = await runFixture(context, { inspect: true, restore: saved, cutover, keys: client.keys });
+    assert.equal(await restored.objectId("bigfur-production"), cutover.target.pin.objectId);
+    assert.deepEqual(await restored.sql("SELECT update_id FROM inbox"), [{ update_id: 41001 }]);
+    assert.deepEqual(await restored.post("telegram", telegram(41002), webhook),
+        { disposition: "task", task: "telegram:41002" });
+    await restored.stop();
     assert.equal(cutover.authorityCalls, 0);
+    assert.deepEqual(await readFile(join(root, "control.sqlite")), authorityBeforeAck);
+
     assert.deepEqual(await client.agent("alpha", "next", {}, 503), inactive);
     assert.deepEqual(await client.post("cancel", { task }, cancelHeaders, 503), inactive);
     assert.ok(cutover.authorityCalls > 0);
