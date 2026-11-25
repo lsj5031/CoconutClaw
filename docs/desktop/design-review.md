@@ -25,3 +25,22 @@ The baseline was the clean functional gate at `a3de2d1`. The review used the pin
 The available host was Linux. The earlier macOS screenshots are baseline evidence. Re-run the same fixture on macOS to verify keyboard focus, picker return, resize, scroll, contrast and Reduce Motion, and exercise pairing and the owned runner lifecycle there.
 
 The rebuilt Windows x64 ZIP is a cross-built portable smoke package. Win32 launch from a path with spaces, UI Automation and keyboard focus, file-picker error/cancel/empty behavior, resize and 100%/150% DPI, Reduce Motion, pairing, runner ownership and staging remain native Windows gates. [Windows rollout gates](README.md#windows-rollout-gates)
+
+
+## Second pass, 25 November 2026
+
+The first pass fixed focus, scroll, contrast and message slots. This pass left the visual language alone and changed what the window ranks: the same borders, native widgets and verified contrast values, grouped under named tokens in `desktop/theme.ts`.
+
+| Priority | Before | After |
+| --- | --- | --- |
+| P1 · Inverted severity | `unreachable`, `unconfirmed` and `unchecked` shared one grey and only `unknown` drew attention, so `Failed`, `Awaiting approval` and `Cancelled` rendered like `Completed` and a failed check was quieter than a passing one. | Every saved state resolves to one of four tones in `desktop/snapshot.ts`. Awaiting approval, Unknown, failed, an unreachable or unconfirmed runner, a delivery with no record, and a paused, blocked or unknown schedule are `attention`; completed, reachable and active are affirmative. |
+| P1 · Unstated freshness and provenance | The demo read `Synthetic demo` in the smallest grey text, and an export showed only a raw UTC time. | A full-width notice states that demo values are fabricated. The toolbar states the export's age and marks one older than 24 hours. |
+| P1 · Silent 15-second wait and harmful recovery copy | A host action disabled every control and swapped one sentence, then advised reopening the companion, which drops the control pipe of a runner the window started. | Start, stop, card review and pairing show a wait indicator and what they are waiting for. An unacknowledged action says to keep the window open; pairing advises checking admission with `nodes status` instead. |
+| P2 · No triage | Up to 50 runs and 32 runners rendered as one unranked wall in coordinator order. | `All · N` / `Needs attention · N` narrow each page without reordering rows. |
+| P2 · Split identity | A run's assigned computer and routing's destination appeared without their saved observation, and runner IDs were the last eight characters of an uncopyable string. | Both carry a toned annotation drawn from the same saved fields, and Nodes lists the full public ID as selectable text. |
+| P2 · No token layer | About 22 hex values were inlined across class strings, so severity, staleness and any second appearance had nowhere to live. | `desktop/theme.ts` holds every colour, surface, focus ring and motion class, with a `dark` set exported unwired. |
+| P3 · Copy noise and motion | `Signed start` read back as `No verified start`; hover and press changed colour instantly; a page switch swapped two identical list layouts. | Facts read `Verified` / `No verified record`. Hover and press fade over 100 ms, a page switch glides with `LayoutAnimation.easeInEaseOut()`, and the wait indicator is `motion-safe`, so reduced motion removes it. Snapshot contents are never animated. |
+
+### What this pass does not claim
+
+No native run, screenshot, contrast measurement or package was produced for this pass: the checkout has no `nsh` binary. The tones, age labels, filter behaviour and copy are asserted in `desktop/App.test.tsx`; the added colours are computed sRGB contrast ratios (attention `#764608` 7.9:1 on white, pending `#1756ad` 7.1:1, affirmative `#17614c` 7.4:1, neutral `#526174` 6.3:1), not measured pixels. Verification still needs `nsh check desktop`, `nsh test desktop` and the GTK steps in [validation.md](validation.md), plus the macOS and Windows gates above. The tracked screenshots still show the previous pass.

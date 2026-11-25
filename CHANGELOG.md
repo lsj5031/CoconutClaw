@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Active, owner-approved facts from an exact Telegram topic can be included as
   bounded data in the signed text request to its assigned runner. Memory remains
   coordinator-owned; it is not a shared index or a replicated database.
+- Desktop companion ranks saved runner, run and schedule state by tone, filters
+  each page to the rows that need attention, states how old the open export is,
+  lists full public runner IDs, and holds its colours and motion classes in one
+  token file with an unwired dark set.
 
 ### Changed
 - Retained runtime is Telegram polling and Codex with a single data directory.
@@ -26,8 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reconcile workspace package metadata with the existing v0.4.1 release tag and
   changelog. That release retained 0.3.1 in Cargo metadata; this is not a new release.
 - Document all seven current CLI commands in the architecture overview.
+- Desktop companion no longer advises reopening the companion after an
+  unacknowledged local runner request; reopening drops control of a runner the
+  window started.
 
 ### Verification
+- The desktop companion changes in this pass await `nsh check desktop`,
+  `nsh test desktop` and the native GTK, macOS and Windows gates in
+  [docs/desktop/validation.md](docs/desktop/validation.md). No native receipt is
+  claimed for them.
 - [19 November 2026 fleet record](docs/fleet-verification.md) distinguishes the
   live scoped-memory checks and exact hosted CI on `18c460c` from the earlier
   live routing, scheduling, recovery and cancellation checks on `746c3b8`.

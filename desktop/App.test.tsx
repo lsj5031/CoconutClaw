@@ -14,12 +14,16 @@ test("reachability, assigned computer, evidence, and delivery stay independent",
   expect(app.texts().join("\n")).toContain(
     "Unreachable at last check\nChecked\n2026-11-20 · 01:50:00 UTC\nLast reached\n2026-11-20 · 01:14:00 UTC",
   );
+  expect(app.texts()).toContain("Full public ID");
+  expect(app.texts()).toContain(demo.nodes[0].id);
+  expect(app.texts()).toContain("All · 2 runners");
+  expect(app.texts()).toContain("Needs attention · 1 runner");
 
   await app.press("Jobs");
   const jobs = app.texts().join("\n");
   expect(jobs).toContain("Run #1042\nUnknown\nAssigned computer\nRunner · 51c2a740");
-  expect(jobs).toContain("Signed start\nNo verified start\nSigned result\nNo verified result\nMessage delivery\nDelivered");
-  expect(jobs).toContain("Verified start\nSigned result\nVerified result\nMessage delivery\nPending");
+  expect(jobs).toContain("Signed start\nNo verified record\nSigned result\nNo verified record\nMessage delivery\nDelivered");
+  expect(jobs).toContain("Verified\nSigned result\nVerified\nMessage delivery\nPending");
 
   await app.press("Nodes");
   expect(app.texts()).toContain("Reachable at last check");
@@ -75,7 +79,8 @@ test("opens an explicit export, keeps its snapshot after cancel or invalid selec
   expect(app.texts()).toContain("No paired runners in this snapshot.");
   await app.press("Jobs");
   expect(app.texts()).toContain("Unknown");
-  expect(app.texts()).toContain("Verified result");
+  expect(app.texts().join("\n")).toContain("Signed start\nVerified\nSigned result\nVerified");
+  expect(app.texts().join("\n")).toContain("Assigned computer\nRunner · 51c2a740\nnot in this snapshot");
 
   app.onPick(() => null);
   await app.press("Open snapshot");
@@ -103,12 +108,15 @@ test("shows saved topic routing separately from job assignments and renders dura
   await app.press("Open snapshot");
 
   await app.press("Routing");
-  expect(app.texts().join("\n")).toContain("New Telegram text tasks\nRunner · c917df26");
+  expect(app.texts().join("\n")).toContain(
+    "New Telegram text tasks\nRunner · c917df26\nunreachable at last check",
+  );
   await app.press("Jobs");
   expect(app.texts().join("\n")).toContain("Run #1042\nUnknown\nAssigned computer\nRunner · 51c2a740");
 
   await app.press("Schedules");
   const shown = app.texts().join("\n");
+  expect(shown).toContain("Needs attention · 1 schedule");
   expect(shown).toContain("Schedule #21\nActive\nBlocked by a prior run\nPlanned next run\n2026-11-22 · 19:30:00 UTC\nLatest run\nRun #1042");
   expect(shown).toContain("Cadence\nweekly mon,thu 08:30\nTimezone\nPacific/Auckland\nRepeated time\nSecond occurrence\nSkipped time\nUse next valid time\nMissed runs\nCombine into one run");
   expect(shown).toContain("Schedule #22\nFinished\nPlanned next run\nNo time recorded");
@@ -165,4 +173,54 @@ test("keeps the current scope on cancel and rejection and distinguishes old expo
   app.onPick(() => pickSnapshot({ ...newer, routing: null, schedules: [], schedule_count: 0 }));
   await app.press("Open snapshot");
   expect(app.texts()).toContain("This snapshot covers a local conversation.");
+});
+
+test("states how old the export is and says when the values are fabricated", async () => {
+  const app = await open("./App.tsx");
+  expect(app.texts()).toContain("Synthetic demo");
+  expect(app.texts()).toContain("Fabricated sample data. Not a coordinator export, and no live fleet is shown.");
+
+  const fresh = { ...demo, source: "coordinator", observed_at: new Date().toISOString() };
+  app.onPick(() => pickSnapshot(fresh));
+  await app.press("Open snapshot");
+  expect(app.texts().join("\n")).toContain("just now · refresh by opening a new export");
+  expect(app.texts()).not.toContain("Synthetic demo");
+  expect(app.texts()).not.toContain("Fabricated sample data. Not a coordinator export, and no live fleet is shown.");
+
+  app.onPick(() => pickSnapshot({ ...fresh, observed_at: "2020-01-01T00:00:00Z" }));
+  await app.press("Open snapshot");
+  expect(app.texts().join("\n")).toContain("days old · refresh by opening a new export");
+});
+
+test("filters a page to the rows that need attention without reordering them", async () => {
+  const app = await open("./App.tsx");
+  expect(app.texts()).toContain("Needs attention · 1 runner");
+  await app.press("Needs attention · 1 runner");
+  const nodes = app.texts().join("\n");
+  expect(nodes).toContain("Runner · c917df26");
+  expect(nodes).not.toContain("Runner · 51c2a740");
+  await app.press("All · 2 runners");
+  expect(app.texts()).toContain("Runner · 51c2a740");
+
+  await app.press("Jobs");
+  expect(app.texts()).toContain("All · 2 jobs");
+  expect(app.texts()).toContain("Needs attention · 1 job");
+  await app.press("Needs attention · 1 job");
+  const filtered = app.texts().join("\n");
+  expect(filtered).toContain("Run #1042");
+  expect(filtered).not.toContain("Run #1041");
+  await app.press("All · 2 jobs");
+  expect(app.texts().join("\n")).toContain("Run #1041");
+
+  await app.press("Needs attention · 1 job");
+  await app.press("Nodes");
+  await app.press("Jobs");
+  expect(app.texts().join("\n")).toContain("Run #1041");
+
+  await app.press("Schedules");
+  expect(app.texts()).toContain("Needs attention · 1 schedule");
+  await app.press("Needs attention · 1 schedule");
+  const schedules = app.texts().join("\n");
+  expect(schedules).toContain("Schedule #21");
+  expect(schedules).not.toContain("Schedule #22");
 });
