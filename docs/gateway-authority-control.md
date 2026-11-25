@@ -1,5 +1,8 @@
 # BigFur control host
 
+For the first BigFur deployment, follow the [direct-retirement runbook](bigfur-direct-retirement.md)
+for ledger initialization and predecessor evidence.
+
 Run `authority-control.mjs` and `authority-preflight.mjs` from
 `crates/coconutclaw-gateway` on an independently administered, always-on host
 with Node 24 (verified on 24.22.1). The service uses Node's SQLite and HTTP
@@ -19,7 +22,7 @@ fail-closed when the host or its database is unavailable.
 
 ## Enrollment and retirement
 
-1. Keep ingress, launch and effect credentials held. Prepare the held ledger
+1. Keep ingress, launch and effect credentials held. For a custody cutover, prepare the held ledger
    with the checked generation, custody digest and attempt floor. Match the
    actual account, Worker, deployment and `CF_VERSION_METADATA.id` to the
    preflight target. Preserve the original `#23` Unknown and quarantine

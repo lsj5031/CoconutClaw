@@ -128,6 +128,14 @@ pub enum Receipt {
     Unknown,
 }
 
+#[derive(Deserialize, PartialEq)]
+pub struct DirectGeneration {
+    pub generation: u32,
+    pub digest: String,
+    pub chat_id: i64,
+    pub thread_id: i32,
+}
+
 const DAY_MS: i64 = 86_400_000;
 const REQUEST_LIMIT: i64 = 10_000;
 const INGRESS_LIMIT: i64 = 9_800;
@@ -180,6 +188,51 @@ impl Ledger {
 
     pub fn initialize(&self) -> Result<()> {
         self.initialize_schema(include_str!("schema.sql"))
+    }
+
+    pub fn direct_generation(&self) -> Result<Option<DirectGeneration>> {
+        if self
+            .number(
+                "SELECT 1 AS value FROM sqlite_master WHERE type='table' AND name='direct_generation'",
+                [],
+            )?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        self.row(
+            "SELECT generation,digest,chat_id,thread_id FROM direct_generation WHERE slot=1",
+            [],
+        )
+    }
+
+    pub fn empty_schema(&self) -> Result<bool> {
+        Ok(self
+            .number("SELECT 1 AS value FROM sqlite_master LIMIT 1", [])?
+            .is_none())
+    }
+
+    pub fn initialize_direct(&self, generation: DirectGeneration) -> Result<()> {
+        self.initialize()?;
+        self.write(
+            "CREATE TABLE direct_generation (
+                slot INTEGER PRIMARY KEY CHECK (slot = 1),
+                generation INTEGER NOT NULL CHECK (generation >= 1),
+                digest TEXT NOT NULL CHECK (length(digest) = 64),
+                chat_id INTEGER NOT NULL CHECK (chat_id > 0),
+                thread_id INTEGER NOT NULL CHECK (thread_id > 0)
+            ) STRICT",
+            [],
+        )?;
+        self.write(
+            "INSERT INTO direct_generation VALUES (1,?,?,?,?)",
+            [
+                i64::from(generation.generation).into(),
+                generation.digest.into(),
+                generation.chat_id.into(),
+                generation.thread_id.into(),
+            ],
+        )
     }
 
     pub fn initialize_local_cutover(&self) -> Result<()> {

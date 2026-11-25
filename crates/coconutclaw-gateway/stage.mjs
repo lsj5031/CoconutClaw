@@ -7,8 +7,8 @@ import { loadAndParseConfig } from "@cloudflare/config";
 
 const root = import.meta.dirname;
 const [mode, ...extra] = process.argv.slice(2);
-if (extra.length || (mode !== undefined && mode !== "phase2-pilot")) {
-    throw new Error("Expected no mode or phase2-pilot");
+if (extra.length || (mode !== undefined && !["phase2-pilot", "phase2-production"].includes(mode))) {
+    throw new Error("Expected no mode, phase2-pilot or phase2-production");
 }
 const buildContext = { isPreview: false, mode };
 const { result } = await loadAndParseConfig(join(root, "cloudflare.config.ts"), buildContext);

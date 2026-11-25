@@ -12,9 +12,8 @@ enrolled 64-character lowercase hex incarnation outside the journal, workspace
 and Codex home. Give the service account ownership and mode `0600` on each
 file. Exclude the incarnation from backups and logs. Enroll the verification
 key and incarnation with the independent authority operator. This runner's
-placement is `alpha`. Cutover ingress pins its admitted tasks to `alpha`, and
-the cutover path excludes unpinned tasks. The Worker still applies the existing
-fixture ingress identity and request budget.
+placement is `alpha`. BigFur ingress pins admitted tasks to `alpha`, and
+the cutover path excludes unpinned tasks. [Production scope and limits](bigfur-direct-retirement.md)
 
 ```json
 {

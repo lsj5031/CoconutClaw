@@ -5,9 +5,11 @@
   "scripts": {
     "stage": "sh build.sh && node stage.mjs",
     "stage:pilot": "sh build.sh && node stage.mjs phase2-pilot",
+    "stage:production": "sh build.sh && node stage.mjs phase2-production",
     "test:config": "node --test config.test.mjs",
     "check:cf": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run",
     "check:cf:pilot": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run --mode phase2-pilot",
+    "check:cf:production": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run --mode phase2-production",
     "test": "npm run stage && node --test authority-control.test.mjs authority-preflight.test.mjs config.test.mjs integration.test.mjs"
   },
   "devDependencies": {

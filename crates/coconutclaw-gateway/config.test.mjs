@@ -5,23 +5,29 @@ import { test } from "node:test";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { loadAndParseConfig } from "@cloudflare/config";
 
-test("only non-preview phase2-pilot selects the custom domain", async () => {
+test("only explicit non-preview pilot and production modes select the custom domain", async () => {
     for (const isPreview of [false, true]) {
-        for (const mode of [undefined, "production", "phase2-cutover", "phase2-local", "phase2-pilot"]) {
+        for (const mode of [undefined, "production", "phase2-cutover", "phase2-local", "phase2-pilot", "phase2-production"]) {
             const { result } = await loadAndParseConfig(join(import.meta.dirname, "cloudflare.config.ts"), {
                 isPreview, mode,
             });
             if (!result.success) throw result.error;
             const { worker } = result.data;
             const pilot = !isPreview && mode === "phase2-pilot";
-            assert.deepEqual(worker.domains, pilot ? ["bigfur.liu.nz"] : undefined, JSON.stringify({ isPreview, mode }));
-            assert.equal(worker.env.PHASE.value, pilot ? "phase2-pilot" : "disabled");
+            const production = !isPreview && mode === "phase2-production";
+            assert.deepEqual(worker.domains, pilot || production ? ["bigfur.liu.nz"] : undefined, JSON.stringify({ isPreview, mode }));
+            assert.equal(worker.env.PHASE.value, pilot || production ? mode : "disabled");
             assert.equal(worker.workersDev, false);
             assert.equal(worker.previewUrls, false);
             assert.equal(worker.routes, undefined);
             assert.equal(worker.triggers, undefined);
             assert.equal(worker.env.LOCAL_GENERATION, undefined);
-            assert.equal(worker.env.CUTOVER_TARGET, undefined);
+            assert.equal(worker.env.PILOT_GATE?.type, pilot ? "rate-limit" : undefined);
+            assert.equal(worker.env.CF_VERSION_METADATA?.type, production ? "version-metadata" : undefined);
+            for (const name of ["CUTOVER_TARGET", "CUTOVER_AUTHORITY_ORIGIN", "CUTOVER_AUTHORITY_BEARER",
+                "CUTOVER_CANCEL_SECRET", "PRODUCTION_TELEGRAM_SCOPE", "WEBHOOK_SECRET"]) {
+                assert.equal(worker.env[name]?.type, production ? "secret" : undefined, name);
+            }
         }
     }
 });

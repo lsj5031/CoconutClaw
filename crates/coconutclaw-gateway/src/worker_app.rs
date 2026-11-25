@@ -1,7 +1,12 @@
 use std::cell::OnceCell;
 use std::num::NonZeroU32;
+use std::time::Duration;
 
-use futures_util::StreamExt;
+use coconutclaw_telegram::private_route;
+use futures_util::{
+    StreamExt,
+    future::{Either, select},
+};
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use wasm_bindgen::prelude::*;
@@ -10,7 +15,8 @@ use worker::*;
 
 use crate::executor_wire::{self, Event, Evidence, evidence_bytes_for, request_bytes};
 use crate::ledger::{
-    Delivery, Execution, Ledger, LocalAuthority, Receipt, Reply, ScheduleInput, conflict,
+    Delivery, DirectGeneration, Execution, Ledger, LocalAuthority, Receipt, Reply, ScheduleInput,
+    conflict,
 };
 use crate::protocol::{
     Agent, BODY_LIMIT, Command, Device, Fixture, INSTANCE, telegram_input, valid_text,
@@ -43,9 +49,13 @@ enum LocalPhase {
     Executor,
     Pilot,
     Cutover,
+    Production,
 }
 
 const PILOT_INSTANCE: &str = "hosted-synthetic-pilot";
+const PRODUCTION_INSTANCE: &str = "bigfur-production";
+const PRODUCTION_HOST: &str = "bigfur.liu.nz";
+const PRODUCTION_IDENTITY: &str = "/v1/production/identity";
 const PILOT_UPDATE: i64 = 23001;
 const PILOT_TASK: &str = "telegram:23001";
 const PILOT_TOPIC: i32 = 37;
@@ -59,6 +69,7 @@ impl LocalPhase {
             "phase2-local" => Some(Self::Executor),
             "phase2-pilot" => Some(Self::Pilot),
             "phase2-cutover" => Some(Self::Cutover),
+            "phase2-production" => Some(Self::Production),
             _ => None,
         }
     }
@@ -68,11 +79,16 @@ impl LocalPhase {
             Self::Protocol => INSTANCE,
             Self::Executor => executor_wire::INSTANCE,
             Self::Pilot | Self::Cutover => PILOT_INSTANCE,
+            Self::Production => PRODUCTION_INSTANCE,
         }
     }
 
     fn executor(self) -> bool {
         self != Self::Protocol
+    }
+
+    fn controlled(self) -> bool {
+        matches!(self, Self::Cutover | Self::Production)
     }
 
     fn authority_pin(self, env: &Env) -> std::result::Result<Option<NonZeroU32>, Reply> {
@@ -84,6 +100,47 @@ impl LocalPhase {
             .and_then(|var| var.to_string().parse().ok())
             .map(Some)
             .ok_or_else(inactive_generation)
+    }
+}
+
+struct TelegramScope {
+    chat: i64,
+    thread: i32,
+}
+
+impl TelegramScope {
+    fn read(env: &Env) -> Option<Self> {
+        let scope = env.secret("PRODUCTION_TELEGRAM_SCOPE").ok()?.to_string();
+        let (chat, thread) = scope.split_once(':')?;
+        let chat = chat
+            .parse()
+            .ok()
+            .filter(|id| (1..(1_i64 << 52)).contains(id))?;
+        let thread = thread.parse().ok().filter(|id| *id > 0)?;
+        Some(Self { chat, thread })
+    }
+
+    fn text<'a>(&self, update: &'a Value) -> Option<&'a str> {
+        let message = update.get("message")?;
+        let route = private_route(message).ok()?;
+        let text = message["text"].as_str()?;
+        (message["chat"]["type"] == "private"
+            && route.chat_id == self.chat
+            && route.message_thread_id == Some(self.thread)
+            && message["from"]["id"].as_i64() == Some(self.chat)
+            && message["from"]["is_bot"] == false
+            && !text.trim_start().starts_with('/')
+            && valid_text(text))
+        .then_some(text)
+    }
+
+    fn generation(&self, pin: &Pin) -> DirectGeneration {
+        DirectGeneration {
+            generation: pin.generation.get(),
+            digest: pin.custody_digest.clone(),
+            chat_id: self.chat,
+            thread_id: self.thread,
+        }
     }
 }
 
@@ -117,7 +174,15 @@ fn route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
     if req.method() != Method::Post || url.scheme() != "https" || url.query().is_some() {
         return Ok(None);
     }
-    let valid = if phase == LocalPhase::Cutover {
+    let valid = if phase.controlled() {
+        if phase == LocalPhase::Production {
+            if url.host_str() != Some(PRODUCTION_HOST) || url.port().is_some() {
+                return Ok(None);
+            }
+            if url.path() == PRODUCTION_IDENTITY {
+                return Ok(Some(phase));
+            }
+        }
         let Some(pin) = Pin::read(env) else {
             return Ok(None);
         };
@@ -141,6 +206,14 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let Some(phase) = route(&req, &env)? else {
         return Reply::error(404, "not_found").response();
     };
+    if phase == LocalPhase::Production && req.path() == PRODUCTION_IDENTITY {
+        if !authorized(&req, &env, "x-cutover-operator", "CUTOVER_CANCEL_SECRET") {
+            return Reply::error(401, "unauthorized").response();
+        }
+        let bots = env.durable_object("BOTS")?;
+        let object_id = bots.id_from_name(phase.instance())?;
+        return Reply::ok(json!({"objectId": object_id.to_string()})).response();
+    }
     if let Err(reply) = phase.authority_pin(&env) {
         return reply.response();
     }
@@ -191,8 +264,10 @@ impl DurableObject for BotLedger {
         {
             return Reply::error(404, "not_found").response();
         }
-        let reply = if phase == LocalPhase::Cutover {
-            self.handle_cutover(req).await
+        let reply = if phase == LocalPhase::Production && req.path() == "/v1/telegram" {
+            self.handle_production_telegram(req).await
+        } else if phase.controlled() {
+            self.handle_cutover(req, phase).await
         } else {
             self.handle(req, phase, pin).await
         };
@@ -215,8 +290,8 @@ impl DurableObject for BotLedger {
         }
         let storage = self.state.storage();
         let result = async {
-            if phase == LocalPhase::Cutover {
-                return self.cutover_alarm(&storage).await;
+            if phase.controlled() {
+                return self.cutover_alarm(&storage, phase).await;
             }
             let ledger = self.ledger(&storage, phase, "alarm")?;
             if let Some(pin) = pin
@@ -240,7 +315,7 @@ impl DurableObject for BotLedger {
                     settle_alarm(alarm).await?;
                     storage.sync().await
                 }
-                LocalPhase::Cutover => unreachable!(),
+                LocalPhase::Cutover | LocalPhase::Production => unreachable!(),
             }
         }
         .await;
@@ -313,7 +388,7 @@ impl BotLedger {
         (authority.pin().object_id == self.state.id().to_string()).then_some(authority)
     }
 
-    async fn cutover_alarm(&self, storage: &Storage) -> Result<()> {
+    async fn cutover_alarm(&self, storage: &Storage, phase: LocalPhase) -> Result<()> {
         let Some(authority) = self.cutover_authority(None) else {
             return Ok(());
         };
@@ -321,17 +396,97 @@ impl BotLedger {
             return Ok(());
         }
         let pin = authority.pin();
-        let ledger = self.ledger(storage, LocalPhase::Cutover, "alarm")?;
-        if ledger
-            .cutover_authority(pin.generation.get(), &pin.custody_digest)?
-            .is_some()
-        {
+        let ledger = self.controlled_ledger(storage, phase)?;
+        if self.attempt_floor(&ledger, phase, pin)?.is_some() {
             self.deliver(storage, &ledger, Some(&authority)).await?;
         }
         Ok(())
     }
 
-    async fn handle_cutover(&self, mut req: Request) -> Result<Reply> {
+    fn controlled_ledger(&self, storage: &Storage, phase: LocalPhase) -> Result<Ledger> {
+        if phase == LocalPhase::Production {
+            Ok(Ledger::new(storage, None))
+        } else {
+            self.ledger(storage, phase, "cutover")
+        }
+    }
+
+    fn attempt_floor(&self, ledger: &Ledger, phase: LocalPhase, pin: &Pin) -> Result<Option<i64>> {
+        if phase == LocalPhase::Production {
+            let Some(scope) = TelegramScope::read(&self.env) else {
+                return Ok(None);
+            };
+            Ok((ledger.direct_generation()? == Some(scope.generation(pin))).then_some(0))
+        } else {
+            Ok(ledger
+                .cutover_authority(pin.generation.get(), &pin.custody_digest)?
+                .map(|custody| custody.attempt_floor))
+        }
+    }
+
+    async fn handle_production_telegram(&self, mut req: Request) -> Result<Reply> {
+        if !authorized(
+            &req,
+            &self.env,
+            "x-telegram-bot-api-secret-token",
+            "WEBHOOK_SECRET",
+        ) {
+            return Ok(Reply::error(401, "unauthorized"));
+        }
+        let (Some(pin), Some(scope)) = (Pin::read(&self.env), TelegramScope::read(&self.env))
+        else {
+            return Ok(inactive_generation());
+        };
+        if pin.object_id != self.state.id().to_string() {
+            return Ok(inactive_generation());
+        }
+        let bytes = match select(
+            std::pin::pin!(bounded_body(&mut req)),
+            Delay::from(Duration::from_secs(2)),
+        )
+        .await
+        {
+            Either::Left((Ok(bytes), _)) => bytes,
+            Either::Left((Err(reply), _)) => return Ok(reply),
+            Either::Right(_) => return Ok(Reply::error(408, "body_timeout")),
+        };
+        let Some((id, update)) = decode_update(&bytes) else {
+            return Ok(bad_input());
+        };
+        let generation = scope.generation(&pin);
+        let text = scope.text(&update);
+        let storage = self.state.storage();
+        let ledger = Ledger::new(&storage, None);
+        let reply = ledger.transaction(&storage, || {
+            match ledger.direct_generation()? {
+                Some(current) if current == generation => {}
+                None if ledger.empty_schema()? => {
+                    if text.is_some() {
+                        ledger.initialize_direct(generation)?;
+                    }
+                }
+                _ => return Ok(inactive_generation()),
+            }
+            let Some(text) = text else {
+                return Ok(Reply::ok(json!({"disposition": "ignored", "task": null})));
+            };
+            let at = now();
+            if !ledger.take_pilot_request(at, false)? {
+                return ledger.pilot_limit(at);
+            }
+            ledger.ingest(
+                id,
+                Some((scope.chat, Some(scope.thread), text)),
+                false,
+                Some(at),
+                Some(Device::Alpha),
+            )
+        })?;
+        storage.sync().await?;
+        Ok(reply)
+    }
+
+    async fn handle_cutover(&self, mut req: Request, phase: LocalPhase) -> Result<Reply> {
         let path = req.path();
         let runner = match path.as_str() {
             "/v1/agent" => {
@@ -378,13 +533,7 @@ impl BotLedger {
         let instance = pin.agent_instance();
         let agent = if path == "/v1/agent" {
             match self
-                .decode_agent(
-                    &req,
-                    &bytes,
-                    LocalPhase::Cutover,
-                    &instance,
-                    Some(&pin.executor_key),
-                )
+                .decode_agent(&req, &bytes, phase, &instance, Some(&pin.executor_key))
                 .await
             {
                 Ok(agent) => Some(agent),
@@ -397,10 +546,13 @@ impl BotLedger {
             return Ok(inactive_generation());
         };
         let storage = self.state.storage();
-        let ledger = self.ledger(&storage, LocalPhase::Cutover, "cutover")?;
-        let Some(custody) = ledger.cutover_authority(pin.generation.get(), &pin.custody_digest)?
-        else {
-            return Ok(Reply::error(503, "legacy_cutover_held"));
+        let ledger = self.controlled_ledger(&storage, phase)?;
+        let Some(attempt_floor) = self.attempt_floor(&ledger, phase, pin)? else {
+            return Ok(if phase == LocalPhase::Production {
+                inactive_generation()
+            } else {
+                Reply::error(503, "legacy_cutover_held")
+            });
         };
         let mut start = None;
         let (reply, alarm) = if let Some((agent, evidence)) = agent {
@@ -415,7 +567,7 @@ impl BotLedger {
             if start
                 .or(status)
                 .or_else(|| evidence.as_ref().map(|proof| proof.attempt))
-                .is_some_and(|attempt| attempt <= custody.attempt_floor)
+                .is_some_and(|attempt| attempt <= attempt_floor)
             {
                 return Ok(conflict());
             }
@@ -439,13 +591,7 @@ impl BotLedger {
                 )
             })?
         } else if path == "/v1/telegram" {
-            let Ok(update) = serde_json::from_slice::<Value>(&bytes) else {
-                return Ok(bad_input());
-            };
-            let Some(id) = update["update_id"]
-                .as_i64()
-                .filter(|id| (0..=i32::MAX as i64).contains(id))
-            else {
+            let Some((id, update)) = decode_update(&bytes) else {
                 return Ok(bad_input());
             };
             let input = telegram_input(&update)
@@ -641,7 +787,7 @@ impl BotLedger {
                         reconcile_only: frozen,
                     }),
                     LocalPhase::Pilot => Some(Execution::HostedPilot),
-                    LocalPhase::Cutover => unreachable!(),
+                    LocalPhase::Cutover | LocalPhase::Production => unreachable!(),
                 };
                 let (reply, alarm) = ledger.transaction(&storage, || {
                     ledger.mutate_agent(agent, now(), execution, evidence, &storage)
@@ -717,7 +863,7 @@ impl BotLedger {
                     LocalPhase::Protocol => {
                         format!("DEVICE_{}_KEY", agent.device.name().to_ascii_uppercase())
                     }
-                    LocalPhase::Cutover => return Err(unauthorized()),
+                    LocalPhase::Cutover | LocalPhase::Production => return Err(unauthorized()),
                 };
                 self.env
                     .var(&binding)
@@ -840,6 +986,14 @@ impl BotLedger {
             }
         }
     }
+}
+
+fn decode_update(bytes: &[u8]) -> Option<(i64, Value)> {
+    let update: Value = serde_json::from_slice(bytes).ok()?;
+    let id = update["update_id"]
+        .as_i64()
+        .filter(|id| (0..=i32::MAX as i64).contains(id))?;
+    Some((id, update))
 }
 
 fn bad_input() -> Reply {
