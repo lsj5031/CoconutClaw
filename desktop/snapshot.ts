@@ -37,6 +37,49 @@ const scheduleStates = {
 
 export { observations, statuses, delivery, scheduleStates };
 
+// How urgently saved state needs an operator. `attention` is reserved for what
+// cannot be left alone: a runner that failed its check, a run awaiting approval,
+// an Unknown outcome, a schedule that is blocked or will not fire. Evidence and
+// reachability keep their own fields; a tone never merges them.
+export type Tone = "attention" | "pending" | "ok" | "neutral";
+
+export const observationTone: Record<keyof typeof observations, Tone> = {
+  reachable: "ok",
+  exchange: "ok",
+  unreachable: "attention",
+  unconfirmed: "attention",
+  unchecked: "neutral",
+};
+
+export const statusTone: Record<keyof typeof statuses, Tone> = {
+  queued: "pending",
+  running: "pending",
+  awaiting_approval: "attention",
+  waiting_remote: "pending",
+  waiting_event: "pending",
+  cancel_requested: "pending",
+  completed: "ok",
+  failed: "attention",
+  cancelled: "neutral",
+  unknown: "attention",
+};
+
+export const deliveryTone: Record<keyof typeof delivery, Tone> = {
+  unknown: "attention",
+  delivered: "ok",
+  inflight: "pending",
+  pending: "pending",
+  unavailable: "attention",
+};
+
+export const scheduleTone: Record<keyof typeof scheduleStates, Tone> = {
+  active: "ok",
+  paused: "attention",
+  cancelled: "neutral",
+  done: "neutral",
+  unknown: "attention",
+};
+
 type Node = {
   id: string;
   observation: keyof typeof observations;
@@ -87,6 +130,25 @@ export type Snapshot = SnapshotBase & ({ version: 1 } | {
 });
 
 export const maxSnapshotBytes = 64 * 1024;
+
+// A snapshot is operator-held until another export is opened, so its age is the
+// only thing that says whether what is on screen is still current.
+export const staleAfterMs = 86_400_000;
+
+export function age(iso: string, now: number): string {
+  const then = Date.parse(iso);
+  const seconds = Math.round(Math.abs(now - then) / 1000);
+  if (seconds < 60) return "just now";
+  const unit: [number, string] = seconds < 3600 ? [Math.floor(seconds / 60), "minute"]
+    : seconds < 86_400 ? [Math.floor(seconds / 3600), "hour"]
+    : [Math.floor(seconds / 86_400), "day"];
+  const parts = `${unit[0]} ${unit[1]}${unit[0] === 1 ? "" : "s"}`;
+  return then > now ? `in ${parts}` : `${parts} old`;
+}
+
+export function isStale(iso: string, now: number): boolean {
+  return now - Date.parse(iso) > staleAfterMs;
+}
 
 const timestamp = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|\+00:00)$/;
 const nodeId = /^[0-9a-f]{64}$/;
