@@ -8,6 +8,7 @@ import { checkAuthorityHandoff, reference, sha256, targetFields } from "./author
 
 const permitMs = 900;
 const bodyLimit = 32 * 1024;
+const freshObjectOnly = "fresh-object-only";
 const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
 const uuid = value => typeof value === "string" &&
     /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
@@ -87,9 +88,12 @@ class AuthorityStore {
     }
 
     publish(publication) {
-        if (!fields(publication, ["target", "retirement", "versionId", "objectIncarnation", "runnerIncarnation"]) ||
+        const fresh = publication?.continuity === freshObjectOnly;
+        if (!fields(publication, ["target", "retirement", "versionId", "runnerIncarnation",
+            fresh ? "continuity" : "objectIncarnation"]) ||
             !validTarget(publication.target) || !reference(publication.versionId) ||
-            !uuid(publication.objectIncarnation) || !sha256(publication.runnerIncarnation)) {
+            !sha256(publication.runnerIncarnation) ||
+            (fresh ? publication.target.hostname !== "bigfur.liu.nz" : !uuid(publication.objectIncarnation))) {
             throw new Error("invalid publication");
         }
         const generation = checkAuthorityHandoff(publication, publication.target);
@@ -98,6 +102,14 @@ class AuthorityStore {
             if (generation !== (current?.generation ?? 0) + 1 || (current && !current.retired)) {
                 throw new Error("publication requires the next generation and a retired predecessor");
             }
+            const reused = this.db.prepare(`
+                SELECT 1 FROM publications
+                WHERE (? = 1 OR json_extract(publication, '$.continuity') = ?)
+                  AND (json_extract(publication, '$.target.objectId') = ?
+                       OR json_extract(publication, '$.runnerIncarnation') = ?)
+                LIMIT 1
+            `).get(Number(fresh), freshObjectOnly, publication.target.objectId, publication.runnerIncarnation);
+            if (reused) throw new Error("publication requires a fresh object and runner incarnation");
             this.db.prepare("INSERT INTO publications VALUES (?, ?)").run(generation, JSON.stringify(publication));
             return this.status();
         });
@@ -119,7 +131,7 @@ class AuthorityStore {
         const enrolled = JSON.parse(current.publication);
         if (!isDeepStrictEqual(target, wireTarget(enrolled)) ||
             enrolled.target.telegramCredentialVersion !== credentialVersion ||
-            objectIncarnation !== enrolled.objectIncarnation ||
+            (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation) ||
             (runnerIncarnation !== null && !equalSecret(runnerIncarnation, enrolled.runnerIncarnation))) {
             throw new Denied(503);
         }

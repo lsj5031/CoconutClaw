@@ -62,6 +62,14 @@ const PILOT_TOPIC: i32 = 37;
 const PILOT_PROMPT: &str = "synthetic pilot";
 const PILOT_RESULT: &str = "pilot: SYNTHETIC PILOT";
 
+fn production_object_name(generation: NonZeroU32) -> String {
+    if generation.get() == 1 {
+        PRODUCTION_INSTANCE.to_owned()
+    } else {
+        format!("{PRODUCTION_INSTANCE}:{generation}")
+    }
+}
+
 impl LocalPhase {
     fn from_env(env: &Env) -> Option<Self> {
         match env.var("PHASE").ok()?.to_string().as_str() {
@@ -80,6 +88,14 @@ impl LocalPhase {
             Self::Executor => executor_wire::INSTANCE,
             Self::Pilot | Self::Cutover => PILOT_INSTANCE,
             Self::Production => PRODUCTION_INSTANCE,
+        }
+    }
+
+    fn object_name(self, env: &Env) -> Option<String> {
+        if self == Self::Production {
+            Some(production_object_name(Pin::read(env)?.generation))
+        } else {
+            Some(self.instance().to_owned())
         }
     }
 
@@ -210,8 +226,15 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         if !authorized(&req, &env, "x-cutover-operator", "CUTOVER_CANCEL_SECRET") {
             return Reply::error(401, "unauthorized").response();
         }
+        let generation = match req.headers().get("x-cutover-generation")? {
+            Some(value) => match value.parse() {
+                Ok(generation) => generation,
+                Err(_) => return bad_input().response(),
+            },
+            None => NonZeroU32::MIN,
+        };
         let bots = env.durable_object("BOTS")?;
-        let object_id = bots.id_from_name(phase.instance())?;
+        let object_id = bots.id_from_name(&production_object_name(generation))?;
         return Reply::ok(json!({"objectId": object_id.to_string()})).response();
     }
     if let Err(reply) = phase.authority_pin(&env) {
@@ -224,8 +247,11 @@ pub async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 }
 
 async fn forward(req: Request, env: Env, phase: LocalPhase) -> Result<Response> {
+    let Some(name) = phase.object_name(&env) else {
+        return inactive_generation().response();
+    };
     env.durable_object("BOTS")?
-        .get_by_name(phase.instance())?
+        .get_by_name(&name)?
         .fetch_with_request(req)
         .await
 }
@@ -256,12 +282,7 @@ impl DurableObject for BotLedger {
             Ok(pin) => pin,
             Err(reply) => return reply.response(),
         };
-        if self.state.id()
-            != self
-                .env
-                .durable_object("BOTS")?
-                .id_from_name(phase.instance())?
-        {
+        if !self.routed_here(phase)? {
             return Reply::error(404, "not_found").response();
         }
         let reply = if phase == LocalPhase::Production && req.path() == "/v1/telegram" {
@@ -284,8 +305,7 @@ impl DurableObject for BotLedger {
         let Ok(pin) = phase.authority_pin(&self.env) else {
             return Reply::ok(json!({})).response();
         };
-        let bots = self.env.durable_object("BOTS")?;
-        if self.state.id() != bots.id_from_name(phase.instance())? {
+        if !self.routed_here(phase)? {
             return Reply::ok(json!({})).response();
         }
         let storage = self.state.storage();
@@ -325,6 +345,14 @@ impl DurableObject for BotLedger {
 }
 
 impl BotLedger {
+    fn routed_here(&self, phase: LocalPhase) -> Result<bool> {
+        let Some(name) = phase.object_name(&self.env) else {
+            return Ok(false);
+        };
+        let bots = self.env.durable_object("BOTS")?;
+        Ok(self.state.id() == bots.id_from_name(&name)?)
+    }
+
     fn local_authority(ledger: &Ledger, pin: NonZeroU32) -> Result<Option<LocalAuthority>> {
         let durable = ledger.local_authority()?;
         Ok((pin.get() == durable.generation).then_some(durable))

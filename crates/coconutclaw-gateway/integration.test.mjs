@@ -454,6 +454,10 @@ async function productionRunner(context) {
     }));
     await ingress(80, "enrollment", 503);
     enroll(cutover.runner);
+    return attachProductionRunner(context, client, cutover, mock, ingress);
+}
+
+async function attachProductionRunner(context, client, cutover, mock, ingress) {
     const executor = await attachExecutor(context, client, cutover);
     const workspace = join(executor.root, "work");
     const home = join(executor.root, "codex-home");
@@ -578,7 +582,12 @@ pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text("
 test("BigFur runs installed Codex and cancels it over the signed protocol with a local provider", {
     timeout: 50_000, skip: !executable || !realCodex || process.platform !== "linux",
 }, async context => {
-    const runner = await productionRunner(context);
+    const { client, mock, cutover, ingress, telegram } = await productionAuthorityFixture(context);
+    const runner = await attachProductionRunner(context, client, cutover, mock, (id, text) => {
+        const update = telegram(id);
+        update.message.text = text;
+        return ingress(update);
+    });
     await writeFile(join(runner.home, "auth"), "#!/bin/sh\nprintf local-smoke-only\n", { mode: 0o700 });
     let calls = 0;
     let cancelledStreamClosed = false;
@@ -637,13 +646,27 @@ wire_api = "responses"
 [model_providers.myprovider.auth]
 command = ${JSON.stringify(join(runner.home, "auth"))}
 `, { mode: 0o600 });
-    await runner.ingress(81, "Reply with Codex local smoke.");
-    await runner.ingress(82, "Hold this local smoke request.");
     const provider_env = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"];
     const config = { ...runner.configure(realCodex), provider_env };
     const env = { HTTP_PROXY: endpoint, HTTPS_PROXY: endpoint, ALL_PROXY: endpoint, NO_PROXY: "127.0.0.1" };
+    await runner.ingress(80, "Initialize the ledger for the local smoke.");
+    mock.publish(cutover.target, null, cutover.runner);
+    cutover.controlOnline = true;
+    assert.equal((await runner.cancel(80)).phase, "cancelled_before_start");
     const processHandle = await runner.runProduction("init", config, { env });
-    await until(() => calls === 2 || mockError, "Codex did not open both local Responses requests");
+    await until(() => runner.packets.some(({ command }) => command.op === "next"), "runner did not enroll");
+    runner.proxy.offline = true;
+    await runner.ingress(81, "Reply with Codex local smoke.");
+    await runner.ingress(82, "Hold this local smoke request.");
+    const before = await client.agent("alpha", "hello");
+    const enrolled = mock.checks.at(-1).objectIncarnation;
+    await client.restart();
+    assert.deepEqual(await ingress(telegram(81)), { disposition: "duplicate" });
+    assert.equal((await client.agent("alpha", "hello")).instance, before.instance);
+    assert.notEqual(mock.checks.at(-1).objectIncarnation, enrolled);
+    assert.equal(calls, 0);
+    runner.proxy.offline = false;
+    await until(() => calls === 2 || mockError, "Codex did not open both local Responses requests", 16_000);
     if (mockError) throw mockError;
     assert.deepEqual(await runner.receipt(1, "result"), { kind: "result", text: "Codex local smoke" });
     const [supervisor] = await procChildren(processHandle.pid);
@@ -661,6 +684,9 @@ command = ${JSON.stringify(join(runner.home, "auth"))}
     assert.equal(calls, 2);
     assert.deepEqual(runner.packets.filter(({ command }) => command.op === "start")
         .map(({ command }) => command.attempt), [1, 2]);
+    await until(() => mock.sends.some(({ task, messageThreadId, text }) =>
+        task === "telegram:81" && messageThreadId === 101550 && text === "Codex local smoke"),
+    "Codex result did not reach its topic");
     context.diagnostic("2 local Responses requests, signed result and process_exited, native Codex PID gone and HTTP stream closed, 0 relaunches on resume");
 });
 
@@ -1862,6 +1888,88 @@ test("BigFur production preserves queued work and pending delivery but fences bo
     await verifyFenced(client, restartChecks);
     assert.deepEqual(await restored.sql("SELECT id FROM tasks WHERE id='telegram:42004'"), []);
     assert.notEqual(mock.checks[restartChecks].objectIncarnation, mock.checks[restoreChecks].objectIncarnation);
+});
+
+test("BigFur fresh-object policy resumes pending replies and signed claims after cold wake", timeout, async context => {
+    const { mock, cutover, client, ingress, telegram, owner, topic } = await productionAuthorityFixture(context);
+    const first = "telegram:42101";
+    const pending = "telegram:42102";
+    const queued = "telegram:42103";
+    const outbox = task => client.sql("SELECT phase,sends FROM outbox WHERE task=?", task);
+    for (const id of [42101, 42102, 42103]) await ingress(telegram(id));
+    mock.publish(cutover.target, null, cutover.runner);
+    cutover.controlOnline = true;
+
+    const complete = async task => {
+        const { attempt } = await client.agent("alpha", "claim", { task });
+        const grant = await client.agent("alpha", "start", { attempt });
+        await reportProductionResult(client, grant, task);
+    };
+    await complete(first);
+    await until(async () => (await outbox(first))[0]?.phase === "delivered", "first send completes");
+    await complete(pending);
+    assert.deepEqual(await outbox(pending), [{ phase: "pending", sends: 0 }]);
+    const preWake = mock.checks.at(-1).objectIncarnation;
+
+    await client.restart();
+    assert.deepEqual(await ingress(telegram(42103)), { disposition: "duplicate" });
+    assert.equal((await client.agent("alpha", "next")).task, queued);
+    assert.notEqual(mock.checks.at(-1).objectIncarnation, preWake);
+    await complete(queued);
+    await until(async () => (await outbox(pending))[0]?.phase === "delivered", "persisted alarm dispatches after wake");
+    mock.afterSend = () => Response.error();
+    await until(async () => (await outbox(queued))[0]?.phase === "unknown", "a lost acknowledgment becomes Unknown");
+    assert.deepEqual(await outbox(queued), [{ phase: "unknown", sends: 1 }]);
+    await client.restart();
+    assert.deepEqual(await ingress(telegram(42103)), { disposition: "duplicate" });
+    assert.equal((await client.agent("alpha", "next")).task, null);
+    assert.deepEqual(await outbox(queued), [{ phase: "unknown", sends: 1 }]);
+    assert.deepEqual(mock.sends, [first, pending, queued].map(task => ({
+        task, sendNumber: 1, chatId: owner, messageThreadId: topic, text: task,
+    })));
+});
+
+test("BigFur recovery routes a new generation only after retiring predecessor effects", timeout, async context => {
+    const { mock, cutover, client, cancelHeaders, ingress, telegram } = await productionAuthorityFixture(context);
+    const stale = { ...cutover };
+    const inactive = { error: "inactive_generation" };
+    await ingress(telegram(42201));
+    mock.publish(stale.target, null, stale.runner);
+    cutover.controlOnline = true;
+    stale.controlOnline = true;
+    const oldPacket = client.signed("alpha", { op: "claim", task: "telegram:42201" });
+    const retired = await runFixture(context, { cutover: stale, keys: client.keys });
+    await retired.post("telegram", telegram(42201), webhook);
+
+    const generationHeader = { ...cancelHeaders, "x-cutover-generation": "2" };
+    await client.post("production/identity", {}, { "x-cutover-generation": "2" }, 401);
+    await client.post("production/identity", {}, { ...generationHeader, "x-cutover-generation": "0" }, 400);
+    const { objectId } = await client.post("production/identity", {}, generationHeader);
+    assert.notEqual(objectId, stale.target.pin.objectId);
+    cutover.target = {
+        pin: { ...stale.target.pin, generation: 2, objectId, custodyDigest: "c".repeat(64) },
+        versionId: "replacement-worker",
+    };
+    cutover.runner = "e".repeat(64);
+    await client.restart();
+    assert.equal((await client.directIngress("bigfur-production", telegram(42202))).status, 404);
+    await ingress(telegram(42202));
+    assert.deepEqual(await client.agent("alpha", "next", {}, 503), inactive);
+    assert.throws(() => mock.publish(cutover.target, null, cutover.runner));
+    mock.retire();
+    assert.deepEqual(await retired.wire(oldPacket, 503), inactive);
+    assert.throws(() => mock.publish({
+        ...cutover.target, pin: { ...cutover.target.pin, objectId: stale.target.pin.objectId },
+    }, null, cutover.runner));
+    assert.throws(() => mock.publish(cutover.target, null, stale.runner));
+    mock.publish(cutover.target, null, cutover.runner);
+    assert.deepEqual(await retired.wire(oldPacket, 503), inactive);
+    assert.deepEqual(await client.wire(oldPacket, 503), inactive);
+    const oldSignature = { ...oldPacket, headers: { ...oldPacket.headers, "x-executor-incarnation": cutover.runner } };
+    await client.wire(oldSignature, 401);
+    assert.equal((await client.agent("alpha", "claim", { task: "telegram:42202" })).task, "telegram:42202");
+    assert.deepEqual(await client.sql("SELECT update_id FROM inbox"), [{ update_id: 42202 }]);
+    assert.deepEqual(mock.sends, []);
 });
 
 test("BigFur authority fences restored writers and is checked at effect boundaries", timeout, async context => {

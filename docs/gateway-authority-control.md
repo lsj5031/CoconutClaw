@@ -45,6 +45,9 @@ fail-closed when the host or its database is unavailable.
 4. Prepare private `RECORD.json` with `target`, `versionId`,
    `objectIncarnation`, `runnerIncarnation` and `retirement`. The last field
    has the preflight predecessor generation and verified evidence references.
+   For BigFur under the [fresh-object recovery policy](bigfur-direct-retirement.md#eviction-and-recovery),
+   replace `objectIncarnation` with `"continuity": "fresh-object-only"`. The
+   observer can verify the candidate route without enrolling its process UUID.
    Issue an independent random 32-byte lowercase-hex `runnerIncarnation`
    to the runner outside its journal and backups. Compare the record with the
    independently collected preflight target (`CANDIDATE.json`) using
@@ -82,10 +85,13 @@ one generation, so hold old work through the handoff.
 
 ## Restore
 
-Retire authority and close routes and effect custody before restoring a
-Worker, DO, or runner. The service rejects old generations and different
-DO incarnations. Ordinary DO eviction also loses its incarnation and
-requires an explicitly authorized higher generation.
+Retire authority and close routes and effect custody before recovery. The
+service rejects old generations and checks the exact object, Worker version
+and runner enrollment. A UUID-pinned publication also rejects a new DO
+incarnation. A `fresh-object-only` publication admits ordinary cold wakes of
+the enrolled object. Recovery requires a newly routed object and a fresh
+runner incarnation under the next generation. The control store rejects
+reuse of previously enrolled identities when publishing under this policy.
 
 If the **control store** is missing, has uncertain continuity, or may have
 been rolled back, keep its listener, ingress and effect custody closed.

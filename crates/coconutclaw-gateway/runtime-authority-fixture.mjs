@@ -30,13 +30,15 @@ export async function authorityFixture(path) {
         sends,
         beforeReply: undefined,
         beforeSend: undefined,
+        afterSend: undefined,
         close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
         status: () => admin("status"),
         publish(target, objectIncarnation, runnerIncarnation) {
             const input = `${path}.json`;
             writeFileSync(input, JSON.stringify({
                 target: { ...target.pin, deployment: "synthetic/deployment" },
-                versionId: target.versionId, objectIncarnation, runnerIncarnation,
+                versionId: target.versionId, runnerIncarnation,
+                ...(objectIncarnation === null ? { continuity: "fresh-object-only" } : { objectIncarnation }),
                 retirement: {
                     generation: target.pin.generation - 1, writers: "synthetic/writers",
                     executorGrants: "synthetic/grants", custody: "synthetic/custody",
@@ -63,6 +65,9 @@ export async function authorityFixture(path) {
             if (url.pathname === "/v1/check") {
                 checks.push({ target, objectIncarnation, runnerIncarnation, allowed: response.ok });
                 if (response.ok) return await fixture.beforeReply?.(JSON.parse(text)) ?? Response.json(JSON.parse(text));
+            } else if (response.ok) {
+                const reply = await fixture.afterSend?.();
+                if (reply) return reply;
             }
             return new Response(text, { status: response.status });
         },

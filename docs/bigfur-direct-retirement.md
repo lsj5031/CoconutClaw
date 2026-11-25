@@ -50,9 +50,9 @@ Set `PRODUCTION_TELEGRAM_SCOPE` to the verified private numeric
 paths. Set `CUTOVER_AUTHORITY_ORIGIN` and `CUTOVER_AUTHORITY_BEARER` for the
 independent HTTPS control host. An authenticated `/v1/cancel` request for a
 nonexistent task can exercise the control observer before the first Telegram
-update. Use the resulting object incarnation and the one runner incarnation
-in the control publication. Supply retirement, grant and exclusive
-credential evidence from the direct-retirement cutover.
+update. Publish `"continuity": "fresh-object-only"` in place of
+`objectIncarnation`. Supply the runner incarnation and retirement, grant
+and exclusive credential evidence from the direct-retirement cutover.
 
 ## Cutover and limits
 
@@ -83,41 +83,40 @@ cannot be verified or a cutoff has been reached. This leaves 32 inbox slots
 and 128 attempt IDs of headroom. Preserve the ledger and its deduplication
 history at the cutoff.
 
-### Eviction blocker
+### Eviction and recovery
 
-Cloudflare reruns the constructor when an evicted object wakes. SQLite
-contents survive normal eviction. Point-in-time recovery also restarts
-the object and restores its SQL and KV contents. The documented bookmarks
-identify points in the object's history. An eviction and a restore can
-present the same object ID, Worker version and ledger contents.
-[Lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/),
-[SQLite recovery](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api),
-[Durable Object state](https://developers.cloudflare.com/durable-objects/api/state/).
+This release excludes in-place restore of the active object and rollback
+of the control store. Keep recovery operations under separate operator
+custody. The enrolled object can cold-wake against its live SQLite ledger
+without re-enrollment. Control still checks the published generation,
+object ID, Worker version and runner incarnation before effects. An
+out-of-band rollback under the active object ID and deployment is
+indistinguishable from that cold wake. It can undo acknowledged ingress
+and reopen older task state. Treat suspected rollback as an incident and
+close ingress and effect authority.
 
-Control pins a UUID generated in the live object. Both eviction and restore
-replace it. Persisting that UUID in the ledger would also copy it into later
-snapshots. Accepting a new UUID based on the target and SQLite state would
-authorize a restored copy with the same inputs. The existing control store
-records publication, retirement and send reservations. Safe recovery needs
-a continuity signal outside the restored ledger, such as a trusted
-platform restore epoch.
+1. Close ingress and retire the predecessor in the independent control
+   store. Wait out permits, stop the old runner and reconcile outstanding
+   effects before opening the successor. Keep ambiguous effects Unknown.
+2. Set the next generation explicitly. Ask the authenticated identity
+   endpoint for that generation using `x-cutover-generation`, and pin the
+   returned ID with a fresh custody digest. Generation 1 routes to
+   `bigfur-production`. Later generations route to
+   `bigfur-production:<generation>`. Verify the new deployment routes to
+   the fresh object and remove the predecessor's ingress route.
+3. Verify that the Telegram pending-update boundary excludes all updates
+   admitted by the predecessor, including deliveries whose HTTP acknowledgments
+   may have been lost. Preserve the predecessor ledger for reconciliation
+   and exclude its tasks and outbox from replay. If the ingress boundary is
+   uncertain, keep admission closed. A fresh ledger cannot deduplicate
+   against unavailable predecessor records.
+4. Publish the successor against the exact new route and Worker version.
+   Enroll a fresh runner incarnation and a generation-scoped journal. Open
+   ingress only after verifying the predecessor and retired runner are
+   denied. Admission uses Cloudflare SQLite and the webhook secret
+   independently of the control store.
 
-The production-mode loopback test cold-starts the original SQLite store
-and separately opens a copy under the same target. In both cases control
-denies a signed claim and a persisted alarm, leaving the queued task and
-pending outbox intact. Only the original store receives a further update,
-and it still deduplicates an admitted update. A temporary stable-incarnation
-mutation makes the copied store's claim succeed. The test models eviction
-with a process restart and restore with an offline snapshot because the
-Cloudflare PITR API is unavailable locally.
-
-Unattended operation remains blocked. Fresh ingress still works within
-the ledger limits. Close admission separately when retiring authority.
-Inspect the durable outbox after an authority failure at alarm time.
-Ambiguous effects stay Unknown.
-
-On November 25, 2026, 15 focused loopback and configuration checks passed,
-including the stale-restore, retirement, and ambiguous-effect denials.
-The offline WASM build, official `cf` production dry run, formatting,
-workspace and WASM Clippy, and all 591 runnable workspace tests passed.
-The five ignored workspace tests stayed ignored.
+The same ledger deduplicates repeated update IDs across ordinary eviction.
+An alarm without control authority leaves its work held. Inspect pending
+deliveries after a control outage. A lost send acknowledgment spends the
+send reservation and records Unknown without retrying the effect.
