@@ -2081,11 +2081,17 @@ test("native enrolled runner reconciles consumed grants and reports both kinds o
     assert.deepEqual(mock.sends, []);
 });
 
-test("native enrolled macOS custody exits a live tree on cancellation and runner SIGKILL", {
-    ...nativeTimeout, skip: !executable || process.platform !== "darwin",
+const linuxCustody = process.platform === "linux";
+test(`native enrolled ${linuxCustody ? "Linux" : "macOS"} custody exits a live tree on cancellation and runner SIGKILL`, {
+    ...nativeTimeout, skip: !executable || (!linuxCustody && process.platform !== "darwin"),
 }, async context => {
     const { client, cutover, admit, cancelHeaders, mock } = await nativePlacement(context);
     const beta = await attachExecutor(context, client, cutover, "beta");
+    const procStat = pid => readFile(`/proc/${pid}/stat`, "utf8").catch(error => {
+        if (error.code !== "ENOENT") throw error;
+        return "";
+    });
+    const statFields = stat => stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     function processes() {
         return execFileSync("/bin/ps", ["-axo", "pid=,ppid=,pgid=,state=,comm="], { encoding: "utf8" })
             .trim().split("\n").map(line => {
@@ -2094,6 +2100,26 @@ test("native enrolled macOS custody exits a live tree on cancellation and runner
             }).filter(row => !row.state.startsWith("Z"));
     }
     async function liveTree(runner) {
+        if (linuxCustody) {
+            return until(async () => {
+                try {
+                    const [supervisor] = await procChildren(runner.pid);
+                    if (!supervisor) return false;
+                    const [leader] = await procChildren(supervisor);
+                    if (!leader) return false;
+                    const [detached] = await procChildren(leader);
+                    if (!detached) return false;
+                    const stat = await procStat(detached);
+                    const [state, parent, group, session] = statFields(stat);
+                    return stat.startsWith(`${detached} (sleep) `) && state !== "Z"
+                        && Number(parent) === leader && Number(group) === detached
+                        && Number(session) === detached && { supervisor, provider: [leader, detached] };
+                } catch (error) {
+                    if (error.code !== "ENOENT") throw error;
+                    return false;
+                }
+            }, "Linux supervisor owns a live provider with a detached sleep descendant", 3000);
+        }
         return until(() => {
             const rows = processes();
             const leader = rows.find(row => row.parent === runner.pid && row.pid === row.group);
@@ -2104,6 +2130,15 @@ test("native enrolled macOS custody exits a live tree on cancellation and runner
         }, "runner owns a live group with a running sleep descendant", 3000);
     }
     async function treeExited(tree, reason) {
+        if (linuxCustody) {
+            await until(async () => (await Promise.all(tree.provider.map(procStat))).every(stat => !stat),
+                `${reason} did not reap provider PIDs ${tree.provider}`, 2000);
+            await until(async () => {
+                const stat = await procStat(tree.supervisor);
+                return !stat || statFields(stat)[0] === "Z";
+            }, `${reason} did not exit supervisor ${tree.supervisor}`, 2000);
+            return;
+        }
         await until(() => processes().every(row => !tree.some(member => member.pid === row.pid)),
             `${reason} left live members of group ${tree[0].group} (${tree.map(row => row.pid)})`, 2000);
     }
@@ -2112,6 +2147,13 @@ test("native enrolled macOS custody exits a live tree on cancellation and runner
     const held = beta.runEnrolled("init", "hold");
     const cancelledTree = await liveTree(held);
     const [cancelledAttempt] = await beta.launches();
+    const { generation, objectId } = cutover.target.pin;
+    const identity = [{
+        instance: `enrolled:bigfur:${generation}:${objectId}:beta:${cutover.enrolled.beta}`,
+        public_key: client.keys.beta.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"),
+    }];
+    const journalIdentity = () => beta.query("SELECT instance,public_key FROM identity").map(row => ({ ...row }));
+    assert.deepEqual(journalIdentity(), identity);
     assert.equal((await client.post("cancel", { task: cancelled }, cancelHeaders)).phase, "cancel_requested");
     await until(() => beta.query(
         "SELECT acknowledged FROM evidence WHERE attempt=? AND event='cancelled'", cancelledAttempt,
@@ -2133,13 +2175,21 @@ test("native enrolled macOS custody exits a live tree on cancellation and runner
     context.diagnostic(`consumed attempt ${lostAttempt}, runner ${owner.pid}, live tree ${JSON.stringify(lostTree)}`);
     assert.deepEqual(await owner.stop(), [null, "SIGKILL"]);
     await treeExited(lostTree, "runner SIGKILL");
-    context.diagnostic(`runner SIGKILL and exit of group ${lostTree[0].group} confirmed before recovery`);
+    context.diagnostic("runner SIGKILL and provider tree exit confirmed before recovery");
+    const recoverAt = beta.packets.length;
+    assert.match(await beta.runEnrolled("resume", undefined, { incarnation: cutover.enrolled.alpha }).exit(1),
+        /journal identity mismatch/);
+    assert.equal(beta.packets.length, recoverAt);
     const resumed = beta.runEnrolled("resume");
     await until(() => beta.query(
         "SELECT acknowledged FROM evidence WHERE attempt=? AND event='unknown'", lostAttempt,
-    )[0]?.acknowledged, "Unknown acknowledged on recovery");
+    )[0]?.acknowledged && beta.packets.slice(recoverAt).some(({ command }) => command.op === "next"),
+    "Unknown acknowledged and recovered runner polls for work");
     const [unknown] = beta.proofs("unknown");
     assert.deepEqual(beta.verifyProof(unknown.command.proof), { attempt: lostAttempt, event: { kind: "unknown" } });
+    assert.deepEqual(beta.query("SELECT payload,signature FROM evidence WHERE attempt=? AND event='unknown'", lostAttempt)
+        .map(row => ({ ...row })), [unknown.command.proof]);
+    assert.deepEqual(journalIdentity(), identity);
     assert.equal((await client.agent("beta", "status", { attempt: lostAttempt })).phase, "unknown");
     assert.equal((await client.agent("beta", "next")).task, null);
     await client.agent("beta", "claim", { task: lost }, 409);

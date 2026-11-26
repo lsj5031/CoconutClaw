@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 
@@ -54,7 +55,7 @@ def drain(children):
 
 
 def run():
-    executable, home, workspace, output_root, timeout, lock = sys.argv[1:]
+    executable, home, workspace, output_root, timeout, lock, *fixture_args = sys.argv[1:]
     os.set_inheritable(int(lock), False)
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "cannot establish child subreaper")
@@ -71,7 +72,7 @@ def run():
         output = Path(folder, "reply")
         prompt.write(start["prompt"].encode())
         prompt.seek(0)
-        command = [
+        command = [executable, *fixture_args] if fixture_args else [
             executable, "exec", "--skip-git-repo-check", "--ephemeral",
             "--sandbox", "workspace-write", "-c", 'approval_policy="never"',
             "-c", 'shell_environment_policy.inherit="none"',
@@ -83,11 +84,12 @@ def run():
         parent.register(lease, select.POLLHUP | select.POLLERR)
         try:
             require_spawn_authority(start["deadline"], parent)
-            child = subprocess.Popen(
-                command, cwd=workspace, env=child_env, stdin=prompt,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-                preexec_fn=lambda: require_spawn_authority(start["deadline"], parent),
-            )
+            with (output.open("wb") if fixture_args else nullcontext(subprocess.DEVNULL)) as stdout:
+                child = subprocess.Popen(
+                    command, cwd=workspace, env=child_env, stdin=prompt,
+                    stdout=stdout, stderr=subprocess.DEVNULL, start_new_session=True,
+                    preexec_fn=lambda: require_spawn_authority(start["deadline"], parent),
+                )
         except (TimeoutError, subprocess.SubprocessError):
             emit("unknown")
             return

@@ -20,7 +20,10 @@ use serde_json::{Value, json};
 use super::journal::{Intent, Journal};
 use super::link::{Link, PilotPaused, Scope, Unavailable, lower_hex, now_ms};
 #[cfg(target_os = "linux")]
-use super::production;
+use super::production::{self, Permit as AuthorityDeadline};
+
+#[cfg(not(target_os = "linux"))]
+type AuthorityDeadline = Deadline;
 
 #[cfg(target_os = "macos")]
 #[path = "macos_custody.rs"]
@@ -296,8 +299,12 @@ impl Executor {
         let enrolled = self.link.scope.placement().is_some();
         let enrolled_deadline = if enrolled {
             Some(
-                Deadline::authority(Some(grant.start_until))?
-                    .shorter(Deadline::authority(grant.authority_valid_until)?),
+                AuthorityDeadline::authority(Some(grant.start_until))
+                    .map_err(|_| Unavailable)?
+                    .shorter(
+                        AuthorityDeadline::authority(grant.authority_valid_until)
+                            .map_err(|_| Unavailable)?,
+                    ),
             )
         } else {
             None
@@ -311,8 +318,14 @@ impl Executor {
             "grant conflicts with current authorization"
         );
         let deadline = if let Some(start) = enrolled_deadline {
-            let deadline = start.shorter(Deadline::authority(status.authority_valid_until)?);
+            let deadline = start.shorter(
+                AuthorityDeadline::authority(status.authority_valid_until)
+                    .map_err(|_| Unavailable)?,
+            );
             deadline.check().map_err(|_| Unavailable)?;
+            #[cfg(target_os = "linux")]
+            return self.launch_enrolled_fixture(intent, grant.start_until, deadline);
+            #[cfg(not(target_os = "linux"))]
             deadline
         } else {
             let Some(deadline) = Deadline::new(grant.start_until, 5000)? else {
@@ -342,6 +355,48 @@ impl Executor {
         Ok(false)
     }
 
+    #[cfg(target_os = "linux")]
+    fn launch_enrolled_fixture(
+        &mut self,
+        intent: Intent,
+        start_until: i64,
+        deadline: AuthorityDeadline,
+    ) -> Result<bool> {
+        let Execution::Fixture(fixture) = self.execution else {
+            unreachable!();
+        };
+        let attempt = intent.attempt;
+        ensure!(
+            self.journal.consume(attempt)?,
+            "grant has already been consumed"
+        );
+        if fixture == Fixture::CrashBeforeSpawn {
+            std::process::exit(72);
+        }
+        let mut command = fixture_command(attempt, fixture == Fixture::Hold);
+        command.arg("detached");
+        let event = (|| {
+            let supervisor =
+                production::fixture_supervisor(self.journal.process_lock()?, &self.dir, &command)?;
+            production::supervise(
+                supervisor,
+                &self.link,
+                &intent,
+                start_until,
+                || Ok(Some(deadline)),
+                || {
+                    if fixture == Fixture::CrashAfterSpawn {
+                        std::process::exit(73);
+                    }
+                    self.journal.started(&self.link.key, attempt)
+                },
+            )
+        })()
+        .unwrap_or(Event::Unknown);
+        self.journal.finish(&self.link.key, attempt, [event])?;
+        Ok(false)
+    }
+
     fn resolve_without_launch(
         &mut self,
         status: &Status,
@@ -353,7 +408,8 @@ impl Executor {
                 production::check_cancel(status).map_err(|_| Unavailable)?;
             }
             if self.link.scope.placement().is_some() {
-                Deadline::authority(status.authority_valid_until)?
+                AuthorityDeadline::authority(status.authority_valid_until)
+                    .map_err(|_| Unavailable)?
                     .check()
                     .map_err(|_| Unavailable)?;
             }
@@ -404,10 +460,12 @@ impl Deadline {
         }))
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn authority(wall: Option<i64>) -> Result<Self> {
         Self::new(wall.ok_or(Unavailable)?, 2000)?.ok_or_else(|| Unavailable.into())
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn shorter(self, other: Self) -> Self {
         Self {
             wall: self.wall.min(other.wall),
@@ -430,7 +488,14 @@ fn fixture_command(attempt: i64, hold: bool) -> Command {
         "-c",
         r#"
             printf '%s\n' "$1" >> launches || exit 1
-            if [ "$2" = hold ]; then /bin/sleep 6; fi
+            if [ "$2" = hold ]; then
+                if [ "$3" = detached ]; then
+                    /usr/bin/python3 -I -c 'import os; os.setsid(); os.execl("/bin/sleep", "sleep", "6")' &
+                    wait
+                else
+                    /bin/sleep 6
+                fi
+            fi
             IFS= read -r prompt || :
             printf 'fixture output: %.100s\n' "$prompt"
         "#,
@@ -491,8 +556,10 @@ fn run_child(
                             && (link.scope.placement().is_none()
                                 || (status.phase.has_grant()
                                     && status.start_until == Some(start_until)
-                                    && Deadline::authority(status.authority_valid_until)
-                                        .is_ok_and(|permit| permit.check().is_ok()))) =>
+                                    && AuthorityDeadline::authority(
+                                        status.authority_valid_until,
+                                    )
+                                    .is_ok_and(|permit| permit.check().is_ok()))) =>
                     {
                         cancel.store(true, Ordering::Release);
                         Duration::from_millis(250)

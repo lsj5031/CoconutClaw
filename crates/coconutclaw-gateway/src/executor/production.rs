@@ -5,7 +5,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -117,113 +117,40 @@ impl Config {
         grant: &Grant,
         start: Permit,
     ) -> Result<Event> {
-        let mut supervisor = self.supervisor(journal.process_lock()?, dir)?;
-        let control = supervisor
-            .stdin
-            .take()
-            .context("missing supervisor control")?;
-        let output = supervisor
-            .stdout
-            .take()
-            .context("missing supervisor receipt")?;
-        let result = (|| {
-            let mut control = control;
-            let attempt = intent.attempt;
-            let status = link.status(attempt)?;
-            let permit = Permit::fresh(status.authority_valid_until)?;
-            if status.cancel_requested && status.start_until == Some(grant.start_until) {
-                permit.check()?;
-                return Ok(Event::Cancelled {
-                    evidence: CancelEvidence::BeforeStart,
-                });
-            }
-            ensure!(
-                status.phase == Phase::Authorized && status.start_until == Some(grant.start_until),
-                "fresh status does not authorize the original start grant"
-            );
-            let deadline = start.shorter(permit);
-            deadline.check()?;
-            send(
-                &mut control,
-                json!({ "deadline": deadline, "prompt": intent.prompt }),
-            )?;
-
-            let (receipts, received) = mpsc::channel();
-            std::thread::spawn(move || {
-                for line in BufReader::new(output).lines() {
-                    let receipt = line
-                        .ok()
-                        .and_then(|line| serde_json::from_str::<Receipt>(&line).ok());
-                    if receipts.send(receipt).is_err() {
-                        break;
-                    }
+        let supervisor = self.supervisor(journal.process_lock()?, dir)?;
+        let attempt = intent.attempt;
+        supervise(
+            supervisor,
+            link,
+            &intent,
+            grant.start_until,
+            || {
+                let status = link.status(attempt)?;
+                let permit = Permit::authority(status.authority_valid_until)?;
+                if status.cancel_requested && status.start_until == Some(grant.start_until) {
+                    permit.check()?;
+                    return Ok(None);
                 }
-            });
-            let mut started = false;
-            let interval = Duration::from_millis(250);
-            let mut next_poll = Instant::now() + interval;
-            loop {
-                match received.recv_timeout(next_poll.saturating_duration_since(Instant::now())) {
-                    Ok(Some(Receipt::Started)) if !started => {
-                        journal.started(&link.key, attempt)?;
-                        started = true;
-                    }
-                    Ok(Some(Receipt::Result { mut text })) if started => {
-                        text.retain(|char| {
-                            !char.is_control() || matches!(char, '\t' | '\n' | '\r')
-                        });
-                        let text = text.trim().to_owned();
-                        return Ok(if text.is_empty() {
-                            Event::Unknown
-                        } else {
-                            Event::Result { text }
-                        });
-                    }
-                    Ok(Some(Receipt::Cancelled)) if started => {
-                        return Ok(Event::Cancelled {
-                            evidence: CancelEvidence::ProcessExited,
-                        });
-                    }
-                    Ok(Some(Receipt::Unknown)) => return Ok(Event::Unknown),
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if started
-                            && let Ok(status) = link.status(attempt)
-                            && status.cancel_requested
-                            && status.phase.has_grant()
-                            && status.start_until == Some(grant.start_until)
-                            && let Ok(deadline) = Permit::fresh(status.authority_valid_until)
-                            && deadline.check().is_ok()
-                        {
-                            let _ = send(&mut control, json!({ "deadline": deadline }));
-                        }
-                        next_poll = Instant::now() + interval;
-                    }
-                    _ => bail!("owned Codex supervisor receipt unavailable"),
-                }
-            }
-        })();
-        if !supervisor.wait()?.success() {
-            return Ok(Event::Unknown);
-        }
-        result
+                ensure!(
+                    status.phase == Phase::Authorized
+                        && status.start_until == Some(grant.start_until),
+                    "fresh status does not authorize the original start grant"
+                );
+                Ok(Some(start.shorter(permit)))
+            },
+            || journal.started(&link.key, attempt),
+        )
     }
 
-    fn supervisor(&self, lock: File, dir: &Path) -> Result<std::process::Child> {
-        let fd = lock.as_raw_fd();
-        let mut command = Command::new("/usr/bin/python3");
+    fn supervisor(&self, lock: File, dir: &Path) -> Result<Child> {
+        let mut command = supervisor_command(&lock);
         command
-            .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .args(["-I", "-c", include_str!("owned_codex.py")])
             .arg(&self.codex)
             .arg(&self.codex_home)
             .arg(&self.workspace)
             .arg(dir.canonicalize()?)
             .arg(self.timeout_seconds.to_string())
-            .arg(fd.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .arg(lock.as_raw_fd().to_string());
         for name in &self.provider_env {
             ensure!(
                 !name.starts_with("LD_")
@@ -239,16 +166,130 @@ impl Config {
                 std::env::var_os(name).context("provider environment missing")?,
             );
         }
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
         Ok(command.spawn()?)
     }
+}
+
+pub fn fixture_supervisor(lock: File, dir: &Path, fixture: &Command) -> Result<Child> {
+    let dir = dir.canonicalize()?;
+    Ok(supervisor_command(&lock)
+        .arg(fixture.get_program())
+        .arg(&dir)
+        .arg(&dir)
+        .arg(&dir)
+        .arg("8")
+        .arg(lock.as_raw_fd().to_string())
+        .args(fixture.get_args())
+        .spawn()?)
+}
+
+fn supervisor_command(lock: &File) -> Command {
+    let fd = lock.as_raw_fd();
+    let mut command = Command::new("/usr/bin/python3");
+    command
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .args(["-I", "-c", include_str!("owned_codex.py")])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+}
+
+pub fn supervise(
+    mut supervisor: Child,
+    link: &Link,
+    intent: &Intent,
+    start_until: i64,
+    prepare: impl FnOnce() -> Result<Option<Permit>>,
+    record_started: impl Fn() -> Result<()>,
+) -> Result<Event> {
+    let control = supervisor
+        .stdin
+        .take()
+        .context("missing supervisor control")?;
+    let output = supervisor
+        .stdout
+        .take()
+        .context("missing supervisor receipt")?;
+    let result = (|| {
+        let mut control = control;
+        let attempt = intent.attempt;
+        let Some(deadline) = prepare()? else {
+            return Ok(Event::Cancelled {
+                evidence: CancelEvidence::BeforeStart,
+            });
+        };
+        deadline.check()?;
+        send(
+            &mut control,
+            json!({ "deadline": deadline, "prompt": intent.prompt }),
+        )?;
+
+        let (receipts, received) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(output).lines() {
+                let receipt = line
+                    .ok()
+                    .and_then(|line| serde_json::from_str::<Receipt>(&line).ok());
+                if receipts.send(receipt).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut started = false;
+        let interval = Duration::from_millis(250);
+        let mut next_poll = Instant::now() + interval;
+        loop {
+            match received.recv_timeout(next_poll.saturating_duration_since(Instant::now())) {
+                Ok(Some(Receipt::Started)) if !started => {
+                    record_started()?;
+                    started = true;
+                }
+                Ok(Some(Receipt::Result { mut text })) if started => {
+                    text.retain(|char| !char.is_control() || matches!(char, '\t' | '\n' | '\r'));
+                    let text = text.trim().to_owned();
+                    return Ok(if text.is_empty() {
+                        Event::Unknown
+                    } else {
+                        Event::Result { text }
+                    });
+                }
+                Ok(Some(Receipt::Cancelled)) if started => {
+                    return Ok(Event::Cancelled {
+                        evidence: CancelEvidence::ProcessExited,
+                    });
+                }
+                Ok(Some(Receipt::Unknown)) => return Ok(Event::Unknown),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if started
+                        && let Ok(status) = link.status(attempt)
+                        && status.cancel_requested
+                        && status.phase.has_grant()
+                        && status.start_until == Some(start_until)
+                        && let Ok(deadline) = Permit::authority(status.authority_valid_until)
+                        && deadline.check().is_ok()
+                    {
+                        let _ = send(&mut control, json!({ "deadline": deadline }));
+                    }
+                    next_poll = Instant::now() + interval;
+                }
+                _ => bail!("owned Codex supervisor receipt unavailable"),
+            }
+        }
+    })();
+    if !supervisor.wait()?.success() {
+        return Ok(Event::Unknown);
+    }
+    result
 }
 
 #[derive(Deserialize)]
@@ -268,14 +309,14 @@ fn send(control: &mut impl Write, message: serde_json::Value) -> Result<()> {
 }
 
 pub fn start_permit(grant: &Grant) -> Result<Permit> {
-    let permit = Permit::fresh(grant.authority_valid_until)?
-        .shorter(Permit::fresh(Some(grant.start_until))?);
+    let permit = Permit::authority(grant.authority_valid_until)?
+        .shorter(Permit::authority(Some(grant.start_until))?);
     permit.check()?;
     Ok(permit)
 }
 
 pub fn check_cancel(status: &Status) -> Result<()> {
-    Permit::fresh(status.authority_valid_until)?.check()
+    Permit::authority(status.authority_valid_until)?.check()
 }
 
 #[derive(Serialize)]
@@ -285,7 +326,7 @@ pub struct Permit {
 }
 
 impl Permit {
-    fn fresh(wall: Option<i64>) -> Result<Self> {
+    pub fn authority(wall: Option<i64>) -> Result<Self> {
         let monotonic = monotonic_ms()?;
         let wall = wall.context("missing production authority deadline")?;
         let remaining = wall.saturating_sub(now_ms()?);
@@ -299,7 +340,7 @@ impl Permit {
         })
     }
 
-    fn check(&self) -> Result<()> {
+    pub fn check(&self) -> Result<()> {
         ensure!(
             monotonic_ms()? < self.monotonic && now_ms()? < self.wall,
             "production authority expired"
@@ -307,7 +348,7 @@ impl Permit {
         Ok(())
     }
 
-    fn shorter(self, other: Self) -> Self {
+    pub fn shorter(self, other: Self) -> Self {
         Self {
             wall: self.wall.min(other.wall),
             monotonic: self.monotonic.min(other.monotonic),
