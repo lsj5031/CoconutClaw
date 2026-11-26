@@ -28,7 +28,7 @@ pub(crate) mod desktop;
 pub(crate) mod desktop_host;
 mod probe;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod transport;
 
 const REVISION: &str = env!("COCONUTCLAW_REVISION");
@@ -279,14 +279,15 @@ fn validate_existing(cfg: &RuntimeConfig) -> Result<()> {
     }
     Ok(())
 }
-fn initialize(store: &Store) -> Result<()> {
-    store.conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS paired_nodes(id TEXT PRIMARY KEY,card TEXT NOT NULL,last_contact TEXT,last_error TEXT);
+pub(crate) const SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS paired_nodes(id TEXT PRIMARY KEY,card TEXT NOT NULL,last_contact TEXT,last_error TEXT);
          CREATE TABLE IF NOT EXISTS node_selection(session TEXT PRIMARY KEY,node TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS node_routes(run INTEGER PRIMARY KEY,node TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS node_assignments(run INTEGER PRIMARY KEY,bundle TEXT NOT NULL);
-         CREATE TABLE IF NOT EXISTS node_claims(origin TEXT PRIMARY KEY,bundle TEXT NOT NULL,start BLOB NOT NULL,result BLOB,cancelled INTEGER NOT NULL DEFAULT 0);"
-    )?;
+         CREATE TABLE IF NOT EXISTS node_claims(origin TEXT PRIMARY KEY,bundle TEXT NOT NULL,start BLOB NOT NULL,result BLOB,cancelled INTEGER NOT NULL DEFAULT 0);";
+
+fn initialize(store: &Store) -> Result<()> {
+    store.conn.execute_batch(SCHEMA)?;
     Ok(())
 }
 fn paired(store: &Store, id: EndpointId) -> Result<Card> {
@@ -770,6 +771,10 @@ impl Runner {
         let card = paired(&self.store, peer)?;
         ensure!(card.role == Role::Coordinator, "not coordinator");
         bundle.validate(peer, self.key.public())?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.store.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         let exists: bool = self.store.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM node_claims WHERE origin=?1)",
             [bundle.origin.hash()?],
@@ -779,6 +784,7 @@ impl Runner {
             self.evidence(bundle)?;
             return Ok(None);
         }
+        self.store.require_open_legacy_admission()?;
         ensure!(
             self.active.is_empty(),
             "runner busy; assignment not admitted"
@@ -797,6 +803,7 @@ impl Runner {
             "INSERT INTO node_claims(origin,bundle,start) VALUES(?1,?2,?3)",
             params![bundle.origin.hash()?, serde_json::to_string(bundle)?, start],
         )?;
+        tx.commit()?;
         let flag = Arc::new(AtomicBool::new(false));
         self.active.insert(bundle.origin.hash()?, flag.clone());
         Ok(Some(flag))
@@ -1038,6 +1045,9 @@ pub(crate) fn execute(
             &store.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        if store.legacy_admission_frozen()? {
+            return Ok(true);
+        }
         let source = store
             .get_task_run(run)?
             .context("remote source run absent")?;
@@ -1070,7 +1080,10 @@ pub(crate) fn execute(
     let result = transport::runtime()?.block_on(async {
         let endpoint = transport::coordinator(cfg).await?;
         async {
-            transport::call(&endpoint, &card, Request::Begin(bundle.clone())).await?;
+            let reply = transport::call(&endpoint, &card, Request::Begin(bundle.clone())).await?;
+            if accept(store, run, &bundle, reply, &cfg.timezone)? {
+                return Ok(());
+            }
             loop {
                 if cancel.load(Ordering::SeqCst)
                     || store
@@ -1127,41 +1140,203 @@ pub(crate) fn recover(store: &Store, now: &str) -> Result<()> {
          AND NOT EXISTS(SELECT 1 FROM runtime_remote_results c WHERE c.task_run_id=task_runs.id AND c.state='pending')",[now])?;
     Ok(())
 }
+
+pub(crate) fn verify_cutover_authority(
+    cfg: &RuntimeConfig,
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<()> {
+    validate_storage(cfg)?;
+    let local_path = directory(cfg).join("local.json");
+    if local_path.try_exists()? {
+        let identity: Local = read_json(&local_path)?;
+        ensure!(
+            identity.card.version == 1 && identity.card.role == Role::Coordinator,
+            "seal legacy cutover on the coordinator database"
+        );
+    }
+
+    cutover_receipts(tx, None).map(|_| ())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CutoverReceipt {
+    pub(crate) run: i64,
+    pub(crate) start: Vec<u8>,
+    pub(crate) result: Vec<u8>,
+}
+
+impl CutoverReceipt {
+    pub(crate) fn verify(
+        &self,
+        bundle: &str,
+        origin: &str,
+        assignment: &[u8],
+        coordinator: Option<EndpointId>,
+    ) -> Result<()> {
+        let bundle: Bundle = serde_json::from_str(bundle)?;
+        let runner = *bundle
+            .origin
+            .origin
+            .runners
+            .first()
+            .context("runner absent")?;
+        bundle.validate(coordinator.unwrap_or(bundle.origin.origin.owner), runner)?;
+        ensure!(
+            origin == bundle.origin.hash()? && assignment == bundle.assignment,
+            "assignment reservation mismatch"
+        );
+        receipt_history(&bundle, &self.start, Some(&self.result))?;
+        Ok(())
+    }
+}
+
+pub(crate) fn cutover_receipts(
+    tx: &rusqlite::Transaction<'_>,
+    coordinator: Option<EndpointId>,
+) -> Result<Vec<CutoverReceipt>> {
+    let has_assignments: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='node_assignments')",
+        [],
+        |row| row.get(0),
+    )?;
+    let untracked_sql = if has_assignments {
+        "SELECT task_run_id FROM runtime_remote_runs
+         WHERE task_run_id NOT IN (SELECT run FROM node_assignments) ORDER BY task_run_id LIMIT 1"
+    } else {
+        "SELECT task_run_id FROM runtime_remote_runs ORDER BY task_run_id LIMIT 1"
+    };
+    if let Some(run) = tx
+        .query_row(untracked_sql, [], |row| row.get::<_, i64>(0))
+        .optional()?
+    {
+        anyhow::bail!("legacy run {run} has a remote reservation without a tracked Begin");
+    }
+    if !has_assignments {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = tx.prepare(
+        "SELECT a.run,a.bundle,r.origin,r.assignment,n.start,n.result,p.start,p.result
+         FROM node_assignments a
+         LEFT JOIN runtime_remote_runs r ON r.task_run_id=a.run
+         LEFT JOIN node_signed_receipts n ON n.task_run_id=a.run
+         LEFT JOIN runtime_remote_results p ON p.task_run_id=a.run
+         ORDER BY a.run",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut receipts = Vec::new();
+    while let Some(row) = rows.next()? {
+        let run: i64 = row.get(0)?;
+        let verify = || -> Result<CutoverReceipt> {
+            let saved_start: Option<Vec<u8>> = row.get(4)?;
+            let saved_result: Option<Vec<u8>> = row.get(5)?;
+            let projected_start: Option<Vec<u8>> = row.get(6)?;
+            let projected_result: Option<Vec<u8>> = row.get(7)?;
+            for (saved, projected) in [
+                (&saved_start, &projected_start),
+                (&saved_result, &projected_result),
+            ] {
+                ensure!(
+                    saved
+                        .as_ref()
+                        .zip(projected.as_ref())
+                        .is_none_or(|(a, b)| a == b),
+                    "conflicting receipt custody"
+                );
+            }
+            let result = saved_result
+                .or(projected_result)
+                .context("signed terminal receipt missing")?;
+            let start = saved_start
+                .or(projected_start)
+                .context("signed Start missing")?;
+            let receipt = CutoverReceipt { run, start, result };
+            receipt.verify(
+                &row.get::<_, String>(1)?,
+                &row.get::<_, Option<String>>(2)?
+                    .context("reservation origin absent")?,
+                &row.get::<_, Option<Vec<u8>>>(3)?
+                    .context("reservation assignment absent")?,
+                coordinator,
+            )?;
+            Ok(receipt)
+        };
+        receipts.push(verify().with_context(|| format!("legacy run {run} blocks executor seal"))?);
+    }
+    Ok(receipts)
+}
+
+fn receipt_history(bundle: &Bundle, start: &[u8], result: Option<&[u8]>) -> Result<History> {
+    ensure!(
+        matches!(
+            SignedEvent::parse(start)?.event.action,
+            Action::Start { assignment: 1 }
+        ),
+        "start absent"
+    );
+    if let Some(result) = result {
+        ensure!(
+            matches!(
+                SignedEvent::parse(result)?.event.action,
+                Action::Result { assignment: 1, .. }
+            ),
+            "result absent"
+        );
+    }
+    History::replay(
+        &bundle.origin,
+        bundle.origin.origin.owner,
+        bundle.origin.origin.namespace,
+        [bundle.assignment.clone(), start.to_vec()]
+            .into_iter()
+            .chain(result.map(<[u8]>::to_vec)),
+    )
+}
+
 fn accept(store: &Store, run: i64, bundle: &Bundle, reply: Reply, timezone: &str) -> Result<bool> {
     let Reply::Evidence { start, result } = reply else {
         anyhow::bail!("runner refused evidence")
     };
-    let Some(result) = result else {
-        return Ok(false);
-    };
-    let history = History::replay(
-        &bundle.origin,
-        bundle.origin.origin.owner,
-        bundle.origin.origin.namespace,
-        [bundle.assignment.clone(), start.clone(), result.clone()],
+    let history = receipt_history(bundle, &start, result.as_deref())?;
+    let tx = rusqlite::Transaction::new_unchecked(
+        &store.conn,
+        rusqlite::TransactionBehavior::Immediate,
     )?;
-    let (outcome, output) = history
-        .jobs
-        .get(&1)
-        .and_then(|j| j.result.as_ref())
-        .context("result absent")?;
-    let status = match outcome {
-        Outcome::Completed => TaskRunStatus::Completed,
-        Outcome::Cancelled => TaskRunStatus::Cancelled,
-        _ => TaskRunStatus::Failed,
-    };
-    let tx = store.conn.unchecked_transaction()?;
-    store.custody_runtime_result(
+    store.custody_node_receipt(
         run,
+        &bundle.origin.hash()?,
+        &bundle.assignment,
         &start,
-        &result,
-        (status, *outcome == Outcome::Unknown),
-        output,
-        &crate::iso_now(timezone),
+        result.as_deref(),
     )?;
+    if let Some(result) = &result {
+        let (outcome, output) = history
+            .jobs
+            .get(&1)
+            .and_then(|job| job.result.as_ref())
+            .context("result absent")?;
+        if !store.legacy_admission_frozen()? {
+            let status = match outcome {
+                Outcome::Completed => TaskRunStatus::Completed,
+                Outcome::Cancelled => TaskRunStatus::Cancelled,
+                _ => TaskRunStatus::Failed,
+            };
+            store.custody_runtime_result(
+                run,
+                &start,
+                result,
+                (status, *outcome == Outcome::Unknown),
+                output,
+                &crate::iso_now(timezone),
+            )?;
+        }
+    }
     tx.commit()?;
-    store.apply_runtime_results(&crate::iso_now(timezone))?;
-    Ok(true)
+    if result.is_some() {
+        store.apply_runtime_results(&crate::iso_now(timezone))?;
+    }
+    Ok(result.is_some())
 }
 async fn reconcile(cfg: &RuntimeConfig, store: &Store, run: i64) -> Result<()> {
     let json: String = store.conn.query_row(
@@ -1178,7 +1353,7 @@ async fn reconcile(cfg: &RuntimeConfig, store: &Store, run: i64) -> Result<()> {
         .context("runner absent")?;
     let card = paired(store, runner)?;
     let _instance = cfg.acquire_instance_lock()?;
-    let endpoint = transport::coordinator(cfg).await?;
+    let endpoint = transport::endpoint(key(cfg)?, local(cfg)?.card.address).await?;
     let result = async {
         let reply = transport::call(&endpoint, &card, Request::Status(bundle.clone())).await?;
         ensure!(

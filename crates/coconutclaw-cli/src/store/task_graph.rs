@@ -219,6 +219,9 @@ impl Store {
     /// ownership commit together; raw conversation fences are respected.
     pub(crate) fn resume_task_events(&self, now: &str) -> Result<Vec<(i64, TaskRequest)>> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        if self.legacy_admission_frozen()? {
+            return Ok(Vec::new());
+        }
         let mut stmt=self.conn.prepare(
             "SELECT w.run_id,w.expected_id,d.current_run_id,w.resume_payload,w.session_id,w.actor
              FROM runtime_waits w JOIN runtime_attempts a ON a.run_id=w.run_id

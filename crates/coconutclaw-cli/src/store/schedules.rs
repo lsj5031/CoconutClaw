@@ -127,6 +127,7 @@ impl Store {
         now: DateTime<Utc>,
     ) -> Result<Vec<(i64, TaskRequest)>> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        self.require_open_legacy_admission()?;
         let mut stmt = self.conn.prepare(&format!(
             "SELECT s.id,s.revision,s.request,s.timing,s.next_due FROM runtime_schedules s
              WHERE {ELIGIBLE} AND s.next_due<=?1 ORDER BY s.next_due,s.id LIMIT ?2"

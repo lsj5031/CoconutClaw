@@ -24,6 +24,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 coconutclaw-config = { path = "../coconutclaw-config" }
 coconutclaw-provider = { path = "../coconutclaw-provider" }
+coconutclaw-telegram = { path = "../coconutclaw-telegram" }
 notify = { version = "8.2.0", features = ["macos_kqueue"] }
 tempfile = "3.27.0"
 libc.workspace = true

@@ -52,6 +52,20 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS legacy_admission_freeze (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1)
+);
+
+CREATE TABLE IF NOT EXISTS legacy_cutover_seal (
+  singleton INTEGER PRIMARY KEY REFERENCES legacy_admission_freeze(singleton)
+);
+
+CREATE TABLE IF NOT EXISTS node_signed_receipts (
+  task_run_id INTEGER PRIMARY KEY REFERENCES runtime_remote_runs(task_run_id),
+  start BLOB NOT NULL,
+  result BLOB
+);
+
 CREATE TABLE IF NOT EXISTS turns (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL,

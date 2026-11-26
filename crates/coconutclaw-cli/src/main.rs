@@ -7,6 +7,7 @@ mod approval;
 mod cancel;
 mod commands;
 mod context;
+mod cutover;
 mod delivery;
 mod loops;
 mod markers;
@@ -56,6 +57,10 @@ enum Commands {
     Once(TurnArgs),
     /// Listen for Telegram requests and scheduled tasks.
     Run(TurnArgs),
+    /// Seal a frozen coordinator after verifying remote launch authority is spent.
+    SealLegacyCutover,
+    /// Transfer frozen legacy state between offline cutover stores.
+    LegacyCutover(cutover::Args),
     /// Check local setup without contacting Telegram or Codex.
     Doctor(DoctorArgs),
     /// Manage the background service for this user.
@@ -113,6 +118,9 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if let Commands::LegacyCutover(args) = &cli.command {
+        return cutover::run(args);
+    }
     if let Commands::Desktop(args) = &cli.command {
         return nodes::desktop::run(args);
     }
@@ -163,6 +171,11 @@ fn main() -> Result<()> {
     if let Commands::Service(args) = &command {
         return service::run_service(&cfg, &overrides, args.clone());
     }
+    if matches!(command, Commands::SealLegacyCutover) {
+        Store::seal_legacy_cutover(&cfg)?;
+        println!("Legacy executor seal verified.");
+        return Ok(());
+    }
 
     let _instance_lock = cfg.acquire_instance_lock()?;
     let mut store = Store::open(&cfg)?;
@@ -170,6 +183,8 @@ fn main() -> Result<()> {
     match command {
         Commands::Once(args) => commands::run_once(&cfg, &mut store, &args),
         Commands::Run(args) => commands::run_run(&cfg, &mut store, &args),
+        Commands::SealLegacyCutover => unreachable!("cutover seal checks execution ownership"),
+        Commands::LegacyCutover(_) => unreachable!("offline cutover bypasses runtime setup"),
         Commands::Doctor(_) => unreachable!("doctor handled before layout/lock/store setup"),
         Commands::Service(_) => unreachable!("service command handled before lock/store setup"),
         Commands::ImportOpenclaw(_) => unreachable!("import handled before store setup"),

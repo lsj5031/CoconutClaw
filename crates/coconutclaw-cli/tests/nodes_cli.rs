@@ -34,6 +34,37 @@ fn cli(data: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn legacy_cutover_cli_rejects_untracked_authority_and_frozen_service_restart() {
+    let root = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    private(root.path());
+    let output = cli(root.path(), &["nodes", "status"]);
+    assert!(output.status.success(), "{output:?}");
+    let db = rusqlite::Connection::open(root.path().join("state.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO task_runs(id,session_id,channel,prompt,status,created_at)
+             VALUES (24,'local','local','fixture','waiting_remote','fixture');
+         INSERT INTO runtime_remote_runs VALUES(24,'untracked',x'01','local','{}');
+         INSERT INTO legacy_admission_freeze VALUES(1);
+         INSERT INTO legacy_cutover_seal VALUES(1);",
+    )
+    .unwrap();
+    drop(db);
+    for args in [["seal-legacy-cutover"], ["run"], ["once"]] {
+        let output = cli(root.path(), &args);
+        assert!(!output.status.success(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let expected = match args[0] {
+            "seal-legacy-cutover" => {
+                "legacy run 24 has a remote reservation without a tracked Begin"
+            }
+            _ => "legacy admission is frozen",
+        };
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+}
+
+#[test]
 fn reviewed_pair_checks_exact_bytes_and_serializes_competing_coordinators() {
     let root = tempfile::tempdir().unwrap();
     #[cfg(windows)]

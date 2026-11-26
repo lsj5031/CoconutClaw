@@ -4,7 +4,9 @@ use anyhow::Result;
 use coconutclaw_config::{RuntimeConfig, TelegramParseFallback, TelegramParseMode};
 use reqwest::blocking::Client;
 
-use crate::delivery::{DeliveryState, TaskDispatch, persist_delivery_state};
+use crate::delivery::{
+    DeliveryKey, DeliveryState, TaskDispatch, persist_delivery_state, reserve_telegram_delivery,
+};
 use crate::markers::CompiledOutput;
 use crate::store::Store;
 use crate::telegram::{
@@ -81,7 +83,9 @@ fn durable_op(
     }
     saved["attempts"] = (saved["attempts"].as_u64().unwrap_or(0) + 1).into();
     saved["phase"] = "sending".into();
-    persist_delivery_state(store, task_id, state)?;
+    if !reserve_telegram_delivery(store, task_id, state)? {
+        return Ok(false);
+    }
     match send() {
         Ok(()) => {
             state.mark_telegram_op(op);
@@ -124,6 +128,45 @@ fn durable_op(
     }
 }
 
+fn optional_op(
+    store: &Store,
+    key: DeliveryKey,
+    state: &mut DeliveryState,
+    op: &str,
+    send: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    if state.operations.contains_key(op) || state.has_telegram_op(op) {
+        return Ok(true);
+    }
+    state
+        .operations
+        .insert(op.into(), serde_json::json!({"phase":"attempted"}));
+    if !reserve_telegram_delivery(store, key, state)? {
+        state.operations.remove(op);
+        return Ok(false);
+    }
+    Ok(send().is_ok())
+}
+
+fn clean_progress(
+    store: &Store,
+    key: DeliveryKey,
+    state: &mut DeliveryState,
+    client: &Client,
+    cfg: &RuntimeConfig,
+    chat_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    if !optional_op(store, key, state, "telegram:progress-delete", || {
+        telegram_delete_message(client, cfg, chat_id, message_id)
+    })? {
+        optional_op(store, key, state, "telegram:progress-keyboard", || {
+            telegram_remove_keyboard(client, cfg, chat_id, message_id)
+        })?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn deliver_text(
     store: &Store,
@@ -140,14 +183,14 @@ fn deliver_text(
         let sent = durable_op(store, request.task_id, state, "telegram:text", || {
             crate::telegram::telegram_send_ui(client, cfg, chat_id, &message)
         })?;
-        if sent
-            && !state.has_telegram_op("telegram:callback-attempted")
-            && let Some(id) = message.callback_id.as_deref()
-        {
-            // Attempt only, not proof. An expired spinner never gates the report.
-            state.mark_telegram_op("telegram:callback-attempted");
-            persist_delivery_state(store, request.task_id, state)?;
-            let _ = crate::telegram::telegram_answer_ui_callback(client, cfg, id);
+        if sent && let Some(id) = message.callback_id.as_deref() {
+            optional_op(
+                store,
+                request.task_id,
+                state,
+                "telegram:callback-attempted",
+                || crate::telegram::telegram_answer_ui_callback(client, cfg, id),
+            )?;
         }
         return Ok(sent);
     }
@@ -186,12 +229,16 @@ fn deliver_text(
         let attempts = plan["attempts"].as_u64().unwrap_or(0) + 1;
         plan["phase"] = "sending".into();
         plan["attempts"] = attempts.into();
-        persist_delivery_state(store, request.task_id, state)?;
+        if !reserve_telegram_delivery(store, request.task_id, state)? {
+            return Ok(false);
+        }
         match crate::telegram::telegram_send_rich(client, cfg, chat_id, &markdown)? {
             crate::telegram::RichSendOutcome::Sent => {
                 state.mark_telegram_op("telegram:text");
                 persist_delivery_state(store, request.task_id, state)?;
-                if let Some(message_id) = request.progress_message_id {
+                if let Some(message_id) = request.progress_message_id
+                    && !store.legacy_admission_frozen()?
+                {
                     let _ = telegram_delete_message(client, cfg, chat_id, message_id);
                 }
                 return Ok(true);
@@ -241,7 +288,9 @@ fn deliver_text(
             Ok(true) => {
                 state.mark_telegram_op("telegram:text");
                 persist_delivery_state(store, request.task_id, state)?;
-                if let Some(message_id) = request.progress_message_id {
+                if let Some(message_id) = request.progress_message_id
+                    && !store.legacy_admission_frozen()?
+                {
                     let _ = telegram_delete_message(client, cfg, chat_id, message_id);
                 }
                 return Ok(true);
@@ -542,9 +591,15 @@ pub(crate) fn dispatch_task_output(
                     if let (Some(chat_id), Some(message_id)) =
                         (chat_id, request.progress_message_id)
                     {
-                        let _ = telegram_delete_message(client, cfg, chat_id, message_id).or_else(
-                            |_| telegram_remove_keyboard(client, cfg, chat_id, message_id),
-                        );
+                        clean_progress(
+                            store,
+                            request.task_id,
+                            state,
+                            client,
+                            cfg,
+                            chat_id,
+                            message_id,
+                        )?;
                     }
                     state.mark_telegram_op("telegram:text");
                     persist_delivery_state(store, request.task_id, state)?;
@@ -666,8 +721,15 @@ pub(crate) fn dispatch_task_output(
         && !state.has_telegram_op("telegram:text")
     {
         if let (Some(chat_id), Some(message_id)) = (chat_id, request.progress_message_id) {
-            let _ = telegram_delete_message(client, cfg, chat_id, message_id)
-                .or_else(|_| telegram_remove_keyboard(client, cfg, chat_id, message_id));
+            clean_progress(
+                store,
+                request.task_id,
+                state,
+                client,
+                cfg,
+                chat_id,
+                message_id,
+            )?;
         }
         state.mark_telegram_op("telegram:text");
         persist_delivery_state(store, request.task_id, state)?;

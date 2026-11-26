@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use coconutclaw_config::RuntimeConfig;
 use rusqlite::{Connection, OpenFlags};
 use std::fs;
@@ -22,7 +22,11 @@ pub(crate) mod turns;
 #[cfg(test)]
 mod task_adapter;
 
-const SCHEMA_SQL: &str = include_str!("../../../../sql/schema.sql");
+pub(crate) const SCHEMA_SQL: &str = include_str!("../../../../sql/schema.sql");
+pub(crate) const LEGACY_EXECUTOR_SEAL_SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS legacy_executor_seal (
+    singleton INTEGER PRIMARY KEY REFERENCES legacy_cutover_seal(singleton)
+)";
 
 #[derive(Debug)]
 pub(crate) struct TurnRecord {
@@ -152,6 +156,45 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    pub(crate) fn legacy_admission_frozen(&self) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM legacy_admission_freeze WHERE singleton=1)",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(crate) fn require_open_legacy_admission(&self) -> Result<()> {
+        ensure!(
+            !self.conn.is_autocommit(),
+            "legacy admission requires a write transaction"
+        );
+        ensure!(
+            !self.legacy_admission_frozen()?,
+            "legacy admission is frozen"
+        );
+        Ok(())
+    }
+
+    pub(crate) fn seal_legacy_cutover(cfg: &RuntimeConfig) -> Result<()> {
+        let _owner = cfg.acquire_instance_lock()?;
+        let store = Self::connect(cfg)?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &store.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        ensure!(
+            store.legacy_admission_frozen()?,
+            "freeze legacy admission first"
+        );
+        crate::nodes::verify_cutover_authority(cfg, &tx)?;
+        tx.execute("INSERT OR IGNORE INTO legacy_cutover_seal VALUES(1)", [])?;
+        tx.execute(LEGACY_EXECUTOR_SEAL_SCHEMA, [])?;
+        tx.execute("INSERT OR IGNORE INTO legacy_executor_seal VALUES(1)", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Bootstrap once at each process entry point, before starting workers.
     /// Ordinary runtime connections must use `connect` instead.
     pub(crate) fn open(cfg: &RuntimeConfig) -> Result<Self> {
@@ -214,3 +257,6 @@ mod tests;
 
 #[cfg(test)]
 mod startup_tests;
+
+#[cfg(test)]
+mod legacy_admission_tests;

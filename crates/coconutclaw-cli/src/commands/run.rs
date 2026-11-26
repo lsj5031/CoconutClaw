@@ -25,6 +25,10 @@ pub(crate) fn run_run(
     store: &mut Store,
     args: &crate::TurnArgs,
 ) -> Result<()> {
+    anyhow::ensure!(
+        !store.legacy_admission_frozen()?,
+        "legacy admission is frozen"
+    );
     if args.inject_text.is_some() || args.inject_file.is_some() {
         return super::run_once(cfg, store, args);
     }

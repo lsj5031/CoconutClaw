@@ -48,6 +48,9 @@ mod reconciliation;
 #[path = "context_notification_tests.rs"]
 mod context_notifications;
 
+#[path = "legacy_cutover_tests.rs"]
+mod legacy_cutover;
+
 fn graph_admit(store: &Store, session: &str, key: &str) -> (i64, TaskRequest) {
     let mut request = make_stdout_request(SessionKey::from_id(session.into()), key);
     request.update_id = Some(key.into());
@@ -1114,6 +1117,9 @@ impl FakeTelegramServer {
                             .to_string();
                         requests_clone.lock().expect("requests lock").push(path);
                         let (status, body) = respond(&request);
+                        if status == 0 {
+                            continue;
+                        }
                         let response = format!(
                             "HTTP/1.1 {status} Mock\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             body.len(),

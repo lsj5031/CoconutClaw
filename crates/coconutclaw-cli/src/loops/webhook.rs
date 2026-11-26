@@ -144,6 +144,9 @@ pub(crate) fn drain_telegram_ingress(
 /// Called by the existing bounded dispatcher under its delivery owner lock.
 /// Cached ProcessOutcome.output is diagnostic data, not permission to resend.
 pub(crate) fn deliver_telegram_acks(cfg: &RuntimeConfig, store: &Store) -> Result<()> {
+    if store.legacy_admission_frozen()? {
+        return Ok(());
+    }
     // Finish the bounded read before HTTP or writes. A live row iterator keeps
     // a WAL snapshot that cannot be promoted after another task commits.
     let candidates = {
@@ -538,17 +541,20 @@ pub(crate) fn process_webhook_line(
                     && !scheduler.has_task_for_update_id(&id)?
                     && !store.turn_exists_for_update_id(&id)?
                 {
-                    store.conn.execute(
-                        "UPDATE telegram_ingress SET progress_state='sending' WHERE seq=?1",
+                    let reserved = store.conn.execute(
+                        "UPDATE telegram_ingress SET progress_state='sending' WHERE seq=?1
+                         AND NOT EXISTS(SELECT 1 FROM legacy_admission_freeze)",
                         [seq],
-                    )?;
-                    let mut once = cfg.clone();
-                    once.telegram_api_retry_attempts = 0;
-                    progress = send_progress_message(&once, &turn.session.telegram_route_id())
-                        .ok()
-                        .flatten();
-                    store.conn.execute("UPDATE telegram_ingress SET progress_state=?2,progress_message_id=?3 WHERE seq=?1",
-                        params![seq,if progress.is_some(){"sent"}else{"unknown"},progress])?;
+                    )? == 1;
+                    if reserved {
+                        let mut once = cfg.clone();
+                        once.telegram_api_retry_attempts = 0;
+                        progress = send_progress_message(&once, &turn.session.telegram_route_id())
+                            .ok()
+                            .flatten();
+                        store.conn.execute("UPDATE telegram_ingress SET progress_state=?2,progress_message_id=?3 WHERE seq=?1",
+                            params![seq,if progress.is_some(){"sent"}else{"unknown"},progress])?;
+                    }
                 }
             }
             let legacy =
