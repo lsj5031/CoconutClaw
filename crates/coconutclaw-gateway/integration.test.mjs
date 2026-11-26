@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { cp, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, request } from "node:https";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -243,7 +243,7 @@ async function runFixture(context, {
     }, status);
     async function fixtureDbPath(filePattern) {
         assert.ok(inspect);
-        const files = (await readdir(persistence, { recursive: true })).filter(file => filePattern.test(file));
+        const files = (await readdir(persistence, { recursive: true })).filter(file => filePattern.test(basename(file)));
         assert.equal(files.length, 1, files.join(", "));
         return join(persistence, files[0]);
     }
@@ -257,7 +257,7 @@ async function runFixture(context, {
         }
     }
     const ledgerFile = () => cutover
-        ? new RegExp(`/${cutover.target.pin.objectId}\\.sqlite$`)
+        ? new RegExp(`^${cutover.target.pin.objectId}\\.sqlite$`)
         : /[a-f0-9]{64}\.sqlite$/;
     const queryFixture = (filePattern, query, args) =>
         withFixtureDb(filePattern, db => db.prepare(query).all(...args).map(row => ({ ...row })));
@@ -303,7 +303,7 @@ async function until(check, message, timeoutMs = 10_000) {
         if (result) return result;
         await sleep(50);
     } while (Date.now() < deadline);
-    assert.fail(message);
+    assert.fail(typeof message === "function" ? message() : message);
 }
 
 function makeWindowsPrivate(root) {
@@ -389,13 +389,16 @@ async function attachExecutor(context, client, production, device = "alpha", ori
         child.once("close", (code, signal) => { termination = code ?? signal; });
         const process = {
             pid: child.pid,
+            get stderr() { return stderr; },
             assertRunning() {
                 if (termination !== undefined) {
                     assert.fail(`executor ${child.pid} exited (${termination}): ${stderr.trim()}`);
                 }
             },
             async exit(expected) {
-                assert.deepEqual(await exited, [expected, null], stderr);
+                const outcome = await exited;
+                if (termination === undefined) await once(child, "close");
+                assert.deepEqual(outcome, [expected, null], stderr);
                 return stderr;
             },
             async stop() {
@@ -1839,7 +1842,7 @@ async function nativePlacement(context) {
 }
 
 test("BigFur fresh install pairs native runners and keeps the default, offline pins, and Unknown", {
-    ...nativeTimeout, skip: !executable || !cutoverCli || windowsCustody,
+    ...nativeTimeout, skip: !executable || !cutoverCli,
 }, async context => {
     const { root, mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
         await productionAuthorityFixture(context, { pairing: true, enrolled: {} });
@@ -1862,8 +1865,10 @@ test("BigFur fresh install pairs native runners and keeps the default, offline p
     })).stdout);
     async function pair(device, alias) {
         const data = join(root, device);
+        await mkdir(data, { mode: 0o700 });
+        if (windowsCustody) makeWindowsPrivate(data);
         const workspace = join(data, "workspace");
-        await mkdir(workspace, { recursive: true, mode: 0o700 });
+        await mkdir(workspace, { mode: 0o700 });
         const card = await command(cutoverCli, "--data-dir", data, "nodes", "enroll", "--role", "runner",
             "--bind", "127.0.0.1:49731", "--workspace", workspace);
         assert.equal(card.role, "runner");
@@ -2157,7 +2162,7 @@ test("native enrolled runner reconciles consumed grants and reports both kinds o
 test("native enrolled Windows rejects unsafe ACLs and reparse points before opening state", {
     ...nativeTimeout, skip: !executable || !windowsCustody,
 }, async context => {
-    const { client, cutover, mock } = await nativePlacement(context);
+    const { client, cutover, admit, mock } = await nativePlacement(context);
     const beta = await attachExecutor(context, client, cutover, "beta");
     const grant = path => execFileSync("icacls.exe", [path, "/grant", "*S-1-1-0:R"]);
     const remove = path => execFileSync("icacls.exe", [path, "/remove:g", "*S-1-1-0"]);
@@ -2168,15 +2173,42 @@ test("native enrolled Windows rejects unsafe ACLs and reparse points before open
     assert.match(await beta.runEnrolled("init", undefined, { journal: join(unsafeParent, "journal") }).exit(1),
         /unsafe node ACL/);
     assert.deepEqual(await readdir(unsafeParent), []);
-    for (const path of [beta.seed, join(beta.root, "ca.pem")]) {
+    for (const [path, custodyError] of [
+        [beta.seed, /check fixture seed custody[\s\S]*unsafe node ACL/],
+        [join(beta.root, "ca.pem"), /check fixture CA custody[\s\S]*unsafe node ACL/],
+    ]) {
         grant(path);
-        assert.match(await beta.runEnrolled("init").exit(1), /unsafe node ACL/);
+        assert.match(await beta.runEnrolled("init").exit(1), custodyError);
         remove(path);
     }
     assert.deepEqual(beta.packets, []);
 
+    assert.equal(await admit(45121, "synthetic journal activation"), "telegram:45121");
+    let helloStatus;
+    let helloInactive;
+    let next;
+    beta.proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op === "hello") {
+            helloStatus = response.status;
+            helloInactive = response.value?.error === "inactive_generation";
+        }
+        if (envelope.command.op === "next") {
+            next = { status: response.status, idle: response.value?.task === null };
+        }
+        return response;
+    };
     const owner = beta.runEnrolled("init");
-    await until(() => beta.packets.some(({ command }) => command.op === "next"), "private journal is admitted");
+    try {
+        await until(() => {
+            owner.assertRunning();
+            return next?.status === 200 && next.idle;
+        }, () => `private journal is admitted (executor ${owner.pid} timed out, stderr: ${owner.stderr.trim() || "(empty)"})`);
+    } catch (error) {
+        const entries = await readdir(beta.dir).catch(error => [error.code ?? error.message]);
+        const requests = beta.packets.map(({ command }) => command.op);
+        context.diagnostic(`Private init journal entries ${JSON.stringify(entries)}, requests ${JSON.stringify(requests)}, last Hello HTTP ${helloStatus ?? "(none)"}${helloInactive ? " inactive_generation" : ""}, last Next HTTP ${next?.status ?? "(none)"}`);
+        throw error;
+    }
     await owner.stop();
     const packetCount = beta.packets.length;
     const db = join(beta.dir, "executor.sqlite3");
