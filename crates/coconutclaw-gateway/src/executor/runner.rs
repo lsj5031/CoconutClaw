@@ -22,6 +22,10 @@ use super::link::{Link, PilotPaused, Scope, Unavailable, lower_hex, now_ms};
 #[cfg(target_os = "linux")]
 use super::production;
 
+#[cfg(target_os = "macos")]
+#[path = "macos_custody.rs"]
+mod custody;
+
 #[derive(Clone, Copy, PartialEq)]
 enum Fixture {
     Normal,
@@ -46,6 +50,10 @@ enum Execution {
 pub fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     let mode = args.next();
+    #[cfg(target_os = "macos")]
+    if mode.as_deref().is_some_and(|arg| arg == custody::MODE) {
+        return custody::run(args);
+    }
     #[cfg(target_os = "linux")]
     if mode.as_deref().is_some_and(|arg| arg == "--production") {
         let usage = "--production init|resume <private runner JSON> <journal directory>";
@@ -416,6 +424,23 @@ impl Deadline {
     }
 }
 
+fn fixture_command(attempt: i64, hold: bool) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command.args([
+        "-c",
+        r#"
+            printf '%s\n' "$1" >> launches || exit 1
+            if [ "$2" = hold ]; then /bin/sleep 6; fi
+            IFS= read -r prompt || :
+            printf 'fixture output: %.100s\n' "$prompt"
+        "#,
+        "fixture",
+        &attempt.to_string(),
+        if hold { "hold" } else { "" },
+    ]);
+    command
+}
+
 fn run_child(
     link: &Link,
     dir: &Path,
@@ -429,19 +454,13 @@ fn run_child(
     let attempt = intent.attempt;
     let exit = thread::scope(|scope| {
         let child = scope.spawn(|| {
-            let mut command = Command::new("/bin/sh");
-            command.env_clear().current_dir(dir).args([
-                "-c",
-                r#"
-                    printf '%s\n' "$1" >> launches || exit 1
-                    if [ "$2" = hold ]; then /bin/sleep 6; fi
-                    IFS= read -r prompt || :
-                    printf 'fixture output: %.100s\n' "$prompt"
-                "#,
-                "fixture",
-                &attempt.to_string(),
-                if fixture == Fixture::Hold { "hold" } else { "" },
-            ]);
+            let hold = fixture == Fixture::Hold;
+            let mut command = fixture_command(attempt, hold);
+            #[cfg(target_os = "macos")]
+            if link.scope.placement().is_some() {
+                command = custody::command(attempt, hold, &deadline)?;
+            }
+            command.env_clear().current_dir(dir);
             run_single_child(
                 command,
                 &intent.prompt,

@@ -97,6 +97,20 @@ Host custody in Gate 4 requires the Linux supervisor, macOS parent-loss, and
 Windows ACL and Job Object checks on their respective hosts. Production
 placement also depends on the retirement and delivery-custody proof in Gate 2.
 
+On Mars, the enrolled loopback fixture runs the synthetic shell under a
+guardian in the provider's dedicated process group. The guardian binds
+`kqueue` exit notification to its current runner parent before launching the
+shell and kills its own group on runner exit or provider cancellation.
+The macOS custody integration test observes the shell and its sleeping child
+alive, checks their exit after cancellation and after a separate runner
+`SIGKILL`, then checks signed Unknown and one launch on journal recovery.
+This check covers the fixture's group members. Live macOS acceptance still
+requires private host credentials and workspace, separately authorized
+enrollment, and a custody policy for tools that create their own groups or
+sessions. Linux still needs per-enrollment supervisor validation on Leo-Claw.
+Windows still needs BigFur integration and native ACL and Job Object validation
+on Mercury.
+
 ## BigFur integration gates
 
 1. Scope production admission to its existing webhook, private owner and
