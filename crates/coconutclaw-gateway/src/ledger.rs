@@ -16,6 +16,7 @@ pub enum Execution<'a> {
     Cutover {
         instance: &'a str,
         valid_until: i64,
+        placement: Option<Device>,
     },
     Local {
         instance: &'a str,
@@ -544,12 +545,24 @@ impl Ledger {
         )
     }
 
-    pub fn grant_current(&self, attempt: i64, now: i64) -> Result<bool> {
+    pub fn grant_current(
+        &self,
+        device: Device,
+        attempt: i64,
+        start_until: i64,
+        now: i64,
+    ) -> Result<bool> {
         Ok(self
             .number(
-                "SELECT id AS value FROM attempts
-             WHERE id=? AND phase='authorized' AND cancel_requested=0 AND start_until>?",
-                [attempt.into(), now.into()],
+                "SELECT a.id AS value FROM attempts a JOIN tasks t ON t.current_attempt=a.id
+                 WHERE a.id=? AND a.device=? AND t.pin=a.device AND a.phase='authorized'
+                   AND a.cancel_requested=0 AND a.start_until=? AND a.start_until>?",
+                [
+                    attempt.into(),
+                    device.name().into(),
+                    start_until.into(),
+                    now.into(),
+                ],
             )?
             .is_some())
     }
@@ -616,6 +629,10 @@ impl Ledger {
                         attempt,
                         start_until: until,
                         request_sequence: sequence,
+                        placement: match execution {
+                            Some(Execution::Cutover { placement, .. }) => placement,
+                            _ => None,
+                        },
                         authority_valid_until: None,
                     }),
                     Some(Execution::HostedPilot) => {

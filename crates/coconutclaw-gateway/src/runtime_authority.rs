@@ -7,6 +7,7 @@ use wasm_bindgen_futures::JsFuture;
 use worker::{Env, Response, Result, Url, web_sys};
 
 use crate::ledger::{Delivery, Receipt};
+use crate::protocol::Device;
 use crate::worker_app::{collect_body, now};
 
 const PERMIT_MS: i64 = 2_000;
@@ -45,7 +46,42 @@ pub struct Pin {
     pub object_id: String,
     pub custody_digest: String,
     telegram_credential_version: String,
-    pub executor_key: String,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    executor_key: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    executor_keys: Option<ExecutorKeys>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ExecutorKeys {
+    alpha: String,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    beta: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    gamma: Option<String>,
+}
+
+fn present<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -57,6 +93,22 @@ impl Pin {
     pub fn read(env: &Env) -> Option<Self> {
         let pin: Self = serde_json::from_str(&env.var("CUTOVER_TARGET").ok()?.to_string()).ok()?;
         let host = Url::parse(&format!("https://{}", pin.hostname)).ok()?;
+        let fixture = env.var("PHASE").ok()?.to_string() == "phase2-placement-local";
+        let valid_keys = match (&pin.executor_key, &pin.executor_keys) {
+            (Some(key), None) => !fixture && pin.hostname != "127.0.0.1" && lower_hex(key, 64),
+            (None, Some(keys)) => {
+                fixture
+                    && pin.hostname == "127.0.0.1"
+                    && lower_hex(&keys.alpha, 64)
+                    && keys
+                        .beta
+                        .iter()
+                        .chain(&keys.gamma)
+                        .all(|key| lower_hex(key, 64) && key != &keys.alpha)
+                    && (keys.beta.is_none() || keys.beta != keys.gamma)
+            }
+            _ => false,
+        };
         (host.host_str() == Some(&pin.hostname)
             && host.as_str() == format!("https://{}/", pin.hostname)
             && pin.hostname.contains('.')
@@ -64,8 +116,18 @@ impl Pin {
             && lower_hex(&pin.revision, 40)
             && lower_hex(&pin.object_id, 64)
             && lower_hex(&pin.custody_digest, 64)
-            && lower_hex(&pin.executor_key, 64))
-        .then_some(pin)
+            && valid_keys)
+            .then_some(pin)
+    }
+
+    pub fn key(&self, device: Device) -> Option<&str> {
+        match (&self.executor_keys, device) {
+            (Some(keys), Device::Alpha) => Some(&keys.alpha),
+            (Some(keys), Device::Beta) => keys.beta.as_deref(),
+            (Some(keys), Device::Gamma) => keys.gamma.as_deref(),
+            (None, Device::Alpha) => self.executor_key.as_deref(),
+            (None, _) => None,
+        }
     }
 
     pub fn agent_instance(&self) -> String {
@@ -92,9 +154,14 @@ fn lower_hex(value: &str, length: usize) -> bool {
 pub struct Authority<'a> {
     target: Target,
     object_incarnation: &'a str,
-    pub runner_incarnation: Option<String>,
+    runner: Option<Runner>,
     origin: Url,
     bearer: String,
+}
+
+pub struct Runner {
+    pub incarnation: String,
+    pub placement: Option<Device>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +172,7 @@ struct Permit {
     high_water: NonZeroU32,
     object_incarnation: String,
     runner_incarnation: Option<String>,
+    placement: Option<Device>,
     valid_until: i64,
 }
 
@@ -116,7 +184,7 @@ struct SendReply {
 }
 
 impl<'a> Authority<'a> {
-    pub fn read(env: &Env, object_incarnation: &'a str, runner: Option<String>) -> Option<Self> {
+    pub fn read(env: &Env, object_incarnation: &'a str, runner: Option<Runner>) -> Option<Self> {
         let origin = Url::parse(&env.var("CUTOVER_AUTHORITY_ORIGIN").ok()?.to_string()).ok()?;
         let bearer = env.secret("CUTOVER_AUTHORITY_BEARER").ok()?.to_string();
         let version: Version = env.object_var("CF_VERSION_METADATA").ok()?;
@@ -129,17 +197,26 @@ impl<'a> Authority<'a> {
             || origin.fragment().is_some()
             || !lower_hex(&bearer, 64)
             || !reference(&version.id)
-            || runner.as_deref().is_some_and(|value| !lower_hex(value, 64))
+            || runner
+                .as_ref()
+                .is_some_and(|runner| !lower_hex(&runner.incarnation, 64))
         {
+            return None;
+        }
+        let pin = Pin::read(env)?;
+        if runner.as_ref().is_some_and(|runner| {
+            runner.placement.is_some() != pin.executor_keys.is_some()
+                || pin.key(runner.placement.unwrap_or(Device::Alpha)).is_none()
+        }) {
             return None;
         }
         Some(Self {
             target: Target {
-                pin: Pin::read(env)?,
+                pin,
                 version_id: version.id,
             },
             object_incarnation,
-            runner_incarnation: runner,
+            runner,
             origin,
             bearer,
         })
@@ -149,6 +226,10 @@ impl<'a> Authority<'a> {
         &self.target.pin
     }
 
+    pub fn runner(&self) -> Option<&Runner> {
+        self.runner.as_ref()
+    }
+
     async fn call<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -156,13 +237,16 @@ impl<'a> Authority<'a> {
         delivery: Value,
     ) -> Result<T> {
         let url = self.origin.join(path)?;
-        let request = json!({
+        let mut request = json!({
             "nonce": nonce,
             "target": self.target,
             "objectIncarnation": self.object_incarnation,
-            "runnerIncarnation": self.runner_incarnation,
+            "runnerIncarnation": self.runner().map(|runner| &runner.incarnation),
             "delivery": delivery,
         });
+        if let Some(placement) = self.runner().and_then(|runner| runner.placement) {
+            request["placement"] = json!(placement);
+        }
         let mut response = Response::from(
             JsFuture::from(ask_authority(
                 url.as_str(),
@@ -189,7 +273,9 @@ impl<'a> Authority<'a> {
             && permit.target == self.target
             && permit.high_water == self.pin().generation
             && permit.object_incarnation == self.object_incarnation
-            && permit.runner_incarnation == self.runner_incarnation
+            && permit.runner_incarnation.as_ref()
+                == self.runner().map(|runner| &runner.incarnation)
+            && permit.placement == self.runner().and_then(|runner| runner.placement)
             && permit.valid_until <= started + PERMIT_MS
             && permit.valid_until > now())
         .then_some(permit.valid_until)

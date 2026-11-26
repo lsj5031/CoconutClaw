@@ -5,6 +5,30 @@ pub const DEVICE: &str = "alpha";
 pub const BODY_LIMIT: usize = 16 * 1024;
 pub const TEXT_LIMIT: usize = 4096;
 
+#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Device {
+    Alpha,
+    Beta,
+    Gamma,
+}
+
+impl Device {
+    pub const ALL: [Self; 3] = [Self::Alpha, Self::Beta, Self::Gamma];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Alpha => DEVICE,
+            Self::Beta => "beta",
+            Self::Gamma => "gamma",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|device| device.name() == name)
+    }
+}
+
 pub fn fixture_instance(generation: u32) -> String {
     if generation == 1 {
         INSTANCE.to_owned()
@@ -28,6 +52,30 @@ pub struct SignedEvidence {
 
 pub fn evidence_bytes_for(instance: &str, payload: &str) -> Vec<u8> {
     format!("coconutclaw-evidence-v1\n{instance}\n{DEVICE}\n{payload}").into_bytes()
+}
+
+pub fn enrolled_request_bytes(
+    instance: &str,
+    placement: &str,
+    incarnation: &str,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut signed = format!(
+        "coconutclaw-enrolled-request-v1\n{instance}\n{placement}\n{incarnation}\nPOST\n/v1/agent\n"
+    )
+    .into_bytes();
+    signed.extend_from_slice(body);
+    signed
+}
+
+pub fn enrolled_evidence_bytes(
+    instance: &str,
+    placement: &str,
+    incarnation: &str,
+    payload: &str,
+) -> Vec<u8> {
+    format!("coconutclaw-enrolled-evidence-v1\n{instance}\n{placement}\n{incarnation}\n{payload}")
+        .into_bytes()
 }
 
 #[derive(Deserialize, Serialize)]
@@ -99,6 +147,8 @@ pub struct Grant {
     pub attempt: i64,
     pub start_until: i64,
     pub request_sequence: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Device>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority_valid_until: Option<i64>,
 }

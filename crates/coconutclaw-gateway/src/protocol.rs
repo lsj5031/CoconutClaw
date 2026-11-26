@@ -1,36 +1,16 @@
 use std::collections::BTreeMap;
 
 use coconutclaw_telegram::{PrivateRoute, private_route};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::executor_wire::SignedEvidence;
-pub use crate::executor_wire::{BODY_LIMIT, CancelEvidence, Phase, TEXT_LIMIT};
+pub use crate::executor_wire::{BODY_LIMIT, CancelEvidence, Device, Phase, TEXT_LIMIT};
 
 pub const INSTANCE: &str = "local-fixture";
 pub const PLACEMENT_INSTANCE: &str = "local-placement-fixture";
 pub const LEASE_MS: i64 = 1500;
 pub const START_MS: i64 = 1500;
-
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Device {
-    Alpha,
-    Beta,
-    Gamma,
-}
-
-impl Device {
-    pub const ALL: [Self; 3] = [Self::Alpha, Self::Beta, Self::Gamma];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Alpha => "alpha",
-            Self::Beta => "beta",
-            Self::Gamma => "gamma",
-        }
-    }
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -182,18 +162,22 @@ impl PlacementAliases {
         {
             return None;
         }
-        let device = if let Some(selection) = task.prompt.trim_start().strip_prefix('@') {
+        let (device, prompt) = self.select(task.prompt)?;
+        task.prompt = prompt;
+        task.pin = Some(device);
+        Some(task)
+    }
+
+    pub fn select<'a>(&self, text: &'a str) -> Option<(Device, &'a str)> {
+        if let Some(selection) = text.trim_start().strip_prefix('@') {
             let (alias, prompt) = selection.split_once(char::is_whitespace)?;
             let prompt = prompt.trim();
             if !valid_text(prompt) || prompt.starts_with('/') {
                 return None;
             }
-            task.prompt = prompt;
-            *self.0.get(alias)?
+            Some((*self.0.get(alias)?, prompt))
         } else {
-            Device::Alpha
-        };
-        task.pin = Some(device);
-        Some(task)
+            Some((Device::Alpha, text))
+        }
     }
 }

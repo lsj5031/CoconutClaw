@@ -43,6 +43,25 @@ node --test --test-concurrency=1 \
   integration.test.mjs
 ```
 
+## Control enrollment fixture
+
+`phase2-placement-local` uses the scoped Telegram ingress and the independent
+Control service on loopback. The Worker pin carries `executorKeys` by placement
+and the Control publication carries `runnerIncarnations` for the same placements.
+Both maps require `alpha` and distinct values. Control pins the observed object
+incarnation and requires a fresh object and runner incarnations for a successor.
+Ingress resolves selectors against the pinned keys without querying Control.
+Each admitted task keeps its original placement and reply topic.
+
+An agent supplies `x-executor-placement` and `x-executor-incarnation`. The signed
+request and evidence bind the object generation, placement, and incarnation.
+Control permits echo that placement and the exact target, including its keys.
+Start returns the placement, attempt, request sequence, and original deadline.
+The final check requires the same authorized attempt, task pin, and deadline.
+An object restart closes this fixture's authority until a successor is published.
+The production singleton keeps its `executorKey`, `runnerIncarnation`, and
+original signature domains.
+
 ## BigFur integration gates
 
 1. Scope production admission to its existing webhook, private owner and
@@ -52,23 +71,20 @@ node --test --test-concurrency=1 \
    offline admission, and same-topic replies without consulting runner health
    at admission. The production handler currently pins every admitted task to
    `alpha`. [Gateway ingress](../crates/coconutclaw-gateway/src/worker_app.rs)
-2. Replace the single `executorKey` in the target and single
-   `runnerIncarnation` in the control publication with per-placement
-   enrollment. Bind each permit to the same object generation, placement,
-   key and incarnation at request verification, Start, evidence and cancellation.
-   Define independent runner retirement and prevent copied or retired journals
-   from acquiring permits. Verify cold wake, predecessor fencing, exclusive
-   delivery custody and stale-restore behavior before opening the scope.
+2. Carry the fixture's per-placement Control enrollment into a separately
+   authorized production generation. Define independent runner retirement,
+   including who can reconcile old evidence after retirement. Prove that copied
+   or retired journals cannot acquire permits. Verify cold wake, predecessor
+   fencing, exclusive delivery custody and stale-restore behavior for the
+   production object lifecycle before opening the scope.
    [Control publication](../crates/coconutclaw-gateway/authority-control.mjs) ·
    [Worker permit verification](../crates/coconutclaw-gateway/src/runtime_authority.rs)
-3. Coordinate the wire change with runner journals. `DEVICE`, Hello,
-   request identity, claim checking and the signed evidence domain currently
-   assume `alpha`. Bind Start and its recheck to the exact attempt and enrolled
-   placement alongside the request sequence, original deadline and generation.
-   Bind the journal to that enrollment and keep preexisting signed evidence
-   verifiable in its original domain. Exercise cross-placement replay,
-   lost Start and result acknowledgments, before-start and process-exit
-   cancellation, restart and Unknown without effect retry.
+3. Teach the native runner to use its enrolled placement for Hello, request
+   signatures, claim checks, grant consumption, and evidence. Bind each journal
+   to the exact enrollment and keep preexisting signed evidence verifiable in
+   its original domain. Exercise cross-placement replay, lost Start and result
+   acknowledgments, both kinds of cancellation, restart and Unknown without
+   effect retry through the native runner.
    [Wire](../crates/coconutclaw-gateway/src/executor_wire.rs) ·
    [Journal](../crates/coconutclaw-gateway/src/executor/journal.rs)
 4. Prove native custody on each host with host-owned credentials, workspace

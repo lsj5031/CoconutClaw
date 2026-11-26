@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 
 const generation = value => Number.isInteger(value) && value > 0 && value <= 0xffff_ffff;
 export const reference = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(value);
@@ -17,11 +18,42 @@ export const targetFields = {
     executorKey: sha256,
 };
 
+export function fields(value, keys) {
+    return value !== null && typeof value === "object" &&
+        Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+
+export const placement = value => ["alpha", "beta", "gamma"].includes(value);
+
+export function validEnrollments(value) {
+    if (value === null || typeof value !== "object" || !Object.hasOwn(value, "alpha")) return false;
+    const entries = Object.entries(value);
+    return entries.every(([name, hex]) => placement(name) && sha256(hex)) &&
+        new Set(entries.map(([, hex]) => hex)).size === entries.length;
+}
+
+function targetValidators(target) {
+    const { executorKey, ...common } = targetFields;
+    return target?.hostname === "127.0.0.1"
+        ? { ...common, hostname: value => value === "127.0.0.1", executorKeys: validEnrollments }
+        : targetFields;
+}
+
+export function validTarget(target) {
+    const validators = targetValidators(target);
+    return fields(target, Object.keys(validators)) &&
+        Object.entries(validators).every(([key, valid]) => valid(target[key]));
+}
+
 export function checkAuthorityHandoff(current, candidate) {
-    for (const [field, valid] of Object.entries(targetFields)) {
-        if (!valid(candidate?.[field]) || candidate[field] !== current?.target?.[field]) {
+    const validators = targetValidators(candidate);
+    for (const [field, valid] of Object.entries(validators)) {
+        if (!valid(candidate?.[field]) || !isDeepStrictEqual(candidate[field], current?.target?.[field])) {
             throw new Error(`authority target mismatch: ${field}`);
         }
+    }
+    if (!fields(candidate, Object.keys(validators)) || !isDeepStrictEqual(candidate, current.target)) {
+        throw new Error("invalid authority target");
     }
     const retirement = current.retirement;
     if (retirement?.generation !== candidate.generation - 1) {

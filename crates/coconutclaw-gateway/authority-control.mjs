@@ -4,7 +4,9 @@ import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import { checkAuthorityHandoff, reference, sha256, targetFields } from "./authority-preflight.mjs";
+import {
+    checkAuthorityHandoff, fields, placement, reference, sha256, targetFields, validEnrollments, validTarget,
+} from "./authority-preflight.mjs";
 
 const permitMs = 900;
 const bodyLimit = 32 * 1024;
@@ -12,10 +14,6 @@ const freshObjectOnly = "fresh-object-only";
 const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
 const uuid = value => typeof value === "string" &&
     /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
-const fields = (value, keys) => value !== null && typeof value === "object" &&
-    Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
-const validTarget = target => fields(target, Object.keys(targetFields)) &&
-    Object.entries(targetFields).every(([key, valid]) => valid(target[key]));
 const wireTarget = ({ target: { deployment, ...pin }, versionId }) => ({ pin, versionId });
 
 class Denied extends Error {
@@ -89,10 +87,15 @@ class AuthorityStore {
 
     publish(publication) {
         const fresh = publication?.continuity === freshObjectOnly;
-        if (!fields(publication, ["target", "retirement", "versionId", "runnerIncarnation",
+        const keys = publication?.target?.executorKeys;
+        const multi = keys !== undefined;
+        const incarnations = publication?.runnerIncarnations;
+        if (!fields(publication, ["target", "retirement", "versionId",
+            multi ? "runnerIncarnations" : "runnerIncarnation",
             fresh ? "continuity" : "objectIncarnation"]) ||
             !validTarget(publication.target) || !reference(publication.versionId) ||
-            !sha256(publication.runnerIncarnation) ||
+            (multi ? fresh || !validEnrollments(incarnations) || !fields(incarnations, Object.keys(keys))
+                : !sha256(publication.runnerIncarnation)) ||
             (fresh ? publication.target.hostname !== "bigfur.liu.nz" : !uuid(publication.objectIncarnation))) {
             throw new Error("invalid publication");
         }
@@ -102,13 +105,15 @@ class AuthorityStore {
             if (generation !== (current?.generation ?? 0) + 1 || (current && !current.retired)) {
                 throw new Error("publication requires the next generation and a retired predecessor");
             }
-            const reused = this.db.prepare(`
-                SELECT 1 FROM publications
-                WHERE (? = 1 OR json_extract(publication, '$.continuity') = ?)
-                  AND (json_extract(publication, '$.target.objectId') = ?
-                       OR json_extract(publication, '$.runnerIncarnation') = ?)
-                LIMIT 1
-            `).get(Number(fresh), freshObjectOnly, publication.target.objectId, publication.runnerIncarnation);
+            const runners = multi ? Object.values(incarnations) : [publication.runnerIncarnation];
+            const reused = this.db.prepare("SELECT publication FROM publications").iterate()
+                .some(row => {
+                    const old = JSON.parse(row.publication);
+                    if (!(fresh || multi || old.runnerIncarnations || old.continuity === freshObjectOnly)) return false;
+                    const previous = old.runnerIncarnations ? Object.values(old.runnerIncarnations) : [old.runnerIncarnation];
+                    return old.target.objectId === publication.target.objectId ||
+                        previous.some(runner => runners.includes(runner));
+                });
             if (reused) throw new Error("publication requires a fresh object and runner incarnation");
             this.db.prepare("INSERT INTO publications VALUES (?, ?)").run(generation, JSON.stringify(publication));
             return this.status();
@@ -125,16 +130,18 @@ class AuthorityStore {
         });
     }
 
-    authorize({ target, objectIncarnation, runnerIncarnation }, credentialVersion) {
+    authorize({ target, objectIncarnation, runnerIncarnation, placement: name }, credentialVersion) {
         const current = this.current();
         if (!current || current.retired) throw new Denied(503);
         const enrolled = JSON.parse(current.publication);
         if (!isDeepStrictEqual(target, wireTarget(enrolled))) {
             throw new Denied(503);
         }
+        const runner = enrolled.runnerIncarnations ? enrolled.runnerIncarnations[name] : enrolled.runnerIncarnation;
         if (enrolled.target.telegramCredentialVersion !== credentialVersion ||
             (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation) ||
-            (runnerIncarnation !== null && !equalSecret(runnerIncarnation, enrolled.runnerIncarnation))) {
+            (name !== undefined && !enrolled.runnerIncarnations) ||
+            (runnerIncarnation !== null && (runner === undefined || !equalSecret(runnerIncarnation, runner)))) {
             throw new Denied(503);
         }
         return current.generation;
@@ -237,8 +244,12 @@ function authorityServer(bearer, decide) {
                 throw new Denied(401);
             }
             const body = await readJson(incoming);
-            if (!fields(body, ["nonce", "target", "objectIncarnation", "runnerIncarnation", "delivery"]) ||
+            const members = ["nonce", "target", "objectIncarnation", "runnerIncarnation", "delivery"];
+            const scoped = body?.placement !== undefined;
+            if (scoped) members.push("placement");
+            if (!fields(body, members) ||
                 !uuid(body.nonce) || !uuid(body.objectIncarnation) ||
+                (scoped && (!check || !placement(body.placement) || !sha256(body.runnerIncarnation))) ||
                 (check ? body.delivery !== null || (body.runnerIncarnation !== null && !sha256(body.runnerIncarnation))
                     : body.runnerIncarnation !== null || !validDelivery(body.delivery))) {
                 throw new Denied(400);
@@ -260,8 +271,8 @@ export function serveAuthority(path, { bearer, credentialVersion }, send) {
             const validUntil = Date.now() + permitMs;
             const highWater = store.authorize(body, credentialVersion);
             if (validUntil <= Date.now()) throw new Denied(503);
-            const { nonce, target, objectIncarnation, runnerIncarnation } = body;
-            return { nonce, target, highWater, objectIncarnation, runnerIncarnation, validUntil };
+            const { delivery, ...binding } = body;
+            return { ...binding, highWater, validUntil };
         }
         if (dispatching) throw new Denied(503);
         dispatching = true;

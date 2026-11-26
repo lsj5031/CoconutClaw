@@ -202,6 +202,55 @@ if (process.argv[2] === "serve-test") {
         await authority.stop();
     });
 
+    test("placement publications bind exact keys and incarnations and fence predecessor reuse", options, async context => {
+        const { admin, publish, start } = await fixture(context);
+        const { executorKey, ...pin } = publication(1).target;
+        const { runnerIncarnation, ...rest } = publication(1);
+        const target = { ...pin, hostname: "127.0.0.1", executorKeys: { alpha: executorKey, beta: "5".repeat(64) } };
+        const runners = { alpha: runnerIncarnation, beta: "6".repeat(64) };
+        const first = { ...rest, target, runnerIncarnations: runners };
+        await admin("init");
+        await assert.rejects(publish({ ...first, runnerIncarnations: { alpha: runners.alpha } }));
+        await assert.rejects(publish({ ...first, runnerIncarnations: { alpha: runners.alpha, beta: runners.alpha } }));
+        await assert.rejects(publish({ ...first, target: { ...target, executorKeys: { alpha: executorKey, beta: executorKey } } }));
+        await assert.rejects(publish({ ...first, target: { ...target, hostname: "bigfur.liu.nz" } }));
+        await publish(first);
+        let authority = await start();
+        for (const [name, incarnation] of Object.entries(runners)) {
+            const permit = await authority.post(first, "check", { placement: name, runnerIncarnation: incarnation });
+            assert.equal(permit.status, 200);
+            const { delivery, ...echo } = permit.body;
+            assert.deepEqual(permit.reply, { ...echo, highWater: 1, validUntil: permit.reply.validUntil });
+        }
+        const beta = { placement: "beta", runnerIncarnation: runners.beta };
+        assert.equal((await authority.post(first, "check", { runnerIncarnation: runners.beta })).status, 503);
+        assert.equal((await authority.post(first, "check", { ...beta, placement: "alpha" })).status, 503);
+        assert.equal((await authority.post(first, "check", { ...beta, placement: "gamma" })).status, 503);
+        assert.equal((await authority.post(first, "check", { ...beta, objectIncarnation: randomUUID() })).status, 503);
+        const changed = { ...first, target: { ...target, executorKeys: { ...target.executorKeys, beta: "7".repeat(64) } } };
+        assert.equal((await authority.post(changed, "check", beta)).status, 503);
+        assert.equal((await authority.post(first, "send", { ...beta, delivery: sendDelivery(1) })).status, 400);
+        assert.equal((await authority.post(first, "send", { delivery: sendDelivery(1) })).status, 200);
+        await admin("retire", "1");
+        const second = {
+            ...first,
+            target: { ...target, generation: 2, objectId: "8".repeat(64) },
+            retirement: { ...first.retirement, generation: 1 },
+            objectIncarnation: randomUUID(),
+            runnerIncarnations: { alpha: "7".repeat(64), beta: "8".repeat(64) },
+        };
+        await assert.rejects(publish({ ...second, target: { ...second.target, objectId: target.objectId } }));
+        await assert.rejects(publish({ ...second, runnerIncarnations: { ...second.runnerIncarnations, alpha: runners.beta } }));
+        await publish(second);
+        await authority.stop();
+        authority = await start();
+        assert.equal((await authority.post(first, "check", beta)).status, 503);
+        assert.equal((await authority.post(second, "check", beta)).status, 503);
+        assert.equal((await authority.post(second, "check", {
+            placement: "beta", runnerIncarnation: second.runnerIncarnations.beta,
+        })).status, 200);
+    });
+
     test("a lost reply or process kill after dispatch never resends a reservation", options, async context => {
         const { admin, publish, start, received, respond } = await fixture(context);
         const record = publication(1);

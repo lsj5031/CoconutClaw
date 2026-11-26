@@ -109,7 +109,8 @@ async function runFixture(context, {
                 ...(executor && pin !== undefined ? { LOCAL_GENERATION: pin } : {}),
                 ...(inspect ? { LOCAL_SQL_METRICS: "1" } : {}),
                 ...(cutover ? {
-                    PHASE: cutover.production ? "phase2-production" : "phase2-cutover",
+                    PHASE: cutover.enrolled ? "phase2-placement-local"
+                        : cutover.production ? "phase2-production" : "phase2-cutover",
                     CUTOVER_TARGET: JSON.stringify(cutover.target?.pin ?? {}),
                     CF_VERSION_METADATA: { id: cutover.versionId ?? cutover.target?.versionId ?? "unset" },
                     CUTOVER_AUTHORITY_ORIGIN: origin,
@@ -189,7 +190,7 @@ async function runFixture(context, {
         return response;
     }
 
-    const requestHost = () => cutover?.production ? "bigfur.liu.nz" : hostname;
+    const requestHost = () => cutover?.enrolled ? "127.0.0.1" : cutover?.production ? "bigfur.liu.nz" : hostname;
     const dispatch = (url, init) => service.dispatchFetch(url, { method: "POST", ...init });
 
     async function post(path, body, headers, status = 200, chunked = false) {
@@ -210,9 +211,13 @@ async function runFixture(context, {
         return (await service.getDurableObjectNamespace("BOTS")).idFromName(name).toString();
     }
 
-    function signed(device, command, { at = Date.now(), prefix, seq } = {}) {
-        prefix ??= cutover
-            ? `coconutclaw-v1\nbigfur:${cutover.target.pin.generation}:${cutover.target.pin.objectId}\nPOST\n/v1/agent\n`
+    function signed(device, command, { at = Date.now(), prefix, seq, incarnation } = {}) {
+        incarnation ??= cutover?.enrolled ? cutover.enrolled[device] : cutover?.runner;
+        const instance = cutover && `bigfur:${cutover.target.pin.generation}:${cutover.target.pin.objectId}`;
+        prefix ??= cutover?.enrolled
+            ? `coconutclaw-enrolled-request-v1\n${instance}\n${device}\n${incarnation}\nPOST\n/v1/agent\n`
+            : cutover
+            ? `coconutclaw-v1\n${instance}\nPOST\n/v1/agent\n`
             : executor
             ? (generation === 1 ? executorPrefix : executorPrefix.replace("fixture\n", `fixture:${generation}\n`))
             : placementAliases ? placementPrefix : signingPrefix;
@@ -223,7 +228,8 @@ async function runFixture(context, {
         const signature = sign(null, Buffer.from(prefix + body), keys[device].privateKey).toString("hex");
         return { body, headers: {
             "x-agent-signature": signature,
-            ...(cutover ? { "x-executor-incarnation": cutover.runner } : {}),
+            ...(cutover ? { "x-executor-incarnation": incarnation } : {}),
+            ...(cutover?.enrolled ? { "x-executor-placement": device } : {}),
         } };
     }
 
@@ -1680,7 +1686,7 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
     assert.ok(warmSamples.every(row => row.written <= 10), "warm writes stay below 10 rows per operation");
 });
 
-async function productionAuthorityFixture(context) {
+async function productionAuthorityFixture(context, { enrolled, placementAliases } = {}) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "direct-retirement-"));
     const mock = await authorityFixture(join(root, "control.sqlite"));
     context.after(async () => {
@@ -1690,28 +1696,35 @@ async function productionAuthorityFixture(context) {
     const owner = 5_123_456_789;
     const topic = 101550;
     const cutover = {
-        production: true, scope: `${owner}:${topic}`, runner: "d".repeat(64),
+        production: true, enrolled, scope: `${owner}:${topic}`, runner: "d".repeat(64),
         controlOnline: false, authorityCalls: 0,
         fetch(request) {
             cutover.authorityCalls++;
             return cutover.controlOnline ? mock.fetch(request) : new Response(null, { status: 503 });
         },
     };
-    const client = await runFixture(context, { inspect: true, cutover });
+    const client = await runFixture(context, { inspect: true, cutover, placementAliases });
     const cancelHeaders = { "x-cutover-operator": operator["x-fixture-secret"] };
-    assert.equal((await client.dispatch("https://bigfur.liu.nz/v1/production/identity")).status, 401);
-    assert.equal((await client.dispatch("https://other.invalid/v1/production/identity", {
-        headers: cancelHeaders,
-    })).status, 404);
-    const { objectId } = await client.post("production/identity", {}, cancelHeaders);
-    assert.equal(objectId, await client.objectId("bigfur-production"));
+    let objectId;
+    if (enrolled) {
+        objectId = await client.objectId("enrolled-placement-fixture:1");
+    } else {
+        assert.equal((await client.dispatch("https://bigfur.liu.nz/v1/production/identity")).status, 401);
+        assert.equal((await client.dispatch("https://other.invalid/v1/production/identity", {
+            headers: cancelHeaders,
+        })).status, 404);
+        ({ objectId } = await client.post("production/identity", {}, cancelHeaders));
+        assert.equal(objectId, await client.objectId("bigfur-production"));
+    }
+    const key = device => client.keys[device].publicKey.export({ format: "der", type: "spki" })
+        .subarray(-32).toString("hex");
     cutover.target = {
         pin: {
-            generation: 1, revision: "e".repeat(40), hostname: "bigfur.liu.nz", objectId,
+            generation: 1, revision: "e".repeat(40), hostname: enrolled ? "127.0.0.1" : "bigfur.liu.nz", objectId,
             custodyDigest: "b".repeat(64),
             telegramCredentialVersion: "synthetic-existing-token",
-            executorKey: client.keys.alpha.publicKey.export({ format: "der", type: "spki" })
-                .subarray(-32).toString("hex"),
+            ...(enrolled ? { executorKeys: Object.fromEntries(Object.keys(enrolled).map(device => [device, key(device)])) }
+                : { executorKey: key("alpha") }),
         },
         versionId: "direct-retirement-fixture",
     };
@@ -1734,6 +1747,130 @@ async function reportProductionResult(client, grant, text) {
         await client.agent("alpha", "report", { proof: { payload, signature } });
     }
 }
+
+test("enrolled placement binds claims, grants and journal recovery to one runner", timeout, async context => {
+    const enrolled = { alpha: "e".repeat(64), beta: "d".repeat(64) };
+    let aliases = "desk=mars";
+    const { root, mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
+        await productionAuthorityFixture(context, { enrolled, placementAliases: () => aliases });
+    const update = (id, text) => {
+        const value = telegram(id);
+        value.message.text = text;
+        return value;
+    };
+    const beta = (await ingress(update(45100, "@desk beta fixture"))).task;
+    const alpha = (await ingress(update(45101, "plain fixture"))).task;
+    assert.equal((await ingress(update(45102, "@mercury unregistered"))).disposition, "ignored");
+    assert.equal(cutover.authorityCalls, 0);
+    aliases = "desk=leo-claw";
+    await client.restart();
+    assert.equal((await ingress(update(45100, "@desk duplicate"))).disposition, "duplicate");
+
+    cutover.controlOnline = true;
+    await client.agent("beta", "hello", {}, 503);
+    const objectIncarnation = mock.checks.at(-1).objectIncarnation;
+    mock.publish(cutover.target, objectIncarnation, enrolled);
+    for (const [device, task] of [["alpha", alpha], ["beta", beta]]) {
+        assert.equal((await client.agent(device, "hello")).device, device);
+        assert.equal((await client.agent(device, "next")).task, task);
+    }
+    const inactive = { error: "inactive_generation" };
+    const wrongIncarnation = client.signed("beta", { op: "hello" }, { incarnation: enrolled.alpha });
+    assert.deepEqual(await client.wire(wrongIncarnation, 503), inactive);
+    wrongIncarnation.headers["x-executor-incarnation"] = enrolled.beta;
+    await client.wire(wrongIncarnation, 401);
+    const wrongPlacement = client.signed("beta", { op: "hello" });
+    wrongPlacement.headers["x-executor-placement"] = "alpha";
+    wrongPlacement.headers["x-executor-incarnation"] = enrolled.alpha;
+    await client.wire(wrongPlacement, 401);
+    const wrongKey = client.signed("beta", { op: "hello" });
+    const instance = `bigfur:1:${cutover.target.pin.objectId}`;
+    const betaPrefix = `coconutclaw-enrolled-request-v1\n${instance}\nbeta\n${enrolled.beta}\nPOST\n/v1/agent\n`;
+    wrongKey.headers["x-agent-signature"] = sign(null, Buffer.from(betaPrefix + wrongKey.body),
+        client.keys.alpha.privateKey).toString("hex");
+    await client.wire(wrongKey, 401);
+    const omittedPlacement = client.signed("beta", { op: "hello" });
+    delete omittedPlacement.headers["x-executor-placement"];
+    await client.wire(omittedPlacement, 503);
+    mock.beforeReply = permit => permit.placement === "beta" ?
+        Response.json({ ...permit, placement: "alpha" }) : undefined;
+    assert.deepEqual(await client.agent("beta", "next", {}, 503), inactive);
+    mock.beforeReply = undefined;
+
+    await client.agent("alpha", "claim", { task: beta }, 409);
+    const claimed = await client.agent("beta", "claim", { task: beta });
+    assert.equal(claimed.placement, "beta");
+    assert.equal(claimed.prompt, "beta fixture");
+    await client.agent("alpha", "start", { attempt: claimed.attempt }, 409);
+    const alphaClaim = await client.agent("alpha", "claim", { task: alpha });
+    const alphaGrant = await client.agent("alpha", "start", { attempt: alphaClaim.attempt });
+    assert.equal(alphaGrant.placement, "alpha");
+    const started = client.signed("beta", { op: "start", attempt: claimed.attempt });
+    const grant = await client.wire(started);
+    assert.equal(grant.placement, "beta");
+    assert.equal(grant.attempt, claimed.attempt);
+    assert.equal(grant.request_sequence, JSON.parse(started.body).sequence);
+    await client.agent("beta", "start", { attempt: claimed.attempt }, 409);
+    await client.agent("alpha", "status", { attempt: claimed.attempt }, 409);
+    assert.equal((await client.agent("beta", "status", { attempt: claimed.attempt })).start_until, grant.start_until);
+    assert.equal((await client.agent("beta", "next")).task, null);
+
+    function proof(device, attempt, event, signedPlacement = device) {
+        const payload = JSON.stringify({ attempt, event });
+        const domain = `coconutclaw-enrolled-evidence-v1\n${grant.instance}\n${signedPlacement}\n${enrolled[device]}\n`;
+        return { payload, signature: sign(null, Buffer.from(domain + payload), client.keys[device].privateKey).toString("hex") };
+    }
+    const result = { kind: "result", text: "journal result" };
+    await client.agent("beta", "report", { proof: proof("beta", claimed.attempt, result, "alpha") }, 401);
+    await client.agent("alpha", "report", { proof: proof("alpha", claimed.attempt, result) }, 409);
+    const journal = join(root, "beta-evidence.json");
+    await writeFile(journal, JSON.stringify(proof("beta", claimed.attempt, result)), { mode: 0o600 });
+    const recovered = JSON.parse(await readFile(journal, "utf8"));
+    await client.agent("beta", "report", { proof: proof("beta", claimed.attempt, { kind: "started" }) });
+    let checks = 0;
+    mock.beforeReply = permit => permit.placement === "beta" && ++checks === 3 ?
+        new Response(null, { status: 503 }) : undefined;
+    await client.agent("beta", "report", { proof: recovered }, 503);
+    mock.beforeReply = undefined;
+    assert.equal((await client.agent("beta", "status", { attempt: claimed.attempt })).phase, "completed");
+    await client.agent("beta", "report", { proof: recovered });
+    await until(() => mock.sends.length === 1, "same-topic delivery after replay");
+    assert.deepEqual(mock.sends, [{ task: beta, sendNumber: 1, chatId: owner, messageThreadId: topic, text: result.text }]);
+
+    await client.agent("alpha", "report", { proof: proof("alpha", alphaClaim.attempt, { kind: "started" }) });
+    await client.post("cancel", { task: alpha }, cancelHeaders);
+    await client.agent("beta", "report", { proof: proof("beta", alphaClaim.attempt, {
+        kind: "cancelled", evidence: "process_exited",
+    }) }, 409);
+    await client.agent("alpha", "report", { proof: proof("alpha", alphaClaim.attempt, {
+        kind: "cancelled", evidence: "process_exited",
+    }) });
+    assert.equal((await client.agent("alpha", "status", { attempt: alphaClaim.attempt })).phase, "cancelled_after_exit");
+
+    const lost = (await ingress(update(45103, "@mars lost Start fixture"))).task;
+    const lostClaim = await client.agent("beta", "claim", { task: lost });
+    let originalDeadline;
+    checks = 0;
+    mock.beforeReply = permit => {
+        if (permit.placement !== "beta") return;
+        if (++checks === 2) originalDeadline = permit.validUntil;
+        if (checks === 3) return Response.json({ ...permit, placement: "alpha" });
+    };
+    await client.agent("beta", "start", { attempt: lostClaim.attempt }, 503);
+    mock.beforeReply = undefined;
+    const status = await client.agent("beta", "status", { attempt: lostClaim.attempt });
+    assert.equal(status.start_until, originalDeadline);
+    assert.equal(status.phase, "authorized");
+    await client.agent("beta", "report", { proof: proof("beta", lostClaim.attempt, { kind: "unknown" }) });
+    assert.equal((await client.agent("beta", "status", { attempt: lostClaim.attempt })).phase, "unknown");
+    assert.equal((await client.agent("beta", "next")).task, null);
+    await client.agent("beta", "claim", { task: lost }, 409);
+
+    await client.restart();
+    assert.deepEqual(await client.agent("beta", "status", { attempt: claimed.attempt }, 503), inactive);
+    assert.notEqual(mock.checks.at(-1).objectIncarnation, objectIncarnation);
+    assert.equal(mock.sends.length, 1);
+});
 
 test("BigFur production queues fresh Telegram work with the runner and control offline", timeout, async context => {
     const { root, mock, owner, topic, cutover, client, cancelHeaders, telegram, ingress } =
@@ -1828,6 +1965,7 @@ test("BigFur production queues fresh Telegram work with the runner and control o
     cutover.controlOnline = true;
     const grant = await client.agent("alpha", "start", { attempt: claimed.attempt });
     assert.ok(grant.authority_valid_until > Date.now());
+    assert.equal(Object.hasOwn(grant, "placement"), false);
     assert.deepEqual(await client.sql("SELECT update_id FROM inbox ORDER BY sequence"), [
         { update_id: 41001 }, { update_id: 41002 },
     ]);

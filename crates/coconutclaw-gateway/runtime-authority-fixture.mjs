@@ -33,11 +33,12 @@ export async function authorityFixture(path) {
         afterSend: undefined,
         close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
         status: () => admin("status"),
-        publish(target, objectIncarnation, runnerIncarnation) {
+        publish(target, objectIncarnation, runner) {
             const input = `${path}.json`;
             writeFileSync(input, JSON.stringify({
                 target: { ...target.pin, deployment: "synthetic/deployment" },
-                versionId: target.versionId, runnerIncarnation,
+                versionId: target.versionId,
+                ...(typeof runner === "string" ? { runnerIncarnation: runner } : { runnerIncarnations: runner }),
                 ...(objectIncarnation === null ? { continuity: "fresh-object-only" } : { objectIncarnation }),
                 retirement: {
                     generation: target.pin.generation - 1, writers: "synthetic/writers",
@@ -56,14 +57,15 @@ export async function authorityFixture(path) {
             assert.equal(request.method, "POST");
             assert.equal(request.headers.get("authorization"), `Bearer ${bearer}`);
             const body = await request.text();
-            const { target, objectIncarnation, runnerIncarnation } = JSON.parse(body);
+            const { target, objectIncarnation, runnerIncarnation, placement } = JSON.parse(body);
             if (url.pathname === "/v1/send") await fixture.beforeSend?.();
             const response = await fetch(`${endpoint}${url.pathname}`, {
                 method: "POST", headers: { authorization: `Bearer ${bearer}` }, body,
             });
             const text = await response.text();
             if (url.pathname === "/v1/check") {
-                checks.push({ target, objectIncarnation, runnerIncarnation, allowed: response.ok });
+                checks.push({ target, objectIncarnation, runnerIncarnation,
+                    ...(placement === undefined ? {} : { placement }), allowed: response.ok });
                 if (response.ok) return await fixture.beforeReply?.(JSON.parse(text)) ?? Response.json(JSON.parse(text));
             } else if (response.ok) {
                 const reply = await fixture.afterSend?.();
