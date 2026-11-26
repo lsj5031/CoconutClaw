@@ -90,6 +90,12 @@ struct Task {
 }
 
 #[derive(Deserialize)]
+pub struct PlacedTask {
+    pub placement: Device,
+    pub attempt_phase: Option<Phase>,
+}
+
+#[derive(Deserialize)]
 struct Attempt {
     id: i64,
     task: String,
@@ -507,6 +513,14 @@ impl Ledger {
             }
             _ => Ok(None),
         }
+    }
+
+    pub fn placed_task(&self, task: &str) -> Result<Option<PlacedTask>> {
+        self.row(
+            "SELECT t.pin AS placement,a.phase AS attempt_phase FROM tasks t
+             LEFT JOIN attempts a ON t.current_attempt=a.id WHERE t.id=?",
+            [task.into()],
+        )
     }
 
     fn last_sequence(&self, device: Device) -> Result<i64> {

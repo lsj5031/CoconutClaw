@@ -8,6 +8,7 @@ use worker::{Env, Response, Result, Url, web_sys};
 
 use crate::ledger::{Delivery, Receipt};
 use crate::protocol::Device;
+use crate::protocol::{PairedRoute, PlacementAliases};
 use crate::worker_app::{collect_body, now};
 
 const PERMIT_MS: i64 = 2_000;
@@ -58,6 +59,12 @@ pub struct Pin {
         skip_serializing_if = "Option::is_none"
     )]
     executor_keys: Option<ExecutorKeys>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pairing: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq)]
@@ -93,11 +100,21 @@ impl Pin {
     pub fn read(env: &Env) -> Option<Self> {
         let pin: Self = serde_json::from_str(&env.var("CUTOVER_TARGET").ok()?.to_string()).ok()?;
         let host = Url::parse(&format!("https://{}", pin.hostname)).ok()?;
-        let fixture = env.var("PHASE").ok()?.to_string() == "phase2-placement-local";
-        let valid_keys = match (&pin.executor_key, &pin.executor_keys) {
-            (Some(key), None) => !fixture && pin.hostname != "127.0.0.1" && lower_hex(key, 64),
-            (None, Some(keys)) => {
-                fixture
+        let phase = env.var("PHASE").ok()?.to_string();
+        let valid_keys = match (
+            &pin.executor_key,
+            &pin.executor_keys,
+            pin.pairing.as_deref(),
+        ) {
+            (Some(key), None, None) => {
+                !matches!(
+                    phase.as_str(),
+                    "phase2-placement-local" | "phase2-pairing-local"
+                ) && pin.hostname != "127.0.0.1"
+                    && lower_hex(key, 64)
+            }
+            (None, Some(keys), None) => {
+                phase == "phase2-placement-local"
                     && pin.hostname == "127.0.0.1"
                     && lower_hex(&keys.alpha, 64)
                     && keys
@@ -106,6 +123,11 @@ impl Pin {
                         .chain(&keys.gamma)
                         .all(|key| lower_hex(key, 64) && key != &keys.alpha)
                     && (keys.beta.is_none() || keys.beta != keys.gamma)
+            }
+            (None, None, Some("fixture-v1")) => {
+                phase == "phase2-pairing-local"
+                    && pin.hostname == "127.0.0.1"
+                    && pin.generation == NonZeroU32::MIN
             }
             _ => false,
         };
@@ -166,14 +188,24 @@ pub struct Runner {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Permit {
+pub struct Permit {
     nonce: String,
     target: Target,
     high_water: NonZeroU32,
     object_incarnation: String,
     runner_incarnation: Option<String>,
     placement: Option<Device>,
-    valid_until: i64,
+    pub valid_until: i64,
+    #[serde(default, deserialize_with = "present")]
+    pub key: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    routes: Option<Vec<PairedRoute>>,
+}
+
+impl Permit {
+    pub fn routes(self) -> Option<PlacementAliases> {
+        PlacementAliases::paired(self.routes?)
+    }
 }
 
 #[derive(Deserialize)]
@@ -205,8 +237,9 @@ impl<'a> Authority<'a> {
         }
         let pin = Pin::read(env)?;
         if runner.as_ref().is_some_and(|runner| {
-            runner.placement.is_some() != pin.executor_keys.is_some()
-                || pin.key(runner.placement.unwrap_or(Device::Alpha)).is_none()
+            runner.placement.is_some() != (pin.executor_keys.is_some() || pin.pairing.is_some())
+                || (pin.pairing.is_none()
+                    && pin.key(runner.placement.unwrap_or(Device::Alpha)).is_none())
         }) {
             return None;
         }
@@ -265,11 +298,19 @@ impl<'a> Authority<'a> {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    pub async fn check(&self) -> Option<i64> {
+    pub async fn permit(&self) -> Option<Permit> {
         let nonce = nonce();
         let started = now();
         let permit: Permit = self.call("/v1/check", &nonce, Value::Null).await.ok()?;
-        (permit.nonce == nonce
+        let enrollment = match (self.pin().pairing.is_some(), self.runner().is_some()) {
+            (false, _) => permit.key.is_none() && permit.routes.is_none(),
+            (true, true) => {
+                permit.routes.is_none() && permit.key.as_ref().is_some_and(|key| lower_hex(key, 64))
+            }
+            (true, false) => permit.key.is_none() && permit.routes.is_some(),
+        };
+        (enrollment
+            && permit.nonce == nonce
             && permit.target == self.target
             && permit.high_water == self.pin().generation
             && permit.object_incarnation == self.object_incarnation
@@ -278,7 +319,11 @@ impl<'a> Authority<'a> {
             && permit.placement == self.runner().and_then(|runner| runner.placement)
             && permit.valid_until <= started + PERMIT_MS
             && permit.valid_until > now())
-        .then_some(permit.valid_until)
+        .then_some(permit)
+    }
+
+    pub async fn check(&self) -> Option<i64> {
+        Some(self.permit().await?.valid_until)
     }
 
     pub async fn send(&self, delivery: &Delivery) -> Receipt {

@@ -1,4 +1,4 @@
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::num::NonZeroU32;
 use std::time::Duration;
 
@@ -19,8 +19,8 @@ use crate::ledger::{
     conflict,
 };
 use crate::protocol::{
-    Agent, BODY_LIMIT, Command, Device, Fixture, INSTANCE, PLACEMENT_INSTANCE, PlacementAliases,
-    TelegramTask, telegram_input, valid_text,
+    Agent, BODY_LIMIT, Command, Device, Fixture, INSTANCE, PLACEMENT_INSTANCE, Phase,
+    PlacementAliases, TelegramTask, telegram_input, valid_text,
 };
 use crate::runtime_authority::{Authority, Pin, Runner, nonce};
 
@@ -53,8 +53,10 @@ enum LocalPhase {
     Cutover,
     Production,
     EnrolledPlacement,
+    PairedPlacement,
 }
 
+const RUNNER_PRESENCE_MS: i64 = 15_000;
 const PILOT_INSTANCE: &str = "hosted-synthetic-pilot";
 const PRODUCTION_INSTANCE: &str = "bigfur-production";
 const PRODUCTION_HOST: &str = "bigfur.liu.nz";
@@ -83,6 +85,7 @@ impl LocalPhase {
             "phase2-cutover" => Some(Self::Cutover),
             "phase2-production" => Some(Self::Production),
             "phase2-placement-local" => Some(Self::EnrolledPlacement),
+            "phase2-pairing-local" => Some(Self::PairedPlacement),
             _ => None,
         }
     }
@@ -95,13 +98,14 @@ impl LocalPhase {
             Self::Pilot | Self::Cutover => PILOT_INSTANCE,
             Self::Production => PRODUCTION_INSTANCE,
             Self::EnrolledPlacement => "enrolled-placement-fixture",
+            Self::PairedPlacement => "paired-placement-fixture",
         }
     }
 
     fn object_name(self, env: &Env) -> Option<String> {
         match self {
             Self::Production => Some(production_object_name(Pin::read(env)?.generation)),
-            Self::EnrolledPlacement => Some(format!(
+            Self::EnrolledPlacement | Self::PairedPlacement => Some(format!(
                 "{}:{}",
                 self.instance(),
                 Pin::read(env)?.generation
@@ -118,6 +122,7 @@ impl LocalPhase {
                 | Self::Cutover
                 | Self::Production
                 | Self::EnrolledPlacement
+                | Self::PairedPlacement
         )
     }
 
@@ -126,7 +131,10 @@ impl LocalPhase {
     }
 
     fn direct(self) -> bool {
-        matches!(self, Self::Production | Self::EnrolledPlacement)
+        matches!(
+            self,
+            Self::Production | Self::EnrolledPlacement | Self::PairedPlacement
+        )
     }
 
     fn authority_pin(self, env: &Env) -> std::result::Result<Option<NonZeroU32>, Reply> {
@@ -226,7 +234,8 @@ fn route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
         };
         url.host_str() == Some(&pin.hostname)
             && url.port().is_none()
-            && matches!(url.path(), "/v1/telegram" | "/v1/agent" | "/v1/cancel")
+            && (matches!(url.path(), "/v1/telegram" | "/v1/agent" | "/v1/cancel")
+                || (phase == LocalPhase::PairedPlacement && url.path() == "/v1/status"))
     } else if phase == LocalPhase::Pilot {
         matches!(
             url.path(),
@@ -284,6 +293,7 @@ pub struct BotLedger {
     env: Env,
     initialized: OnceCell<()>,
     incarnation: OnceCell<String>,
+    runner_seen: [Cell<Option<i64>>; 3],
 }
 
 impl DurableObject for BotLedger {
@@ -293,6 +303,7 @@ impl DurableObject for BotLedger {
             env,
             initialized: OnceCell::new(),
             incarnation: OnceCell::new(),
+            runner_seen: Default::default(),
         }
     }
 
@@ -358,7 +369,10 @@ impl DurableObject for BotLedger {
                     settle_alarm(alarm).await?;
                     storage.sync().await
                 }
-                LocalPhase::Cutover | LocalPhase::Production | LocalPhase::EnrolledPlacement => {
+                LocalPhase::Cutover
+                | LocalPhase::Production
+                | LocalPhase::EnrolledPlacement
+                | LocalPhase::PairedPlacement => {
                     unreachable!()
                 }
             }
@@ -508,7 +522,20 @@ impl BotLedger {
         };
         let generation = scope.generation(&pin);
         let text = scope.text(&update);
-        let aliases = if phase == LocalPhase::EnrolledPlacement {
+        let mut permit_deadline = None;
+        let aliases = if phase == LocalPhase::PairedPlacement && text.is_some() {
+            let Some(authority) = self.cutover_authority(None) else {
+                return Ok(inactive_generation());
+            };
+            let Some(permit) = authority.permit().await else {
+                return Ok(inactive_generation());
+            };
+            permit_deadline = Some(permit.valid_until);
+            let Some(aliases) = permit.routes() else {
+                return Ok(inactive_generation());
+            };
+            Some(aliases)
+        } else if phase == LocalPhase::EnrolledPlacement {
             let raw = self
                 .env
                 .var("LOCAL_PLACEMENT_ALIASES")
@@ -523,12 +550,18 @@ impl BotLedger {
         let storage = self.state.storage();
         let ledger = Ledger::new(&storage, None);
         let reply = ledger.transaction(&storage, || {
+            let at = now();
+            if permit_deadline.is_some_and(|deadline| at >= deadline) {
+                return Ok(inactive_generation());
+            }
             let selection = text
                 .and_then(|text| match &aliases {
                     Some(aliases) => aliases.select(text),
                     None => Some((Device::Alpha, text)),
                 })
-                .filter(|(device, _)| pin.key(*device).is_some());
+                .filter(|(device, _)| {
+                    phase == LocalPhase::PairedPlacement || pin.key(*device).is_some()
+                });
             match ledger.direct_generation()? {
                 Some(current) if current == generation => {}
                 None if ledger.empty_schema()? => {
@@ -541,7 +574,6 @@ impl BotLedger {
             let Some((device, text)) = selection else {
                 return Ok(Reply::ok(json!({"disposition": "ignored", "task": null})));
             };
-            let at = now();
             if !ledger.take_pilot_request(at, false)? {
                 return ledger.pilot_limit(at);
             }
@@ -593,7 +625,7 @@ impl BotLedger {
                 }
                 None
             }
-            "/v1/cancel" => {
+            "/v1/cancel" | "/v1/status" => {
                 if !authorized(
                     &req,
                     &self.env,
@@ -609,9 +641,9 @@ impl BotLedger {
         let Some(authority) = self.cutover_authority(runner) else {
             return Ok(inactive_generation());
         };
-        if authority.check().await.is_none() {
+        let Some(permit) = authority.permit().await else {
             return Ok(inactive_generation());
-        }
+        };
         let bytes = match bounded_body(&mut req).await {
             Ok(bytes) => bytes,
             Err(reply) => return Ok(reply),
@@ -620,7 +652,13 @@ impl BotLedger {
         let instance = pin.agent_instance();
         let agent = if path == "/v1/agent" {
             match self
-                .decode_agent(&req, &bytes, phase, &instance, Some(&authority))
+                .decode_agent(
+                    &req,
+                    &bytes,
+                    phase,
+                    &instance,
+                    Some((&authority, permit.key.as_deref())),
+                )
                 .await
             {
                 Ok(agent) => Some(agent),
@@ -629,9 +667,14 @@ impl BotLedger {
         } else {
             None
         };
-        let Some(permit_deadline) = authority.check().await else {
+        let Some(current) = authority
+            .permit()
+            .await
+            .filter(|current| current.key == permit.key)
+        else {
             return Ok(inactive_generation());
         };
+        let permit_deadline = current.valid_until;
         let storage = self.state.storage();
         let ledger = self.controlled_ledger(&storage, phase)?;
         let Some(attempt_floor) = self.attempt_floor(&ledger, phase, pin)? else {
@@ -658,6 +701,11 @@ impl BotLedger {
                 .is_some_and(|attempt| attempt <= attempt_floor)
             {
                 return Ok(conflict());
+            }
+            if phase == LocalPhase::PairedPlacement {
+                let seen = &self.runner_seen[agent.device as usize];
+                let signed_at = agent.at_ms.min(now());
+                seen.set(Some(seen.get().map_or(signed_at, |at| at.max(signed_at))));
             }
             if let Some(reply) = ledger.read_agent(&agent, now(), &instance, true)? {
                 return Ok(reply.authority_deadline(permit_deadline));
@@ -704,23 +752,41 @@ impl BotLedger {
         } else {
             #[derive(serde::Deserialize)]
             #[serde(deny_unknown_fields)]
-            struct Cancel {
+            struct TaskQuery {
                 task: String,
             }
-            let Ok(cancel) = serde_json::from_slice::<Cancel>(&bytes) else {
+            let Ok(query) = serde_json::from_slice::<TaskQuery>(&bytes) else {
                 return Ok(bad_input());
             };
-            if cancel.task.is_empty() || cancel.task.len() > 64 {
+            if query.task.is_empty() || query.task.len() > 64 {
                 return Ok(bad_input());
             }
+            if path == "/v1/status" {
+                let Some(task) = ledger.placed_task(&query.task)? else {
+                    return Ok(Reply::error(404, "not_found"));
+                };
+                let online = self.runner_seen[task.placement as usize]
+                    .get()
+                    .is_some_and(|seen| now().saturating_sub(seen) < RUNNER_PRESENCE_MS);
+                return Ok(Reply::ok(json!({
+                    "placement": task.placement,
+                    "runner": if online { "Online runner" } else { "Offline runner" },
+                    "attempt_phase": task.attempt_phase,
+                    "outcome": (task.attempt_phase == Some(Phase::Unknown)).then_some("Unknown attempt outcome"),
+                })));
+            }
             (
-                ledger.transaction(&storage, || ledger.cancel(&cancel.task))?,
+                ledger.transaction(&storage, || ledger.cancel(&query.task))?,
                 None,
             )
         };
         settle_alarm(alarm).await?;
         storage.sync().await?;
-        let Some(valid_until) = authority.check().await else {
+        let Some(final_permit) = authority
+            .permit()
+            .await
+            .filter(|current| current.key == permit.key)
+        else {
             return Ok(inactive_generation());
         };
         if let Some((device, attempt)) = start
@@ -728,7 +794,7 @@ impl BotLedger {
         {
             return Ok(conflict());
         }
-        Ok(reply.authority_deadline(valid_until))
+        Ok(reply.authority_deadline(final_permit.valid_until))
     }
 
     async fn handle(
@@ -892,7 +958,8 @@ impl BotLedger {
                     LocalPhase::Pilot => Some(Execution::HostedPilot),
                     LocalPhase::Cutover
                     | LocalPhase::Production
-                    | LocalPhase::EnrolledPlacement => {
+                    | LocalPhase::EnrolledPlacement
+                    | LocalPhase::PairedPlacement => {
                         unreachable!()
                     }
                 };
@@ -960,15 +1027,17 @@ impl BotLedger {
         bytes: &[u8],
         phase: LocalPhase,
         instance: &str,
-        authority: Option<&Authority<'_>>,
+        authority: Option<(&Authority<'_>, Option<&str>)>,
     ) -> std::result::Result<(Agent, Option<Evidence>), Reply> {
         let unauthorized = || Reply::error(401, "unauthorized");
         let agent = serde_json::from_slice::<Agent>(bytes).map_err(|_| bad_input())?;
-        let scoped = authority.and_then(Authority::runner).and_then(|runner| {
-            runner
-                .placement
-                .map(|placement| (placement, &runner.incarnation))
-        });
+        let scoped = authority
+            .and_then(|(authority, _)| authority.runner())
+            .and_then(|runner| {
+                runner
+                    .placement
+                    .map(|placement| (placement, &runner.incarnation))
+            });
         if agent.at_ms.abs_diff(now()) > 30_000
             || (phase.executor()
                 && agent.device != scoped.map_or(Device::Alpha, |(device, _)| device))
@@ -976,9 +1045,8 @@ impl BotLedger {
             return Err(unauthorized());
         }
         let key = match authority {
-            Some(authority) => authority
-                .pin()
-                .key(agent.device)
+            Some((authority, key)) => key
+                .or_else(|| authority.pin().key(agent.device))
                 .ok_or_else(unauthorized)?
                 .to_owned(),
             None => {
@@ -990,7 +1058,8 @@ impl BotLedger {
                     }
                     LocalPhase::Cutover
                     | LocalPhase::Production
-                    | LocalPhase::EnrolledPlacement => {
+                    | LocalPhase::EnrolledPlacement
+                    | LocalPhase::PairedPlacement => {
                         return Err(unauthorized());
                     }
                 };

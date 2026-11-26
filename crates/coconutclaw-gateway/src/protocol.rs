@@ -125,7 +125,24 @@ pub fn telegram_input(update: &Value) -> Option<TelegramTask<'_>> {
     })
 }
 
-pub struct PlacementAliases(BTreeMap<String, Device>);
+pub struct PlacementAliases {
+    names: BTreeMap<String, Device>,
+    default: Option<Device>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairedRoute {
+    placement: Device,
+    alias: Option<String>,
+}
+
+fn valid_alias(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
 
 impl PlacementAliases {
     pub fn parse(raw: &str) -> Option<Self> {
@@ -138,10 +155,7 @@ impl PlacementAliases {
         if !raw.is_empty() {
             for entry in raw.split(',') {
                 let (alias, target) = entry.split_once('=')?;
-                if alias.is_empty()
-                    || !alias.bytes().all(|byte| {
-                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-                    })
+                if !valid_alias(alias)
                     || aliases
                         .insert(alias.to_owned(), *canonical.get(target)?)
                         .is_some()
@@ -150,7 +164,32 @@ impl PlacementAliases {
                 }
             }
         }
-        Some(Self(aliases))
+        Some(Self {
+            names: aliases,
+            default: Some(Device::Alpha),
+        })
+    }
+
+    pub fn paired(routes: Vec<PairedRoute>) -> Option<Self> {
+        let mut names = BTreeMap::new();
+        for (route, placement) in routes.iter().zip(Device::ALL) {
+            if route.placement != placement {
+                return None;
+            }
+            match &route.alias {
+                Some(alias) if valid_alias(alias) && alias.len() <= 32 => {
+                    if names.insert(alias.clone(), placement).is_some() {
+                        return None;
+                    }
+                }
+                None if placement == Device::Alpha => {}
+                _ => return None,
+            }
+        }
+        (routes.len() <= Device::ALL.len()).then_some(Self {
+            names,
+            default: (!routes.is_empty()).then_some(Device::Alpha),
+        })
     }
 
     pub fn input<'a>(&self, update: &'a Value) -> Option<TelegramTask<'a>> {
@@ -175,9 +214,9 @@ impl PlacementAliases {
             if !valid_text(prompt) || prompt.starts_with('/') {
                 return None;
             }
-            Some((*self.0.get(alias)?, prompt))
+            Some((*self.names.get(alias)?, prompt))
         } else {
-            Some((Device::Alpha, text))
+            Some((self.default?, text))
         }
     }
 }

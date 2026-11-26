@@ -3,52 +3,61 @@ import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { serveAuthority } from "./authority-control.mjs";
+import { createPairingAuthority, serveAuthority } from "./authority-control.mjs";
 
 export const origin = "https://control.invalid";
 export const hostname = "bigfur.invalid";
 export const bearer = "a".repeat(64);
 
-export async function authorityFixture(path) {
+export async function authorityFixture(path, { pairing = false } = {}) {
     const cli = join(import.meta.dirname, "authority-control.mjs");
     const admin = (command, ...args) => JSON.parse(execFileSync(process.execPath, [cli, command, path, ...args], {
         env: {}, stdio: ["ignore", "pipe", "pipe"],
     }));
-    if (!existsSync(path)) admin("init");
+    if (!pairing && !existsSync(path)) admin("init");
     const checks = [];
     const sends = [];
     const credentialVersion = "synthetic-existing-token";
-    const server = serveAuthority(path, { bearer, credentialVersion }, delivery => {
+    const credentials = { bearer, credentialVersion };
+    const send = delivery => {
         sends.push(delivery);
         return sends.length;
-    });
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const endpoint = `http://127.0.0.1:${server.address().port}`;
+    };
+    const local = pairing ? await createPairingAuthority(path, credentials, send) : undefined;
+    const server = local ? undefined : serveAuthority(path, credentials, send);
+    if (server) {
+        server.listen(0, "127.0.0.1");
+        await once(server, "listening");
+    }
+    const endpoint = local?.endpoint ?? `http://127.0.0.1:${server.address().port}`;
     const fixture = {
         checks,
         sends,
+        ...(local ? { endpoint, issue: local.issue } : {}),
         beforeReply: undefined,
         beforeSend: undefined,
         afterSend: undefined,
-        close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+        close: local?.close ?? (() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))),
         status: () => admin("status"),
         publish(target, objectIncarnation, runner) {
-            const input = `${path}.json`;
-            writeFileSync(input, JSON.stringify({
+            const publication = {
                 target: { ...target.pin, deployment: "synthetic/deployment" },
                 versionId: target.versionId,
-                ...(typeof runner === "string" ? { runnerIncarnation: runner } : { runnerIncarnations: runner }),
+                ...(local ? {} : typeof runner === "string" ? { runnerIncarnation: runner } : { runnerIncarnations: runner }),
                 ...(objectIncarnation === null ? { continuity: "fresh-object-only" } : { objectIncarnation }),
                 retirement: {
                     generation: target.pin.generation - 1, writers: "synthetic/writers",
                     executorGrants: "synthetic/grants", custody: "synthetic/custody",
                     telegram: { disposition: "exclusive-existing-token", evidence: "synthetic/telegram" },
                 },
-            }), { mode: 0o600 });
+            };
+            if (local) return local.publish(publication);
+            const input = `${path}.json`;
+            writeFileSync(input, JSON.stringify(publication), { mode: 0o600 });
             admin("publish", input);
         },
         retire() {
+            if (local) return local.retire(1);
             return admin("retire", String(fixture.status().highWater));
         },
         async fetch(request) {

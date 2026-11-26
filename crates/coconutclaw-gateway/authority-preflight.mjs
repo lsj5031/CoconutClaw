@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 const generation = value => Number.isInteger(value) && value > 0 && value <= 0xffff_ffff;
 export const reference = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(value);
 export const sha256 = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+export const pairingChallenge = code => Buffer.from(`coconutclaw-fixture-pairing-v1\n${code}`);
 const hostname = value => typeof value === "string" && value.length <= 253 &&
     /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value);
 

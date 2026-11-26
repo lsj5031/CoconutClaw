@@ -6,7 +6,8 @@ import { request as httpsRequest } from "node:https";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import {
-    checkAuthorityHandoff, fields, placement, reference, sha256, targetFields, validEnrollments, validTarget,
+    checkAuthorityHandoff, fields, pairingChallenge, placement, reference, sha256, targetFields, validEnrollments,
+    validTarget,
 } from "./authority-preflight.mjs";
 
 const permitMs = 900;
@@ -18,7 +19,6 @@ const uuid = value => typeof value === "string" &&
 const wireTarget = ({ target: { deployment, ...pin }, versionId }) => ({ pin, versionId });
 const placements = ["alpha", "beta", "gamma"];
 const invitationHash = code => createHash("sha256").update(code).digest("hex");
-const pairingChallenge = code => Buffer.from(`coconutclaw-fixture-pairing-v1\n${code}`);
 const aliasName = value => typeof value === "string" && /^[a-z0-9-]{1,32}$/.test(value);
 
 class Denied extends Error {
@@ -181,12 +181,12 @@ class AuthorityStore {
             const key = createPublicKey({ key: der, format: "der", type: "spki" });
             if (!verify(null, pairingChallenge(body.code), key, Buffer.from(body.signature, "hex"))) throw new Denied(401);
             if (invite.placement !== null) throw new Denied(409);
+            if (invite.expires <= Date.now()) throw new Denied(410);
             const enrolled = this.db.prepare("SELECT placement,key,alias FROM invitations WHERE generation=? AND placement IS NOT NULL")
                 .all(generation);
             const name = placements.find(name => !enrolled.some(runner => runner.placement === name));
             if (!name || (name !== "alpha" && invite.alias === null) ||
                 enrolled.some(runner => runner.key === invite.key || runner.alias === invite.alias)) throw new Denied(409);
-            if (invite.expires <= Date.now()) throw new Denied(410);
             const incarnation = randomBytes(32).toString("hex");
             this.db.prepare("UPDATE invitations SET placement=?,incarnation=? WHERE hash=?").run(name, incarnation, hash);
             return { generation, objectId: publication.target.objectId, placement: name, incarnation };
@@ -383,7 +383,12 @@ export async function createPairingAuthority(path, credentials, send) {
     }
     return {
         endpoint: `http://127.0.0.1:${server.address().port}`,
-        publish: publication => store.publish(publication),
+        publish(publication) {
+            if (publication?.target?.telegramCredentialVersion !== credentials.credentialVersion) {
+                throw new Error("invalid publication credential version");
+            }
+            return store.publish(publication);
+        },
         retire: generation => store.retire(generation),
         issue: card => store.issue(card),
         close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),

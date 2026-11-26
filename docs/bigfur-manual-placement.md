@@ -62,6 +62,68 @@ An object restart closes this fixture's authority until a successor is published
 The production singleton keeps its `executorKey`, `runnerIncarnation`, and
 original signature domains.
 
+## Fresh-install fixture for administrators
+
+Start with an empty, private fixture directory and `PHASE=phase2-pairing-local`.
+Use the synthetic webhook secret and owner/topic scope from the test fixture.
+The Worker pin uses hostname `127.0.0.1`, generation `1`, the ID of
+`paired-placement-fixture:1`, and `"pairing": "fixture-v1"` in place of
+`executorKeys`. The pin and version stay fixed for the life of the fixture.
+
+Start Control with `createPairingAuthority` from `authority-control.mjs` and a
+mock Telegram sender. Observe the Worker object's incarnation through an exact,
+authenticated Control check and publish the installation with that incarnation.
+Keep the Control handle and its bearer with the administrator. Review the
+runner's public card, including its role and revision. Call
+`authority.issue({ key: card.id })` for the first runner, or
+`authority.issue({ key: card.id, alias: "desk" })` for a later runner. Supply the
+returned code privately to that runner. Codes expire after five minutes.
+Aliases are unique lowercase ASCII letters, digits and hyphens, up to 32
+characters. Control records the redeemed code and enrollment in one write.
+
+The first redeemed runner becomes the default. Send `@desk` followed by a
+prompt to select that runner. The selected placement stays with the task.
+An operator POST to `/v1/status` with `{"task":"telegram:45203"}` and the fixture
+operator header reports runner presence and attempt phase separately. A runner
+with no signed activity in the last 15 seconds reads **Offline runner**.
+**Unknown attempt outcome** is the durable outcome of an uncertain attempt.
+The runner does not relaunch it automatically.
+
+The walkthrough starts a fresh Miniflare Worker, Control database and runner
+journals. It builds cards with `nodes enroll` and redeems each through Control.
+From the repository root, build the binaries and stage the Worker.
+
+```sh
+cargo build --locked -p coconutclaw
+cargo build --locked -p coconutclaw-gateway --features local-executor --bin gateway-local-executor
+npm --prefix crates/coconutclaw-gateway run stage
+COCONUTCLAW_CUTOVER_CLI="$PWD/target/debug/coconutclaw" \
+GATEWAY_LOCAL_EXECUTOR="$PWD/target/debug/gateway-local-executor" \
+  node --test --test-concurrency=1 --test-name-pattern='BigFur fresh install' \
+    crates/coconutclaw-gateway/integration.test.mjs
+```
+
+## Fresh-install fixture for runners
+
+Use `nodes enroll` with a fresh, private fixture data directory and share only
+`runner-card.json` with the administrator. Put their one-time code in a private
+`pairing-code` file and use the loopback Control endpoint they provide.
+Run this from `crates/coconutclaw-gateway` with `$fixture_data` and
+`$fixture_workspace` pointing to owned disposable directories.
+
+```sh
+umask 077
+coconutclaw --data-dir "$fixture_data" nodes enroll \
+  --role runner --bind 127.0.0.1:49731 --workspace "$fixture_workspace" > runner-card.json
+seed="$fixture_data/runtime/nodes/device-key"
+node pair-runner-local.mjs redeem "$control_endpoint" "$seed" pairing-code > enrollment.json
+```
+
+Use the `generation`, `objectId`, `placement` and `incarnation` from the
+receipt with `--enrollment` below. Keep the seed and original receipt to resume
+the same journal. The fixture uses the administrator's loopback Worker origin
+and disposable CA. A spent code cannot return another receipt.
+
 ## Native runner fixture
 
 Build `gateway-local-executor` with `--features local-executor`. Supply the

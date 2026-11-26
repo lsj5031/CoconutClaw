@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { once } from "node:events";
 import { cp, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -9,9 +9,11 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Log, LogLevel, Miniflare } from "miniflare";
 import { checkAuthorityHandoff } from "./authority-preflight.mjs";
+import { runnerKey } from "./pair-runner-local.mjs";
 import { authorityFixture, bearer, hostname, origin } from "./runtime-authority-fixture.mjs";
 import {
     admitLegacyFixtureUpdate, advanceGatewayFixture, appendRunningFixtureTask, cutoverSnapshot,
@@ -101,7 +103,7 @@ async function runFixture(context, {
                 ...(aliases === undefined ? {} : { LOCAL_PLACEMENT_ALIASES: aliases }),
                 WEBHOOK_SECRET: webhook["x-telegram-bot-api-secret-token"],
                 FIXTURE_SECRET: operator["x-fixture-secret"],
-                ...Object.fromEntries(Object.keys(keys).map(device => [
+                ...Object.fromEntries(Object.keys(cutover?.pairing ? {} : keys).map(device => [
                     `DEVICE_${device.toUpperCase()}_KEY`,
                     publicHex(device),
                 ])),
@@ -109,8 +111,9 @@ async function runFixture(context, {
                 ...(executor && pin !== undefined ? { LOCAL_GENERATION: pin } : {}),
                 ...(inspect ? { LOCAL_SQL_METRICS: "1" } : {}),
                 ...(cutover ? {
-                    PHASE: cutover.enrolled ? "phase2-placement-local"
-                        : cutover.production ? "phase2-production" : "phase2-cutover",
+                    PHASE: cutover.pairing ? "phase2-pairing-local"
+                        : cutover.enrolled ? "phase2-placement-local"
+                            : cutover.production ? "phase2-production" : "phase2-cutover",
                     CUTOVER_TARGET: JSON.stringify(cutover.target?.pin ?? {}),
                     CF_VERSION_METADATA: { id: cutover.versionId ?? cutover.target?.versionId ?? "unset" },
                     CUTOVER_AUTHORITY_ORIGIN: origin,
@@ -300,7 +303,7 @@ async function until(check, message, timeoutMs = 10_000) {
     assert.fail(message);
 }
 
-async function attachExecutor(context, client, production, device = "alpha") {
+async function attachExecutor(context, client, production, device = "alpha", originalSeed) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "executor-"));
     const dir = join(root, "journal");
     const cert = join(root, "cert.pem");
@@ -309,8 +312,10 @@ async function attachExecutor(context, client, production, device = "alpha") {
     const tlsKey = join(root, "tls-key.pem");
     const csr = join(root, "tls.csr");
     const extensions = join(root, "tls.ext");
-    const seed = join(root, "device.seed");
-    await writeFile(seed, client.keys[device].privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32), { mode: 0o600 });
+    const seed = originalSeed ?? join(root, "device.seed");
+    if (!originalSeed) {
+        await writeFile(seed, client.keys[device].privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32), { mode: 0o600 });
+    }
     await writeFile(extensions, "basicConstraints=critical,CA:FALSE\nsubjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n");
     const openssl = (...args) => execFileSync("openssl", args, { stdio: "ignore" });
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
@@ -1700,9 +1705,9 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
     assert.ok(warmSamples.every(row => row.written <= 10), "warm writes stay below 10 rows per operation");
 });
 
-async function productionAuthorityFixture(context, { enrolled, placementAliases } = {}) {
+async function productionAuthorityFixture(context, { enrolled, placementAliases, pairing = false } = {}) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "direct-retirement-"));
-    const mock = await authorityFixture(join(root, "control.sqlite"));
+    const mock = await authorityFixture(join(root, "control.sqlite"), { pairing });
     context.after(async () => {
         await mock.close();
         await rm(root, { recursive: true, force: true });
@@ -1710,18 +1715,18 @@ async function productionAuthorityFixture(context, { enrolled, placementAliases 
     const owner = 5_123_456_789;
     const topic = 101550;
     const cutover = {
-        production: true, enrolled, scope: `${owner}:${topic}`, runner: "d".repeat(64),
+        production: true, enrolled, pairing, scope: `${owner}:${topic}`, runner: "d".repeat(64),
         controlOnline: false, authorityCalls: 0,
         fetch(request) {
             cutover.authorityCalls++;
             return cutover.controlOnline ? mock.fetch(request) : new Response(null, { status: 503 });
         },
     };
-    const client = await runFixture(context, { inspect: true, cutover, placementAliases });
+    const client = await runFixture(context, { inspect: true, cutover, placementAliases, ...(pairing ? { keys: {} } : {}) });
     const cancelHeaders = { "x-cutover-operator": operator["x-fixture-secret"] };
     let objectId;
     if (enrolled) {
-        objectId = await client.objectId("enrolled-placement-fixture:1");
+        objectId = await client.objectId(pairing ? "paired-placement-fixture:1" : "enrolled-placement-fixture:1");
     } else {
         assert.equal((await client.dispatch("https://bigfur.liu.nz/v1/production/identity")).status, 401);
         assert.equal((await client.dispatch("https://other.invalid/v1/production/identity", {
@@ -1737,8 +1742,9 @@ async function productionAuthorityFixture(context, { enrolled, placementAliases 
             generation: 1, revision: "e".repeat(40), hostname: enrolled ? "127.0.0.1" : "bigfur.liu.nz", objectId,
             custodyDigest: "b".repeat(64),
             telegramCredentialVersion: "synthetic-existing-token",
-            ...(enrolled ? { executorKeys: Object.fromEntries(Object.keys(enrolled).map(device => [device, key(device)])) }
-                : { executorKey: key("alpha") }),
+            ...(pairing ? { pairing: "fixture-v1" }
+                : enrolled ? { executorKeys: Object.fromEntries(Object.keys(enrolled).map(device => [device, key(device)])) }
+                    : { executorKey: key("alpha") }),
         },
         versionId: "direct-retirement-fixture",
     };
@@ -1776,6 +1782,150 @@ async function nativePlacement(context) {
     }
     return { mock, client, cutover, admit, cancelHeaders, owner, topic };
 }
+
+test("BigFur fresh install pairs native runners and keeps the default, offline pins, and Unknown", {
+    ...nativeTimeout, skip: !executable || !cutoverCli,
+}, async context => {
+    const { root, mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
+        await productionAuthorityFixture(context, { pairing: true, enrolled: {} });
+    const update = (id, text) => {
+        const value = telegram(id);
+        value.message.text = text;
+        return value;
+    };
+    const firstUpdate = update(45200, "first runner synthetic");
+    cutover.controlOnline = true;
+    await ingress(firstUpdate, 503);
+    const objectIncarnation = mock.checks.at(-1).objectIncarnation;
+    mock.publish(cutover.target, objectIncarnation);
+    assert.equal((await ingress(firstUpdate)).disposition, "ignored");
+    assert.deepEqual(mock.sends, []);
+
+    const cli = join(import.meta.dirname, "pair-runner-local.mjs");
+    const command = async (program, ...args) => JSON.parse((await promisify(execFile)(program, args, {
+        env: {}, timeout: 5000,
+    })).stdout);
+    async function pair(device, alias) {
+        const data = join(root, device);
+        const workspace = join(data, "workspace");
+        await mkdir(workspace, { recursive: true, mode: 0o700 });
+        const card = await command(cutoverCli, "--data-dir", data, "nodes", "enroll", "--role", "runner",
+            "--bind", "127.0.0.1:49731", "--workspace", workspace);
+        assert.equal(card.role, "runner");
+        const seed = join(data, "runtime", "nodes", "device-key");
+        const codeFile = join(data, "pairing-code");
+        await writeFile(codeFile, mock.issue({ key: card.id, alias }), { mode: 0o600 });
+        const receipt = await command(process.execPath, cli, "redeem", mock.endpoint, seed, codeFile);
+        assert.equal(receipt.placement, device);
+        assert.equal(receipt.generation, cutover.target.pin.generation);
+        assert.equal(receipt.objectId, cutover.target.pin.objectId);
+        cutover.enrolled[device] = receipt.incarnation;
+        client.keys[device] = runnerKey(await readFile(seed));
+        const runner = await attachExecutor(context, client, cutover, device, seed);
+        return { ...runner, runEnrolled: (mode, behavior) => runner.runEnrolled(mode, behavior, receipt) };
+    }
+    const alpha = await pair("alpha");
+    const first = (await ingress(firstUpdate)).task;
+    assert.equal(first, "telegram:45200");
+    const firstRunner = alpha.runEnrolled("init");
+    async function delivered(task) {
+        return until(async () => (await client.sql(
+            "SELECT message_id FROM delivery_receipts WHERE task=?", task,
+        ))[0]?.message_id, `settled reply for ${task}`);
+    }
+    assert.equal(await delivered(first), 1);
+    await until(() => alpha.query("SELECT acknowledged FROM evidence WHERE event='result'")[0]?.acknowledged,
+        "alpha journal has acknowledged result");
+    await firstRunner.stop();
+    const [alphaAttempt] = await alpha.launches();
+    const settledEvidence = () => alpha.query(
+        "SELECT payload,signature,acknowledged FROM evidence WHERE event='result' AND attempt=?", alphaAttempt,
+    );
+    const originalEvidence = settledEvidence();
+    const pending = (await ingress(update(45201, "already queued for alpha"))).task;
+    assert.equal((await client.agent("alpha", "next")).task, pending);
+
+    const beta = await pair("beta", "desk");
+    assert.equal((await client.agent("alpha", "status", { attempt: alphaAttempt })).phase, "completed");
+    assert.equal((await client.agent("alpha", "next")).task, pending);
+    assert.equal(await delivered(first), 1);
+    assert.deepEqual(settledEvidence(), originalEvidence);
+    assert.equal((await ingress(update(45202, "@missing synthetic"))).disposition, "ignored");
+    assert.equal((await ingress(update(45200, "@desk duplicate"))).disposition, "duplicate");
+
+    const betaHello = client.signed("beta", { op: "hello" });
+    const wrongSigner = client.signed("beta", { op: "hello" });
+    const prefix = `coconutclaw-enrolled-request-v1\nbigfur:1:${cutover.target.pin.objectId}\nbeta\n${cutover.enrolled.beta}\nPOST\n/v1/agent\n`;
+    wrongSigner.headers["x-agent-signature"] = sign(null, Buffer.from(prefix + wrongSigner.body),
+        client.keys.alpha.privateKey).toString("hex");
+    await client.wire(wrongSigner, 401);
+    let checks = 0;
+    mock.beforeReply = permit => permit.placement === "beta" && ++checks === 2
+        ? Response.json({ ...permit, key: "1".repeat(64) }) : undefined;
+    await client.wire(betaHello, 503);
+    mock.beforeReply = permit => permit.routes ? Response.json({
+        ...permit, routes: [permit.routes[0], { placement: "beta", alias: "bad alias" }],
+    }) : undefined;
+    const secondUpdate = update(45203, "@desk second runner synthetic");
+    await ingress(secondUpdate, 503);
+    mock.beforeReply = undefined;
+    const second = (await ingress(secondUpdate)).task;
+    assert.equal(second, "telegram:45203");
+    const status = (task, code = 200) => client.post("status", { task }, cancelHeaders, code);
+    assert.deepEqual(await status(second), {
+        placement: "beta", runner: "Offline runner", attempt_phase: null, outcome: null,
+    });
+    assert.equal((await status(pending)).runner, "Online runner");
+    assert.equal((await client.agent("alpha", "next")).task, pending);
+    const alphaClaim = client.signed("alpha", { op: "claim", task: second }, { seq: 1000 });
+    assert.equal((await client.wire(alphaClaim, 409)).error, "state_conflict");
+    assert.equal(mock.sends.length, 1);
+
+    const betaRunner = beta.runEnrolled("init");
+    assert.equal(await delivered(second), 2);
+    await until(() => beta.query("SELECT acknowledged FROM evidence WHERE event='result'")[0]?.acknowledged,
+        "beta journal has acknowledged result");
+    await betaRunner.stop();
+    assert.deepEqual(mock.sends, [
+        { task: first, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "fixture output: first runner synthetic" },
+        { task: second, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "fixture output: second runner synthetic" },
+    ]);
+
+    const alphaResumed = alpha.runEnrolled("resume");
+    assert.equal(await delivered(pending), 3);
+    await alphaResumed.stop();
+    const stillDefault = (await ingress(update(45204, "still the default runner"))).task;
+    assert.equal((await status(stillDefault)).placement, "alpha");
+    assert.equal((await alpha.launches())[0], alphaAttempt);
+    assert.deepEqual(settledEvidence(), originalEvidence);
+    assert.equal(mock.sends.filter(send => send.task === first).length, 1);
+
+    const lost = (await ingress(update(45205, "@desk synthetic interrupted child"))).task;
+    const interrupted = beta.runEnrolled("resume", "hold");
+    const attempt = await until(async () => (await beta.launches())[1], "interrupted child launched");
+    assert.deepEqual(await interrupted.stop(), [null, "SIGKILL"]);
+    const recoverAt = beta.packets.length;
+    const betaResumed = beta.runEnrolled("resume");
+    const unknown = await until(async () => {
+        const state = await status(lost);
+        return state.outcome && state;
+    }, "operator sees Unknown after native recovery");
+    assert.deepEqual(unknown, {
+        placement: "beta", runner: "Online runner", attempt_phase: "unknown", outcome: "Unknown attempt outcome",
+    });
+    const [proof] = beta.proofs("unknown").map(({ command }) => beta.verifyProof(command.proof));
+    assert.deepEqual(proof, { attempt, event: { kind: "unknown" } });
+    await until(() => beta.query("SELECT acknowledged FROM evidence WHERE attempt=? AND event='unknown'", attempt)[0]?.acknowledged
+        && beta.packets.slice(recoverAt).some(({ command }) => command.op === "next"), "native recovery acknowledges and polls");
+    assert.equal((await client.agent("beta", "next")).task, null);
+    assert.equal((await beta.launches()).filter(id => id === attempt).length, 1);
+    assert.equal(beta.packets.filter(({ command }) => command.op === "start" && command.attempt === attempt).length, 1);
+    assert.equal(mock.sends.some(send => send.task === lost), false);
+    await betaResumed.stop();
+    assert.ok(mock.checks.every(check => check.objectIncarnation === objectIncarnation));
+    context.diagnostic(`Alpha ${first} and beta ${second} settled in mock chat ${owner}, topic ${topic}.`);
+    context.diagnostic(`Offline beta stayed pinned. Attempt ${attempt} became Unknown after one launch and sent no reply.`);
+});
 
 test("native enrolled runners keep separate journals and replay the original result after restart", nativeTimeout, async context => {
     const { mock, client, cutover, admit, owner, topic } = await nativePlacement(context);
