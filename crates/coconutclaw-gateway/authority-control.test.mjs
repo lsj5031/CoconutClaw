@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, fork } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -10,7 +10,9 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { observeAuthority, serveAuthority, telegramSender } from "./authority-control.mjs";
+import * as control from "./authority-control.mjs";
+
+const { observeAuthority, serveAuthority, telegramSender } = control;
 
 const exec = promisify(execFile);
 const cli = join(import.meta.dirname, "authority-control.mjs");
@@ -35,6 +37,98 @@ const publication = generation => ({
 });
 const sendDelivery = (number, extra = {}) => ({
     task: "telegram:42", sendNumber: number, chatId: -321, messageThreadId: 37, text: "synthetic reply", ...extra,
+});
+
+test("local pairing redeems bound cards atomically and appends to the active generation", options, async context => {
+    const root = await mkdtemp(join(tmpdir(), "authority-pairing-"));
+    const path = join(root, "authority.sqlite");
+    const sends = [];
+    assert.equal(typeof control.createPairingAuthority, "function");
+    const authority = await control.createPairingAuthority(path, { bearer, credentialVersion }, delivery => {
+        sends.push(delivery);
+        return 42;
+    });
+    context.after(async () => {
+        await authority.close();
+        await rm(root, { recursive: true, force: true });
+    });
+    assert.throws(() => serveAuthority(path, { bearer, credentialVersion }, () => 99), /invalid authority store/);
+    const first = publication(1);
+    delete first.runnerIncarnation;
+    delete first.target.executorKey;
+    Object.assign(first.target, { hostname: "127.0.0.1", pairing: "fixture-v1" });
+    authority.publish(first);
+    const { deployment, ...pin } = first.target;
+    const target = { pin, versionId: first.versionId };
+    const post = async (route, body) => {
+        const response = await fetch(`${authority.endpoint}/v1/${route}`, {
+            method: "POST", headers: { authorization: `Bearer ${bearer}` },
+            body: JSON.stringify(body), signal: AbortSignal.timeout(3000),
+        });
+        return { status: response.status, reply: response.ok ? await response.json() : null };
+    };
+    const permit = (extra, route = "check") => post(route, {
+        nonce: randomUUID(), target, objectIncarnation: first.objectIncarnation,
+        runnerIncarnation: null, delivery: null, ...extra,
+    });
+    const card = () => {
+        const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+        return { key: publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"), privateKey };
+    };
+    const alpha = card();
+    const beta = card();
+    const redeem = (code, runner, signingCard = runner, extra = {}) => post("pair", {
+        code, key: runner.key,
+        signature: sign(null, Buffer.from(`coconutclaw-fixture-pairing-v1\n${code}`),
+            signingCard.privateKey).toString("hex"),
+        ...extra,
+    });
+    assert.deepEqual((await permit()).reply.routes, []);
+    const alphaCode = authority.issue({ key: alpha.key });
+    const expired = authority.issue({ key: alpha.key, ttlMs: 1 });
+    await sleep(20);
+    assert.equal((await redeem(expired, alpha)).status, 410);
+    assert.equal((await redeem(alphaCode, beta)).status, 401);
+    assert.equal((await redeem(alphaCode, alpha, beta)).status, 401);
+    assert.equal((await redeem(alphaCode, alpha, alpha, { placement: "beta" })).status, 400);
+    assert.deepEqual((await permit()).reply.routes, []);
+    const race = await Promise.all([redeem(alphaCode, alpha), redeem(alphaCode, alpha)]);
+    assert.deepEqual(race.map(result => result.status).sort(), [200, 409]);
+    const enrolledAlpha = race.find(result => result.status === 200).reply;
+    assert.equal(enrolledAlpha.placement, "alpha");
+    const alphaBinding = { placement: "alpha", runnerIncarnation: enrolledAlpha.incarnation };
+    assert.equal((await permit(alphaBinding)).reply.key, alpha.key);
+    assert.equal((await permit({ runnerIncarnation: enrolledAlpha.incarnation })).status, 503);
+    const delivery = sendDelivery(1);
+    assert.equal((await permit({ delivery }, "send")).reply.messageId, 42);
+
+    const betaCode = authority.issue({ key: beta.key, alias: "desk" });
+    const enrolledBeta = (await redeem(betaCode, beta)).reply;
+    assert.equal(enrolledBeta.placement, "beta");
+    assert.notEqual(enrolledBeta.incarnation, enrolledAlpha.incarnation);
+    assert.deepEqual((await permit()).reply.routes, [
+        { placement: "alpha", alias: null }, { placement: "beta", alias: "desk" },
+    ]);
+    const betaBinding = { placement: "beta", runnerIncarnation: enrolledBeta.incarnation };
+    assert.equal((await permit(betaBinding)).reply.key, beta.key);
+    assert.equal((await permit(alphaBinding)).reply.key, alpha.key);
+    assert.equal((await permit({ ...betaBinding, runnerIncarnation: enrolledAlpha.incarnation })).status, 503);
+    assert.equal((await permit({ ...betaBinding, objectIncarnation: randomUUID() })).status, 503);
+    assert.equal((await permit({ ...betaBinding, target: { ...target, versionId: "wrong" } })).status, 503);
+    const duplicate = card();
+    const duplicateAlias = authority.issue({ key: duplicate.key, alias: "desk" });
+    const duplicateKey = authority.issue({ key: beta.key, alias: "spare" });
+    const missingAlias = authority.issue({ key: duplicate.key });
+    for (const [code, runner] of [[duplicateAlias, duplicate], [duplicateKey, beta], [missingAlias, duplicate]]) {
+        assert.equal((await redeem(code, runner)).status, 409);
+    }
+    assert.equal((await redeem(betaCode, beta)).status, 409);
+    assert.equal((await permit()).reply.routes.length, 2);
+    assert.equal((await permit({ delivery }, "send")).status, 409);
+    assert.deepEqual(sends, [delivery]);
+    authority.retire(1);
+    assert.equal((await permit(alphaBinding)).status, 503);
+    assert.equal((await redeem(duplicateAlias, duplicate)).status, 503);
 });
 
 async function fixture(context) {

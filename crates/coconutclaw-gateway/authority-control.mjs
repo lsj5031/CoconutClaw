@@ -1,4 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } from "node:crypto";
+import { once } from "node:events";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -15,6 +16,10 @@ const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
 const uuid = value => typeof value === "string" &&
     /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
 const wireTarget = ({ target: { deployment, ...pin }, versionId }) => ({ pin, versionId });
+const placements = ["alpha", "beta", "gamma"];
+const invitationHash = code => createHash("sha256").update(code).digest("hex");
+const pairingChallenge = code => Buffer.from(`coconutclaw-fixture-pairing-v1\n${code}`);
+const aliasName = value => typeof value === "string" && /^[a-z0-9-]{1,32}$/.test(value);
 
 class Denied extends Error {
     constructor(status) {
@@ -24,9 +29,11 @@ class Denied extends Error {
 }
 
 class AuthorityStore {
-    constructor(path, { initialize = false, timeout = 0 } = {}) {
+    constructor(path, { initialize = false, timeout = 0, pairing = false } = {}) {
         closeSync(openSync(path, initialize ? "wx" : "r", 0o600));
         this.db = new DatabaseSync(path, { timeout });
+        this.pairing = pairing;
+        const version = pairing ? 2 : 1;
         try {
             this.db.exec("PRAGMA synchronous=EXTRA");
             if (initialize) {
@@ -46,11 +53,24 @@ class AuthorityStore {
                         message_id INTEGER,
                         PRIMARY KEY (generation, task, number)
                     ) STRICT;
-                    PRAGMA user_version=1;
+                    ${pairing ? `CREATE TABLE invitations (
+                        hash TEXT PRIMARY KEY,
+                        generation INTEGER NOT NULL REFERENCES publications,
+                        key TEXT NOT NULL,
+                        alias TEXT,
+                        expires INTEGER NOT NULL,
+                        placement TEXT,
+                        incarnation TEXT UNIQUE,
+                        CHECK ((placement IS NULL) = (incarnation IS NULL)),
+                        UNIQUE (generation, placement)
+                    ) STRICT;
+                    CREATE UNIQUE INDEX enrolled_keys ON invitations(generation, key) WHERE placement IS NOT NULL;
+                    CREATE UNIQUE INDEX enrolled_aliases ON invitations(generation, alias) WHERE placement IS NOT NULL;` : ""}
+                    PRAGMA user_version=${version};
                     COMMIT;
                 `);
             }
-            if (this.db.prepare("PRAGMA user_version").get().user_version !== 1 ||
+            if (this.db.prepare("PRAGMA user_version").get().user_version !== version ||
                 this.db.prepare("PRAGMA journal_mode").get().journal_mode !== "delete") {
                 throw new Error("invalid authority store");
             }
@@ -90,16 +110,17 @@ class AuthorityStore {
         const keys = publication?.target?.executorKeys;
         const multi = keys !== undefined;
         const incarnations = publication?.runnerIncarnations;
-        if (!fields(publication, ["target", "retirement", "versionId",
-            multi ? "runnerIncarnations" : "runnerIncarnation",
-            fresh ? "continuity" : "objectIncarnation"]) ||
-            !validTarget(publication.target) || !reference(publication.versionId) ||
-            (multi ? fresh || !validEnrollments(incarnations) || !fields(incarnations, Object.keys(keys))
-                : !sha256(publication.runnerIncarnation)) ||
+        const members = ["target", "retirement", "versionId", fresh ? "continuity" : "objectIncarnation"];
+        if (!this.pairing) members.push(multi ? "runnerIncarnations" : "runnerIncarnation");
+        if (!fields(publication, members) ||
+            !validTarget(publication.target, this.pairing) || !reference(publication.versionId) ||
+            (this.pairing ? publication.target.generation !== 1
+                : multi ? fresh || !validEnrollments(incarnations) || !fields(incarnations, Object.keys(keys))
+                    : !sha256(publication.runnerIncarnation)) ||
             (fresh ? publication.target.hostname !== "bigfur.liu.nz" : !uuid(publication.objectIncarnation))) {
             throw new Error("invalid publication");
         }
-        const generation = checkAuthorityHandoff(publication, publication.target);
+        const generation = checkAuthorityHandoff(publication, publication.target, this.pairing);
         return this.write(() => {
             const current = this.current();
             if (generation !== (current?.generation ?? 0) + 1 || (current && !current.retired)) {
@@ -130,27 +151,78 @@ class AuthorityStore {
         });
     }
 
-    authorize({ target, objectIncarnation, runnerIncarnation, placement: name }, credentialVersion) {
+    active() {
         const current = this.current();
         if (!current || current.retired) throw new Denied(503);
-        const enrolled = JSON.parse(current.publication);
-        if (!isDeepStrictEqual(target, wireTarget(enrolled))) {
+        return { generation: current.generation, publication: JSON.parse(current.publication) };
+    }
+
+    issue({ key, alias = null, ttlMs = 5 * 60_000 }) {
+        if (!sha256(key) || (alias !== null && !aliasName(alias)) ||
+            !positiveInteger(ttlMs) || ttlMs > 5 * 60_000) throw new Denied(400);
+        return this.write(() => {
+            const { generation } = this.active();
+            const code = randomBytes(32).toString("hex");
+            this.db.prepare("INSERT INTO invitations (hash,generation,key,alias,expires) VALUES (?,?,?,?,?)")
+                .run(invitationHash(code), generation, key, alias, Date.now() + ttlMs);
+            return code;
+        });
+    }
+
+    redeem(body) {
+        if (!fields(body, ["code", "key", "signature"]) || !sha256(body.code) || !sha256(body.key) ||
+            typeof body.signature !== "string" || !/^[a-f0-9]{128}$/.test(body.signature)) throw new Denied(400);
+        return this.write(() => {
+            const { generation, publication } = this.active();
+            const hash = invitationHash(body.code);
+            const invite = this.db.prepare("SELECT * FROM invitations WHERE hash=? AND generation=?").get(hash, generation);
+            if (!invite || !equalSecret(body.key, invite.key)) throw new Denied(401);
+            const der = Buffer.from(`302a300506032b6570032100${body.key}`, "hex");
+            const key = createPublicKey({ key: der, format: "der", type: "spki" });
+            if (!verify(null, pairingChallenge(body.code), key, Buffer.from(body.signature, "hex"))) throw new Denied(401);
+            if (invite.placement !== null) throw new Denied(409);
+            const enrolled = this.db.prepare("SELECT placement,key,alias FROM invitations WHERE generation=? AND placement IS NOT NULL")
+                .all(generation);
+            const name = placements.find(name => !enrolled.some(runner => runner.placement === name));
+            if (!name || (name !== "alpha" && invite.alias === null) ||
+                enrolled.some(runner => runner.key === invite.key || runner.alias === invite.alias)) throw new Denied(409);
+            if (invite.expires <= Date.now()) throw new Denied(410);
+            const incarnation = randomBytes(32).toString("hex");
+            this.db.prepare("UPDATE invitations SET placement=?,incarnation=? WHERE hash=?").run(name, incarnation, hash);
+            return { generation, objectId: publication.target.objectId, placement: name, incarnation };
+        });
+    }
+
+    authorize({ target, objectIncarnation, runnerIncarnation, placement: name }, credentialVersion) {
+        const { generation, publication: enrolled } = this.active();
+        if (!isDeepStrictEqual(target, wireTarget(enrolled)) ||
+            enrolled.target.telegramCredentialVersion !== credentialVersion ||
+            (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation)) {
             throw new Denied(503);
         }
+        if (this.pairing) {
+            if (name === undefined && runnerIncarnation === null) {
+                const routes = this.db.prepare("SELECT placement,alias FROM invitations WHERE generation=? AND placement IS NOT NULL ORDER BY placement")
+                    .all(generation);
+                return { generation, routes };
+            }
+            const runner = this.db.prepare("SELECT key,incarnation FROM invitations WHERE generation=? AND placement=?")
+                .get(generation, name ?? "");
+            if (!runner || !equalSecret(runnerIncarnation, runner.incarnation)) throw new Denied(503);
+            return { generation, key: runner.key };
+        }
         const runner = enrolled.runnerIncarnations ? enrolled.runnerIncarnations[name] : enrolled.runnerIncarnation;
-        if (enrolled.target.telegramCredentialVersion !== credentialVersion ||
-            (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation) ||
-            (name !== undefined && !enrolled.runnerIncarnations) ||
+        if ((name !== undefined && !enrolled.runnerIncarnations) ||
             (runnerIncarnation !== null && (runner === undefined || !equalSecret(runnerIncarnation, runner)))) {
             throw new Denied(503);
         }
-        return current.generation;
+        return { generation };
     }
 
     async dispatch(request, credentialVersion, send) {
         const { task, sendNumber } = request.delivery;
         const generation = this.write(() => {
-            const generation = this.authorize(request, credentialVersion);
+            const { generation } = this.authorize(request, credentialVersion);
             const result = this.db.prepare("INSERT OR IGNORE INTO sends VALUES (?, ?, ?, NULL)")
                 .run(generation, task, sendNumber);
             if (!result.changes) throw new Denied(409);
@@ -231,14 +303,20 @@ export function telegramSender(origin, token) {
     };
 }
 
-function authorityServer(bearer, decide) {
+function authorityServer(bearer, decide, redeem) {
     if (!sha256(bearer)) throw new Error("invalid service credentials");
     return createServer({ requestTimeout: 2000, headersTimeout: 2000 }, async (incoming, response) => {
         response.setHeader("cache-control", "no-store");
         try {
             const check = incoming.url === "/v1/check";
-            if (!check && incoming.url !== "/v1/send") throw new Denied(404);
+            const pairing = redeem && incoming.url === "/v1/pair";
+            if (!check && !pairing && incoming.url !== "/v1/send") throw new Denied(404);
             if (incoming.method !== "POST") throw new Denied(405);
+            if (pairing) {
+                const reply = redeem(await readJson(incoming));
+                response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(reply));
+                return;
+            }
             const authorization = incoming.headers.authorization;
             if (!authorization?.startsWith("Bearer ") || !equalSecret(authorization.slice(7), bearer)) {
                 throw new Denied(401);
@@ -264,15 +342,18 @@ function authorityServer(bearer, decide) {
 
 export function serveAuthority(path, { bearer, credentialVersion }, send) {
     if (!sha256(bearer) || !reference(credentialVersion)) throw new Error("invalid service credentials");
-    const store = new AuthorityStore(path);
+    return serve(new AuthorityStore(path), { bearer, credentialVersion }, send);
+}
+
+function serve(store, { bearer, credentialVersion }, send) {
     let dispatching = false;
     const server = authorityServer(bearer, async (body, check) => {
         if (check) {
             const validUntil = Date.now() + permitMs;
-            const highWater = store.authorize(body, credentialVersion);
+            const { generation: highWater, ...enrollment } = store.authorize(body, credentialVersion);
             if (validUntil <= Date.now()) throw new Denied(503);
             const { delivery, ...binding } = body;
-            return { ...binding, highWater, validUntil };
+            return { ...binding, highWater, validUntil, ...enrollment };
         }
         if (dispatching) throw new Denied(503);
         dispatching = true;
@@ -281,9 +362,32 @@ export function serveAuthority(path, { bearer, credentialVersion }, send) {
         } finally {
             dispatching = false;
         }
-    });
+    }, store.pairing ? body => {
+        if (dispatching) throw new Denied(503);
+        return store.redeem(body);
+    } : undefined);
     server.once("close", () => store.db.close());
     return server;
+}
+
+export async function createPairingAuthority(path, credentials, send) {
+    if (!sha256(credentials.bearer) || !reference(credentials.credentialVersion)) throw new Error("invalid service credentials");
+    const store = new AuthorityStore(path, { initialize: true, pairing: true });
+    const server = serve(store, credentials, send);
+    server.listen(0, "127.0.0.1");
+    try {
+        await once(server, "listening");
+    } catch (error) {
+        store.db.close();
+        throw error;
+    }
+    return {
+        endpoint: `http://127.0.0.1:${server.address().port}`,
+        publish: publication => store.publish(publication),
+        retire: generation => store.retire(generation),
+        issue: card => store.issue(card),
+        close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+    };
 }
 
 function listen(server, port) {

@@ -32,21 +32,24 @@ export function validEnrollments(value) {
         new Set(entries.map(([, hex]) => hex)).size === entries.length;
 }
 
-function targetValidators(target) {
+function targetValidators(target, pairing) {
     const { executorKey, ...common } = targetFields;
+    if (pairing) {
+        return { ...common, hostname: value => value === "127.0.0.1", pairing: value => value === "fixture-v1" };
+    }
     return target?.hostname === "127.0.0.1"
         ? { ...common, hostname: value => value === "127.0.0.1", executorKeys: validEnrollments }
         : targetFields;
 }
 
-export function validTarget(target) {
-    const validators = targetValidators(target);
+export function validTarget(target, pairing = false) {
+    const validators = targetValidators(target, pairing);
     return fields(target, Object.keys(validators)) &&
         Object.entries(validators).every(([key, valid]) => valid(target[key]));
 }
 
-export function checkAuthorityHandoff(current, candidate) {
-    const validators = targetValidators(candidate);
+export function checkAuthorityHandoff(current, candidate, pairing = false) {
+    const validators = targetValidators(candidate, pairing);
     for (const [field, valid] of Object.entries(validators)) {
         if (!valid(candidate?.[field]) || !isDeepStrictEqual(candidate[field], current?.target?.[field])) {
             throw new Error(`authority target mismatch: ${field}`);
