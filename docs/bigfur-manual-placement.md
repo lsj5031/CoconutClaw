@@ -1,0 +1,83 @@
+# BigFur manual placement
+
+## Local fixture
+
+Set `PHASE=phase1-placement-local` in Miniflare with the fixture's webhook
+and operator secrets and distinct synthetic Ed25519 public keys in
+`DEVICE_ALPHA_KEY`, `DEVICE_BETA_KEY` and `DEVICE_GAMMA_KEY`. The existing
+loopback HTTPS `/v1/telegram`, `/v1/agent` and `/v1/fixture` routes use the
+`local-placement-fixture` object and signature domain. Telegram-shaped
+updates require the synthetic private chat `321`, thread `37`, sender `321`
+and an explicit `is_bot: false`. Fixture delivery uses the mocked Bot API.
+
+| Prefix | Fixture device |
+| --- | --- |
+| `@leo-claw` | `alpha` |
+| `@mars` | `beta` |
+| `@mercury` | `gamma` |
+
+Set `LOCAL_PLACEMENT_ALIASES=mac=mars,win=mercury` to add selectors. Aliases
+use lowercase ASCII letters, digits and hyphens. An unknown target,
+malformed entry or duplicate selector, including a canonical name, closes
+admission until corrected. Omit the binding to use the three canonical names.
+Put whitespace and a non-command coding prompt after the prefix. An unknown
+or malformed leading `@` is ignored. A message without a selector keeps its
+original prompt and pins to `alpha`.
+
+The inbox transaction records the update ID, original reply topic, prompt
+and device. Its `telegram:<update_id>` task keeps that device across alias
+changes, redelivery, runner absence and claim expiry. A lease that expires
+before Start can be reclaimed by the same device. A disconnected authorized
+attempt can become Unknown and is never automatically reclaimed. Start,
+result and cancellation evidence use the existing signed fixture commands
+and the current attempt's device. The fixture's operator cancellation can
+also cancel work while its device is absent. Scheduling is outside this mode.
+
+With the gateway's pinned Node dependencies and wasm-bindgen installed, run
+the isolated gateway build and focused tests in `crates/coconutclaw-gateway`:
+
+```sh
+npm run stage
+node --test --test-concurrency=1 \
+  --test-name-pattern='manual placement|webhook admission|signed handshake' \
+  integration.test.mjs
+```
+
+## BigFur integration gates
+
+1. Scope production admission to its existing webhook, private owner and
+   topic check. Resolve aliases against a published set of enrolled placements
+   in the same transaction that records the immutable pin. Keep plain text
+   on `alpha` for the legacy generation. Prove duplicate updates, alias changes,
+   offline admission, and same-topic replies without consulting runner health
+   at admission. The production handler currently pins every admitted task to
+   `alpha`. [Gateway ingress](../crates/coconutclaw-gateway/src/worker_app.rs)
+2. Replace the single `executorKey` in the target and single
+   `runnerIncarnation` in the control publication with per-placement
+   enrollment. Bind each permit to the same object generation, placement,
+   key and incarnation at request verification, Start, evidence and cancellation.
+   Define independent runner retirement and prevent copied or retired journals
+   from acquiring permits. Verify cold wake, predecessor fencing, exclusive
+   delivery custody and stale-restore behavior before opening the scope.
+   [Control publication](../crates/coconutclaw-gateway/authority-control.mjs) ·
+   [Worker permit verification](../crates/coconutclaw-gateway/src/runtime_authority.rs)
+3. Coordinate the wire change with runner journals. `DEVICE`, Hello,
+   request identity, claim checking and the signed evidence domain currently
+   assume `alpha`. Bind Start and its recheck to the exact attempt and enrolled
+   placement alongside the request sequence, original deadline and generation.
+   Bind the journal to that enrollment and keep preexisting signed evidence
+   verifiable in its original domain. Exercise cross-placement replay,
+   lost Start and result acknowledgments, before-start and process-exit
+   cancellation, restart and Unknown without effect retry.
+   [Wire](../crates/coconutclaw-gateway/src/executor_wire.rs) ·
+   [Journal](../crates/coconutclaw-gateway/src/executor/journal.rs)
+4. Prove native custody on each host with host-owned credentials, workspace
+   and separate journal. Use synthetic prompts and processes for integration
+   tests. Native same-topic Telegram acceptance and real host enrollment
+   require a separately authorized run.
+
+| Host | Native custody path |
+| --- | --- |
+| Linux Leo-Claw | BigFur's Linux-only `gateway-local-executor --production` uses an owned pidfd, subreaper and subtree drain through `owned_codex.py`. Keep service-account config, the private signing seed and incarnation outside the journal, workspace and Codex home. Prove grant consumption, process-exit cancellation and parent-loss cleanup per enrollment. [Linux runner](gateway-linux-runner.md) |
+| macOS Mars | The existing native paired `coconutclaw nodes start` path keeps an owner-only `nodes` directory, a host-local claim Store and local Codex auth. The Unix provider owns a process group. Port or reuse these custody mechanisms under the BigFur grant and journal, and prove cancellation and abrupt runner loss on macOS. [Paired nodes](production-nodes.md) |
+| Native Windows Mercury | The native paired `coconutclaw.exe nodes start` path uses a private ACL-checked `%LOCALAPPDATA%\CoconutClaw-native-runner` root with local key and SQLite journal. Its provider starts inside a noninheritable kill-on-close Job Object. Integrate native ACL and Job custody into the BigFur runner and run Windows tests for reparse points, unsafe ACLs, descendant exit and abrupt owner loss. [Windows custody](windows-onboarding.md) |

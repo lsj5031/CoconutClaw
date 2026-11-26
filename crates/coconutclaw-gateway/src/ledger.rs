@@ -7,7 +7,9 @@ use wasm_bindgen::prelude::*;
 use worker::{Response, Result, SqlStorage, SqlStorageValue, Storage};
 
 use crate::executor_wire::{Event, Evidence, Grant, SignedEvidence, Status};
-use crate::protocol::{Agent, CancelEvidence, Command, Device, LEASE_MS, Phase, START_MS};
+use crate::protocol::{
+    Agent, CancelEvidence, Command, Device, LEASE_MS, Phase, START_MS, TelegramTask,
+};
 
 #[derive(Clone, Copy)]
 pub enum Execution<'a> {
@@ -371,10 +373,9 @@ impl Ledger {
     pub fn ingest(
         &self,
         update: i64,
-        input: Option<(i64, Option<i32>, &str)>,
+        input: Option<TelegramTask<'_>>,
         fail: bool,
         pilot_now: Option<i64>,
-        placement: Option<Device>,
     ) -> Result<Reply> {
         if self
             .number(
@@ -403,9 +404,15 @@ impl Ledger {
             "INSERT INTO inbox(update_id,disposition) VALUES(?,?)",
             [update.into(), disposition.into()],
         )?;
-        let task = if let Some((chat, thread, text)) = input {
+        let task = if let Some(task) = input {
             let id = format!("telegram:{update}");
-            self.insert_task(&id, chat, thread, text, placement.map(Device::name))?;
+            self.insert_task(
+                &id,
+                task.route.chat_id,
+                task.route.message_thread_id,
+                task.prompt,
+                task.pin.map(Device::name),
+            )?;
             Some(id)
         } else {
             None
@@ -554,6 +561,7 @@ impl Ledger {
         execution: Option<Execution<'_>>,
         evidence: Option<Evidence>,
         storage: &Storage,
+        pinned_only: bool,
     ) -> Result<(Reply, Option<js_sys::Promise>)> {
         let executor = execution.is_some();
         let mut alarm = None;
@@ -575,13 +583,7 @@ impl Ledger {
             {
                 Ok(conflict())
             }
-            Command::Claim { task } => self.claim(
-                device,
-                now,
-                &task,
-                executor,
-                matches!(execution, Some(Execution::Cutover { .. })),
-            ),
+            Command::Claim { task } => self.claim(device, now, &task, executor, pinned_only),
             Command::Start { attempt } => self.update_attempt(device, attempt, |row| {
                 if row.cancel_requested != 0 {
                     return Ok(conflict());

@@ -2,7 +2,7 @@ use std::cell::OnceCell;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use coconutclaw_telegram::private_route;
+use coconutclaw_telegram::{PrivateRoute, private_route};
 use futures_util::{
     StreamExt,
     future::{Either, select},
@@ -19,7 +19,8 @@ use crate::ledger::{
     conflict,
 };
 use crate::protocol::{
-    Agent, BODY_LIMIT, Command, Device, Fixture, INSTANCE, telegram_input, valid_text,
+    Agent, BODY_LIMIT, Command, Device, Fixture, INSTANCE, PLACEMENT_INSTANCE, PlacementAliases,
+    TelegramTask, telegram_input, valid_text,
 };
 use crate::runtime_authority::{Authority, Pin, nonce};
 
@@ -46,6 +47,7 @@ extern "C" {
 #[derive(Clone, Copy, PartialEq)]
 enum LocalPhase {
     Protocol,
+    Placement,
     Executor,
     Pilot,
     Cutover,
@@ -74,6 +76,7 @@ impl LocalPhase {
     fn from_env(env: &Env) -> Option<Self> {
         match env.var("PHASE").ok()?.to_string().as_str() {
             "phase1-local" => Some(Self::Protocol),
+            "phase1-placement-local" => Some(Self::Placement),
             "phase2-local" => Some(Self::Executor),
             "phase2-pilot" => Some(Self::Pilot),
             "phase2-cutover" => Some(Self::Cutover),
@@ -85,6 +88,7 @@ impl LocalPhase {
     fn instance(self) -> &'static str {
         match self {
             Self::Protocol => INSTANCE,
+            Self::Placement => PLACEMENT_INSTANCE,
             Self::Executor => executor_wire::INSTANCE,
             Self::Pilot | Self::Cutover => PILOT_INSTANCE,
             Self::Production => PRODUCTION_INSTANCE,
@@ -100,7 +104,10 @@ impl LocalPhase {
     }
 
     fn executor(self) -> bool {
-        self != Self::Protocol
+        matches!(
+            self,
+            Self::Executor | Self::Pilot | Self::Cutover | Self::Production
+        )
     }
 
     fn controlled(self) -> bool {
@@ -329,6 +336,7 @@ impl DurableObject for BotLedger {
                     storage.sync().await
                 }
                 LocalPhase::Executor => self.deliver(&storage, &ledger, None).await,
+                LocalPhase::Placement => Ok(()),
                 LocalPhase::Pilot => {
                     let alarm = ledger
                         .transaction(&storage, || ledger.deliver_synthetic(&storage, now()))?;
@@ -504,10 +512,16 @@ impl BotLedger {
             }
             ledger.ingest(
                 id,
-                Some((scope.chat, Some(scope.thread), text)),
+                Some(TelegramTask {
+                    route: PrivateRoute {
+                        chat_id: scope.chat,
+                        message_thread_id: Some(scope.thread),
+                    },
+                    prompt: text,
+                    pin: Some(Device::Alpha),
+                }),
                 false,
                 Some(at),
-                Some(Device::Alpha),
             )
         })?;
         storage.sync().await?;
@@ -616,21 +630,24 @@ impl BotLedger {
                     }),
                     evidence,
                     &storage,
+                    true,
                 )
             })?
         } else if path == "/v1/telegram" {
             let Some((id, update)) = decode_update(&bytes) else {
                 return Ok(bad_input());
             };
-            let input = telegram_input(&update)
-                .map(|(route, text)| (route.chat_id, route.message_thread_id, text));
+            let input = telegram_input(&update).map(|mut task| {
+                task.pin = Some(Device::Alpha);
+                task
+            });
             (
                 ledger.transaction(&storage, || {
                     let at = now();
                     if !ledger.take_pilot_request(at, false)? {
                         return ledger.pilot_limit(at);
                     }
-                    ledger.ingest(id, input, false, Some(at), Some(Device::Alpha))
+                    ledger.ingest(id, input, false, Some(at))
                 })?,
                 None,
             )
@@ -672,6 +689,7 @@ impl BotLedger {
     ) -> Result<Reply> {
         let executor = phase.executor();
         let pilot = phase == LocalPhase::Pilot;
+        let placement = phase == LocalPhase::Placement;
         let path = req.path();
         let operation = if pilot {
             path.strip_prefix("/v1/pilot/")
@@ -749,19 +767,27 @@ impl BotLedger {
         };
         let (reply, drop_reply) = match scope {
             "telegram" => {
-                let Ok(update) = serde_json::from_slice::<Value>(&bytes) else {
+                let Some((id, update)) = decode_update(&bytes) else {
                     return Ok(bad_input());
                 };
-                let Some(id) = update["update_id"]
-                    .as_i64()
-                    .filter(|id| (0..=i32::MAX as i64).contains(id))
-                else {
-                    return Ok(bad_input());
+                let input = if placement {
+                    let raw = self
+                        .env
+                        .var("LOCAL_PLACEMENT_ALIASES")
+                        .map_or_else(|_| String::new(), |var| var.to_string());
+                    let Some(aliases) = PlacementAliases::parse(&raw) else {
+                        return Ok(Reply::error(503, "invalid_placement_aliases"));
+                    };
+                    aliases.input(&update)
+                } else {
+                    telegram_input(&update)
                 };
-                let input = telegram_input(&update)
-                    .map(|(route, text)| (route.chat_id, route.message_thread_id, text));
                 if pilot
-                    && (id != PILOT_UPDATE || input != Some((321, Some(PILOT_TOPIC), PILOT_PROMPT)))
+                    && (id != PILOT_UPDATE
+                        || !input.as_ref().is_some_and(|task| {
+                            task.route.message_thread_id == Some(PILOT_TOPIC)
+                                && task.prompt == PILOT_PROMPT
+                        }))
                 {
                     return Ok(bad_input());
                 }
@@ -771,7 +797,6 @@ impl BotLedger {
                         input,
                         fault.as_deref() == Some("rollback"),
                         executor.then(now),
-                        None,
                     )
                 })?;
                 (reply, fault.as_deref() == Some("after_commit"))
@@ -800,7 +825,7 @@ impl BotLedger {
                         return Ok(conflict());
                     }
                 }
-                if let Some(reply) = ledger.read_agent(&agent, now(), &instance, false)? {
+                if let Some(reply) = ledger.read_agent(&agent, now(), &instance, placement)? {
                     return Ok(reply);
                 }
                 let drop_reply = fault.as_deref() == Some("after_commit")
@@ -809,7 +834,7 @@ impl BotLedger {
                         Command::Start { .. } | Command::Report { .. }
                     );
                 let execution = match phase {
-                    LocalPhase::Protocol => None,
+                    LocalPhase::Protocol | LocalPhase::Placement => None,
                     LocalPhase::Executor => Some(Execution::Local {
                         instance: &instance,
                         reconcile_only: frozen,
@@ -818,7 +843,7 @@ impl BotLedger {
                     LocalPhase::Cutover | LocalPhase::Production => unreachable!(),
                 };
                 let (reply, alarm) = ledger.transaction(&storage, || {
-                    ledger.mutate_agent(agent, now(), execution, evidence, &storage)
+                    ledger.mutate_agent(agent, now(), execution, evidence, &storage, placement)
                 })?;
                 settle_alarm(alarm).await?;
                 (reply, drop_reply)
@@ -846,6 +871,14 @@ impl BotLedger {
                             | Fixture::Wake { .. }
                             | Fixture::Send { .. }
                             | Fixture::RecoverSend { .. }
+                    )
+                {
+                    return Ok(Reply::error(404, "not_found"));
+                }
+                if placement
+                    && matches!(
+                        fixture,
+                        Fixture::Schedule { .. } | Fixture::Disable { .. } | Fixture::Wake { .. }
                     )
                 {
                     return Ok(Reply::error(404, "not_found"));
@@ -888,8 +921,8 @@ impl BotLedger {
                 let binding = match phase {
                     LocalPhase::Pilot => "PILOT_ALPHA_KEY".to_owned(),
                     LocalPhase::Executor => "EXECUTOR_ALPHA_KEY".to_owned(),
-                    LocalPhase::Protocol => {
-                        format!("DEVICE_{}_KEY", agent.device.name().to_ascii_uppercase())
+                    LocalPhase::Protocol | LocalPhase::Placement => {
+                        device_key_binding(agent.device)
                     }
                     LocalPhase::Cutover | LocalPhase::Production => return Err(unauthorized()),
                 };
@@ -901,6 +934,18 @@ impl BotLedger {
         };
         let mut decoded = [0; 32];
         hex::decode_to_slice(key, &mut decoded).map_err(|_| unauthorized())?;
+        if phase == LocalPhase::Placement
+            && Device::ALL.iter().any(|&device| {
+                device.name() != agent.device.name()
+                    && self.env.var(&device_key_binding(device)).is_ok_and(|key| {
+                        let mut other = [0; 32];
+                        hex::decode_to_slice(key.to_string(), &mut other).is_ok()
+                            && other == decoded
+                    })
+            })
+        {
+            return Err(unauthorized());
+        }
         let signature = req
             .headers()
             .get("x-agent-signature")
@@ -1014,6 +1059,10 @@ impl BotLedger {
             }
         }
     }
+}
+
+fn device_key_binding(device: Device) -> String {
+    format!("DEVICE_{}_KEY", device.name().to_ascii_uppercase())
 }
 
 fn decode_update(bytes: &[u8]) -> Option<(i64, Value)> {

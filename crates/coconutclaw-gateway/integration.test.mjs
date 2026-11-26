@@ -44,10 +44,12 @@ const webhook = { "x-telegram-bot-api-secret-token": "synthetic-webhook" };
 const operator = { "x-fixture-secret": "synthetic-operator" };
 const signingPrefix = "coconutclaw-v1\nlocal-fixture\nPOST\n/v1/agent\n";
 const executorPrefix = signingPrefix.replace("local-fixture", "local-executor-fixture");
+const placementPrefix = signingPrefix.replace("local-fixture", "local-placement-fixture");
 
 async function runFixture(context, {
-    enabled = true, executor = false, inspect = false, mock, restore, generationPin, cutover,
-    keys = Object.fromEntries(["alpha", "beta"].map(device => [device, generateKeyPairSync("ed25519")])),
+    enabled = true, executor = false, inspect = false, mock, restore, generationPin, cutover, placementAliases,
+    keys = Object.fromEntries((placementAliases ? ["alpha", "beta", "gamma"] : ["alpha", "beta"])
+        .map(device => [device, generateKeyPairSync("ed25519")])),
 } = {}) {
     const persistence = await mkdtemp(join(import.meta.dirname, "build", "sqlite-"));
     const sends = [];
@@ -55,7 +57,7 @@ async function runFixture(context, {
     const logs = [];
     const log = new Log(LogLevel.INFO);
     log.log = message => logs.push(message);
-    const sequence = { alpha: 0, beta: 0 };
+    const sequence = Object.fromEntries(Object.keys(keys).map(device => [device, 0]));
     const publicHex = device => keys[device].publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
     let service;
     let url;
@@ -74,6 +76,7 @@ async function runFixture(context, {
         if (edit) await edit();
         generation = nextGeneration;
         const pin = generationPin ? await generationPin() : String(generation);
+        const aliases = placementAliases?.();
         service = new Miniflare({
             host: "127.0.0.1",
             port: 0,
@@ -94,6 +97,8 @@ async function runFixture(context, {
             bindings: {
                 ...variables,
                 ...(enabled ? { PHASE: executor ? "phase2-local" : "phase1-local" } : {}),
+                ...(placementAliases ? { PHASE: "phase1-placement-local" } : {}),
+                ...(aliases === undefined ? {} : { LOCAL_PLACEMENT_ALIASES: aliases }),
                 WEBHOOK_SECRET: webhook["x-telegram-bot-api-secret-token"],
                 FIXTURE_SECRET: operator["x-fixture-secret"],
                 ...Object.fromEntries(Object.keys(keys).map(device => [
@@ -210,7 +215,7 @@ async function runFixture(context, {
             ? `coconutclaw-v1\nbigfur:${cutover.target.pin.generation}:${cutover.target.pin.objectId}\nPOST\n/v1/agent\n`
             : executor
             ? (generation === 1 ? executorPrefix : executorPrefix.replace("fixture\n", `fixture:${generation}\n`))
-            : signingPrefix;
+            : placementAliases ? placementPrefix : signingPrefix;
         const mutating = !["hello", "next", "status"].includes(command.op);
         const body = JSON.stringify({
             device, at_ms: at, sequence: seq ?? (mutating ? ++sequence[device] : 0), command,
@@ -2204,7 +2209,8 @@ test("webhook admission, rollback, durable ack after restart, and late same-topi
     await post("telegram", "a".repeat(16385), webhook, 413);
     await post("telegram", "a".repeat(16385), webhook, 413, true);
     await post("telegram", { update_id: "41" }, webhook, 400);
-    const concurrently = await Promise.all([post("telegram", update(41), webhook), post("telegram", update(41), webhook)]);
+    const initial = update(41, 7, "@mars remains literal in the legacy fixture");
+    const concurrently = await Promise.all([post("telegram", initial, webhook), post("telegram", initial, webhook)]);
     assert.deepEqual(concurrently.map(result => result.disposition).sort(), ["duplicate", "task"]);
     await post("telegram", update(39), { ...webhook, ...operator, "x-fixture-fault": "rollback" }, 503);
     await post("telegram", update(38, 8, "sensitive synthetic task"), {
@@ -2228,8 +2234,136 @@ test("webhook admission, rollback, durable ack after restart, and late same-topi
         const claim = await agent("alpha", "claim", { task });
         assert.equal(claim.chat_id, 321);
         assert.equal(claim.message_thread_id, route);
-        assert.equal(claim.prompt, id === 38 ? "sensitive synthetic task" : `synthetic task ${id}`);
+        assert.equal(claim.prompt, id === 41 ? initial.message.text
+            : id === 38 ? "sensitive synthetic task" : `synthetic task ${id}`);
     }
+    assert.deepEqual(await agent("alpha", "next"), { task: null });
+});
+
+function placementUpdate(id, text, thread = 37) {
+    const input = update(id, thread, text);
+    input.message.from.is_bot = false;
+    return input;
+}
+
+test("manual placement pins signed claims across alias changes, offline time and lease expiry", timeout, async context => {
+    let aliases = "desk=mars";
+    const { agent, fixture, post, restart, sends, signed, wire } = await runFixture(context, {
+        placementAliases: () => aliases,
+    });
+    const mars = "telegram:81";
+    const mercury = "telegram:83";
+    await post("telegram", placementUpdate(81, "@desk inspect synthetic tests"), {}, 401);
+    assert.deepEqual(await post("telegram", placementUpdate(81, " @desk\tinspect synthetic tests "), webhook),
+        { disposition: "task", task: mars });
+    assert.deepEqual(await agent("alpha", "next"), { task: null });
+    assert.deepEqual(await agent("gamma", "next"), { task: null });
+    await agent("alpha", "claim", { task: mars }, 409);
+
+    aliases = "desk=mercury";
+    await restart();
+    assert.deepEqual(await post("telegram", placementUpdate(81, "@desk changed duplicate"), webhook),
+        { disposition: "duplicate" });
+    await post("telegram", placementUpdate(82, "plain synthetic task @mars"), webhook);
+    await post("telegram", placementUpdate(83, "@desk inspect fixture"), webhook);
+    await post("telegram", placementUpdate(84, "@leo-claw cancel queued fixture"), webhook);
+    await post("telegram", placementUpdate(85, "@mars cancel started fixture"), webhook);
+    assert.deepEqual(await fixture("cancel", { task: "telegram:84" }), { phase: "cancelled_before_start" });
+
+    assert.deepEqual(await agent("alpha", "next"), { task: "telegram:82" });
+    const plain = await agent("alpha", "claim", { task: "telegram:82" });
+    assert.equal(plain.placement, "alpha");
+    assert.equal(plain.prompt, "plain synthetic task @mars");
+    assert.deepEqual(await agent("alpha", "next"), { task: null });
+    assert.deepEqual(await agent("beta", "next"), { task: mars });
+    assert.deepEqual(await agent("gamma", "next"), { task: mercury });
+
+    const spoofed = signed("alpha", { op: "claim", task: mars });
+    await wire({ ...spoofed, body: spoofed.body.replace('"alpha"', '"beta"') }, 401);
+    await wire(signed("beta", { op: "next" }, { prefix: signingPrefix }), 401);
+    const claim = await agent("beta", "claim", { task: mars });
+    assert.equal(claim.placement, "beta");
+    assert.equal(claim.prompt, "inspect synthetic tests");
+    assert.equal(claim.chat_id, 321);
+    assert.equal(claim.message_thread_id, 37);
+    assert.deepEqual(await agent("beta", "claim", { task: mars }), claim);
+    await sleep(Math.max(0, claim.lease_until - Date.now() + 15));
+    await agent("beta", "start", { attempt: claim.attempt }, 409);
+    await agent("gamma", "claim", { task: mars }, 409);
+    const { attempt } = await agent("beta", "claim", { task: mars });
+    assert.notEqual(attempt, claim.attempt);
+    await agent("gamma", "start", { attempt }, 409);
+    await agent("beta", "start", { attempt });
+    await agent("beta", "started", { attempt });
+    await agent("gamma", "result", { attempt, text: "wrong runner" }, 409);
+    await agent("beta", "result", { attempt, text: "synthetic result" });
+    await fixture("send", { task: mars });
+    assert.deepEqual(sends, [{ chat_id: 321, message_thread_id: 37, text: "synthetic result" }]);
+
+    const unknown = (await agent("gamma", "claim", { task: mercury })).attempt;
+    await agent("gamma", "start", { attempt: unknown });
+    assert.equal((await fixture("disconnect", { attempt: unknown })).phase, "unknown");
+    await restart();
+    assert.deepEqual(await agent("gamma", "next"), { task: null });
+    await agent("gamma", "start", { attempt: unknown }, 409);
+    await agent("beta", "claim", { task: mercury }, 409);
+    await agent("gamma", "claim", { task: mercury }, 409);
+
+    const cancelTask = "telegram:85";
+    const cancelled = (await agent("beta", "claim", { task: cancelTask })).attempt;
+    await agent("beta", "start", { attempt: cancelled });
+    await agent("beta", "started", { attempt: cancelled });
+    assert.equal((await fixture("cancel", { task: cancelTask })).phase, "cancel_requested");
+    const exit = { attempt: cancelled, evidence: "process_exited" };
+    await agent("gamma", "cancelled", exit, 409);
+    assert.equal((await agent("beta", "cancelled", exit)).phase, "cancelled_after_exit");
+    assert.deepEqual(await agent("beta", "next"), { task: null });
+});
+
+test("manual placement fails closed on scope, selectors, alias collisions and shared keys", timeout, async context => {
+    const shared = generateKeyPairSync("ed25519");
+    let aliases;
+    const { agent, dispatch, fixture, post, restart } = await runFixture(context, {
+        placementAliases: () => aliases,
+        keys: { alpha: generateKeyPairSync("ed25519"), beta: shared, gamma: shared },
+    });
+    const wrongOwner = placementUpdate(90, "@mars synthetic");
+    wrongOwner.message.from.id = 322;
+    const bot = placementUpdate(91, "@mars synthetic");
+    bot.message.from.is_bot = true;
+    const wrongChat = placementUpdate(99, "@mars synthetic");
+    wrongChat.message.chat.id = 322;
+    const missingPrivate = placementUpdate(100, "@mars synthetic");
+    delete missingPrivate.message.chat.type;
+    for (const input of [
+        wrongOwner, bot, wrongChat, missingPrivate, update(92, 37, "@mars synthetic"),
+        placementUpdate(93, "@mars synthetic", 38), placementUpdate(94, "@unknown synthetic"),
+        placementUpdate(95, "@mercury "), placementUpdate(96, "@mars /cancel"),
+        placementUpdate(97, "@mars: synthetic"),
+    ]) {
+        assert.deepEqual(await post("telegram", input, webhook), { disposition: "ignored", task: null });
+    }
+    assert.deepEqual(await post("telegram", placementUpdate(94, "@leo-claw duplicate"), webhook),
+        { disposition: "duplicate" });
+    const nonLoopback = await dispatch("https://placement.invalid/v1/telegram", {
+        headers: webhook, body: JSON.stringify(placementUpdate(98, "@mars fixture")),
+    });
+    assert.equal(nonLoopback.status, 404);
+    await fixture("wake", { at_ms: Date.now() }, 404);
+    assert.deepEqual(await agent("alpha", "next"), { task: null });
+    await agent("beta", "next", {}, 401);
+    await agent("gamma", "next", {}, 401);
+    for (const config of ["mars=mercury", "mac=mars,mac=mercury", "mac=wrong", "Mac=mars", "mac!=mars"]) {
+        aliases = config;
+        await restart();
+        assert.deepEqual(await post("telegram", placementUpdate(98, "plain"), webhook, 503),
+            { error: "invalid_placement_aliases" });
+        assert.deepEqual(await agent("alpha", "next"), { task: null });
+    }
+    aliases = "mac=mars";
+    await restart();
+    assert.equal((await post("telegram", placementUpdate(98, "@mac synthetic"), webhook)).disposition, "task");
+    assert.equal((await post("telegram", placementUpdate(101, "@mercury synthetic"), webhook)).disposition, "task");
     assert.deepEqual(await agent("alpha", "next"), { task: null });
 });
 

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use coconutclaw_telegram::{PrivateRoute, private_route};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -6,6 +8,7 @@ use crate::executor_wire::SignedEvidence;
 pub use crate::executor_wire::{BODY_LIMIT, CancelEvidence, Phase, TEXT_LIMIT};
 
 pub const INSTANCE: &str = "local-fixture";
+pub const PLACEMENT_INSTANCE: &str = "local-placement-fixture";
 pub const LEASE_MS: i64 = 1500;
 pub const START_MS: i64 = 1500;
 
@@ -14,13 +17,17 @@ pub const START_MS: i64 = 1500;
 pub enum Device {
     Alpha,
     Beta,
+    Gamma,
 }
 
 impl Device {
+    pub const ALL: [Self; 3] = [Self::Alpha, Self::Beta, Self::Gamma];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Alpha => "alpha",
             Self::Beta => "beta",
+            Self::Gamma => "gamma",
         }
     }
 }
@@ -113,7 +120,13 @@ pub fn valid_text(text: &str) -> bool {
     !text.trim().is_empty() && text.len() <= TEXT_LIMIT
 }
 
-pub fn telegram_input(update: &Value) -> Option<(PrivateRoute, &str)> {
+pub struct TelegramTask<'a> {
+    pub route: PrivateRoute,
+    pub prompt: &'a str,
+    pub pin: Option<Device>,
+}
+
+pub fn telegram_input(update: &Value) -> Option<TelegramTask<'_>> {
     let message = update.get("message")?;
     let route = private_route(message).ok()?;
     let text = message.get("text")?.as_str()?;
@@ -125,5 +138,62 @@ pub fn telegram_input(update: &Value) -> Option<(PrivateRoute, &str)> {
     {
         return None;
     }
-    Some((route, text))
+    Some(TelegramTask {
+        route,
+        prompt: text,
+        pin: None,
+    })
+}
+
+pub struct PlacementAliases(BTreeMap<String, Device>);
+
+impl PlacementAliases {
+    pub fn parse(raw: &str) -> Option<Self> {
+        let canonical = BTreeMap::from([
+            ("leo-claw".to_owned(), Device::Alpha),
+            ("mars".to_owned(), Device::Beta),
+            ("mercury".to_owned(), Device::Gamma),
+        ]);
+        let mut aliases = canonical.clone();
+        if !raw.is_empty() {
+            for entry in raw.split(',') {
+                let (alias, target) = entry.split_once('=')?;
+                if alias.is_empty()
+                    || !alias.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+                    || aliases
+                        .insert(alias.to_owned(), *canonical.get(target)?)
+                        .is_some()
+                {
+                    return None;
+                }
+            }
+        }
+        Some(Self(aliases))
+    }
+
+    pub fn input<'a>(&self, update: &'a Value) -> Option<TelegramTask<'a>> {
+        let mut task = telegram_input(update)?;
+        let message = &update["message"];
+        if task.route.message_thread_id != Some(37)
+            || message["chat"]["type"] != "private"
+            || message["from"]["is_bot"] != false
+        {
+            return None;
+        }
+        let device = if let Some(selection) = task.prompt.trim_start().strip_prefix('@') {
+            let (alias, prompt) = selection.split_once(char::is_whitespace)?;
+            let prompt = prompt.trim();
+            if !valid_text(prompt) || prompt.starts_with('/') {
+                return None;
+            }
+            task.prompt = prompt;
+            *self.0.get(alias)?
+        } else {
+            Device::Alpha
+        };
+        task.pin = Some(device);
+        Some(task)
+    }
 }
