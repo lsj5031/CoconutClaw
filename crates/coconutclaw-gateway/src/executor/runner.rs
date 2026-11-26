@@ -1,6 +1,7 @@
 use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +22,8 @@ use super::journal::{Intent, Journal};
 use super::link::{Link, PilotPaused, Scope, Unavailable, lower_hex, now_ms};
 #[cfg(target_os = "linux")]
 use super::production::{self, Permit as AuthorityDeadline};
+#[cfg(windows)]
+use super::windows_custody as custody;
 
 #[cfg(not(target_os = "linux"))]
 type AuthorityDeadline = Deadline;
@@ -53,7 +56,7 @@ enum Execution {
 pub fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     let mode = args.next();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     if mode.as_deref().is_some_and(|arg| arg == custody::MODE) {
         return custody::run(args);
     }
@@ -139,6 +142,15 @@ pub fn run() -> Result<()> {
         _ => bail!("{usage}"),
     };
     ensure!(args.next().is_none(), "{usage}");
+    #[cfg(windows)]
+    {
+        ensure!(
+            scope.placement().is_some(),
+            "Windows loopback requires an explicit enrollment"
+        );
+        custody::check_input(Path::new(&key_path)).context("check fixture seed custody")?;
+        custody::check_input(Path::new(&cert)).context("check fixture CA custody")?;
+    }
     let seed = fs::read(key_path)?
         .try_into()
         .map_err(|_| anyhow::anyhow!("expected a disposable 32-byte device key"))?;
@@ -482,6 +494,7 @@ impl Deadline {
     }
 }
 
+#[cfg(unix)]
 fn fixture_command(attempt: i64, hold: bool) -> Command {
     let mut command = Command::new("/bin/sh");
     command.args([
@@ -520,17 +533,24 @@ fn run_child(
     let exit = thread::scope(|scope| {
         let child = scope.spawn(|| {
             let hold = fixture == Fixture::Hold;
+            #[cfg(unix)]
             let mut command = fixture_command(attempt, hold);
             #[cfg(target_os = "macos")]
             if link.scope.placement().is_some() {
                 command = custody::command(attempt, hold, &deadline)?;
             }
-            command.env_clear().current_dir(dir);
+            #[cfg(windows)]
+            let mut command = custody::command(attempt, hold)?;
+            command.current_dir(dir);
+            #[cfg(windows)]
+            let timeout = custody::HOLD_SECS + 5;
+            #[cfg(unix)]
+            let timeout = 8;
             run_single_child(
                 command,
                 &intent.prompt,
                 &cancel,
-                8,
+                timeout,
                 ChildBoundary {
                     before_spawn: &|| {
                         if fixture == Fixture::CrashBeforeSpawn {

@@ -577,6 +577,7 @@ name = "coconutclaw-gateway"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "coconutclaw-config",
  "coconutclaw-provider",
  "coconutclaw-telegram",
  "ed25519-dalek",

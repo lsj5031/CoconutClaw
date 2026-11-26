@@ -394,12 +394,13 @@ pub enum ChildExit {
 }
 
 pub fn run_single_child(
-    command: Command,
+    mut command: Command,
     stdin: &str,
     cancel: &Arc<AtomicBool>,
     timeout_secs: u64,
     boundary: ChildBoundary<'_>,
 ) -> Result<ChildExit> {
+    command.env_clear();
     let result = run_provider_process(
         command,
         Some(stdin),
@@ -410,6 +411,8 @@ pub fn run_single_child(
         ProcessOptions {
             timeout: TimeoutPolicy::new(Some(timeout_secs), timeout_secs, timeout_secs),
             boundary: Some(boundary),
+            #[cfg(windows)]
+            inherit_environment: false,
         },
     )?;
     Ok(if result.cancelled {
@@ -424,6 +427,8 @@ pub fn run_single_child(
 struct ProcessOptions<'a> {
     timeout: TimeoutPolicy,
     boundary: Option<ChildBoundary<'a>>,
+    #[cfg(windows)]
+    inherit_environment: bool,
 }
 
 impl From<TimeoutPolicy> for ProcessOptions<'_> {
@@ -431,6 +436,8 @@ impl From<TimeoutPolicy> for ProcessOptions<'_> {
         Self {
             timeout,
             boundary: None,
+            #[cfg(windows)]
+            inherit_environment: true,
         }
     }
 }
@@ -450,7 +457,7 @@ fn run_provider_process(
         (boundary.before_spawn)()?;
     }
     #[cfg(windows)]
-    let (mut child, job) = windows::spawn(&cmd, stdin_text.is_some())
+    let (mut child, job) = windows::spawn(&cmd, stdin_text.is_some(), options.inherit_environment)
         .with_context(|| format!("failed to contain/start {bin_name}"))?;
     #[cfg(not(windows))]
     let mut child = cmd

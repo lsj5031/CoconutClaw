@@ -223,3 +223,36 @@ provide repeatable descendant assertions without inspecting real credentials.
 Native CI is required but is not manual authenticated Codex/Telegram fleet
 acceptance. No service installation is implied. Parent owns Linux upgrade,
 Mac transport/staging, exclusive primary polling and final fleet release.
+
+## BigFur enrolled loopback fixture
+
+From a disposable checkout on native Windows, use the reviewed source revision
+and the pre-provisioned Node, OpenSSL, wasm-bindgen and locked dependencies.
+The test creates its own private roots, seeds, CA, journals and mocked Telegram
+delivery ledger. It runs a synthetic provider built into the fixture binary.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+function Invoke-FixtureCommand($Program) {
+    & $Program @args
+    if ($LASTEXITCODE -ne 0) { throw "$Program failed ($LASTEXITCODE)" }
+}
+Invoke-FixtureCommand git rev-parse HEAD
+Invoke-FixtureCommand rustc -vV
+Invoke-FixtureCommand node -p 'process.platform+String.fromCharCode(32)+process.arch'
+Invoke-FixtureCommand cargo test --locked --offline -p coconutclaw-config windows_security::tests
+Invoke-FixtureCommand cargo test --locked --offline -p coconutclaw-provider windows::tests
+$Gateway = 'crates/coconutclaw-gateway'
+$FixtureTarget = Join-Path (Get-Location) "$Gateway/build/native"
+Invoke-FixtureCommand cargo build --locked --offline -p coconutclaw-gateway --features local-executor --bin gateway-local-executor --target-dir $FixtureTarget
+Invoke-FixtureCommand cargo build --locked --offline --release -p coconutclaw-gateway --target wasm32-unknown-unknown --target-dir "$Gateway/build/target"
+Invoke-FixtureCommand wasm-bindgen --target web --no-typescript --out-dir "$Gateway/build/worker" "$Gateway/build/target/wasm32-unknown-unknown/release/coconutclaw_gateway.wasm"
+Invoke-FixtureCommand node "$Gateway/stage.mjs"
+$env:GATEWAY_LOCAL_EXECUTOR = Join-Path $FixtureTarget 'debug/gateway-local-executor.exe'
+Get-FileHash -LiteralPath $env:GATEWAY_LOCAL_EXECUTOR -Algorithm SHA256
+Invoke-FixtureCommand node --test --test-concurrency=1 --test-name-pattern='native enrolled' "$Gateway/integration.test.mjs"
+```
+
+Record the source revision, OS, architecture, executable hash and test results.
+Require both `native enrolled Windows` tests to pass. The ACL and Job Object
+results require execution on Windows.

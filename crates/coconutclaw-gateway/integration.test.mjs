@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { once } from "node:events";
-import { cp, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer, request } from "node:https";
 import { join } from "node:path";
@@ -291,6 +291,8 @@ const timeout = { timeout: 20_000 };
 
 const executable = process.env.GATEWAY_LOCAL_EXECUTOR;
 const nativeTimeout = { timeout: 45_000, skip: !executable };
+const windowsCustody = process.platform === "win32";
+const singletonTimeout = { ...nativeTimeout, skip: !executable || windowsCustody };
 const realCodex = process.env.GATEWAY_TEST_CODEX;
 
 async function until(check, message, timeoutMs = 10_000) {
@@ -303,8 +305,17 @@ async function until(check, message, timeoutMs = 10_000) {
     assert.fail(message);
 }
 
+function makeWindowsPrivate(root) {
+    const sid = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+        "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { encoding: "utf8" }).trim();
+    assert.match(sid, /^S-\d+(?:-\d+)+$/);
+    execFileSync("icacls.exe", [root, "/inheritance:r", "/grant:r",
+        `*${sid}:(OI)(CI)F`, "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]);
+}
+
 async function attachExecutor(context, client, production, device = "alpha", originalSeed) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "executor-"));
+    if (windowsCustody) makeWindowsPrivate(root);
     const dir = join(root, "journal");
     const cert = join(root, "cert.pem");
     const ca = join(root, "ca.pem");
@@ -720,7 +731,7 @@ command = ${JSON.stringify(join(runner.home, "auth"))}
     context.diagnostic("2 local Responses requests, signed result and process_exited, native Codex PID gone and HTTP stream closed, 0 relaunches on resume");
 });
 
-test("native executor retains result across lost receipt, reconnects, and replies in the original topic", nativeTimeout, async context => {
+test("native executor retains result across lost receipt, reconnects, and replies in the original topic", singletonTimeout, async context => {
     const client = await runFixture(context, { executor: true });
     const { proxy, run, launches, proofs, verifyProof, query, packets } = await attachExecutor(context, client);
     const task = "telegram:101";
@@ -782,7 +793,7 @@ test("native executor retains result across lost receipt, reconnects, and replie
     assert.deepEqual(client.sends, [{ chat_id: 321, message_thread_id: 37, text: event.text }]);
 });
 
-test("native executor crashes on both sides of spawn and reconciles without relaunch", nativeTimeout, async context => {
+test("native executor crashes on both sides of spawn and reconciles without relaunch", singletonTimeout, async context => {
     const client = await runFixture(context, { executor: true });
     const { proxy, run, launches, proofs, verifyProof, query, packets } = await attachExecutor(context, client);
     await client.post("telegram", update(111), webhook);
@@ -822,7 +833,7 @@ test("native executor crashes on both sides of spawn and reconciles without rela
     await resumed.stop();
 });
 
-test("native executor fences replayed and late grants and confirms both kinds of cancellation", nativeTimeout, async context => {
+test("native executor fences replayed and late grants and confirms both kinds of cancellation", singletonTimeout, async context => {
     const client = await runFixture(context, { executor: true });
     const { proxy, run, launches, proofs, verifyProof, query, packets } = await attachExecutor(context, client);
     let replayed;
@@ -1243,7 +1254,7 @@ test("synthetic cutover imports the final delta and returns settled and held wor
     }));
 });
 
-test("synthetic cutover requires late signed terminal evidence before executor generation change", nativeTimeout, async context => {
+test("synthetic cutover requires late signed terminal evidence before executor generation change", singletonTimeout, async context => {
     const client = await runFixture(context, { executor: true, inspect: true });
     const { proxy, run, launches, query, verifyProof, packets } = await attachExecutor(context, client);
     const publicKey = client.keys.alpha.publicKey;
@@ -1357,7 +1368,7 @@ test("synthetic cutover requires late signed terminal evidence before executor g
     context.diagnostic(JSON.stringify({ from: 1, to: 2, oldTask, attempt, late, nextAttempt: replayedGrant.attempt }));
 });
 
-test("stale restore fences independent ledgers and executor journals after generation change", nativeTimeout, async context => {
+test("stale restore fences independent ledgers and executor journals after generation change", singletonTimeout, async context => {
     const root = await mkdtemp(join(import.meta.dirname, "build", "restore-"));
     context.after(() => rm(root, { recursive: true, force: true }));
     const anchor = join(root, "generation");
@@ -1784,7 +1795,7 @@ async function nativePlacement(context) {
 }
 
 test("BigFur fresh install pairs native runners and keeps the default, offline pins, and Unknown", {
-    ...nativeTimeout, skip: !executable || !cutoverCli,
+    ...nativeTimeout, skip: !executable || !cutoverCli || windowsCustody,
 }, async context => {
     const { root, mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
         await productionAuthorityFixture(context, { pairing: true, enrolled: {} });
@@ -1958,16 +1969,20 @@ test("native enrolled runners keep separate journals and replay the original res
     ]) {
         assert.match(await beta.runEnrolled("resume", undefined, options).exit(1), /journal identity mismatch/);
     }
-    assert.match(await beta.run("resume").exit(1), /generation must advance exactly once/);
+    if (!windowsCustody) {
+        assert.match(await beta.run("resume").exit(1), /generation must advance exactly once/);
+    }
     assert.equal(beta.packets.length, before);
     assert.ok(beta.packets.every(({ device }) => device === "beta"));
-    const legacy = join(beta.root, "legacy");
-    const legacyRunner = beta.run("init", undefined, undefined, 1, { journal: legacy });
-    await until(() => beta.packets.length > before, "legacy journal initialized");
-    await legacyRunner.stop();
-    const afterLegacy = beta.packets.length;
-    assert.match(await beta.runEnrolled("resume", undefined, { journal: legacy }).exit(1), /journal identity mismatch/);
-    assert.equal(beta.packets.length, afterLegacy);
+    if (!windowsCustody) {
+        const legacy = join(beta.root, "legacy");
+        const legacyRunner = beta.run("init", undefined, undefined, 1, { journal: legacy });
+        await until(() => beta.packets.length > before, "legacy journal initialized");
+        await legacyRunner.stop();
+        const afterLegacy = beta.packets.length;
+        assert.match(await beta.runEnrolled("resume", undefined, { journal: legacy }).exit(1), /journal identity mismatch/);
+        assert.equal(beta.packets.length, afterLegacy);
+    }
 
     beta.proxy.offline = false;
     beta.proxy.transform = async ({ response }) => response;
@@ -2081,9 +2096,96 @@ test("native enrolled runner reconciles consumed grants and reports both kinds o
     assert.deepEqual(mock.sends, []);
 });
 
+test("native enrolled Windows rejects unsafe ACLs and reparse points before opening state", {
+    ...nativeTimeout, skip: !executable || !windowsCustody,
+}, async context => {
+    const { client, cutover, mock } = await nativePlacement(context);
+    const beta = await attachExecutor(context, client, cutover, "beta");
+    const grant = path => execFileSync("icacls.exe", [path, "/grant", "*S-1-1-0:R"]);
+    const remove = path => execFileSync("icacls.exe", [path, "/remove:g", "*S-1-1-0"]);
+    assert.match(await beta.run("init").exit(1), /requires an explicit enrollment/);
+    const unsafeParent = join(beta.root, "unsafe");
+    await mkdir(unsafeParent);
+    grant(unsafeParent);
+    assert.match(await beta.runEnrolled("init", undefined, { journal: join(unsafeParent, "journal") }).exit(1),
+        /unsafe node ACL/);
+    assert.deepEqual(await readdir(unsafeParent), []);
+    for (const path of [beta.seed, join(beta.root, "ca.pem")]) {
+        grant(path);
+        assert.match(await beta.runEnrolled("init").exit(1), /unsafe node ACL/);
+        remove(path);
+    }
+    assert.deepEqual(beta.packets, []);
+
+    const owner = beta.runEnrolled("init");
+    await until(() => beta.packets.some(({ command }) => command.op === "next"), "private journal is admitted");
+    await owner.stop();
+    const packetCount = beta.packets.length;
+    const db = join(beta.dir, "executor.sqlite3");
+    const original = await readFile(db);
+    for (const path of [beta.dir, join(beta.dir, "executor.lock"), db]) {
+        grant(path);
+        assert.match(await beta.runEnrolled("resume").exit(1), /unsafe node ACL/);
+        remove(path);
+    }
+    const junction = join(beta.root, "junction");
+    await symlink(beta.root, junction, "junction");
+    assert.match(await beta.runEnrolled("resume", undefined, { journal: join(junction, "journal") }).exit(1),
+        /directory reparse points/);
+    await rm(junction);
+    const wal = `${db}-wal`;
+    await symlink(unsafeParent, wal, "junction");
+    assert.match(await beta.runEnrolled("resume").exit(1), /state reparse points/);
+    await rm(wal);
+    assert.deepEqual(await readdir(unsafeParent), []);
+    assert.deepEqual(await readFile(db), original);
+    assert.equal(beta.packets.length, packetCount);
+    assert.deepEqual(await beta.launches(), []);
+    assert.deepEqual(mock.sends, []);
+});
+
+async function watchWindowsTree(context, provider) {
+    const script = `
+        $ErrorActionPreference = 'Stop'
+        $owned = @(${provider.join(",")}) | ForEach-Object {
+            $process = [System.Diagnostics.Process]::GetProcessById($_)
+            if (!$process.Handle -or $process.HasExited) { throw "Fixture process $_ is not live" }
+            $process
+        }
+        [Console]::WriteLine('ready')
+        if ([Console]::ReadLine() -eq 'wait') {
+            foreach ($process in $owned) {
+                if (!$process.WaitForExit(3000)) { throw "Fixture process $($process.Id) is still live" }
+            }
+        }
+    `;
+    const watcher = spawn("powershell.exe", ["-NoProfile", "-NonInteractive",
+        "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]);
+    let stdout = "";
+    let stderr = "";
+    watcher.stdout.setEncoding("utf8").on("data", data => { stdout += data; });
+    watcher.stderr.setEncoding("utf8").on("data", data => { stderr += data; });
+    let done = false;
+    const exited = once(watcher, "close").finally(() => { done = true; });
+    context.after(async () => {
+        if (!watcher.stdin.destroyed) watcher.stdin.end();
+        await exited;
+    });
+    await until(() => {
+        assert.ok(!done, stderr);
+        return stdout.trim() === "ready";
+    }, "native process handles retained for the live provider and descendant", 5000);
+    return { provider, async waitForExit() {
+        watcher.stdin.end("wait\n");
+        assert.deepEqual(await exited, [0, null], stderr);
+    } };
+}
+
 const linuxCustody = process.platform === "linux";
-test(`native enrolled ${linuxCustody ? "Linux" : "macOS"} custody exits a live tree on cancellation and runner SIGKILL`, {
-    ...nativeTimeout, skip: !executable || (!linuxCustody && process.platform !== "darwin"),
+const custodyHost = windowsCustody ? "Windows" : linuxCustody ? "Linux" : "macOS";
+const ownerLoss = windowsCustody ? "abrupt runner termination" : "runner SIGKILL";
+test(`native enrolled ${custodyHost} custody exits a live tree on cancellation and ${ownerLoss}`, {
+    ...nativeTimeout, skip: !executable || (!windowsCustody && !linuxCustody && process.platform !== "darwin"),
 }, async context => {
     const { client, cutover, admit, cancelHeaders, mock } = await nativePlacement(context);
     const beta = await attachExecutor(context, client, cutover, "beta");
@@ -2099,7 +2201,21 @@ test(`native enrolled ${linuxCustody ? "Linux" : "macOS"} custody exits a live t
                 return { pid: Number(pid), parent: Number(parent), group: Number(group), state, command };
             }).filter(row => !row.state.startsWith("Z"));
     }
-    async function liveTree(runner) {
+    async function liveTree(runner, launchIndex = 0) {
+        if (windowsCustody) {
+            const provider = await until(async () => {
+                const attempt = (await beta.launches())[launchIndex];
+                if (!attempt) return false;
+                const tree = await readFile(join(beta.dir, `tree-${attempt}`), "utf8").catch(error => {
+                    if (error.code !== "ENOENT") throw error;
+                    return "";
+                });
+                const ids = /^([1-9]\d*) ([1-9]\d*)\r?\n$/.exec(tree);
+                return ids && ids.slice(1).map(Number);
+            }, "Windows fixture provider publishes its live descendant", 5000);
+            assert.equal(new Set([runner.pid, ...provider]).size, 3);
+            return watchWindowsTree(context, provider);
+        }
         if (linuxCustody) {
             return until(async () => {
                 try {
@@ -2130,6 +2246,10 @@ test(`native enrolled ${linuxCustody ? "Linux" : "macOS"} custody exits a live t
         }, "runner owns a live group with a running sleep descendant", 3000);
     }
     async function treeExited(tree, reason) {
+        if (windowsCustody) {
+            await tree.waitForExit();
+            return;
+        }
         if (linuxCustody) {
             await until(async () => (await Promise.all(tree.provider.map(procStat))).every(stat => !stat),
                 `${reason} did not reap provider PIDs ${tree.provider}`, 2000);
@@ -2154,6 +2274,9 @@ test(`native enrolled ${linuxCustody ? "Linux" : "macOS"} custody exits a live t
     }];
     const journalIdentity = () => beta.query("SELECT instance,public_key FROM identity").map(row => ({ ...row }));
     assert.deepEqual(journalIdentity(), identity);
+    if (windowsCustody) {
+        assert.match(await beta.runEnrolled("resume").exit(1), /executor journal is already in use/);
+    }
     assert.equal((await client.post("cancel", { task: cancelled }, cancelHeaders)).phase, "cancel_requested");
     await until(() => beta.query(
         "SELECT acknowledged FROM evidence WHERE attempt=? AND event='cancelled'", cancelledAttempt,
@@ -2169,13 +2292,13 @@ test(`native enrolled ${linuxCustody ? "Linux" : "macOS"} custody exits a live t
 
     const lost = await admit(45120, "@mars synthetic custody owner loss");
     const owner = beta.runEnrolled("resume", "hold");
-    const lostTree = await liveTree(owner);
+    const lostTree = await liveTree(owner, 1);
     const [, lostAttempt] = await beta.launches();
     assert.equal(beta.query("SELECT phase FROM attempts WHERE attempt=?", lostAttempt)[0].phase, "consumed");
     context.diagnostic(`consumed attempt ${lostAttempt}, runner ${owner.pid}, live tree ${JSON.stringify(lostTree)}`);
     assert.deepEqual(await owner.stop(), [null, "SIGKILL"]);
-    await treeExited(lostTree, "runner SIGKILL");
-    context.diagnostic("runner SIGKILL and provider tree exit confirmed before recovery");
+    await treeExited(lostTree, ownerLoss);
+    context.diagnostic(`${ownerLoss} and provider tree exit confirmed before recovery`);
     const recoverAt = beta.packets.length;
     assert.match(await beta.runEnrolled("resume", undefined, { incarnation: cutover.enrolled.alpha }).exit(1),
         /journal identity mismatch/);

@@ -1,4 +1,7 @@
-use std::fs::{DirBuilder, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::DirBuilder;
+use std::fs::{File, OpenOptions};
+#[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
@@ -62,6 +65,9 @@ impl Journal {
         predecessor: Option<&str>,
         rotate_key: bool,
     ) -> Result<Self> {
+        #[cfg(windows)]
+        super::windows_custody::prepare_journal(dir, init)?;
+        #[cfg(unix)]
         if init {
             DirBuilder::new().mode(0o700).create(dir)?;
         }

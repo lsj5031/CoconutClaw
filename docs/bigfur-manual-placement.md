@@ -179,8 +179,23 @@ This check covers the fixture's group members. Live macOS acceptance still
 requires private host credentials and workspace, separately authorized
 enrollment, and a custody policy for tools that create their own groups or
 sessions. Run the Linux enrolled custody test on Leo-Claw for native validation.
-Windows still needs BigFur integration and native ACL and Job Object validation
-on Mercury.
+Windows accepts `--loopback-fixture` with an explicit `--enrollment`. Use
+absolute paths on a Windows filesystem that supports ACLs. Put the synthetic
+seed, CA and journal in disposable directories with the private DACL described
+in [Windows onboarding](windows-onboarding.md). The runner checks those paths
+for reparse points and checks the DACLs before reading the seed or opening the
+journal, including existing lock, database and SQLite sidecars. `init` creates
+the journal directory under the private parent. `resume` keeps the original
+enrollment and signatures.
+
+The Windows fixture starts its built-in synthetic provider inside the native
+runner's noninheritable kill-on-close Job Object. Native tests retain process
+handles for the provider and its descendant, check that both exit after
+cancellation or abrupt runner termination, and verify signed Unknown after
+resuming the original journal. The lost attempt has one Start, one launch,
+and zero deliveries. Run the PowerShell fixture checks in
+[Windows onboarding](windows-onboarding.md#bigfur-enrolled-loopback-fixture)
+on Mercury to validate this behavior.
 
 ## BigFur integration gates
 

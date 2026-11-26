@@ -79,11 +79,11 @@ fn process_fixture() {
             let _ = leaf.try_wait();
         }
         "owner" => {
-            let (_child, _job) = spawn(&command(&root, "leader"), false).unwrap();
+            let (_child, _job) = spawn(&command(&root, "leader"), false, true).unwrap();
             thread::sleep(Duration::from_secs(90));
         }
         "shutdown" => {
-            let (_child, _job) = spawn(&command(&root, "leader"), false).unwrap();
+            let (_child, _job) = spawn(&command(&root, "leader"), false, true).unwrap();
             wait_file(&root.join("release"));
             crate::kill_active_process_groups();
             fs::write(root.join("shutdown-ready"), "ready").unwrap();
@@ -109,7 +109,7 @@ fn cancellation_timeout_and_normal_exit_kill_detached_descendants() {
                 None,
                 None,
                 "owned-test",
-                TimeoutPolicy::new(Some(30), 60, 60),
+                TimeoutPolicy::new(Some(30), 60, 60).into(),
             )
         });
         let leader = process(&root, "leader");
@@ -158,7 +158,7 @@ fn abrupt_owner_death_and_owned_shutdown_leave_no_tree_on_restart() {
         fs::remove_file(root.join("leaf")).unwrap();
         fs::remove_file(root.join("leader")).unwrap();
         let _ = fs::remove_file(root.join("release"));
-        let (restarted, job) = spawn(&command(&root, "leader"), false).unwrap();
+        let (restarted, job) = spawn(&command(&root, "leader"), false, true).unwrap();
         let mut member = 0;
         checked(unsafe {
             windows_sys::Win32::System::JobObjects::IsProcessInJob(

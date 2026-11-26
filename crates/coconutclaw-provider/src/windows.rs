@@ -177,9 +177,12 @@ fn command_line(command: &Command, executable: &Path) -> Result<Vec<u16>> {
     Ok(line)
 }
 
-fn launch_inputs(command: &Command) -> Result<(PathBuf, Vec<u16>)> {
+fn launch_inputs(command: &Command, inherit_environment: bool) -> Result<(PathBuf, Vec<u16>)> {
     let mut vars = BTreeMap::new();
-    for (name, value) in env::vars_os()
+    for (name, value) in inherit_environment
+        .then(env::vars_os)
+        .into_iter()
+        .flatten()
         .map(|(name, value)| (name, Some(value)))
         .chain(
             command
@@ -230,8 +233,12 @@ fn launch_inputs(command: &Command) -> Result<(PathBuf, Vec<u16>)> {
     Ok((executable, block))
 }
 
-pub(super) fn spawn(command: &Command, input: bool) -> Result<(Child, Job)> {
-    let (executable, environment) = launch_inputs(command)?;
+pub(super) fn spawn(
+    command: &Command,
+    input: bool,
+    inherit_environment: bool,
+) -> Result<(Child, Job)> {
+    let (executable, environment) = launch_inputs(command, inherit_environment)?;
     let mut line = command_line(command, &executable)?;
     let app = wide(executable.as_os_str())?;
     let cwd = command
