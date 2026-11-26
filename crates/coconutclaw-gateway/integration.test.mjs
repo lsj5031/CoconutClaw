@@ -292,6 +292,7 @@ const timeout = { timeout: 20_000 };
 const executable = process.env.GATEWAY_LOCAL_EXECUTOR;
 const nativeTimeout = { timeout: 45_000, skip: !executable };
 const windowsCustody = process.platform === "win32";
+const linuxCustody = process.platform === "linux";
 const singletonTimeout = { ...nativeTimeout, skip: !executable || windowsCustody };
 const realCodex = process.env.GATEWAY_TEST_CODEX;
 
@@ -384,8 +385,15 @@ async function attachExecutor(context, client, production, device = "alpha", ori
         let stderr = "";
         child.stderr.setEncoding("utf8").on("data", data => { stderr += data; });
         const exited = once(child, "exit");
+        let termination;
+        child.once("close", (code, signal) => { termination = code ?? signal; });
         const process = {
             pid: child.pid,
+            assertRunning() {
+                if (termination !== undefined) {
+                    assert.fail(`executor ${child.pid} exited (${termination}): ${stderr.trim()}`);
+                }
+            },
             async exit(expected) {
                 assert.deepEqual(await exited, [expected, null], stderr);
                 return stderr;
@@ -532,6 +540,42 @@ async function attachProductionRunner(context, client, cutover, mock, ingress) {
 async function procChildren(pid) {
     const children = await readFile(`/proc/${pid}/task/${pid}/children`, "utf8");
     return children.trim().split(/\s+/).filter(Boolean).map(Number);
+}
+
+const procStat = pid => readFile(`/proc/${pid}/stat`, "utf8").catch(error => {
+    if (error.code !== "ENOENT") throw error;
+    return "";
+});
+const statFields = stat => stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+
+async function liveLinuxTree(runner) {
+    return until(async () => {
+        try {
+            const [supervisor] = await procChildren(runner.pid);
+            if (!supervisor) return false;
+            const [leader] = await procChildren(supervisor);
+            if (!leader) return false;
+            const [detached] = await procChildren(leader);
+            if (!detached) return false;
+            const stat = await procStat(detached);
+            const [state, parent, group, session] = statFields(stat);
+            return stat.startsWith(`${detached} (sleep) `) && state !== "Z"
+                && Number(parent) === leader && Number(group) === detached
+                && Number(session) === detached && { supervisor, provider: [leader, detached] };
+        } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+            return false;
+        }
+    }, "Linux supervisor owns a live provider with a detached sleep descendant", 3000);
+}
+
+async function linuxTreeExited(tree, reason) {
+    await until(async () => (await Promise.all(tree.provider.map(procStat))).every(stat => !stat),
+        `${reason} did not reap provider PIDs ${tree.provider}`, 2000);
+    await until(async () => {
+        const stat = await procStat(tree.supervisor);
+        return !stat || statFields(stat)[0] === "Z";
+    }, `${reason} did not exit supervisor ${tree.supervisor}`, 2000);
 }
 
 test("BigFur Linux runner binds placement and authority and drains owned processes without relaunch", {
@@ -1913,21 +1957,35 @@ test("BigFur fresh install pairs native runners and keeps the default, offline p
 
     const lost = (await ingress(update(45205, "@desk synthetic interrupted child"))).task;
     const interrupted = beta.runEnrolled("resume", "hold");
+    const linuxTree = linuxCustody ? await liveLinuxTree(interrupted) : undefined;
     const attempt = await until(async () => (await beta.launches())[1], "interrupted child launched");
+    if (linuxTree) {
+        assert.equal(beta.query("SELECT phase FROM attempts WHERE attempt=?", attempt)[0].phase, "consumed");
+    }
     assert.deepEqual(await interrupted.stop(), [null, "SIGKILL"]);
+    if (linuxTree) {
+        await linuxTreeExited(linuxTree, "runner SIGKILL");
+        context.diagnostic(`Runner ${interrupted.pid} killed and Linux tree exited before resume ${JSON.stringify(linuxTree)}`);
+    }
     const recoverAt = beta.packets.length;
     const betaResumed = beta.runEnrolled("resume");
     const unknown = await until(async () => {
+        if (linuxCustody) betaResumed.assertRunning();
         const state = await status(lost);
         return state.outcome && state;
     }, "operator sees Unknown after native recovery");
     assert.deepEqual(unknown, {
         placement: "beta", runner: "Online runner", attempt_phase: "unknown", outcome: "Unknown attempt outcome",
     });
-    const [proof] = beta.proofs("unknown").map(({ command }) => beta.verifyProof(command.proof));
-    assert.deepEqual(proof, { attempt, event: { kind: "unknown" } });
+    const [unknownPacket] = beta.proofs("unknown");
+    const proof = unknownPacket.command.proof;
+    assert.deepEqual(beta.verifyProof(proof), { attempt, event: { kind: "unknown" } });
     await until(() => beta.query("SELECT acknowledged FROM evidence WHERE attempt=? AND event='unknown'", attempt)[0]?.acknowledged
         && beta.packets.slice(recoverAt).some(({ command }) => command.op === "next"), "native recovery acknowledges and polls");
+    if (linuxCustody) {
+        assert.deepEqual(beta.query("SELECT payload,signature FROM evidence WHERE attempt=? AND event='unknown'", attempt)
+            .map(row => ({ ...row })), [proof]);
+    }
     assert.equal((await client.agent("beta", "next")).task, null);
     assert.equal((await beta.launches()).filter(id => id === attempt).length, 1);
     assert.equal(beta.packets.filter(({ command }) => command.op === "start" && command.attempt === attempt).length, 1);
@@ -2181,7 +2239,6 @@ async function watchWindowsTree(context, provider) {
     } };
 }
 
-const linuxCustody = process.platform === "linux";
 const custodyHost = windowsCustody ? "Windows" : linuxCustody ? "Linux" : "macOS";
 const ownerLoss = windowsCustody ? "abrupt runner termination" : "runner SIGKILL";
 test(`native enrolled ${custodyHost} custody exits a live tree on cancellation and ${ownerLoss}`, {
@@ -2189,11 +2246,6 @@ test(`native enrolled ${custodyHost} custody exits a live tree on cancellation a
 }, async context => {
     const { client, cutover, admit, cancelHeaders, mock } = await nativePlacement(context);
     const beta = await attachExecutor(context, client, cutover, "beta");
-    const procStat = pid => readFile(`/proc/${pid}/stat`, "utf8").catch(error => {
-        if (error.code !== "ENOENT") throw error;
-        return "";
-    });
-    const statFields = stat => stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     function processes() {
         return execFileSync("/bin/ps", ["-axo", "pid=,ppid=,pgid=,state=,comm="], { encoding: "utf8" })
             .trim().split("\n").map(line => {
@@ -2217,24 +2269,7 @@ test(`native enrolled ${custodyHost} custody exits a live tree on cancellation a
             return watchWindowsTree(context, provider);
         }
         if (linuxCustody) {
-            return until(async () => {
-                try {
-                    const [supervisor] = await procChildren(runner.pid);
-                    if (!supervisor) return false;
-                    const [leader] = await procChildren(supervisor);
-                    if (!leader) return false;
-                    const [detached] = await procChildren(leader);
-                    if (!detached) return false;
-                    const stat = await procStat(detached);
-                    const [state, parent, group, session] = statFields(stat);
-                    return stat.startsWith(`${detached} (sleep) `) && state !== "Z"
-                        && Number(parent) === leader && Number(group) === detached
-                        && Number(session) === detached && { supervisor, provider: [leader, detached] };
-                } catch (error) {
-                    if (error.code !== "ENOENT") throw error;
-                    return false;
-                }
-            }, "Linux supervisor owns a live provider with a detached sleep descendant", 3000);
+            return liveLinuxTree(runner);
         }
         return until(() => {
             const rows = processes();
@@ -2251,13 +2286,7 @@ test(`native enrolled ${custodyHost} custody exits a live tree on cancellation a
             return;
         }
         if (linuxCustody) {
-            await until(async () => (await Promise.all(tree.provider.map(procStat))).every(stat => !stat),
-                `${reason} did not reap provider PIDs ${tree.provider}`, 2000);
-            await until(async () => {
-                const stat = await procStat(tree.supervisor);
-                return !stat || statFields(stat)[0] === "Z";
-            }, `${reason} did not exit supervisor ${tree.supervisor}`, 2000);
-            return;
+            return linuxTreeExited(tree, reason);
         }
         await until(() => processes().every(row => !tree.some(member => member.pid === row.pid)),
             `${reason} left live members of group ${tree[0].group} (${tree.map(row => row.pid)})`, 2000);
