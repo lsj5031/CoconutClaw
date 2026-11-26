@@ -3,12 +3,12 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
-use coconutclaw_gateway::executor_wire::{
-    Event, Evidence, SignedEvidence, evidence_bytes_for, fixture_instance,
-};
+use coconutclaw_gateway::executor_wire::{Event, Evidence, SignedEvidence};
 use ed25519_dalek::{Signer, SigningKey};
 use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+
+use super::link::Scope;
 
 pub struct Intent {
     pub attempt: i64,
@@ -24,7 +24,7 @@ pub struct Pending {
 pub struct Journal {
     db: Connection,
     _lock: File,
-    instance: String,
+    scope: Scope,
 }
 
 const SCHEMA: &str = "
@@ -54,26 +54,11 @@ const SCHEMA: &str = "
 ";
 
 impl Journal {
-    pub fn open(dir: &Path, key: &SigningKey, init: bool, generation: u32) -> Result<Self> {
-        Self::open_scoped(
-            dir,
-            key,
-            init,
-            fixture_instance(generation),
-            generation
-                .checked_sub(1)
-                .filter(|previous| *previous > 0)
-                .map(fixture_instance)
-                .as_deref(),
-            false,
-        )
-    }
-
     pub fn open_scoped(
         dir: &Path,
         key: &SigningKey,
         init: bool,
-        instance: String,
+        scope: Scope,
         predecessor: Option<&str>,
         rotate_key: bool,
     ) -> Result<Self> {
@@ -92,6 +77,7 @@ impl Journal {
         }
         let mut db = Connection::open_with_flags(dir.join("executor.sqlite3"), flags)?;
         db.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")?;
+        let instance = scope.journal_identity();
         let public_key = hex::encode(key.verifying_key().to_bytes());
         if init {
             let txn = db.transaction()?;
@@ -111,9 +97,9 @@ impl Journal {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if identity.0 == instance {
+        if scope.placement().is_some() || identity.0 == instance {
             ensure!(
-                identity.1 == public_key,
+                identity == (instance, public_key),
                 "executor journal identity mismatch"
             );
         } else {
@@ -149,7 +135,7 @@ impl Journal {
         Ok(Self {
             db,
             _lock: lock,
-            instance,
+            scope,
         })
     }
 
@@ -242,7 +228,7 @@ impl Journal {
             "attempt is already sealed"
         );
         for event in events {
-            Self::record(&txn, &self.instance, key, attempt, event)?;
+            Self::record(&txn, &self.scope, key, attempt, event)?;
         }
         txn.commit()?;
         Ok(())
@@ -250,19 +236,19 @@ impl Journal {
 
     #[cfg(target_os = "linux")]
     pub fn started(&self, key: &SigningKey, attempt: i64) -> Result<()> {
-        Self::record(&self.db, &self.instance, key, attempt, Event::Started)
+        Self::record(&self.db, &self.scope, key, attempt, Event::Started)
     }
 
     fn record(
         db: &Connection,
-        instance: &str,
+        scope: &Scope,
         key: &SigningKey,
         attempt: i64,
         event: Event,
     ) -> Result<()> {
         let name = event.name();
         let payload = serde_json::to_string(&Evidence { attempt, event })?;
-        let signature = hex::encode(key.sign(&evidence_bytes_for(instance, &payload)).to_bytes());
+        let signature = hex::encode(key.sign(&scope.evidence_bytes(&payload)).to_bytes());
         db.execute(
             "INSERT INTO evidence(attempt,event,payload,signature) VALUES(?,?,?,?)",
             params![attempt, name, payload, signature],

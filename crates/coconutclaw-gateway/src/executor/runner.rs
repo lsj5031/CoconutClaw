@@ -1,4 +1,5 @@
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use coconutclaw_gateway::executor_wire::{
-    CancelEvidence, Event, Grant, Phase, Status, fixture_instance,
+    CancelEvidence, Device, Event, Grant, Phase, Status, fixture_instance,
 };
 use coconutclaw_provider::{ChildBoundary, ChildExit, run_single_child};
 use ed25519_dalek::SigningKey;
@@ -17,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::journal::{Intent, Journal};
-use super::link::{Link, PilotPaused, Unavailable, now_ms};
+use super::link::{Link, PilotPaused, Scope, Unavailable, lower_hex, now_ms};
 #[cfg(target_os = "linux")]
 use super::production;
 
@@ -65,7 +66,7 @@ pub fn run() -> Result<()> {
         }
         .serve();
     }
-    let usage = "--loopback-fixture init|resume <https-origin> <CA PEM> <32-byte key file> <journal directory> [--generation N] [hold|crash-before-spawn|crash-after-spawn]";
+    let usage = "--loopback-fixture init|resume <https-origin> <CA PEM> <32-byte key file> <journal directory> [--generation N | --enrollment N OBJECT_ID PLACEMENT INCARNATION] [hold|crash-before-spawn|crash-after-spawn]";
     ensure!(
         mode.is_some_and(|arg| arg == "--loopback-fixture"),
         "{usage}"
@@ -80,16 +81,44 @@ pub fn run() -> Result<()> {
     let key_path = args.next().context(usage)?;
     let dir = PathBuf::from(args.next().context(usage)?);
     let mut behavior = args.next();
-    let generation = if behavior.as_deref().is_some_and(|arg| arg == "--generation") {
-        let generation = args
-            .next()
-            .and_then(|arg| arg.to_str()?.parse::<u32>().ok())
-            .filter(|generation| *generation > 0)
-            .context(usage)?;
-        behavior = args.next();
-        generation
-    } else {
-        1
+    let mut predecessor = None;
+    let scope = match behavior.as_deref().and_then(|arg| arg.to_str()) {
+        Some("--generation" | "--enrollment") => {
+            let generation = args
+                .next()
+                .and_then(|arg| arg.to_str()?.parse::<NonZeroU32>().ok())
+                .context(usage)?;
+            let scope = if behavior.as_deref().is_some_and(|arg| arg == "--enrollment") {
+                let object = args
+                    .next()
+                    .and_then(|arg| arg.into_string().ok())
+                    .context(usage)?;
+                let placement = args
+                    .next()
+                    .and_then(|arg| Device::named(arg.to_str()?))
+                    .context(usage)?;
+                let incarnation = args
+                    .next()
+                    .and_then(|arg| arg.into_string().ok())
+                    .context(usage)?;
+                ensure!(
+                    lower_hex(&object) && lower_hex(&incarnation),
+                    "invalid fixture enrollment"
+                );
+                Scope::Enrolled {
+                    instance: format!("bigfur:{generation}:{object}"),
+                    placement,
+                    incarnation,
+                }
+            } else {
+                predecessor =
+                    (generation.get() > 1).then(|| fixture_instance(generation.get() - 1));
+                Scope::Singleton(fixture_instance(generation.get()))
+            };
+            behavior = args.next();
+            scope
+        }
+        _ => Scope::Singleton(fixture_instance(1)),
     };
     let fixture = match behavior {
         None => Fixture::Normal,
@@ -107,9 +136,16 @@ pub fn run() -> Result<()> {
         origin.to_str().context(usage)?,
         &fs::read(cert)?,
         key,
-        fixture_instance(generation),
+        scope,
     )?;
-    let journal = Journal::open(&dir, &link.key, init, generation)?;
+    let journal = Journal::open_scoped(
+        &dir,
+        &link.key,
+        init,
+        link.scope.clone(),
+        predecessor.as_deref(),
+        false,
+    )?;
     Executor {
         link,
         journal,
@@ -196,9 +232,13 @@ impl Executor {
             return Ok(true);
         };
         ensure!(claim.task == task, "claim bound to another task");
+        let expected = self
+            .link
+            .scope
+            .placement()
+            .or_else(|| self.link.is_production().then_some(Device::Alpha));
         ensure!(
-            !self.link.is_production()
-                || claim.placement.as_deref() == Some(coconutclaw_gateway::executor_wire::DEVICE),
+            expected.is_none_or(|placement| claim.placement.as_deref() == Some(placement.name())),
             "claim lacks the enrolled runner placement"
         );
         self.journal.remember(&Intent {
@@ -211,7 +251,7 @@ impl Executor {
     fn launch(&mut self, intent: Intent) -> Result<bool> {
         let attempt = intent.attempt;
         let status = self.link.status(attempt)?;
-        if self.resolve_without_launch(&status)? {
+        if self.resolve_without_launch(&status, false)? {
             return Ok(false);
         }
         let sequence = self.journal.next_sequence()?;
@@ -221,9 +261,14 @@ impl Executor {
         else {
             return Ok(true);
         };
-        if grant.instance != self.link.instance
+        if grant.instance != self.link.scope.instance()
             || grant.attempt != attempt
             || grant.request_sequence != sequence
+            || self
+                .link
+                .scope
+                .placement()
+                .is_some_and(|placement| grant.placement != Some(placement))
         {
             return Err(Unavailable.into());
         }
@@ -240,34 +285,69 @@ impl Executor {
             self.journal.finish(&self.link.key, attempt, [event])?;
             return Ok(false);
         }
+        let enrolled = self.link.scope.placement().is_some();
+        let enrolled_deadline = if enrolled {
+            Some(
+                Deadline::authority(Some(grant.start_until))?
+                    .shorter(Deadline::authority(grant.authority_valid_until)?),
+            )
+        } else {
+            None
+        };
         let status = self.link.status(attempt)?;
-        if self.resolve_without_launch(&status)? {
+        if self.resolve_without_launch(&status, enrolled)? {
             return Ok(false);
         }
         ensure!(
             status.phase == Phase::Authorized && status.start_until == Some(grant.start_until),
             "grant conflicts with current authorization"
         );
-        let Some(deadline) = Deadline::from_grant(&grant)? else {
-            return Ok(true);
+        let deadline = if let Some(start) = enrolled_deadline {
+            let deadline = start.shorter(Deadline::authority(status.authority_valid_until)?);
+            deadline.check().map_err(|_| Unavailable)?;
+            deadline
+        } else {
+            let Some(deadline) = Deadline::new(grant.start_until, 5000)? else {
+                return Ok(true);
+            };
+            deadline
         };
         ensure!(
             self.journal.consume(attempt)?,
             "grant has already been consumed"
         );
+        #[cfg(target_os = "linux")]
         let Execution::Fixture(fixture) = self.execution else {
             unreachable!();
         };
-        let events = run_child(&self.link, &self.dir, intent, deadline, fixture);
+        #[cfg(not(target_os = "linux"))]
+        let Execution::Fixture(fixture) = self.execution;
+        let events = run_child(
+            &self.link,
+            &self.dir,
+            intent,
+            grant.start_until,
+            deadline,
+            fixture,
+        );
         self.journal.finish(&self.link.key, attempt, events)?;
         Ok(false)
     }
 
-    fn resolve_without_launch(&mut self, status: &Status) -> Result<bool> {
+    fn resolve_without_launch(
+        &mut self,
+        status: &Status,
+        received_enrolled_grant: bool,
+    ) -> Result<bool> {
         let terminal = if status.cancel_requested || status.phase == Phase::CancelledBeforeStart {
             #[cfg(target_os = "linux")]
             if self.link.is_production() {
                 production::check_cancel(status).map_err(|_| Unavailable)?;
+            }
+            if self.link.scope.placement().is_some() {
+                Deadline::authority(status.authority_valid_until)?
+                    .check()
+                    .map_err(|_| Unavailable)?;
             }
             Some(Event::Cancelled {
                 evidence: CancelEvidence::BeforeStart,
@@ -275,8 +355,10 @@ impl Executor {
         } else {
             match status.phase {
                 Phase::Claimed => return Ok(false),
+                Phase::Authorized if received_enrolled_grant => return Ok(false),
                 Phase::Authorized
                     if !self.link.is_production()
+                        && self.link.scope.placement().is_none()
                         && status
                             .start_until
                             .is_some_and(|until| now_ms().is_ok_and(|now| now < until)) =>
@@ -305,13 +387,24 @@ struct Deadline {
 }
 
 impl Deadline {
-    fn from_grant(grant: &Grant) -> Result<Option<Self>> {
+    fn new(wall: i64, max_ms: i64) -> Result<Option<Self>> {
         let monotonic_now = Instant::now();
-        let remaining = grant.start_until.saturating_sub(now_ms()?);
-        Ok((1..=5000).contains(&remaining).then(|| Self {
-            wall: grant.start_until,
+        let remaining = wall.saturating_sub(now_ms()?);
+        Ok((1..=max_ms).contains(&remaining).then(|| Self {
+            wall,
             monotonic: monotonic_now + Duration::from_millis(remaining as u64),
         }))
+    }
+
+    fn authority(wall: Option<i64>) -> Result<Self> {
+        Self::new(wall.ok_or(Unavailable)?, 2000)?.ok_or_else(|| Unavailable.into())
+    }
+
+    fn shorter(self, other: Self) -> Self {
+        Self {
+            wall: self.wall.min(other.wall),
+            monotonic: self.monotonic.min(other.monotonic),
+        }
     }
 
     fn check(&self) -> Result<()> {
@@ -327,6 +420,7 @@ fn run_child(
     link: &Link,
     dir: &Path,
     intent: Intent,
+    start_until: i64,
     deadline: Deadline,
     fixture: Fixture,
 ) -> Vec<Event> {
@@ -373,7 +467,14 @@ fn run_child(
         while !child.is_finished() {
             if Instant::now() >= next_poll && !cancel.load(Ordering::Acquire) {
                 let delay = match link.status(attempt) {
-                    Ok(status) if status.cancel_requested => {
+                    Ok(status)
+                        if status.cancel_requested
+                            && (link.scope.placement().is_none()
+                                || (status.phase.has_grant()
+                                    && status.start_until == Some(start_until)
+                                    && Deadline::authority(status.authority_valid_until)
+                                        .is_ok_and(|permit| permit.check().is_ok()))) =>
+                    {
                         cancel.store(true, Ordering::Release);
                         Duration::from_millis(250)
                     }

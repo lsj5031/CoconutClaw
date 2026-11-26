@@ -62,6 +62,41 @@ An object restart closes this fixture's authority until a successor is published
 The production singleton keeps its `executorKey`, `runnerIncarnation`, and
 original signature domains.
 
+## Native runner fixture
+
+Build `gateway-local-executor` with `--features local-executor`. Supply the
+synthetic values from the Control publication to `--loopback-fixture`.
+
+```sh
+gateway-local-executor --loopback-fixture init "$origin" "$ca" "$seed" "$journal" \
+  --enrollment "$generation" "$object_id" "$placement" "$incarnation"
+```
+
+Each runner starts with a separate private journal. `resume` requires the same
+generation, object ID, placement, incarnation, and public key. Use a fresh
+journal for a new enrollment. The runner replays stored signatures verbatim
+in their original domain.
+
+The runner checks the Hello device and claim placement. Before consuming a
+Start grant, it checks the instance, attempt, request sequence, placement, and
+original deadline against the reply and a fresh status under the same signed
+scope. The wire binds incarnation through the signed requests and Control
+checks. An authorized attempt with a lost Start reply, or a consumed attempt
+without a durable result, reconciles as Unknown without retrying the effect.
+
+With the staged gateway and the native binary path in `GATEWAY_LOCAL_EXECUTOR`,
+run the focused tests from `crates/coconutclaw-gateway`.
+
+```sh
+node --test --test-concurrency=1 \
+  --test-name-pattern='native enrolled|native executor|enrolled placement binds' \
+  integration.test.mjs
+```
+
+Host custody in Gate 4 requires the Linux supervisor, macOS parent-loss, and
+Windows ACL and Job Object checks on their respective hosts. Production
+placement also depends on the retirement and delivery-custody proof in Gate 2.
+
 ## BigFur integration gates
 
 1. Scope production admission to its existing webhook, private owner and

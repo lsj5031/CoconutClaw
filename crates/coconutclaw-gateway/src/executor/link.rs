@@ -2,7 +2,10 @@ use std::io::Read;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail, ensure};
-use coconutclaw_gateway::executor_wire::{BODY_LIMIT, DEVICE, Status, request_bytes};
+use coconutclaw_gateway::executor_wire::{
+    BODY_LIMIT, Device, Status, enrolled_evidence_bytes, enrolled_request_bytes,
+    evidence_bytes_for, request_bytes,
+};
 use ed25519_dalek::{Signer, SigningKey};
 use reqwest::blocking::Client;
 use reqwest::header::HeaderValue;
@@ -42,21 +45,72 @@ pub fn now_ms() -> Result<i64> {
         .try_into()?)
 }
 
+#[derive(Clone)]
+pub enum Scope {
+    Singleton(String),
+    Enrolled {
+        instance: String,
+        placement: Device,
+        incarnation: String,
+    },
+}
+
+impl Scope {
+    pub fn instance(&self) -> &str {
+        match self {
+            Self::Singleton(instance) | Self::Enrolled { instance, .. } => instance,
+        }
+    }
+
+    pub fn placement(&self) -> Option<Device> {
+        match self {
+            Self::Singleton(_) => None,
+            Self::Enrolled { placement, .. } => Some(*placement),
+        }
+    }
+
+    pub fn journal_identity(&self) -> String {
+        match self {
+            Self::Singleton(instance) => instance.clone(),
+            Self::Enrolled {
+                instance,
+                placement,
+                incarnation,
+            } => {
+                format!("enrolled:{instance}:{}:{incarnation}", placement.name())
+            }
+        }
+    }
+
+    pub fn evidence_bytes(&self, payload: &str) -> Vec<u8> {
+        match self {
+            Self::Singleton(instance) => evidence_bytes_for(instance, payload),
+            Self::Enrolled {
+                instance,
+                placement,
+                incarnation,
+            } => enrolled_evidence_bytes(instance, placement.name(), incarnation, payload),
+        }
+    }
+}
+
+pub fn lower_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 pub struct Link {
     client: Client,
     url: Url,
     pub key: SigningKey,
-    pub instance: String,
-    incarnation: Option<HeaderValue>,
+    pub scope: Scope,
+    production_incarnation: Option<HeaderValue>,
 }
 
 impl Link {
-    pub fn new(
-        origin: &str,
-        certificate: &[u8],
-        key: SigningKey,
-        instance: String,
-    ) -> Result<Self> {
+    pub fn new(origin: &str, certificate: &[u8], key: SigningKey, scope: Scope) -> Result<Self> {
         let mut url = Url::parse(origin).context("invalid loopback origin")?;
         ensure!(
             url.scheme() == "https"
@@ -81,8 +135,8 @@ impl Link {
             client,
             url,
             key,
-            instance,
-            incarnation: None,
+            scope,
+            production_incarnation: None,
         })
     }
 
@@ -122,13 +176,13 @@ impl Link {
             client: builder.build()?,
             url,
             key,
-            instance,
-            incarnation: Some(incarnation),
+            scope: Scope::Singleton(instance),
+            production_incarnation: Some(incarnation),
         })
     }
 
     pub fn is_production(&self) -> bool {
-        self.incarnation.is_some()
+        self.production_incarnation.is_some()
     }
 
     pub fn hello(&self, journal: &Journal) -> Result<()> {
@@ -143,8 +197,8 @@ impl Link {
         let hello: Hello = self.read(json!({"op":"hello"}))?;
         ensure!(
             hello.protocol == 1
-                && hello.instance == self.instance
-                && hello.device == DEVICE
+                && hello.instance == self.scope.instance()
+                && hello.device == self.scope.placement().unwrap_or(Device::Alpha).name()
                 && hello.capabilities == ["text"]
                 && (0..=i64::from(i32::MAX)).contains(&hello.last_sequence),
             "unexpected gateway identity or capability"
@@ -170,11 +224,20 @@ impl Link {
         } else {
             Duration::from_millis(750)
         };
+        let device = self.scope.placement().unwrap_or(Device::Alpha).name();
         let body = serde_json::to_vec(&json!({
-            "device":DEVICE, "at_ms":now_ms()?, "sequence":sequence, "command":command,
+            "device":device, "at_ms":now_ms()?, "sequence":sequence, "command":command,
         }))?;
         ensure!(body.len() <= BODY_LIMIT, "gateway request exceeds body cap");
-        let signature = self.key.sign(&request_bytes(&self.instance, &body));
+        let signed = match &self.scope {
+            Scope::Singleton(instance) => request_bytes(instance, &body),
+            Scope::Enrolled {
+                instance,
+                incarnation,
+                ..
+            } => enrolled_request_bytes(instance, device, incarnation, &body),
+        };
+        let signature = self.key.sign(&signed);
         let mut request = self
             .client
             .post(self.url.clone())
@@ -182,7 +245,13 @@ impl Link {
             .header("content-type", "application/json")
             .header("x-agent-signature", hex::encode(signature.to_bytes()))
             .body(body);
-        if let Some(incarnation) = &self.incarnation {
+        if let Scope::Enrolled { incarnation, .. } = &self.scope {
+            let mut incarnation = HeaderValue::from_str(incarnation)?;
+            incarnation.set_sensitive(true);
+            request = request
+                .header("x-executor-placement", device)
+                .header("x-executor-incarnation", incarnation);
+        } else if let Some(incarnation) = &self.production_incarnation {
             request = request.header("x-executor-incarnation", incarnation.clone());
         }
         let response = request.send().map_err(|_| Unavailable)?;

@@ -300,7 +300,7 @@ async function until(check, message, timeoutMs = 10_000) {
     assert.fail(message);
 }
 
-async function attachExecutor(context, client, production) {
+async function attachExecutor(context, client, production, device = "alpha") {
     const root = await mkdtemp(join(import.meta.dirname, "build", "executor-"));
     const dir = join(root, "journal");
     const cert = join(root, "cert.pem");
@@ -310,7 +310,7 @@ async function attachExecutor(context, client, production) {
     const csr = join(root, "tls.csr");
     const extensions = join(root, "tls.ext");
     const seed = join(root, "device.seed");
-    await writeFile(seed, client.keys.alpha.privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32), { mode: 0o600 });
+    await writeFile(seed, client.keys[device].privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32), { mode: 0o600 });
     await writeFile(extensions, "basicConstraints=critical,CA:FALSE\nsubjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n");
     const openssl = (...args) => execFileSync("openssl", args, { stdio: "ignore" });
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
@@ -335,6 +335,9 @@ async function attachExecutor(context, client, production) {
             const body = Buffer.concat(chunks).toString();
             const packet = { body, headers: { "x-agent-signature": req.headers["x-agent-signature"] } };
             if (production) packet.headers["x-executor-incarnation"] = req.headers["x-executor-incarnation"];
+            if (req.headers["x-executor-placement"] !== undefined) {
+                packet.headers["x-executor-placement"] = req.headers["x-executor-placement"];
+            }
             const envelope = JSON.parse(body);
             packets.push(envelope);
             assert.ok(packets.length <= 160, "executor request budget");
@@ -383,6 +386,14 @@ async function attachExecutor(context, client, production) {
         return start(["--loopback-fixture", mode, endpoint, ca, key, journal,
             ...(generation === 1 ? [] : ["--generation", String(generation)]), ...(behavior ? [behavior] : [])]);
     }
+    function runEnrolled(mode, behavior, {
+        journal = dir, key = seed, placement = device, incarnation = production.enrolled[device],
+        generation = production.target.pin.generation, objectId = production.target.pin.objectId,
+    } = {}) {
+        return start(["--loopback-fixture", mode, origin, ca, key, journal,
+            "--enrollment", String(generation), objectId, placement, incarnation,
+            ...(behavior ? [behavior] : [])]);
+    }
     async function runProduction(mode, config, options = {}) {
         const privateConfig = join(root, "runner.json");
         const incarnation = join(root, "incarnation");
@@ -417,11 +428,14 @@ async function attachExecutor(context, client, production) {
         const instance = production
             ? `bigfur:${production.target.pin.generation}:${production.target.pin.objectId}`
             : "local-executor-fixture";
-        assert.ok(verify(null, Buffer.from(`coconutclaw-evidence-v1\n${instance}\nalpha\n${proof.payload}`),
-            client.keys.alpha.publicKey, Buffer.from(proof.signature, "hex")));
+        const domain = production?.enrolled
+            ? `coconutclaw-enrolled-evidence-v1\n${instance}\n${device}\n${production.enrolled[device]}\n`
+            : `coconutclaw-evidence-v1\n${instance}\nalpha\n`;
+        assert.ok(verify(null, Buffer.from(domain + proof.payload),
+            client.keys[device].publicKey, Buffer.from(proof.signature, "hex")));
         return JSON.parse(proof.payload);
     }
-    return { proxy, run, runProduction, launches, proofs, verifyProof, query, packets, dir, seed, root };
+    return { proxy, run, runEnrolled, runProduction, launches, proofs, verifyProof, query, packets, dir, seed, root };
 }
 
 async function productionRunner(context) {
@@ -1747,6 +1761,175 @@ async function reportProductionResult(client, grant, text) {
         await client.agent("alpha", "report", { proof: { payload, signature } });
     }
 }
+
+async function nativePlacement(context) {
+    const enrolled = { alpha: "e".repeat(64), beta: "d".repeat(64) };
+    const { mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
+        await productionAuthorityFixture(context, { enrolled });
+    cutover.controlOnline = true;
+    await client.agent("beta", "hello", {}, 503);
+    mock.publish(cutover.target, mock.checks.at(-1).objectIncarnation, enrolled);
+    async function admit(id, prompt) {
+        const update = telegram(id);
+        update.message.text = prompt;
+        return (await ingress(update)).task;
+    }
+    return { mock, client, cutover, admit, cancelHeaders, owner, topic };
+}
+
+test("native enrolled runners keep separate journals and replay the original result after restart", nativeTimeout, async context => {
+    const { mock, client, cutover, admit, owner, topic } = await nativePlacement(context);
+    const alpha = await attachExecutor(context, client, cutover, "alpha");
+    const beta = await attachExecutor(context, client, cutover, "beta");
+    const alphaTask = await admit(45110, "alpha synthetic");
+    const betaTask = await admit(45111, "@mars beta synthetic");
+    beta.proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op === "report" && JSON.parse(envelope.command.proof.payload).event.kind === "result") {
+            assert.equal(response.status, 200);
+            beta.proxy.offline = true;
+            return null;
+        }
+        return response;
+    };
+    const alphaRunner = alpha.runEnrolled("init");
+    const betaRunner = beta.runEnrolled("init");
+    await until(() => beta.proxy.offline && mock.sends.some(send => send.task === alphaTask), "both runners finish");
+    await Promise.all([alphaRunner.stop(), betaRunner.stop()]);
+    const [saved] = beta.proofs("result");
+    const original = saved.command.proof;
+    const { attempt } = beta.verifyProof(original);
+    assert.equal(beta.query("SELECT acknowledged FROM evidence WHERE event='result'")[0].acknowledged, 0);
+    assert.deepEqual(await beta.launches(), [attempt]);
+
+    const before = beta.packets.length;
+    for (const options of [
+        { placement: "alpha" }, { incarnation: cutover.enrolled.alpha },
+        { generation: 2 }, { objectId: "f".repeat(64) }, { key: alpha.seed },
+    ]) {
+        assert.match(await beta.runEnrolled("resume", undefined, options).exit(1), /journal identity mismatch/);
+    }
+    assert.match(await beta.run("resume").exit(1), /generation must advance exactly once/);
+    assert.equal(beta.packets.length, before);
+    assert.ok(beta.packets.every(({ device }) => device === "beta"));
+    const legacy = join(beta.root, "legacy");
+    const legacyRunner = beta.run("init", undefined, undefined, 1, { journal: legacy });
+    await until(() => beta.packets.length > before, "legacy journal initialized");
+    await legacyRunner.stop();
+    const afterLegacy = beta.packets.length;
+    assert.match(await beta.runEnrolled("resume", undefined, { journal: legacy }).exit(1), /journal identity mismatch/);
+    assert.equal(beta.packets.length, afterLegacy);
+
+    beta.proxy.offline = false;
+    beta.proxy.transform = async ({ response }) => response;
+    const resumed = beta.runEnrolled("resume");
+    await until(() => beta.query("SELECT acknowledged FROM evidence WHERE event='result'")[0].acknowledged
+        && mock.sends.length === 2, "original evidence acknowledged");
+    await resumed.stop();
+    assert.deepEqual(beta.proofs("result").map(packet => packet.command.proof), [original, original]);
+    assert.deepEqual(await beta.launches(), [attempt]);
+    assert.equal((await alpha.launches()).length, 1);
+    assert.deepEqual(mock.sends.toSorted((left, right) => left.task.localeCompare(right.task)), [
+        { task: alphaTask, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "fixture output: alpha synthetic" },
+        { task: betaTask, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "fixture output: beta synthetic" },
+    ]);
+});
+
+test("native enrolled runner rejects mismatched Hello, claim and Start before consumption", nativeTimeout, async context => {
+    const { client, cutover, admit, cancelHeaders, mock } = await nativePlacement(context);
+    const beta = await attachExecutor(context, client, cutover, "beta");
+    const rejectedClaim = await admit(45112, "@mars synthetic claim");
+    beta.proxy.transform = async ({ response, envelope }) => envelope.command.op === "hello"
+        ? { ...response, value: { ...response.value, device: "alpha" } } : response;
+    assert.match(await beta.runEnrolled("init").exit(1), /unexpected gateway identity/);
+    assert.deepEqual(beta.packets.map(packet => packet.command.op), ["hello"]);
+
+    beta.proxy.transform = async ({ response, envelope }) => envelope.command.op === "claim"
+        ? { ...response, value: { ...response.value, placement: "alpha" } } : response;
+    assert.match(await beta.runEnrolled("resume").exit(1), /claim lacks the enrolled runner placement/);
+    assert.deepEqual(beta.query("SELECT attempt FROM attempts"), []);
+    assert.equal(beta.packets.some(packet => packet.command.op === "start"), false);
+    assert.equal((await client.post("cancel", { task: rejectedClaim }, cancelHeaders)).phase, "cancelled_before_start");
+
+    for (const [index, placement] of ["alpha", undefined, "lost"].entries()) {
+        const task = await admit(45113 + index, "@mars synthetic Start");
+        let attempt;
+        beta.proxy.transform = async ({ response, envelope }) => {
+            if (envelope.command.op !== "start") return response;
+            assert.equal(response.status, 200);
+            assert.equal(response.value.placement, "beta");
+            attempt = response.value.attempt;
+            if (placement === "lost") {
+                beta.proxy.offline = true;
+                return null;
+            }
+            return { ...response, value: { ...response.value, placement } };
+        };
+        let runner = beta.runEnrolled("resume");
+        if (placement === "lost") {
+            await until(() => beta.proxy.offline, "Start acknowledgement lost after authorization");
+            await runner.stop();
+            assert.equal(beta.query("SELECT phase FROM attempts WHERE attempt=?", attempt)[0].phase, "intent");
+            beta.proxy.offline = false;
+            runner = beta.runEnrolled("resume");
+        }
+        await until(async () => {
+            assert.deepEqual(await beta.launches(), [], "rejected grant must never spawn");
+            return attempt && beta.query(
+                "SELECT acknowledged FROM evidence WHERE attempt=? AND event='unknown'", attempt
+            )[0]?.acknowledged;
+        }, "unconsumed Start reconciled as Unknown");
+        await runner.stop();
+        assert.equal((await client.agent("beta", "status", { attempt })).phase, "unknown");
+        assert.equal((await client.agent("beta", "next")).task, null);
+        await client.agent("beta", "claim", { task }, 409);
+        assert.equal(beta.packets.filter(packet => packet.command.op === "start" && packet.command.attempt === attempt).length, 1);
+    }
+    assert.deepEqual(await beta.launches(), []);
+    assert.equal(beta.proofs("unknown").length, 3);
+    assert.deepEqual(mock.sends, []);
+});
+
+test("native enrolled runner reconciles consumed grants and reports both kinds of cancellation", nativeTimeout, async context => {
+    const { client, cutover, admit, cancelHeaders, mock } = await nativePlacement(context);
+    const beta = await attachExecutor(context, client, cutover, "beta");
+    await admit(45116, "@mars synthetic crash");
+    await beta.runEnrolled("init", "crash-before-spawn").exit(72);
+    const [{ attempt, phase }] = beta.query("SELECT attempt,phase FROM attempts");
+    assert.equal(phase, "consumed");
+    assert.deepEqual(await beta.launches(), []);
+
+    const before = await admit(45117, "@mars synthetic cancellation before Start");
+    beta.proxy.transform = async ({ response, envelope }) => {
+        if (envelope.command.op === "start" && response.status === 200) {
+            assert.equal((await client.post("cancel", { task: before }, cancelHeaders)).phase, "cancel_requested");
+        }
+        return response;
+    };
+    const resumed = beta.runEnrolled("resume");
+    await until(() => beta.query("SELECT event FROM evidence WHERE acknowledged=1").length === 2,
+        "Unknown and before-start cancellation acknowledged");
+    await resumed.stop();
+    assert.equal((await client.agent("beta", "status", { attempt })).phase, "unknown");
+    assert.deepEqual(await beta.launches(), []);
+    const [beforeProof] = beta.proofs("cancelled").map(({ command }) => beta.verifyProof(command.proof));
+    assert.equal((await client.agent("beta", "status", { attempt: beforeProof.attempt })).phase, "cancelled_before_start");
+    assert.equal(beforeProof.event.evidence, "before_start");
+
+    beta.proxy.transform = async ({ response }) => response;
+    const running = await admit(45118, "@mars synthetic cancellation after spawn");
+    const held = beta.runEnrolled("resume", "hold");
+    const started = await until(async () => (await beta.launches())[0], "synthetic child starts");
+    assert.equal((await client.post("cancel", { task: running }, cancelHeaders)).phase, "cancel_requested");
+    await until(() => beta.query(
+        "SELECT acknowledged FROM evidence WHERE attempt=? AND event='cancelled'", started
+    )[0]?.acknowledged, "exit cancellation acknowledged");
+    await held.stop();
+    const afterProof = beta.verifyProof(beta.proofs("cancelled").at(-1).command.proof);
+    assert.deepEqual(afterProof, { attempt: started, event: { kind: "cancelled", evidence: "process_exited" } });
+    assert.equal((await client.agent("beta", "status", { attempt: started })).phase, "cancelled_after_exit");
+    assert.deepEqual(await beta.launches(), [started]);
+    assert.deepEqual(mock.sends, []);
+});
 
 test("enrolled placement binds claims, grants and journal recovery to one runner", timeout, async context => {
     const enrolled = { alpha: "e".repeat(64), beta: "d".repeat(64) };

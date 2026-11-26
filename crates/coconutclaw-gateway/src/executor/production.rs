@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::journal::{Intent, Journal};
-use super::link::{Link, now_ms};
+use super::link::{Link, lower_hex, now_ms};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,7 +92,7 @@ impl Config {
             &config.origin,
             ca.as_deref(),
             SigningKey::from_bytes(&seed),
-            instance.clone(),
+            instance,
             incarnation,
         )?;
         let predecessor = (config.generation.get() > 1)
@@ -101,7 +101,7 @@ impl Config {
             &dir,
             &link.key,
             init,
-            instance,
+            link.scope.clone(),
             predecessor.as_deref(),
             true,
         )?;
@@ -326,13 +326,6 @@ fn monotonic_ms() -> Result<i64> {
     let seconds: i64 = clock.tv_sec;
     let nanos = i128::from(clock.tv_nsec) / 1_000_000;
     Ok(seconds * 1000 + i64::try_from(nanos)?)
-}
-
-fn lower_hex(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn private_file(path: &Path, journal: &Path) -> Result<Vec<u8>> {
