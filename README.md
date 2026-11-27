@@ -1,48 +1,54 @@
 # CoconutClaw
 
 Send a task to your Telegram bot in the private topic configured for BigFur.
-The cloud gateway saves the request, an enrolled Linux runner executes it
-with Codex in its assigned workspace, and the gateway returns the text reply
-to the same topic. You can submit work while the runner is off, within the
-deployment's admission limits.
+The cloud gateway queues it for an enrolled Linux, macOS or native Windows
+runner. The runner starts Codex in its assigned workspace, and BigFur sends
+the text reply to the same topic. You can submit work while the selected
+runner is offline, within the deployment's admission limits.
 
 ```mermaid
 flowchart LR
     Telegram -->|HTTPS webhook| Worker[Cloudflare Worker]
     Worker --> Ledger[SQLite Durable Object]
-    Runner[Linux runner and Codex] -->|Signed requests and receipts over HTTPS| Worker
+    Runner[Enrolled runner and Codex] -->|Signed requests and receipts over HTTPS| Worker
     Worker -->|Authority checks and delivery| Control[Independent control host and SQLite]
     Control -->|Bot API reply| Telegram
 ```
 
 The Worker and its SQLite Durable Object own the inbox, task ledger and
-outbox. One enrolled runner polls the Worker over outbound HTTPS and owns
+outbox. Each enrolled runner polls the Worker over outbound HTTPS and owns
 its local execution journal and Codex credentials. An independently
 administered, always-on control host owns the current generation's authority
 and the credential that sends Telegram replies.
 
 ## Use an existing BigFur deployment
 
-1. Get the bot name, exact private topic and current admission status from
-   your deployment operator. Telegram is the user interface. The operator
-   handles runner startup and recovery.
-2. In that topic, send a short plain-text request such as
-   `Reply with a short greeting.` BigFur accepts text of up to 4 KiB from
-   the configured private chat owner in that exact topic. Slash commands,
+1. Ask your deployment operator for the bot name, exact private topic,
+   current admission status and configured runner aliases.
+2. Send `Reply with a short greeting.` to the default placement, `alpha`.
+   To select another runner, send `@alias Reply with a short greeting.`,
+   replacing `alias` with the deployment-configured alias. BigFur removes
+   the prefix before passing the prompt to Codex. Unknown aliases are ignored
+   in paired deployments. BigFur accepts up to 4 KiB of plain text from the
+   configured private chat owner in that exact topic. Slash commands,
    callbacks and attachments are ignored. Each task uses a fresh, ephemeral
-   Codex session.
-3. Look for the reply in the same topic. If the runner is off or the reply
-   is delayed, give the operator the topic and message time so they can
-   identify the task in the ledger. Keep the original request for
-   reconciliation and avoid submitting a duplicate.
+   Codex session. [Manual placement](docs/bigfur-manual-placement.md)
+3. Look for the reply in the same topic. A queued task keeps its original
+   placement while the runner is offline, even if an alias changes. It
+   waits for that runner. If the reply is delayed, give the operator the
+   topic and message time so they can find the original request. Avoid
+   submitting a duplicate.
 
 ### Queuing, cancellation and recovery
 
 - **Offline intake.** With the webhook open and the active ledger within its
-  limits, the Worker can admit and deduplicate updates when the runner and
-  control host are both offline. Claiming, starting, recording runner evidence,
-  cancellation and sending require active control authority. Delivery also
-  requires a working Telegram route. A queued task has no execution receipt.
+  limits, the Worker can admit new tasks while their runner is offline.
+  Paired ingress requires an active Control registry for new admissions and
+  can acknowledge exact updates already in the local inbox during a Control
+  outage. The legacy singleton can admit work with Control offline.
+  Claiming, starting, recording runner evidence, cancellation and sending
+  require active control authority. Delivery also requires a working Telegram
+  route. A queued task has no execution receipt.
 - **Cancellation.** Ask the operator to cancel the task through the
   authenticated `POST /v1/cancel` endpoint using the gateway task ID.
   Before a Start grant, the ledger can block launch. After a grant,
@@ -62,12 +68,19 @@ and the credential that sends Telegram replies.
 
 Local Miniflare and signed loopback tests verified recovery, including
 offline intake, deduplication across restart, authority fencing and resume
-without relaunch. The production Telegram handoff subsequently verified
-replies in the existing topic and cancellation with confirmed process exit.
-Intentional production outage and reconnect testing remains open.
+without relaunch. The earlier Linux production Telegram handoff verified
+same-topic replies and cancellation with confirmed process exit.
 [Gateway tests](docs/cloud-gateway-phase-1.md) ·
 [Signed loopback recovery tests](docs/cloud-gateway-phase-2-local.md) ·
 [Linux runner receipts](docs/gateway-linux-runner.md)
+
+Gate 4 production Telegram acceptance covered routed tasks and same-topic
+replies on Linux, macOS and native Windows using real Codex. On each host,
+Codex wrote a test file outside the assigned workspace, read it back and
+removed it. Intentional production outage and reconnect testing remains open.
+
+Native loopback fixtures use synthetic providers to check cancellation and
+parent-loss behavior. [Native custody fixtures](docs/bigfur-manual-placement.md#native-runner-fixture)
 
 ## Self-host BigFur
 
@@ -88,25 +101,46 @@ opening ingress. [Production cutover and limits](docs/bigfur-direct-retirement.m
   that honors locks and `fsync`, and one serving process behind HTTPS. Keep
   this service and its state outside the Worker and runner restore domains.
   Its operator verifies any predecessor's retirement, publishes the matching
-  deployment and runner identity, and retains exclusive access to the Bot API
-  send credential. Keep host, runner and Worker clocks aligned for the
-  short-lived permits. [Control host runbook](docs/gateway-authority-control.md)
+  deployment and enrolls each runner in the production placement registry.
+  Control retains exclusive access to the Bot API send credential. Keep host,
+  runner and Worker clocks aligned for the short-lived permits.
+  [Control host runbook](docs/gateway-authority-control.md) ·
+  [Production placement registry](docs/gateway-authority-control.md#production-placement-registry)
 - **Signed production executor.** Build `gateway-local-executor` with the
-  `local-executor` Cargo feature. Run it on Linux under a dedicated service
-  account with `/usr/bin/python3` 3.10 or newer, working `pidfd_open` and
-  `pidfd_send_signal`, `/proc` and Linux child subreaping. Use a service manager
-  that kills the service cgroup on stop. The runner needs outbound HTTPS,
-  an absolute path to native Codex, a separate private Codex home with its
-  provisioned provider and authentication command, a permitted workspace and a
-  durable journal. Keep the runner JSON, raw 32-byte Ed25519 seed and
-  separately enrolled 64-character lowercase hex incarnation outside the
-  journal, workspace and Codex home. Give the service account ownership and
-  mode `0600` on each file. The single placement is `alpha`. Use
-  `gateway-local-executor --production init "$RUNNER_CONFIG" "$RUNNER_JOURNAL"`
-  for a new enrollment and `--production resume` with the same config and
-  journal for a normal restart. The signed production path requires Linux.
-  WSL operation remains unverified. macOS can run the Unix loopback fixture.
-  [Runner build, configuration and recovery](docs/gateway-linux-runner.md)
+  `local-executor` Cargo feature for the runner's host. Use
+  `coconutclaw nodes enroll --role runner` to create the public card for
+  Control, then redeem the one-use pairing code for the enrollment receipt.
+  The runner needs outbound HTTPS and absolute paths to its native Codex
+  executable, private Codex home with provider authentication, and workspace. Set
+  `timeout_seconds` to 1–3600. Keep the private JSON, raw 32-byte Ed25519 seed
+  and enrollment receipt outside the workspace, Codex home and durable journal.
+  Run `gateway-local-executor --production init "$RUNNER_CONFIG" "$RUNNER_JOURNAL"`
+  for a new enrollment and use `--production resume` with the same arguments
+  and original receipt on restart.
+  [Production runner setup](docs/bigfur-manual-placement.md#production-runner-setup)
+  - **Linux.** Use a dedicated service account and owner-only input files
+    (mode `0600`). The supervisor needs `/usr/bin/python3` 3.10 or newer,
+    working `pidfd_open` and `pidfd_send_signal`, `/proc` and child subreaping.
+    Use a service manager that kills the service cgroup on stop. The older
+    singleton `alpha` configuration with a separate incarnation file is
+    Linux-only. WSL remains unverified.
+    [Linux runner build, configuration and recovery](docs/gateway-linux-runner.md)
+  - **macOS.** Use runner-owned private input files (mode `0600`). The
+    `kqueue` guardian watches its parent and contains Codex in a process
+    group. Tools that create a separate group or session require a custody
+    policy. [macOS custody](docs/bigfur-manual-placement.md#native-runner-fixture)
+  - **Native Windows.** Use a native Codex executable and an absolute
+    `SystemRoot`. Keep private inputs and journal on a local ACL-capable
+    filesystem with a private DACL and no reparse points in their paths.
+    Codex runs in a noninheritable kill-on-close Job Object.
+    [Windows custody](docs/windows-onboarding.md#bigfur-enrolled-loopback-fixture)
+
+The production executor defaults to `workspace-write`. Setting
+`"codex_sandbox": "danger-full-access"` in its private runner JSON gives
+Codex the runner account's filesystem and network access. Use that setting only
+on hosts and accounts trusted to run the assigned tasks with those privileges.
+Approvals remain disabled in either mode.
+[Runner sandbox configuration](docs/bigfur-manual-placement.md#production-runner-setup)
 
 Retire any predecessor poller and sender before moving the bot to the BigFur
 webhook. Verify the pending-update boundary and keep the old state for
@@ -179,13 +213,24 @@ After the foreground run works, stop it before using `service install`,
 manages a systemd user service on Linux or a launchd agent on macOS. Use
 `service stop` or `service uninstall` for teardown.
 
-Standalone supports scoped memory and explicit inbox-backed one-off and
-recurring schedules through `coconutclaw schedule`. Set timezone, DST and
-missed-run policies when creating a schedule. `/schedules` inspects the
-current chat/topic. Use `import-openclaw` to preview explicitly selected
-Markdown files and `--apply` to import scoped candidates.
-[Memory](docs/memory.md) · [Scheduling](docs/inbox-scheduling.md#entry-points) ·
-[Import contract](docs/openclaw-import.md) · [Provider timeouts](docs/provider-timeouts.md)
+### Automation
+
+Create durable one-off and recurring schedules with the standalone
+`coconutclaw schedule` CLI. Set the timezone, DST and missed-run policies.
+In standalone Telegram, `/schedules` lists schedules and opens details for
+the current chat/topic. Cloud BigFur queues manually submitted text tasks
+and has no user-facing scheduling.
+[Scheduling](docs/inbox-scheduling.md#entry-points) ·
+[BigFur manual placement](docs/bigfur-manual-placement.md)
+
+### Dreaming
+
+CoconutClaw has no background dreaming scheduler. Standalone stores scoped
+memory in local SQLite. Use `/memory remember` to save a fact explicitly or
+`/memory promote` to activate a candidate. Use `import-openclaw` to preview
+explicitly selected Markdown files and `--apply` to import scoped candidates.
+[Memory](docs/memory.md) · [Import contract](docs/openclaw-import.md) ·
+[Provider timeouts](docs/provider-timeouts.md)
 
 ## Paired runners, desktop and Windows
 
@@ -210,8 +255,8 @@ owns cancellation and reconciliation, and delivers results.
 
   Use the Windows CLI for the foreground paired runner or to launch the
   desktop companion as described below. Standalone Telegram coordinator
-  operation on Windows remains unverified. BigFur's signed production
-  executor requires Linux.
+  operation on Windows remains unverified. For the separate BigFur executor,
+  see [Self-host BigFur](#self-host-bigfur).
 - **Native Windows paired runner.** Follow the PowerShell guide to enroll a
   private ACL-protected root and pair with the coordinator. Start with
   `& $Bin --data-dir $RunnerData nodes start`, wait
@@ -246,11 +291,13 @@ Build the normal CLI before the native lifecycle tests. Workspace tests use
 fake Telegram endpoints and fake Codex executables. CI runs native checks on
 Linux, macOS and Windows. Its Ubuntu gateway job exercises local fixture
 phases and validates the disabled Worker bundle with a `cf` dry run.
-The signed Linux executor and optional installed-Codex loopback checks
-have their own fixture instructions. The verification records identify
+The native BigFur executor fixtures check host custody and sandbox
+arguments with synthetic providers. The optional Linux installed-Codex
+loopback check has its own instructions. The verification records identify
 the revision and environment used for hosted and live acceptance.
 [CI workflow](.github/workflows/ci.yml) ·
 [Gateway loopback tests](docs/cloud-gateway-phase-2-local.md) ·
 [Linux runner tests](docs/gateway-linux-runner.md) ·
+[Native sandbox fixture](docs/bigfur-manual-placement.md#native-sandbox-fixture) ·
 [Architecture](docs/architecture.md) ·
 [Phase 0 validation](docs/validation-phase-0.md)
