@@ -260,5 +260,35 @@ the original receipt and journal after restart. A retired runner drains
 eligible signed evidence under its original enrollment and exits without
 requesting new work.
 
+On Linux, macOS and Windows, the production runner defaults to
+`"codex_sandbox": "workspace-write"` in its private `runner.json`. Set
+`"codex_sandbox": "danger-full-access"` to launch Codex without its
+sandbox, with the filesystem and network access of the runner account.
+Use this only on a host and account trusted to run the assigned tasks
+with those privileges. The runner passes the mode explicitly to Codex
+and keeps approvals disabled. The setting applies only to the local
+`gateway-local-executor --production` process. Other values cause startup
+to fail. To roll back, stop the runner, remove the field or set it to
+`"workspace-write"`, then resume with the same receipt and journal.
+
 If the pairing response is lost, repeat `redeem-production` with the same
 seed and code file to recover the committed receipt.
+
+## Native sandbox fixture
+
+From a disposable checkout on native Linux or macOS, with Node, OpenSSL, the
+Rust `wasm32-unknown-unknown` target and `wasm-bindgen` 0.2.130 installed, run:
+
+```sh
+gateway=crates/coconutclaw-gateway
+npm --prefix "$gateway" ci --no-audit --no-fund
+cargo build --locked -p coconutclaw-gateway --features local-executor \
+  --bin gateway-local-executor --target-dir "$gateway/build/native"
+npm --prefix "$gateway" run stage
+GATEWAY_LOCAL_EXECUTOR="$PWD/$gateway/build/native/debug/gateway-local-executor" \
+  node --test --test-concurrency=1 --test-name-pattern='BigFur native production runner passes the local Codex sandbox mode' \
+    "$gateway/integration.test.mjs"
+```
+
+The fixture launches a native Node stand-in for Codex and checks its actual
+arguments. For PowerShell, use the [Windows fixture commands](windows-onboarding.md#bigfur-enrolled-loopback-fixture).

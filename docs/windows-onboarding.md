@@ -226,10 +226,18 @@ Mac transport/staging, exclusive primary polling and final fleet release.
 
 ## BigFur enrolled loopback fixture
 
+For BigFur `gateway-local-executor --production`, the private `runner.json`
+can set `"codex_sandbox": "danger-full-access"` to launch Codex without
+its sandbox, with the Windows runner account's privileges. Approvals remain
+disabled and Codex runs in the runner's Job Object. To roll back, stop the
+runner, remove the field or set it to `"workspace-write"`, then resume with
+the same receipt and journal. See [BigFur production setup](bigfur-manual-placement.md#production-runner-setup).
+
 From a disposable checkout on native Windows, use the reviewed source revision
 and the pre-provisioned Node, OpenSSL, wasm-bindgen and locked dependencies.
 The test creates its own private roots, seeds, CA, journals and mocked Telegram
-delivery ledger. It runs a synthetic provider built into the fixture binary.
+delivery ledger. The sandbox fixture launches a native Node stand-in for Codex.
+The other executor fixtures use a synthetic provider built into the binary.
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -243,6 +251,7 @@ Invoke-FixtureCommand node -p 'process.platform+String.fromCharCode(32)+process.
 Invoke-FixtureCommand cargo test --locked --offline -p coconutclaw-config windows_security::tests
 Invoke-FixtureCommand cargo test --locked --offline -p coconutclaw-provider windows::tests
 $Gateway = 'crates/coconutclaw-gateway'
+Invoke-FixtureCommand npm --prefix $Gateway ci --no-audit --no-fund
 $FixtureTarget = Join-Path (Get-Location) "$Gateway/build/native"
 Invoke-FixtureCommand cargo build --locked --offline -p coconutclaw-gateway --features local-executor --bin gateway-local-executor --target-dir $FixtureTarget
 Invoke-FixtureCommand cargo build --locked --offline --release -p coconutclaw-gateway --target wasm32-unknown-unknown --target-dir "$Gateway/build/target"
@@ -250,9 +259,10 @@ Invoke-FixtureCommand wasm-bindgen --target web --no-typescript --out-dir "$Gate
 Invoke-FixtureCommand node "$Gateway/stage.mjs"
 $env:GATEWAY_LOCAL_EXECUTOR = Join-Path $FixtureTarget 'debug/gateway-local-executor.exe'
 Get-FileHash -LiteralPath $env:GATEWAY_LOCAL_EXECUTOR -Algorithm SHA256
+Invoke-FixtureCommand node --test --test-concurrency=1 --test-name-pattern='BigFur native production runner passes the local Codex sandbox mode' "$Gateway/integration.test.mjs"
 Invoke-FixtureCommand node --test --test-concurrency=1 --test-name-pattern='native enrolled' "$Gateway/integration.test.mjs"
 ```
 
 Record the source revision, OS, architecture, executable hash and test results.
-Require both `native enrolled Windows` tests to pass. The ACL and Job Object
-results require execution on Windows.
+Require the sandbox fixture and both `native enrolled Windows` tests to pass.
+The ACL and Job Object results require execution on Windows.

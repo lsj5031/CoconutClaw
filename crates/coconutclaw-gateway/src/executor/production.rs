@@ -51,11 +51,42 @@ pub struct Config {
     enrollment: Option<PathBuf>,
     ca: Option<PathBuf>,
     codex: PathBuf,
+    #[serde(default)]
+    codex_sandbox: CodexSandbox,
     codex_home: PathBuf,
     workspace: PathBuf,
     timeout_seconds: u32,
     #[serde(default)]
     provider_env: Vec<String>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(try_from = "String")]
+enum CodexSandbox {
+    #[default]
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl TryFrom<String> for CodexSandbox {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        match value.as_str() {
+            "workspace-write" => Ok(Self::WorkspaceWrite),
+            "danger-full-access" => Ok(Self::DangerFullAccess),
+            _ => Err("invalid Codex sandbox mode"),
+        }
+    }
+}
+
+impl CodexSandbox {
+    fn as_arg(&self) -> &'static str {
+        match self {
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -211,7 +242,8 @@ impl Config {
             .arg(&self.workspace)
             .arg(dir.canonicalize()?)
             .arg(self.timeout_seconds.to_string())
-            .arg(lock.as_raw_fd().to_string());
+            .arg(lock.as_raw_fd().to_string())
+            .arg(self.codex_sandbox.as_arg());
         self.provider_environment(&mut command)?;
         Ok(command.spawn()?)
     }
@@ -229,7 +261,7 @@ impl Config {
                 "--skip-git-repo-check",
                 "--ephemeral",
                 "--sandbox",
-                "workspace-write",
+                self.codex_sandbox.as_arg(),
                 "-c",
                 "approval_policy=\"never\"",
                 "-c",
@@ -291,6 +323,7 @@ pub fn fixture_supervisor(lock: File, dir: &Path, fixture: &Command) -> Result<C
         .arg(&dir)
         .arg("8")
         .arg(lock.as_raw_fd().to_string())
+        .arg("--fixture")
         .args(fixture.get_args())
         .spawn()?)
 }

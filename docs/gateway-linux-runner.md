@@ -33,8 +33,12 @@ the cutover path excludes unpinned tasks. [Production scope and limits](bigfur-d
 An optional `ca` PEM path replaces the default TLS trust roots for this
 connection. An optional `provider_env` list passes only the named variables
 to the Codex supervisor. The runner connects directly over HTTPS and rejects
-redirects. Codex uses workspace-write, disabled approvals, and a fresh
-ephemeral session with the prompt on stdin.
+redirects. Codex uses disabled approvals and a fresh ephemeral session with
+the prompt on stdin. `codex_sandbox` defaults to `"workspace-write"`. Set
+`"codex_sandbox": "danger-full-access"` in the local `runner.json` to
+run without the Codex sandbox, using the runner account's filesystem and
+network access. To roll back, stop the runner, remove the field or set it to
+`"workspace-write"`, then `resume` with the same enrollment and journal.
 
 ```sh
 gateway-local-executor --production init /private/runner/runner.json /durable/runner/journal

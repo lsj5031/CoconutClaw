@@ -2443,6 +2443,49 @@ test("BigFur retirement at the Start permit boundary marks recently seen alpha O
     ]);
 });
 
+test("BigFur native production runner passes the local Codex sandbox mode", nativeTimeout, async context => {
+    const { mock, client, cutover, ingress, telegram } =
+        await productionAuthorityFixture(context, { pairedProduction: true });
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null);
+    const enrollment = await pairProduction(mock, client, cutover, "alpha");
+    const runner = await attachProductionRunner(context, client, cutover, mock, ingress);
+    await writeFile(join(runner.workspace, "exec"), `
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+process.stdin.on("end", () => {
+    writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify(args));
+});
+process.stdin.resume();
+`);
+    const config = runner.configure(process.execPath);
+    const options = { enrollment, env: windowsCustody ? { SystemRoot: process.env.SystemRoot } : {} };
+    for (const codex_sandbox of ["full-access", null, true, { "danger-full-access": null }]) {
+        const invalid = await runner.runProduction("init", { ...config, codex_sandbox }, options);
+        const rejected = await Promise.race([
+            invalid.exit(1),
+            sleep(5000, undefined, { ref: false }).then(() => assert.fail("invalid runner configuration did not exit")),
+        ]);
+        assert.match(rejected, /invalid private runner configuration/);
+    }
+    assert.deepEqual(runner.packets, []);
+    await assert.rejects(readdir(runner.dir), { code: "ENOENT" });
+
+    for (const [index, codex_sandbox] of [undefined, "danger-full-access", "workspace-write"].entries()) {
+        assert.equal((await ingress(telegram(45410 + index))).disposition, "task");
+        const running = await runner.runProduction(index === 0 ? "init" : "resume",
+            { ...config, codex_sandbox }, options);
+        const { text } = await runner.receipt(index + 1, "result");
+        const args = JSON.parse(text);
+        assert.deepEqual(args, [
+            "--skip-git-repo-check", "--ephemeral", "--sandbox", codex_sandbox ?? "workspace-write",
+            "-c", 'approval_policy="never"', "-c", 'shell_environment_policy.inherit="none"',
+            "--output-last-message", args.at(-2), "-",
+        ]);
+        await running.stop();
+    }
+});
+
 test("BigFur native production runner binds the receipt and reconciles without repeating effects", {
     ...nativeTimeout, skip: !executable || !["darwin", "linux"].includes(process.platform),
 }, async context => {
