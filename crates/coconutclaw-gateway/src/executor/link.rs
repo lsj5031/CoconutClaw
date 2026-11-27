@@ -140,12 +140,12 @@ impl Link {
         })
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub fn production(
         origin: &str,
         ca: Option<&[u8]>,
         key: SigningKey,
-        instance: String,
+        scope: Scope,
         incarnation: &str,
     ) -> Result<Self> {
         let mut url = Url::parse(origin).map_err(|_| anyhow::anyhow!("invalid gateway origin"))?;
@@ -176,7 +176,7 @@ impl Link {
             client: builder.build()?,
             url,
             key,
-            scope: Scope::Singleton(instance),
+            scope,
             production_incarnation: Some(incarnation),
         })
     }
@@ -185,7 +185,7 @@ impl Link {
         self.production_incarnation.is_some()
     }
 
-    pub fn hello(&self, journal: &Journal) -> Result<()> {
+    pub fn hello(&self, journal: &Journal) -> Result<bool> {
         #[derive(Deserialize)]
         struct Hello {
             protocol: i64,
@@ -193,6 +193,8 @@ impl Link {
             device: String,
             capabilities: Vec<String>,
             last_sequence: i64,
+            #[serde(default)]
+            reconcile_only: bool,
         }
         let hello: Hello = self.read(json!({"op":"hello"}))?;
         ensure!(
@@ -203,7 +205,8 @@ impl Link {
                 && (0..=i64::from(i32::MAX)).contains(&hello.last_sequence),
             "unexpected gateway identity or capability"
         );
-        journal.sync_sequence(hello.last_sequence)
+        journal.sync_sequence(hello.last_sequence)?;
+        Ok(hello.reconcile_only)
     }
 
     pub fn status(&self, attempt: i64) -> Result<Status> {

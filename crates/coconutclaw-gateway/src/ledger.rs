@@ -518,6 +518,7 @@ impl Ledger {
                         start_until: row.start_until,
                         cancel_requested: row.cancel_requested != 0,
                         authority_valid_until: None,
+                        reconcile_only: None,
                     })),
                     None => conflict(),
                 }))

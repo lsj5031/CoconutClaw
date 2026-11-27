@@ -1,7 +1,9 @@
 use std::fs;
+#[cfg(any(target_os = "macos", windows))]
+use std::io::Read;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +22,8 @@ use serde_json::{Value, json};
 
 use super::journal::{Intent, Journal};
 use super::link::{Link, PilotPaused, Scope, Unavailable, lower_hex, now_ms};
+#[cfg(any(target_os = "macos", windows))]
+use super::production;
 #[cfg(target_os = "linux")]
 use super::production::{self, Permit as AuthorityDeadline};
 #[cfg(windows)]
@@ -49,7 +53,7 @@ struct Executor {
 
 enum Execution {
     Fixture(Fixture),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Production(Box<production::Config>),
 }
 
@@ -60,7 +64,7 @@ pub fn run() -> Result<()> {
     if mode.as_deref().is_some_and(|arg| arg == custody::MODE) {
         return custody::run(args);
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if mode.as_deref().is_some_and(|arg| arg == "--production") {
         let usage = "--production init|resume <private runner JSON> <journal directory>";
         let init = match args.next().as_deref().and_then(|arg| arg.to_str()) {
@@ -168,6 +172,7 @@ pub fn run() -> Result<()> {
         link.scope.clone(),
         predecessor.as_deref(),
         false,
+        false,
     )?;
     Executor {
         link,
@@ -181,30 +186,32 @@ pub fn run() -> Result<()> {
 impl Executor {
     fn serve(&mut self) -> Result<()> {
         self.journal.recover(&self.link.key)?;
-        let mut connected = false;
+        let mut reconcile_only = None;
         let mut backoff_ms = 250;
         loop {
             let step = (|| {
-                if !connected {
-                    self.link.hello(&self.journal)?;
-                    connected = true;
+                if reconcile_only.is_none() {
+                    reconcile_only = Some(self.link.hello(&self.journal)?);
                 }
-                self.step()
+                self.step(reconcile_only == Some(true))
             })();
             match step {
                 Ok(idle) => {
                     backoff_ms = 250;
                     if idle {
+                        if reconcile_only == Some(true) {
+                            return Ok(());
+                        }
                         thread::sleep(jitter(10_000));
                     }
                 }
                 Err(error) if error.is::<Unavailable>() => {
-                    connected = false;
+                    reconcile_only = None;
                     thread::sleep(jitter(backoff_ms));
                     backoff_ms = (backoff_ms * 2).min(6400);
                 }
                 Err(error) if error.is::<PilotPaused>() => {
-                    connected = false;
+                    reconcile_only = None;
                     let pause = error.downcast::<PilotPaused>()?;
                     thread::sleep(pause.0);
                 }
@@ -213,7 +220,7 @@ impl Executor {
         }
     }
 
-    fn step(&mut self) -> Result<bool> {
+    fn step(&mut self, reconcile_only: bool) -> Result<bool> {
         if let Some(pending) = self.journal.pending()? {
             let reply: Value = self
                 .link
@@ -230,7 +237,29 @@ impl Executor {
             return Ok(false);
         }
         if let Some(intent) = self.journal.intent()? {
+            if reconcile_only {
+                let status = self.link.status(intent.attempt)?;
+                ensure!(
+                    status.reconcile_only == Some(true),
+                    "reconciliation authority changed"
+                );
+                let terminal = match status.phase {
+                    Phase::CancelledBeforeStart => Some(Event::Cancelled {
+                        evidence: CancelEvidence::BeforeStart,
+                    }),
+                    phase if phase.has_grant() && status.start_until.is_some() => {
+                        Some(Event::Unknown)
+                    }
+                    _ => None,
+                };
+                self.journal
+                    .finish(&self.link.key, intent.attempt, terminal)?;
+                return Ok(false);
+            }
             return self.launch(intent);
+        }
+        if reconcile_only {
+            return Ok(true);
         }
         #[derive(Deserialize)]
         struct Next {
@@ -274,6 +303,9 @@ impl Executor {
     fn launch(&mut self, intent: Intent) -> Result<bool> {
         let attempt = intent.attempt;
         let status = self.link.status(attempt)?;
+        if status.reconcile_only == Some(true) {
+            return Err(Unavailable.into());
+        }
         if self.resolve_without_launch(&status, false)? {
             return Ok(false);
         }
@@ -295,21 +327,8 @@ impl Executor {
         {
             return Err(Unavailable.into());
         }
-        #[cfg(target_os = "linux")]
-        if let Execution::Production(config) = &self.execution {
-            let permit = production::start_permit(&grant).map_err(|_| Unavailable)?;
-            ensure!(
-                self.journal.consume(attempt)?,
-                "grant has already been consumed"
-            );
-            let event = config
-                .launch(&self.link, &self.journal, &self.dir, intent, &grant, permit)
-                .unwrap_or(Event::Unknown);
-            self.journal.finish(&self.link.key, attempt, [event])?;
-            return Ok(false);
-        }
-        let enrolled = self.link.scope.placement().is_some();
-        let enrolled_deadline = if enrolled {
+        let controlled = self.link.is_production() || self.link.scope.placement().is_some();
+        let start_deadline = if controlled {
             Some(
                 AuthorityDeadline::authority(Some(grant.start_until))
                     .map_err(|_| Unavailable)?
@@ -322,21 +341,23 @@ impl Executor {
             None
         };
         let status = self.link.status(attempt)?;
-        if self.resolve_without_launch(&status, enrolled)? {
+        if status.reconcile_only == Some(true) {
+            return Err(Unavailable.into());
+        }
+        if self.resolve_without_launch(&status, controlled)? {
             return Ok(false);
         }
-        ensure!(
-            status.phase == Phase::Authorized && status.start_until == Some(grant.start_until),
-            "grant conflicts with current authorization"
-        );
-        let deadline = if let Some(start) = enrolled_deadline {
+        if status.phase != Phase::Authorized || status.start_until != Some(grant.start_until) {
+            return Err(Unavailable.into());
+        }
+        let deadline = if let Some(start) = start_deadline {
             let deadline = start.shorter(
                 AuthorityDeadline::authority(status.authority_valid_until)
                     .map_err(|_| Unavailable)?,
             );
             deadline.check().map_err(|_| Unavailable)?;
             #[cfg(target_os = "linux")]
-            return self.launch_enrolled_fixture(intent, grant.start_until, deadline);
+            return self.launch_controlled_linux(intent, grant.start_until, deadline);
             #[cfg(not(target_os = "linux"))]
             deadline
         } else {
@@ -345,16 +366,27 @@ impl Executor {
             };
             deadline
         };
+        #[cfg(any(target_os = "macos", windows))]
+        if let Execution::Production(config) = &self.execution {
+            let events = run_production_child(
+                &self.link,
+                &self.dir,
+                &intent,
+                grant.start_until,
+                deadline,
+                config,
+                &self.journal,
+            )?;
+            self.journal.finish(&self.link.key, attempt, events)?;
+            return Ok(false);
+        }
         ensure!(
             self.journal.consume(attempt)?,
             "grant has already been consumed"
         );
-        #[cfg(target_os = "linux")]
         let Execution::Fixture(fixture) = self.execution else {
             unreachable!();
         };
-        #[cfg(not(target_os = "linux"))]
-        let Execution::Fixture(fixture) = self.execution;
         let events = run_child(
             &self.link,
             &self.dir,
@@ -368,58 +400,60 @@ impl Executor {
     }
 
     #[cfg(target_os = "linux")]
-    fn launch_enrolled_fixture(
+    fn launch_controlled_linux(
         &mut self,
         intent: Intent,
         start_until: i64,
         deadline: AuthorityDeadline,
     ) -> Result<bool> {
-        let Execution::Fixture(fixture) = self.execution else {
-            unreachable!();
-        };
         let attempt = intent.attempt;
         ensure!(
             self.journal.consume(attempt)?,
             "grant has already been consumed"
         );
-        if fixture == Fixture::CrashBeforeSpawn {
-            std::process::exit(72);
-        }
-        let mut command = fixture_command(attempt, fixture == Fixture::Hold);
-        command.arg("detached");
-        let event = (|| {
-            let supervisor =
-                production::fixture_supervisor(self.journal.process_lock()?, &self.dir, &command)?;
-            production::supervise(
-                supervisor,
+        let event = match &self.execution {
+            Execution::Production(config) => config.launch(
                 &self.link,
-                &intent,
+                &self.journal,
+                &self.dir,
+                intent,
                 start_until,
-                || Ok(Some(deadline)),
-                || {
-                    if fixture == Fixture::CrashAfterSpawn {
-                        std::process::exit(73);
-                    }
-                    self.journal.started(&self.link.key, attempt)
-                },
-            )
-        })()
+                deadline,
+            ),
+            Execution::Fixture(fixture) => (|| {
+                if *fixture == Fixture::CrashBeforeSpawn {
+                    std::process::exit(72);
+                }
+                let mut command = fixture_command(attempt, *fixture == Fixture::Hold);
+                command.arg("detached");
+                let supervisor = production::fixture_supervisor(
+                    self.journal.process_lock()?,
+                    &self.dir,
+                    &command,
+                )?;
+                production::supervise(
+                    supervisor,
+                    &self.link,
+                    &intent,
+                    start_until,
+                    deadline,
+                    || {
+                        if *fixture == Fixture::CrashAfterSpawn {
+                            std::process::exit(73);
+                        }
+                        self.journal.started(&self.link.key, attempt)
+                    },
+                )
+            })(),
+        }
         .unwrap_or(Event::Unknown);
         self.journal.finish(&self.link.key, attempt, [event])?;
         Ok(false)
     }
 
-    fn resolve_without_launch(
-        &mut self,
-        status: &Status,
-        received_enrolled_grant: bool,
-    ) -> Result<bool> {
+    fn resolve_without_launch(&mut self, status: &Status, received_grant: bool) -> Result<bool> {
         let terminal = if status.cancel_requested || status.phase == Phase::CancelledBeforeStart {
-            #[cfg(target_os = "linux")]
-            if self.link.is_production() {
-                production::check_cancel(status).map_err(|_| Unavailable)?;
-            }
-            if self.link.scope.placement().is_some() {
+            if self.link.is_production() || self.link.scope.placement().is_some() {
                 AuthorityDeadline::authority(status.authority_valid_until)
                     .map_err(|_| Unavailable)?
                     .check()
@@ -431,7 +465,7 @@ impl Executor {
         } else {
             match status.phase {
                 Phase::Claimed => return Ok(false),
-                Phase::Authorized if received_enrolled_grant => return Ok(false),
+                Phase::Authorized if received_grant => return Ok(false),
                 Phase::Authorized
                     if !self.link.is_production()
                         && self.link.scope.placement().is_none()
@@ -527,25 +561,109 @@ fn run_child(
     deadline: Deadline,
     fixture: Fixture,
 ) -> Vec<Event> {
+    let hold = fixture == Fixture::Hold;
+    #[cfg(unix)]
+    let mut command = fixture_command(intent.attempt, hold);
+    #[cfg(windows)]
+    let Ok(mut command) = custody::command(intent.attempt, hold) else {
+        return vec![Event::Unknown];
+    };
+    command.current_dir(dir);
+    #[cfg(windows)]
+    let timeout = custody::HOLD_SECS + 5;
+    #[cfg(unix)]
+    let timeout = 8;
+    #[cfg(target_os = "macos")]
+    let command = if link.scope.placement().is_some() {
+        let Ok(guard) = custody::guard(&command, &deadline, None) else {
+            return vec![Event::Unknown];
+        };
+        guard
+    } else {
+        command
+    };
+    run_owned_child(
+        link,
+        &intent,
+        start_until,
+        &deadline,
+        Some(fixture),
+        (command, timeout),
+    )
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn run_production_child(
+    link: &Link,
+    dir: &Path,
+    intent: &Intent,
+    start_until: i64,
+    deadline: Deadline,
+    config: &production::Config,
+    journal: &Journal,
+) -> Result<Vec<Event>> {
+    ensure!(
+        journal.consume(intent.attempt)?,
+        "grant has already been consumed"
+    );
+    let output_dir = dir
+        .canonicalize()?
+        .join(format!("output-{}", intent.attempt));
+    if fs::create_dir(&output_dir).is_err() {
+        return Ok(vec![Event::Unknown]);
+    }
+    let events = (|| {
+        let output = output_dir.join("reply");
+        let command = config.command(&output)?;
+        #[cfg(target_os = "macos")]
+        let lock = journal.process_lock()?;
+        #[cfg(target_os = "macos")]
+        let command = (
+            custody::guard(&command.0, &deadline, Some(&lock))?,
+            command.1,
+        );
+        let mut events = run_owned_child(link, intent, start_until, &deadline, None, command);
+        if let Some(event @ Event::Result { .. }) = events.last_mut() {
+            let metadata = fs::symlink_metadata(&output)?;
+            ensure!(
+                metadata.is_file() && !metadata.is_symlink(),
+                "invalid provider result file"
+            );
+            let mut text = String::new();
+            fs::File::open(&output)?
+                .take(4097)
+                .read_to_string(&mut text)?;
+            text.retain(|character| {
+                !character.is_control() || matches!(character, '\t' | '\n' | '\r')
+            });
+            let text = text.trim();
+            *event = if text.is_empty() || text.len() > 4096 {
+                Event::Unknown
+            } else {
+                Event::Result {
+                    text: text.to_owned(),
+                }
+            };
+        }
+        Ok::<_, anyhow::Error>(events)
+    })();
+    let _ = fs::remove_dir_all(&output_dir);
+    Ok(events.unwrap_or_else(|_| vec![Event::Unknown]))
+}
+
+fn run_owned_child(
+    link: &Link,
+    intent: &Intent,
+    start_until: i64,
+    deadline: &Deadline,
+    fixture: Option<Fixture>,
+    (command, timeout): (Command, u64),
+) -> Vec<Event> {
     let started = AtomicBool::new(false);
     let cancel = Arc::new(AtomicBool::new(false));
     let attempt = intent.attempt;
     let exit = thread::scope(|scope| {
         let child = scope.spawn(|| {
-            let hold = fixture == Fixture::Hold;
-            #[cfg(unix)]
-            let mut command = fixture_command(attempt, hold);
-            #[cfg(target_os = "macos")]
-            if link.scope.placement().is_some() {
-                command = custody::command(attempt, hold, &deadline)?;
-            }
-            #[cfg(windows)]
-            let mut command = custody::command(attempt, hold)?;
-            command.current_dir(dir);
-            #[cfg(windows)]
-            let timeout = custody::HOLD_SECS + 5;
-            #[cfg(unix)]
-            let timeout = 8;
             run_single_child(
                 command,
                 &intent.prompt,
@@ -553,13 +671,13 @@ fn run_child(
                 timeout,
                 ChildBoundary {
                     before_spawn: &|| {
-                        if fixture == Fixture::CrashBeforeSpawn {
+                        if fixture == Some(Fixture::CrashBeforeSpawn) {
                             std::process::exit(72);
                         }
                         deadline.check()
                     },
                     after_spawn: &|| {
-                        if fixture == Fixture::CrashAfterSpawn {
+                        if fixture == Some(Fixture::CrashAfterSpawn) {
                             std::process::exit(73);
                         }
                         started.store(true, Ordering::Release);

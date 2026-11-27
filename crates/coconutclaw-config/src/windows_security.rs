@@ -39,6 +39,18 @@ pub fn present(path: &Path) -> Result<bool> {
     }
 }
 
+pub fn open_file_identity(file: &File) -> Result<(u32, u64)> {
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    ensure!(
+        unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } != 0,
+        "cannot inspect file identity"
+    );
+    Ok((
+        info.dwVolumeSerialNumber,
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
+}
+
 pub fn private_directory(path: &Path, allow_missing: bool) -> Result<()> {
     ensure!(path.is_absolute(), "node directory must be absolute");
     let mut nearest = None;

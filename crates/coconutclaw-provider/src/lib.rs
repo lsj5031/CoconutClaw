@@ -400,7 +400,11 @@ pub fn run_single_child(
     timeout_secs: u64,
     boundary: ChildBoundary<'_>,
 ) -> Result<ChildExit> {
-    command.env_clear();
+    let environment: Vec<_> = command
+        .get_envs()
+        .filter_map(|(name, value)| Some((name.to_owned(), value?.to_owned())))
+        .collect();
+    command.env_clear().envs(environment);
     let result = run_provider_process(
         command,
         Some(stdin),
@@ -453,12 +457,21 @@ fn run_provider_process(
 ) -> Result<RunResult> {
     configure_child_command(&mut cmd);
 
+    #[cfg(not(windows))]
     if let Some(boundary) = &options.boundary {
         (boundary.before_spawn)()?;
     }
     #[cfg(windows)]
-    let (mut child, job) = windows::spawn(&cmd, stdin_text.is_some(), options.inherit_environment)
-        .with_context(|| format!("failed to contain/start {bin_name}"))?;
+    let (mut child, job) = windows::spawn(
+        &cmd,
+        stdin_text.is_some(),
+        options.inherit_environment,
+        options
+            .boundary
+            .as_ref()
+            .map(|boundary| boundary.before_spawn),
+    )
+    .with_context(|| format!("failed to contain/start {bin_name}"))?;
     #[cfg(not(windows))]
     let mut child = cmd
         .stdin(if stdin_text.is_some() {

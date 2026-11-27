@@ -237,6 +237,7 @@ pub(super) fn spawn(
     command: &Command,
     input: bool,
     inherit_environment: bool,
+    before_spawn: Option<&dyn Fn() -> Result<()>>,
 ) -> Result<(Child, Job)> {
     let (executable, environment) = launch_inputs(command, inherit_environment)?;
     let mut line = command_line(command, &executable)?;
@@ -293,6 +294,9 @@ pub(super) fn spawn(
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
     let mut jobs = JOBS.lock().expect("provider jobs");
     jobs.retain(|job| job.strong_count() != 0);
+    if let Some(before_spawn) = before_spawn {
+        before_spawn()?;
+    }
     checked(unsafe {
         CreateProcessW(
             app.as_ptr(),

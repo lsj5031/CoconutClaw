@@ -3,6 +3,8 @@ use std::fs::DirBuilder;
 use std::fs::{File, OpenOptions};
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
@@ -64,6 +66,7 @@ impl Journal {
         scope: Scope,
         predecessor: Option<&str>,
         rotate_key: bool,
+        bind_lock: bool,
     ) -> Result<Self> {
         #[cfg(windows)]
         super::windows_custody::prepare_journal(dir, init)?;
@@ -83,7 +86,11 @@ impl Journal {
         }
         let mut db = Connection::open_with_flags(dir.join("executor.sqlite3"), flags)?;
         db.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")?;
-        let instance = scope.journal_identity();
+        let mut instance = scope.journal_identity();
+        if bind_lock {
+            let (volume, file) = lock_identity(&lock)?;
+            instance.push_str(&format!(":journal:{volume}:{file}"));
+        }
         let public_key = hex::encode(key.verifying_key().to_bytes());
         if init {
             let txn = db.transaction()?;
@@ -145,7 +152,7 @@ impl Journal {
         })
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn process_lock(&self) -> Result<File> {
         Ok(self._lock.try_clone()?)
     }
@@ -287,4 +294,15 @@ impl Journal {
             .execute("UPDATE evidence SET acknowledged=1 WHERE id=?", [id])?;
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn lock_identity(lock: &File) -> Result<(u64, u64)> {
+    let metadata = lock.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn lock_identity(lock: &File) -> Result<(u32, u64)> {
+    coconutclaw_config::windows_security::open_file_identity(lock)
 }

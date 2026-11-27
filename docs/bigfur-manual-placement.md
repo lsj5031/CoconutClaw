@@ -210,21 +210,46 @@ on Mercury to validate this behavior.
    restore, independent runner retirement and single same-topic dispatch. In-place
    restoration of the active object and rollback of Control remain outside the
    recovery contract. [Control runbook](gateway-authority-control.md)
-3. Teach the native runner to use its enrolled placement for Hello, request
-   signatures, claim checks, grant consumption, and evidence. Bind each journal
-   to the exact enrollment and keep preexisting signed evidence verifiable in
-   its original domain. Exercise cross-placement replay, lost Start and result
-   acknowledgments, both kinds of cancellation, restart and Unknown without
-   effect retry through the native runner.
-   [Wire](../crates/coconutclaw-gateway/src/executor_wire.rs) ·
-   [Journal](../crates/coconutclaw-gateway/src/executor/journal.rs)
-4. Prove native custody on each host with host-owned credentials, workspace
-   and separate journal. Use synthetic prompts and processes for integration
-   tests. Native same-topic Telegram acceptance and real host enrollment
-   require a separately authorized run.
+3. The `--production` runner uses the pairing receipt for Hello, request
+   signatures, claim and Start checks, and evidence. It checks fresh Status
+   before consuming a Start grant. Its journal binds the enrollment, signing
+   key and original lock file identity. A file copy needs a new enrollment
+   and journal. The original journal resumes with its stored signatures.
+   The macOS production integration uses a synthetic provider and mocked
+   Telegram to exercise mismatched placement, lost Start and result
+   acknowledgments, both kinds of cancellation, abrupt loss, and retired
+   journal reconciliation. Unknown produces zero deliveries or new launches.
+4. Native synthetic loopback custody was accepted on macOS, Linux and Windows
+   in the base candidate. Production uses those custody paths. A separately
+   authorized rollout still needs native host admission with host-owned
+   credentials and workspace, verified Control and Telegram custody, and
+   same-topic Telegram acceptance.
 
 | Host | Native custody path |
 | --- | --- |
-| Linux Leo-Claw | BigFur's Linux-only `gateway-local-executor --production` uses an owned pidfd, subreaper and subtree drain through `owned_codex.py`. Keep service-account config, the private signing seed and incarnation outside the journal, workspace and Codex home. Prove grant consumption, process-exit cancellation and parent-loss cleanup per enrollment. [Linux runner](gateway-linux-runner.md) |
-| macOS Mars | The existing native paired `coconutclaw nodes start` path keeps an owner-only `nodes` directory, a host-local claim Store and local Codex auth. The Unix provider owns a process group. Port or reuse these custody mechanisms under the BigFur grant and journal, and prove cancellation and abrupt runner loss on macOS. [Paired nodes](production-nodes.md) |
-| Native Windows Mercury | The native paired `coconutclaw.exe nodes start` path uses a private ACL-checked `%LOCALAPPDATA%\CoconutClaw-native-runner` root with local key and SQLite journal. Its provider starts inside a noninheritable kill-on-close Job Object. Integrate native ACL and Job custody into the BigFur runner and run Windows tests for reparse points, unsafe ACLs, descendant exit and abrupt owner loss. [Windows custody](windows-onboarding.md) |
+| Linux Leo-Claw | The production runner uses an owned pidfd, subreaper and subtree drain through `owned_codex.py`. [Linux runner](gateway-linux-runner.md) |
+| macOS Mars | The guardian watches its runner parent with `kqueue`, holds the journal lock and contains Codex in its process group. Host custody still needs a policy for tools that create their own process group or session. |
+| Native Windows Mercury | The production runner uses the private ACL and reparse-point checks and launches native Codex directly inside a noninheritable kill-on-close Job Object. [Windows custody](windows-onboarding.md) |
+
+## Production runner setup
+
+Use `coconutclaw nodes enroll --role runner` as in the fixture and give the
+public card to the Control operator. Redeem their one-use code against the
+published HTTPS Control origin. Keep the seed, code file and receipt in
+owner-only storage. On Windows use the private ACL-checked root.
+
+```sh
+umask 077
+node pair-runner-local.mjs redeem-production "$control_origin" "$seed" "$code_file" > "$receipt"
+gateway-local-executor --production init "$private_config" "$journal"
+```
+
+The private runner JSON requires `origin` (the Worker HTTPS origin),
+`signing_key` (the 32-byte seed path), `enrollment` (the receipt path),
+`codex` (an absolute executable path), `codex_home`, `workspace`, and
+`timeout_seconds` (1 through 3600). Local installations can supply `ca`
+and an explicit `provider_env` allowlist. Keep configuration and signing
+material outside the journal, workspace and Codex home. Use `resume` with
+the original receipt and journal after restart. A retired runner drains
+eligible signed evidence under its original enrollment and exits without
+requesting new work.

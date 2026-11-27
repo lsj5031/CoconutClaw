@@ -1,32 +1,54 @@
-use std::fs::{self, File};
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader, Write};
 use std::num::NonZeroU32;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::process::{Child, Stdio};
+#[cfg(target_os = "linux")]
 use std::sync::mpsc;
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail, ensure};
-use coconutclaw_gateway::executor_wire::{CancelEvidence, Event, Grant, Phase, Status};
+#[cfg(target_os = "linux")]
+use anyhow::bail;
+use anyhow::{Context, Result, ensure};
+use coconutclaw_gateway::executor_wire::Device;
+#[cfg(target_os = "linux")]
+use coconutclaw_gateway::executor_wire::{CancelEvidence, Event};
 use ed25519_dalek::SigningKey;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+#[cfg(target_os = "linux")]
+use serde::Serialize;
+#[cfg(target_os = "linux")]
 use serde_json::json;
 
-use super::journal::{Intent, Journal};
-use super::link::{Link, lower_hex, now_ms};
+#[cfg(target_os = "linux")]
+use super::journal::Intent;
+use super::journal::Journal;
+#[cfg(target_os = "linux")]
+use super::link::now_ms;
+use super::link::{Link, Scope, lower_hex};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     origin: String,
-    generation: NonZeroU32,
-    object_id: String,
-    placement: String,
+    generation: Option<NonZeroU32>,
+    object_id: Option<String>,
+    placement: Option<Device>,
     signing_key: PathBuf,
-    incarnation: PathBuf,
+    incarnation: Option<PathBuf>,
+    enrollment: Option<PathBuf>,
     ca: Option<PathBuf>,
     codex: PathBuf,
     codex_home: PathBuf,
@@ -36,9 +58,21 @@ pub struct Config {
     provider_env: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Enrollment {
+    generation: NonZeroU32,
+    object_id: String,
+    placement: Device,
+    incarnation: String,
+}
+
 impl Config {
     pub fn load(path: &Path, dir: &Path, init: bool) -> Result<(Self, Link, Journal)> {
+        check_private_file(path)?;
         let path = path.canonicalize()?;
+        #[cfg(windows)]
+        super::windows_custody::check_journal_location(dir, init)?;
         let dir = if init {
             let name = dir
                 .file_name()
@@ -53,9 +87,41 @@ impl Config {
         };
         let mut config: Self = serde_json::from_slice(&private_file(&path, &dir)?)
             .map_err(|_| anyhow::anyhow!("invalid private runner configuration"))?;
+        let (enrollment, enrolled, enrollment_path) = match (
+            &config.enrollment,
+            config.generation,
+            &config.object_id,
+            config.placement,
+            &config.incarnation,
+        ) {
+            (Some(receipt), None, None, None, None) => (
+                serde_json::from_slice(&private_file(receipt, &dir)?)
+                    .context("invalid private runner enrollment")?,
+                true,
+                receipt,
+            ),
+            (None, Some(generation), Some(object_id), Some(Device::Alpha), Some(incarnation))
+                if cfg!(target_os = "linux") =>
+            {
+                let bytes = private_file(incarnation, &dir)?;
+                (
+                    Enrollment {
+                        generation,
+                        object_id: object_id.clone(),
+                        placement: Device::Alpha,
+                        incarnation: std::str::from_utf8(&bytes)?
+                            .trim_end_matches('\n')
+                            .to_owned(),
+                    },
+                    false,
+                    incarnation,
+                )
+            }
+            _ => anyhow::bail!("expected an exact runner enrollment receipt"),
+        };
         ensure!(
-            lower_hex(&config.object_id)
-                && config.placement == coconutclaw_gateway::executor_wire::DEVICE
+            lower_hex(&enrollment.object_id)
+                && lower_hex(&enrollment.incarnation)
                 && (1..=3600).contains(&config.timeout_seconds)
                 && config.codex.is_absolute()
                 && config.codex_home.is_absolute()
@@ -72,7 +138,7 @@ impl Config {
                 && [
                     &path,
                     &config.signing_key.canonicalize()?,
-                    &config.incarnation.canonicalize()?
+                    &enrollment_path.canonicalize()?
                 ]
                 .into_iter()
                 .all(|file| !file.starts_with(&config.workspace)
@@ -83,65 +149,60 @@ impl Config {
         let seed = private_file(&config.signing_key, &dir)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("expected a 32-byte executor signing key"))?;
-        let incarnation = private_file(&config.incarnation, &dir)?;
-        let incarnation = std::str::from_utf8(&incarnation)?.trim_end_matches('\n');
-        ensure!(lower_hex(incarnation), "invalid executor incarnation");
-        let instance = format!("bigfur:{}:{}", config.generation, config.object_id);
+        let instance = format!("bigfur:{}:{}", enrollment.generation, enrollment.object_id);
+        let scope = if enrolled {
+            Scope::Enrolled {
+                instance,
+                placement: enrollment.placement,
+                incarnation: enrollment.incarnation.clone(),
+            }
+        } else {
+            Scope::Singleton(instance)
+        };
+        #[cfg(windows)]
+        if let Some(ca) = &config.ca {
+            check_private_file(ca)?;
+        }
         let ca = config.ca.as_ref().map(fs::read).transpose()?;
         let link = Link::production(
             &config.origin,
             ca.as_deref(),
             SigningKey::from_bytes(&seed),
-            instance,
-            incarnation,
+            scope,
+            &enrollment.incarnation,
         )?;
-        let predecessor = (config.generation.get() > 1)
-            .then(|| format!("bigfur:{}:", config.generation.get() - 1));
+        let predecessor = (!enrolled && enrollment.generation.get() > 1)
+            .then(|| format!("bigfur:{}:", enrollment.generation.get() - 1));
         let journal = Journal::open_scoped(
             &dir,
             &link.key,
             init,
             link.scope.clone(),
             predecessor.as_deref(),
-            true,
+            !enrolled,
+            enrolled,
         )?;
         Ok((config, link, journal))
     }
 
+    #[cfg(target_os = "linux")]
     pub fn launch(
         &self,
         link: &Link,
         journal: &Journal,
         dir: &Path,
         intent: Intent,
-        grant: &Grant,
+        start_until: i64,
         start: Permit,
     ) -> Result<Event> {
         let supervisor = self.supervisor(journal.process_lock()?, dir)?;
         let attempt = intent.attempt;
-        supervise(
-            supervisor,
-            link,
-            &intent,
-            grant.start_until,
-            || {
-                let status = link.status(attempt)?;
-                let permit = Permit::authority(status.authority_valid_until)?;
-                if status.cancel_requested && status.start_until == Some(grant.start_until) {
-                    permit.check()?;
-                    return Ok(None);
-                }
-                ensure!(
-                    status.phase == Phase::Authorized
-                        && status.start_until == Some(grant.start_until),
-                    "fresh status does not authorize the original start grant"
-                );
-                Ok(Some(start.shorter(permit)))
-            },
-            || journal.started(&link.key, attempt),
-        )
+        supervise(supervisor, link, &intent, start_until, start, || {
+            journal.started(&link.key, attempt)
+        })
     }
 
+    #[cfg(target_os = "linux")]
     fn supervisor(&self, lock: File, dir: &Path) -> Result<Child> {
         let mut command = supervisor_command(&lock);
         command
@@ -151,13 +212,63 @@ impl Config {
             .arg(dir.canonicalize()?)
             .arg(self.timeout_seconds.to_string())
             .arg(lock.as_raw_fd().to_string());
+        self.provider_environment(&mut command)?;
+        Ok(command.spawn()?)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn command(&self, output: &Path) -> Result<(Command, u64)> {
+        let mut command = Command::new(&self.codex);
+        self.provider_environment(&mut command)?;
+        command
+            .env("HOME", &self.codex_home)
+            .env("CODEX_HOME", &self.codex_home)
+            .current_dir(&self.workspace)
+            .args([
+                "exec",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--sandbox",
+                "workspace-write",
+                "-c",
+                "approval_policy=\"never\"",
+                "-c",
+                "shell_environment_policy.inherit=\"none\"",
+                "--output-last-message",
+            ])
+            .arg(output)
+            .arg("-");
+        #[cfg(target_os = "macos")]
+        command.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        #[cfg(windows)]
+        {
+            let system =
+                PathBuf::from(std::env::var_os("SystemRoot").context("missing SystemRoot")?);
+            ensure!(system.is_absolute(), "invalid SystemRoot");
+            command
+                .env("SystemRoot", &system)
+                .env("PATH", system.join("System32"))
+                .env("USERPROFILE", &self.codex_home);
+        }
+        Ok((command, u64::from(self.timeout_seconds)))
+    }
+
+    fn provider_environment(&self, command: &mut Command) -> Result<()> {
         for name in &self.provider_env {
+            let upper = name.to_ascii_uppercase();
             ensure!(
-                !name.starts_with("LD_")
-                    && !name.starts_with("PYTHON")
+                !upper.starts_with("LD_")
+                    && !upper.starts_with("DYLD_")
+                    && !upper.starts_with("PYTHON")
                     && !matches!(
-                        name.as_str(),
-                        "PATH" | "HOME" | "CODEX_HOME" | "BASH_ENV" | "ENV"
+                        upper.as_str(),
+                        "PATH"
+                            | "HOME"
+                            | "CODEX_HOME"
+                            | "BASH_ENV"
+                            | "ENV"
+                            | "SYSTEMROOT"
+                            | "USERPROFILE"
                     ),
                 "invalid provider environment variable"
             );
@@ -166,10 +277,11 @@ impl Config {
                 std::env::var_os(name).context("provider environment missing")?,
             );
         }
-        Ok(command.spawn()?)
+        Ok(())
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn fixture_supervisor(lock: File, dir: &Path, fixture: &Command) -> Result<Child> {
     let dir = dir.canonicalize()?;
     Ok(supervisor_command(&lock)
@@ -183,6 +295,7 @@ pub fn fixture_supervisor(lock: File, dir: &Path, fixture: &Command) -> Result<C
         .spawn()?)
 }
 
+#[cfg(target_os = "linux")]
 fn supervisor_command(lock: &File) -> Command {
     let fd = lock.as_raw_fd();
     let mut command = Command::new("/usr/bin/python3");
@@ -204,12 +317,13 @@ fn supervisor_command(lock: &File) -> Command {
     command
 }
 
+#[cfg(target_os = "linux")]
 pub fn supervise(
     mut supervisor: Child,
     link: &Link,
     intent: &Intent,
     start_until: i64,
-    prepare: impl FnOnce() -> Result<Option<Permit>>,
+    deadline: Permit,
     record_started: impl Fn() -> Result<()>,
 ) -> Result<Event> {
     let control = supervisor
@@ -223,11 +337,6 @@ pub fn supervise(
     let result = (|| {
         let mut control = control;
         let attempt = intent.attempt;
-        let Some(deadline) = prepare()? else {
-            return Ok(Event::Cancelled {
-                evidence: CancelEvidence::BeforeStart,
-            });
-        };
         deadline.check()?;
         send(
             &mut control,
@@ -292,6 +401,7 @@ pub fn supervise(
     result
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum Receipt {
@@ -301,6 +411,7 @@ enum Receipt {
     Unknown,
 }
 
+#[cfg(target_os = "linux")]
 fn send(control: &mut impl Write, message: serde_json::Value) -> Result<()> {
     let mut bytes = serde_json::to_vec(&message)?;
     bytes.push(b'\n');
@@ -308,23 +419,14 @@ fn send(control: &mut impl Write, message: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-pub fn start_permit(grant: &Grant) -> Result<Permit> {
-    let permit = Permit::authority(grant.authority_valid_until)?
-        .shorter(Permit::authority(Some(grant.start_until))?);
-    permit.check()?;
-    Ok(permit)
-}
-
-pub fn check_cancel(status: &Status) -> Result<()> {
-    Permit::authority(status.authority_valid_until)?.check()
-}
-
+#[cfg(target_os = "linux")]
 #[derive(Serialize)]
 pub struct Permit {
     wall: i64,
     monotonic: i64,
 }
 
+#[cfg(target_os = "linux")]
 impl Permit {
     pub fn authority(wall: Option<i64>) -> Result<Self> {
         let monotonic = monotonic_ms()?;
@@ -356,6 +458,7 @@ impl Permit {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn monotonic_ms() -> Result<i64> {
     let mut clock = libc::timespec {
         tv_sec: 0,
@@ -370,15 +473,28 @@ fn monotonic_ms() -> Result<i64> {
 }
 
 fn private_file(path: &Path, journal: &Path) -> Result<Vec<u8>> {
+    check_private_file(path)?;
     let path = path.canonicalize()?;
-    let metadata = path.metadata()?;
     ensure!(
-        path.is_absolute()
-            && !path.starts_with(journal)
-            && metadata.is_file()
-            && metadata.uid() == unsafe { libc::geteuid() }
-            && metadata.mode() & 0o077 == 0,
+        !path.starts_with(journal),
         "runner configuration and keys require owner-only files outside the journal"
     );
     Ok(fs::read(path)?)
+}
+
+#[cfg(unix)]
+fn check_private_file(path: &Path) -> Result<()> {
+    let metadata = path.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0,
+        "runner configuration and keys require owner-only files"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+fn check_private_file(path: &Path) -> Result<()> {
+    super::windows_custody::check_input(path)
 }

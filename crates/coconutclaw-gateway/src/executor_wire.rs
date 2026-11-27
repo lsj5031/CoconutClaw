@@ -139,6 +139,8 @@ pub struct Status {
     pub cancel_requested: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority_valid_until: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile_only: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize)]

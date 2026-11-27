@@ -342,15 +342,20 @@ async function attachExecutor(context, client, production, device = "alpha", ori
     const packets = [];
     const forwarding = new Set();
     const workerStopped = client.registerProxyDrain(() => Promise.allSettled(forwarding));
-    const proxy = { offline: false, transform: async ({ response }) => response };
+    const proxy = { offline: false, pairingEndpoint: undefined, transform: async ({ response }) => response };
     let proxyError;
     const server = createServer({ key: await readFile(tlsKey), cert: await readFile(cert) }, async (req, res) => {
         try {
             assert.equal(req.method, "POST");
-            assert.equal(req.url, "/v1/agent");
             const chunks = [];
             for await (const chunk of req) chunks.push(chunk);
             const body = Buffer.concat(chunks).toString();
+            if (req.url === "/v1/pair" && proxy.pairingEndpoint) {
+                const paired = await fetch(`${proxy.pairingEndpoint}/v1/pair`, { method: "POST", body });
+                res.writeHead(paired.status, { "content-type": "application/json" }).end(await paired.text());
+                return;
+            }
+            assert.equal(req.url, "/v1/agent");
             const packet = { body, headers: { "x-agent-signature": req.headers["x-agent-signature"] } };
             if (production) packet.headers["x-executor-incarnation"] = req.headers["x-executor-incarnation"];
             if (req.headers["x-executor-placement"] !== undefined) {
@@ -425,10 +430,19 @@ async function attachExecutor(context, client, production, device = "alpha", ori
     async function runProduction(mode, config, options = {}) {
         const privateConfig = join(root, "runner.json");
         const incarnation = join(root, "incarnation");
-        await writeFile(incarnation, options.runner ?? production.runner, { mode: 0o600 });
+        const enrollment = join(root, "enrollment.json");
+        if (options.enrollment) {
+            await writeFile(enrollment, JSON.stringify(options.enrollment), { mode: 0o600 });
+        } else {
+            await writeFile(incarnation, options.runner ?? production.runner, { mode: 0o600 });
+        }
         await writeFile(privateConfig, JSON.stringify({
-            origin, ca, signing_key: seed, incarnation, generation: production.target.pin.generation,
-            object_id: production.target.pin.objectId, placement: "alpha", timeout_seconds: 20, ...config,
+            origin, ca, signing_key: seed,
+            ...(options.enrollment ? { enrollment } : {
+                incarnation, generation: production.target.pin.generation,
+                object_id: production.target.pin.objectId, placement: "alpha",
+            }),
+            timeout_seconds: 20, ...config,
         }), { mode: 0o600 });
         return start(["--production", mode, privateConfig, options.journal ?? dir], options.env);
     }
@@ -463,7 +477,7 @@ async function attachExecutor(context, client, production, device = "alpha", ori
             client.keys[device].publicKey, Buffer.from(proof.signature, "hex")));
         return JSON.parse(proof.payload);
     }
-    return { proxy, run, runEnrolled, runProduction, launches, proofs, verifyProof, query, packets, dir, seed, root };
+    return { proxy, run, runEnrolled, runProduction, launches, proofs, verifyProof, query, packets, dir, seed, root, origin, ca };
 }
 
 async function productionRunner(context) {
@@ -510,8 +524,8 @@ async function productionRunner(context) {
     return attachProductionRunner(context, client, cutover, mock, ingress);
 }
 
-async function attachProductionRunner(context, client, cutover, mock, ingress) {
-    const executor = await attachExecutor(context, client, cutover);
+async function attachProductionRunner(context, client, cutover, mock, ingress, device) {
+    const executor = await attachExecutor(context, client, cutover, device);
     const workspace = join(executor.root, "work");
     const home = join(executor.root, "codex-home");
     await mkdir(workspace, { mode: 0o700 });
@@ -1948,6 +1962,7 @@ test("BigFur production pairing keeps immutable pins and fences retired writers 
 
     mock.retireRunner(betaBinding);
     assert.equal((await client.agent("beta", "hello")).reconcile_only, true);
+    assert.equal((await client.agent("beta", "status", { attempt: retiredGrant.attempt })).reconcile_only, true);
     assert.equal((await client.agent("alpha", "hello")).reconcile_only, undefined);
     assert.deepEqual(await client.agent("beta", "start", { attempt: retiredGrant.attempt }, 503), noAuthority);
     assert.deepEqual(await client.agent("beta", "claim", { task: olderEvidence }, 503), noAuthority);
@@ -1998,6 +2013,135 @@ test("BigFur production pairing keeps immutable pins and fences retired writers 
     await pairProduction(mock, client, cutover, "alpha");
     assert.equal((await admit(45305, "fresh default")).disposition, "task");
     assert.equal((await client.agent("alpha", "next")).task, "telegram:45305");
+});
+
+test("BigFur native production runner binds the receipt and reconciles without repeating effects", {
+    ...nativeTimeout, skip: !executable || !["darwin", "linux"].includes(process.platform),
+}, async context => {
+    const { mock, client, cutover, ingress, telegram, owner, topic } =
+        await productionAuthorityFixture(context, { pairedProduction: true });
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null);
+    const alpha = await pairProduction(mock, client, cutover, "alpha");
+    const runner = await attachProductionRunner(context, client, cutover, mock, ingress, "beta");
+    runner.proxy.pairingEndpoint = mock.endpoint;
+    const codeFile = join(runner.root, "code");
+    const betaKey = client.keys.beta.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+    const pairingCode = mock.issue({ key: betaKey, alias: "desk" });
+    await writeFile(codeFile, pairingCode, { mode: 0o600 });
+    const { stdout } = await promisify(execFile)(process.execPath, [
+        join(import.meta.dirname, "pair-runner-local.mjs"), "redeem-production", runner.origin, runner.seed, codeFile,
+    ], { env: { NODE_EXTRA_CA_CERTS: runner.ca }, timeout: 5000 });
+    const beta = JSON.parse(stdout);
+    assert.equal(beta.placement, "beta");
+    assert.equal(beta.generation, cutover.target.pin.generation);
+    assert.equal(beta.objectId, cutover.target.pin.objectId);
+    cutover.enrolled.beta = beta.incarnation;
+    assert.equal((await redeemProduction(mock, client.keys.beta, pairingCode))[0], 409);
+    const codex = join(runner.root, "codex-test");
+    await writeFile(codex, `#!/bin/sh
+while [ "$#" -gt 1 ]; do
+    if [ "$1" = "--output-last-message" ]; then output=$2; shift; fi
+    shift
+done
+prompt=$(cat)
+case "$prompt" in
+    hold*)
+        /bin/sleep 60 &
+        printf '%s %s\\n' "$$" "$!" >> observed
+        wait ;;
+    *)
+        printf '%s\\n' "$$" >> observed ;;
+esac
+printf '%s' "$BIGFUR_SYNTHETIC_REPLY" > "$output"
+`, { mode: 0o700 });
+    const observed = count => until(async () => {
+        const rows = (await readFile(join(runner.workspace, "observed"), "utf8").catch(error => {
+            if (error.code !== "ENOENT") throw error;
+            return "";
+        })).trim().split("\n").filter(Boolean);
+        return rows.length >= count && rows.map(row => row.split(" ").map(Number));
+    }, `observed ${count} production starts`);
+    const exited = pids => until(() => pids.every(pid => {
+        try { process.kill(pid, 0); return false; } catch (error) { return error.code === "ESRCH"; }
+    }), "contained production PIDs exit");
+    for (const [id, text] of [[45401, "wrong placement"], [45402, "lost Start"],
+        [45403, "cancel before spawn"], [45404, "result"], [45405, "hold and cancel"],
+        [45406, "hold and lose runner"]]) {
+        const update = telegram(id);
+        update.message.text = `@desk ${text}`;
+        assert.equal((await ingress(update)).disposition, "task");
+    }
+    const config = { ...runner.configure(codex), provider_env: ["BIGFUR_SYNTHETIC_REPLY"] };
+    const env = { BIGFUR_SYNTHETIC_REPLY: "synthetic production reply" };
+    const options = { enrollment: beta, env };
+    let lostResult;
+    let attemptedBetaSignature;
+    runner.proxy.transform = async ({ response, envelope, packet }) => {
+        if (response.status !== 200) return response;
+        const { op, attempt, proof } = envelope.command;
+        if (op === "start") {
+            if (attempt === 1) response.value.placement = "alpha";
+            if (attempt === 2) return undefined;
+            if (attempt === 3) await runner.cancel(45403);
+        }
+        if (op === "report" && JSON.parse(proof.payload).event.kind === "result") {
+            if (!lostResult) {
+                lostResult = proof;
+                attemptedBetaSignature = packet;
+                return undefined;
+            }
+            assert.deepEqual(proof, lostResult);
+        }
+        return response;
+    };
+    const running = await runner.runProduction("init", config, options);
+    assert.deepEqual(await runner.receipt(1, "unknown"), { kind: "unknown" });
+    assert.deepEqual(await runner.receipt(2, "unknown"), { kind: "unknown" });
+    assert.deepEqual(await runner.receipt(3, "cancelled"), { kind: "cancelled", evidence: "before_start" });
+    assert.deepEqual(await runner.receipt(4, "result"), { kind: "result", text: env.BIGFUR_SYNTHETIC_REPLY });
+    assert.equal(runner.proofs("result").length, 2);
+    await client.wire({ ...attemptedBetaSignature, headers: {
+        ...attemptedBetaSignature.headers, "x-executor-placement": "alpha", "x-executor-incarnation": alpha.incarnation,
+    } }, 401);
+    const [, cancelled] = await observed(2);
+    assert.equal(cancelled.length, 2);
+    await runner.cancel(45405);
+    assert.deepEqual(await runner.receipt(5, "cancelled"), { kind: "cancelled", evidence: "process_exited" });
+    await exited(cancelled);
+    const [, , abandoned] = await observed(3);
+    assert.equal(abandoned.length, 2);
+    await running.stop();
+    await exited(abandoned);
+
+    const restored = join(runner.root, "copied-journal");
+    await cp(runner.dir, restored, { recursive: true });
+    const packetCount = runner.packets.length;
+    assert.match(await (await runner.runProduction("resume", config, { ...options, journal: restored })).exit(1),
+        /journal identity mismatch/);
+    assert.match(await (await runner.runProduction("resume", config, { ...options, enrollment: alpha })).exit(1),
+        /journal identity mismatch/);
+    assert.equal(runner.packets.length, packetCount);
+    mock.retireRunner({ placement: beta.placement, incarnation: beta.incarnation });
+    const reconciling = await runner.runProduction("resume", config, options);
+    await reconciling.exit(0);
+    assert.deepEqual(await runner.receipt(6, "unknown"), { kind: "unknown" });
+    const reconciliation = runner.packets.slice(packetCount).map(({ command }) => command);
+    assert.equal(reconciliation.shift().op, "hello");
+    assert.ok(reconciliation.every(command => command.op === "report"));
+    assert.deepEqual(reconciliation.map(({ proof }) => JSON.parse(proof.payload).event.kind),
+        process.platform === "linux" ? ["started", "unknown"] : ["unknown"]);
+    assert.deepEqual(runner.packets.filter(({ command }) => command.op === "start")
+        .map(({ device, command }) => [device, command.attempt]), [1, 2, 3, 4, 5, 6].map(attempt => ["beta", attempt]));
+    assert.equal((await observed(3)).length, 3);
+    await until(() => mock.sends.length === 1, "owned synthetic send");
+    assert.deepEqual(mock.sends, [{
+        task: "telegram:45404", sendNumber: 1, chatId: owner, messageThreadId: topic, text: env.BIGFUR_SYNTHETIC_REPLY,
+    }]);
+    assert.deepEqual(await client.sql("SELECT id,phase FROM attempts ORDER BY id"), [
+        { id: 1, phase: "unknown" }, { id: 2, phase: "unknown" }, { id: 3, phase: "cancelled_before_start" },
+        { id: 4, phase: "completed" }, { id: 5, phase: "cancelled_after_exit" }, { id: 6, phase: "unknown" },
+    ]);
 });
 
 test("BigFur fresh install pairs native runners and keeps the default, offline pins, and Unknown", {

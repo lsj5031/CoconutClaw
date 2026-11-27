@@ -33,6 +33,11 @@ pub fn check_input(path: &Path) -> Result<()> {
     check_file(path)
 }
 
+pub fn check_journal_location(dir: &Path, init: bool) -> Result<()> {
+    check_parent(dir)?;
+    private_directory(dir, init)
+}
+
 pub fn prepare_journal(dir: &Path, init: bool) -> Result<()> {
     check_parent(dir).context("check executor journal parent")?;
     if init {

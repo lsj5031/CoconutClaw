@@ -719,7 +719,7 @@ impl BotLedger {
                 seen.set(Some(seen.get().map_or(signed_at, |at| at.max(signed_at))));
             }
             if let Some(reply) = ledger.read_agent(&agent, now(), &instance, true)? {
-                let reply = if current.reconcile_only && matches!(agent.command, Command::Hello) {
+                let reply = if current.reconcile_only {
                     reply.reconcile_only()
                 } else {
                     reply

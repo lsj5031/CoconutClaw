@@ -2,7 +2,7 @@
 mod journal;
 #[cfg(any(unix, windows))]
 mod link;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod production;
 #[cfg(any(unix, windows))]
 mod runner;

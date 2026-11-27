@@ -1,46 +1,68 @@
 use std::ffi::OsString;
+use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 
-use super::{Deadline, fixture_command, now_ms};
+use super::{Deadline, now_ms};
 
 pub(super) const MODE: &str = "--fixture-macos-child";
 
-pub(super) fn command(attempt: i64, hold: bool, deadline: &Deadline) -> Result<Command> {
+pub(super) fn guard(child: &Command, deadline: &Deadline, lock: Option<&File>) -> Result<Command> {
     let clock = uptime()?;
     let expires = clock + deadline.monotonic.saturating_duration_since(Instant::now());
     let mut command = Command::new(std::env::current_exe()?);
-    command.args([
-        MODE,
-        &std::process::id().to_string(),
-        &attempt.to_string(),
-        if hold { "hold" } else { "reply" },
-        &deadline.wall.to_string(),
-        &expires.as_millis().to_string(),
-    ]);
+    command
+        .args([
+            MODE,
+            &std::process::id().to_string(),
+            &deadline.wall.to_string(),
+            &expires.as_millis().to_string(),
+            &lock.map_or(-1, AsRawFd::as_raw_fd).to_string(),
+        ])
+        .arg(child.get_program())
+        .args(child.get_args());
+    if let Some(dir) = child.get_current_dir() {
+        command.current_dir(dir);
+    }
+    command.envs(
+        child
+            .get_envs()
+            .filter_map(|(name, value)| Some((name, value?))),
+    );
+    if let Some(lock) = lock {
+        let descriptor = lock.as_raw_fd();
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(descriptor, libc::F_SETFD, 0) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     Ok(command)
 }
 
 pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
     let args: Vec<_> = args.collect();
-    let [owner, attempt, behavior, wall, expires] = args.as_slice() else {
-        anyhow::bail!("invalid fixture child arguments");
+    let [owner, wall, expires, lock, program, rest @ ..] = args.as_slice() else {
+        anyhow::bail!("invalid guardian arguments");
     };
     let owner: libc::pid_t = owner.to_str().context("invalid owner")?.parse()?;
-    let attempt = attempt.to_str().context("invalid attempt")?.parse()?;
     let wall = wall.to_str().context("invalid wall deadline")?.parse()?;
     let expires = expires
         .to_str()
         .context("invalid monotonic deadline")?
         .parse()?;
-    ensure!(
-        behavior == "hold" || behavior == "reply",
-        "invalid fixture child behavior"
-    );
+    let lock: libc::c_int = lock.to_str().context("invalid journal lock")?.parse()?;
+    if lock >= 0 && unsafe { libc::fcntl(lock, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        return Err(io::Error::last_os_error()).context("retain journal lock in guardian");
+    }
     ensure!(
         owner > 1 && unsafe { libc::getpgrp() == libc::getpid() && libc::getppid() == owner },
         "fixture child must lead its runner-owned process group"
@@ -80,7 +102,8 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<()> {
         "start grant expired"
     );
 
-    let mut child = fixture_command(attempt, behavior == "hold")
+    let mut child = Command::new(program)
+        .args(rest)
         .stdin(Stdio::inherit())
         .spawn()?;
     let timeout = libc::timespec {
