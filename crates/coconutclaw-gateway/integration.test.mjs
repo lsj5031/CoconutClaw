@@ -447,6 +447,7 @@ async function attachExecutor(context, client, production, device = "alpha", ori
         child.once("close", (code, signal) => { termination = code ?? signal; });
         const process = {
             pid: child.pid,
+            get exitStatus() { return { code: child.exitCode, signal: child.signalCode }; },
             get stderr() { return stderr; },
             assertRunning() {
                 if (termination !== undefined) {
@@ -2450,14 +2451,24 @@ test("BigFur native production runner passes the local Codex sandbox mode", nati
     mock.publish(cutover.target, null);
     const enrollment = await pairProduction(mock, client, cutover, "alpha");
     const runner = await attachProductionRunner(context, client, cutover, mock, ingress);
+    const stageFile = join(runner.workspace, "exec-stage");
     await writeFile(join(runner.workspace, "exec"), `
 import { writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
+writeFileSync("exec-stage", "script entered");
 process.stdin.on("end", () => {
+    writeFileSync("exec-stage", "stdin ended");
     writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify(args));
+    writeFileSync("exec-stage", "reply written");
 });
 process.stdin.resume();
 `);
+    const replies = new Map();
+    runner.proxy.transform = async ({ response, envelope }) => {
+        const { phase, event, error } = response.value ?? {};
+        replies.set(envelope, { http: response.status, phase, event, error });
+        return response;
+    };
     const config = runner.configure(process.execPath);
     const options = { enrollment, env: windowsCustody ? { SystemRoot: process.env.SystemRoot } : {} };
     for (const codex_sandbox of ["full-access", null, true, { "danger-full-access": null }]) {
@@ -2472,11 +2483,38 @@ process.stdin.resume();
     await assert.rejects(readdir(runner.dir), { code: "ENOENT" });
 
     for (const [index, codex_sandbox] of [undefined, "danger-full-access", "workspace-write"].entries()) {
+        const attempt = index + 1;
+        await rm(stageFile, { force: true });
         assert.equal((await ingress(telegram(45410 + index))).disposition, "task");
-        const running = await runner.runProduction(index === 0 ? "init" : "resume",
-            { ...config, codex_sandbox }, options);
-        const { text } = await runner.receipt(index + 1, "result");
-        const args = JSON.parse(text);
+        const mode = index === 0 ? "init" : "resume";
+        const packetStart = runner.packets.length;
+        const running = await runner.runProduction(mode, { ...config, codex_sandbox }, options);
+        let result;
+        try {
+            result = await runner.receipt(attempt, "result");
+        } catch (error) {
+            const packets = runner.packets.slice(packetStart);
+            const operations = packets.slice(-16).map(envelope => {
+                const { op, attempt: requestAttempt, proof } = envelope.command;
+                const report = proof && JSON.parse(proof.payload);
+                return { op, attempt: requestAttempt ?? report?.attempt, proof: report?.event?.kind, ...replies.get(envelope) };
+            });
+            let journal;
+            try {
+                journal = runner.query(`SELECT attempts.phase, evidence.event, evidence.acknowledged
+                    FROM attempts LEFT JOIN evidence USING(attempt) WHERE attempt=? ORDER BY evidence.id`, attempt);
+            } catch (error) {
+                journal = error.message.slice(0, 256);
+            }
+            const stage = await readFile(stageFile, "utf8").catch(error => error.code);
+            context.diagnostic(`Production launch ${JSON.stringify({
+                mode, attempt, sandbox: codex_sandbox ?? "default", pid: running.pid,
+                ...running.exitStatus, stderr: running.stderr.trim().slice(-1024),
+                stage, journal, packetCount: packets.length, operations,
+            })}`);
+            throw error;
+        }
+        const args = JSON.parse(result.text);
         assert.deepEqual(args, [
             "--skip-git-repo-check", "--ephemeral", "--sandbox", codex_sandbox ?? "workspace-write",
             "-c", 'approval_policy="never"', "-c", 'shell_environment_policy.inherit="none"',
