@@ -17,7 +17,7 @@ or redirects. Keep TLS verification enabled, cap bodies at 32 KiB, and
 exclude authorization, bodies and downstream Bot API URLs from logs and
 diagnostics. Verify host and Worker clocks and proxy latency before activation.
 The Worker has a 1.5-second request timeout. Checks return 900 ms permits and
-the host gives the outgoing Telegram request 1 second. The service is
+the host gives the outgoing Telegram request 10 seconds. The service is
 fail-closed when the host or its database is unavailable.
 
 ## Enrollment and retirement
@@ -76,16 +76,33 @@ Telegram request. It then acquires the SQLite writer lock again, rechecks
 authority and holds that lock through the one bounded outbound request and
 receipt commit. Retirement either wins before dispatch begins or waits for
 that request. An already-issued request can still complete at Telegram.
-Duplicates never dispatch, even after restart. A timeout, lost acknowledgment,
-or crash leaves a spent reservation. A null receipt means the outcome may
-be Unknown. Before reserving locally, the alarm checks delivery readiness
-against the Control writer lock. A busy Control or temporary check failure
-rearms pending, unsent work. An exact retired target stops delivery alarms.
-The send endpoint checks authority again at dispatch. An ambiguous call
-after reservation spends the attempt and is held for reconciliation.
+Duplicates never dispatch, even after restart. A positive message ID is a
+committed receipt. The Worker records an authentic receipt even if Control
+then becomes unavailable. A null message ID is a spent reservation with
+an uncertain outcome.
+
+Before reserving locally, the alarm uses `deliveryCheck: true` on `/v1/check`
+to check readiness against the Control writer lock. A temporary failure rearms
+pending work. After a Worker reservation expires without a receipt, the Worker
+can ask `/v1/send` to `closeUnsent` for that exact generation, task and send
+number. Control commits a row with message ID `0` under its writer lock only
+if the slot was unused. The row permanently fences that send number, and a
+repeat request for the same slot can recover the proof. A verified proof allows
+one new send number within the existing two-attempt bound. With missing or
+ambiguous proof, including a Control outage at expiry, the Worker durably records
+Unknown with zero retries. Retired targets can neither close an unused slot
+nor dispatch a reply. Their in-flight rows can still expire locally.
 Reconcile held deliveries against the Worker and private control evidence
 before any operator-authorized new effect. The reservation key is scoped to
 one generation, so hold old work through the handoff.
+
+Upgrade Control before the Worker and roll back the Worker before Control.
+Control versions predating `deliveryCheck` reject that request with HTTP 400,
+so a new Worker holds pending deliveries. Upgraded Control still accepts the
+older Worker's ordinary checks and sends. Control versions that support
+`deliveryCheck` but predate `closeUnsent` leave expired slots without proof.
+Hold paired successor ingress if reverting to a Worker that predates inherited
+inbox checks.
 
 ## Production placement registry
 
@@ -117,8 +134,10 @@ public ingress.
 The Control operator reads a runner's public card and uses
 `node authority-control.mjs issue "$DB" CARD.json` with `{"key":"<card id>"}`.
 Include `"alias":"desk"` for a later runner. The private code can enroll its
-exact signing key once within five minutes. Repeating the authenticated
-redemption returns the original receipt, including after retirement.
+exact signing key once within five minutes. An unredeemed code expires without
+enrollment. Repeating the authenticated redemption of a spent code returns the
+original receipt after expiry, runner retirement or generation retirement.
+Recovering a retired receipt grants only reconciliation authority.
 The first runner is `alpha` and the default. `beta` and `gamma` require unique
 aliases. Admission consults the published registry through `/v1/check`.
 The same check suppresses inherited IDs before creating a successor task.

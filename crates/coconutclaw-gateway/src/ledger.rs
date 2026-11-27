@@ -140,6 +140,7 @@ pub struct Delivery {
 
 pub enum Receipt {
     Delivered(i64),
+    Unsent,
     Rejected,
     RateLimited(i64),
     Unknown,
@@ -1052,6 +1053,8 @@ impl Ledger {
                 )?;
                 ("delivered", 0)
             }
+            Receipt::Unsent if sends == 1 => ("pending", now),
+            Receipt::Unsent => ("failed", 0),
             Receipt::Rejected => ("failed", 0),
             Receipt::RateLimited(delay) if sends == 1 && delay <= 10_000 => {
                 ("pending", now + delay)
@@ -1093,21 +1096,28 @@ impl Ledger {
         Ok((delivery, self.arm_delivery(storage, now, until)?))
     }
 
-    pub fn defer_unsent_delivery(
+    pub fn expired_delivery(&self, now: i64) -> Result<Option<Delivery>> {
+        self.row(
+            "SELECT o.task,t.chat_id,t.thread_id,o.text,o.sends FROM outbox o
+             JOIN tasks t ON o.task=t.id WHERE o.phase='in_flight' AND o.ready_at<=?
+             ORDER BY o.ready_at LIMIT 1",
+            [now.into()],
+        )
+    }
+
+    pub fn defer_delivery(
         &self,
         storage: &Storage,
         now: i64,
+        retry_pending: bool,
     ) -> Result<Option<js_sys::Promise>> {
-        if self
-            .number(
-                "SELECT 1 AS value FROM outbox WHERE phase='pending' AND sends=0 LIMIT 1",
-                [],
-            )?
-            .is_none()
-        {
-            return Ok(None);
+        if let Some(at) = self.in_flight_at()? {
+            return Ok(Some(Self::alarm(storage, at.max(now + 100))?));
         }
-        self.arm_delivery(storage, now, now + 1_000)
+        if retry_pending {
+            return self.arm_delivery(storage, now, now + 1_000);
+        }
+        Ok(None)
     }
 
     fn take_delivery(&self, now: i64) -> Result<(Option<Delivery>, i64)> {

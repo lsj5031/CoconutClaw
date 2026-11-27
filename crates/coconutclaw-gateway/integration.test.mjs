@@ -567,25 +567,25 @@ const procStat = pid => readFile(`/proc/${pid}/stat`, "utf8").catch(error => {
 });
 const statFields = stat => stat.slice(stat.lastIndexOf(")") + 2).split(" ");
 
-async function liveLinuxTree(runner) {
+async function liveLinuxTree(runner, { detached = true } = {}) {
     return until(async () => {
         try {
             const [supervisor] = await procChildren(runner.pid);
             if (!supervisor) return false;
             const [leader] = await procChildren(supervisor);
             if (!leader) return false;
-            const [detached] = await procChildren(leader);
-            if (!detached) return false;
-            const stat = await procStat(detached);
+            const [child] = await procChildren(leader);
+            if (!child) return false;
+            const stat = await procStat(child);
             const [state, parent, group, session] = statFields(stat);
-            return stat.startsWith(`${detached} (sleep) `) && state !== "Z"
-                && Number(parent) === leader && Number(group) === detached
-                && Number(session) === detached && { supervisor, provider: [leader, detached] };
+            return stat.startsWith(`${child} (sleep) `) && state !== "Z"
+                && Number(parent) === leader && (!detached || (Number(group) === child && Number(session) === child))
+                && { supervisor, provider: [leader, child] };
         } catch (error) {
             if (error.code !== "ENOENT") throw error;
             return false;
         }
-    }, "Linux supervisor owns a live provider with a detached sleep descendant", 3000);
+    }, "Linux supervisor owns a live provider with a sleep descendant", 3000);
 }
 
 async function linuxTreeExited(tree, reason) {
@@ -665,10 +665,10 @@ pathlib.Path(sys.argv[sys.argv.index("--output-last-message") + 1]).write_text("
     assert.deepEqual(await runner.receipt(8, "cancelled"), { kind: "cancelled", evidence: "process_exited" });
     for (const pid of holding) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
     const [, , abandoned] = await observed(3);
-    await started.stop();
-    await until(() => abandoned.every(pid => {
-        try { process.kill(pid, 0); return false; } catch (error) { return error.code === "ESRCH"; }
-    }), "supervisor did not drain descendants after loss of runner");
+    const abandonedTree = await liveLinuxTree(started);
+    assert.deepEqual(abandonedTree.provider, abandoned);
+    assert.deepEqual(await started.stop(), [null, "SIGKILL"]);
+    await linuxTreeExited(abandonedTree, "runner SIGKILL");
     const restored = join(runner.root, "restored");
     await cp(runner.dir, restored, { recursive: true });
     const old = await runner.runProduction("resume", config, { runner: "c".repeat(64), journal: restored });
@@ -1779,9 +1779,11 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
     assert.ok(warmSamples.every(row => row.written <= 10), "warm writes stay below 10 rows per operation");
 });
 
-async function productionAuthorityFixture(context, { enrolled, placementAliases, pairing = false, pairedProduction = false } = {}) {
+async function productionAuthorityFixture(context, {
+    enrolled, placementAliases, pairing = false, pairedProduction = false, control,
+} = {}) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "direct-retirement-"));
-    const mock = await authorityFixture(join(root, "control.sqlite"), { pairing });
+    const mock = await authorityFixture(join(root, "control.sqlite"), { pairing, control });
     context.after(async () => {
         await mock.close();
         await rm(root, { recursive: true, force: true });
@@ -1941,6 +1943,108 @@ test("BigFur pending paired delivery rearms after a Control outage at cold wake"
     ]);
 });
 
+for (const scenario of ["proven unsent", "unproven unsent", "mismatched no-send proof", "received receipt", "lost receipt"]) {
+    test(`BigFur delivery across Control outage with ${scenario}`, timeout, async context => {
+        const { root, mock, client, cutover, ingress, telegram, owner, topic } =
+            await productionAuthorityFixture(context, { pairedProduction: true });
+        cutover.controlOnline = true;
+        mock.publish(cutover.target, null);
+        const alpha = await pairProduction(mock, client, cutover, "alpha");
+        const { task } = await ingress(telegram(45298));
+        const { attempt } = await client.agent("alpha", "claim", { task });
+        const grant = await client.agent("alpha", "start", { attempt });
+        const outbox = async () => (await client.sql(
+            "SELECT phase,sends,message_id FROM outbox LEFT JOIN delivery_receipts USING(task) WHERE task=?", task,
+        ))[0];
+        const received = scenario === "received receipt";
+        const lost = scenario === "lost receipt";
+        const proven = scenario === "proven unsent";
+        const mismatched = scenario === "mismatched no-send proof";
+        const calls = [];
+        const forward = cutover.fetch;
+        cutover.fetch = async request => {
+            const { pathname } = new URL(request.url);
+            const { delivery, deliveryCheck } = await request.clone().json();
+            if (deliveryCheck && !cutover.controlOnline) calls.push("offline alarm");
+            if (pathname === "/v1/send" && delivery.closeUnsent && (proven || mismatched)) {
+                const proof = await forward(request);
+                assert.equal(proof.status, 200);
+                const reply = await proof.json();
+                if (mismatched) return Response.json({ ...reply, nonce: "unrelated" });
+                cutover.controlOnline = false;
+                return Response.json(reply);
+            }
+            if (pathname === "/v1/send" && !delivery.closeUnsent && delivery.sendNumber === 1) {
+                calls.push("first dispatch");
+                assert.deepEqual(await outbox(), { phase: "in_flight", sends: 1, message_id: null });
+                if (!(received || lost)) {
+                    if (!proven && !mismatched) cutover.controlOnline = false;
+                    return new Response(null, { status: 503 });
+                }
+            }
+            return forward(request);
+        };
+        mock.afterSend = () => {
+            if (received || lost) cutover.controlOnline = false;
+            if (lost) return Response.error();
+        };
+        await reportProductionResult(client, grant, scenario, alpha.incarnation);
+        if (proven) {
+            await until(() => calls.includes("offline alarm"), "closed attempt rearms through a second outage");
+            assert.deepEqual(await outbox(), { phase: "pending", sends: 1, message_id: null });
+            assert.deepEqual(mock.sends, []);
+            cutover.controlOnline = true;
+        }
+        const delivered = proven || received;
+        const expected = { phase: delivered ? "delivered" : "unknown", sends: proven ? 2 : 1, message_id: delivered ? 1 : null };
+        await until(async () => (await outbox()).phase === expected.phase, `durable ${expected.phase}`);
+        if (!delivered && !mismatched) assert.ok(calls.includes("offline alarm"), "expiry ran during the Control outage");
+        const control = new DatabaseSync(join(root, "control.sqlite"), { readOnly: true });
+        try {
+            const rows = control.prepare("SELECT number,message_id FROM sends WHERE generation=1 AND task=? ORDER BY number")
+                .all(task).map(row => ({ ...row }));
+            const first = proven || mismatched ? { number: 1, message_id: 0 }
+                : received || lost ? { number: 1, message_id: 1 } : null;
+            assert.deepEqual(rows, proven ? [first, { number: 2, message_id: 1 }] : first ? [first] : []);
+        } finally {
+            control.close();
+        }
+        cutover.controlOnline = true;
+        await client.restart();
+        assert.deepEqual(await outbox(), expected);
+        assert.equal(calls.filter(call => call === "first dispatch").length, 1);
+        assert.deepEqual(mock.sends, proven || received || lost ? [
+            { task, sendNumber: proven ? 2 : 1, chatId: owner, messageThreadId: topic, text: scenario },
+        ] : []);
+    });
+}
+
+const legacyDelivery = process.env.GATEWAY_TEST_LEGACY_DELIVERY;
+test("BigFur deliveryCheck version interoperability", { ...timeout, skip: !legacyDelivery }, async context => {
+    const oldControl = legacyDelivery === "worker-first";
+    const control = oldControl ? new URL(process.env.GATEWAY_TEST_LEGACY_CONTROL) : undefined;
+    const { mock, client, cutover, ingress, telegram, owner, topic } = await productionAuthorityFixture(context, { control });
+    const { task } = await ingress(telegram(45299));
+    mock.publish(cutover.target, null, cutover.runner);
+    cutover.controlOnline = true;
+    const { attempt } = await client.agent("alpha", "claim", { task });
+    const grant = await client.agent("alpha", "start", { attempt });
+    await reportProductionResult(client, grant, "version skew");
+    const outbox = () => client.sql("SELECT phase,sends FROM outbox WHERE task=?", task);
+    if (oldControl) {
+        await until(() => mock.checks.filter(check => check.deliveryCheck && check.status === 400).length >= 2,
+            "old Control rejects the delivery check across alarms");
+        assert.deepEqual(await outbox(), [{ phase: "pending", sends: 0 }]);
+        assert.deepEqual(mock.sends, []);
+    } else {
+        await until(async () => (await outbox())[0].phase === "delivered", "old Worker receives a durable reply");
+        assert.ok(mock.checks.every(check => !check.deliveryCheck));
+        await client.restart();
+        assert.deepEqual(await outbox(), [{ phase: "delivered", sends: 1 }]);
+        assert.deepEqual(mock.sends, [{ task, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "version skew" }]);
+    }
+});
+
 test("BigFur holds a second pending reply while Control finishes a timed-out send", timeout, async context => {
     const { mock, client, cutover, ingress, telegram, owner, topic } =
         await productionAuthorityFixture(context, { pairedProduction: true });
@@ -1956,7 +2060,9 @@ test("BigFur holds a second pending reply while Control finishes a timed-out sen
             const grant = await client.agent("alpha", "start", { attempt });
             await reportProductionResult(client, grant, `reply ${id}`, alpha.incarnation);
         }
-        await until(() => mock.checks.some(check => check.deliveryCheck && !check.allowed), "Control busy at alarm");
+        await until(async () => mock.checks.some(check => check.deliveryCheck && !check.allowed)
+            && (await client.sql("SELECT phase FROM outbox WHERE task='telegram:45296'"))[0]?.phase === "unknown",
+        "Control busy at alarm and expired attempt settles");
         assert.deepEqual(await client.sql("SELECT task,phase,sends FROM outbox ORDER BY task"), [
             { task: "telegram:45296", phase: "unknown", sends: 1 },
             { task: "telegram:45297", phase: "pending", sends: 0 },
@@ -2302,8 +2408,11 @@ printf '%s' "$BIGFUR_SYNTHETIC_REPLY" > "$output"
     await exited(cancelled);
     const [, , abandoned] = await observed(3);
     assert.equal(abandoned.length, 2);
-    await running.stop();
-    await exited(abandoned);
+    const abandonedTree = process.platform === "linux" ? await liveLinuxTree(running, { detached: false }) : null;
+    if (abandonedTree) assert.deepEqual(abandonedTree.provider, abandoned);
+    assert.deepEqual(await running.stop(), [null, "SIGKILL"]);
+    if (abandonedTree) await linuxTreeExited(abandonedTree, "runner SIGKILL");
+    else await exited(abandoned);
 
     const restored = join(runner.root, "copied-journal");
     await cp(runner.dir, restored, { recursive: true });
@@ -3478,7 +3587,8 @@ test("BigFur authority fences restored writers and is checked at effect boundari
     const afterReopen = mock.checks.length;
     await until(() => mock.checks.slice(afterReopen).some(check => check.runnerIncarnation === null),
         "a persisted delivery alarm reaches the authority gate");
-    assert.deepEqual(await interruptedDelivery(), [{ phase: "in_flight", sends: 1 }]);
+    await until(async () => (await interruptedDelivery())[0]?.phase === "unknown", "retired flight expires without egress");
+    assert.deepEqual(await interruptedDelivery(), [{ phase: "unknown", sends: 1 }]);
     assert.deepEqual(mock.sends, delivered);
 });
 

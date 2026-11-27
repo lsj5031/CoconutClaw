@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { createPairingAuthority, serveAuthority } from "./authority-control.mjs";
+import { fileURLToPath } from "node:url";
 
 export const origin = "https://control.invalid";
 export const hostname = "bigfur.invalid";
 export const bearer = "a".repeat(64);
 
-export async function authorityFixture(path, { pairing = false } = {}) {
-    const cli = join(import.meta.dirname, "authority-control.mjs");
+export async function authorityFixture(path, { pairing = false, control = new URL("./authority-control.mjs", import.meta.url) } = {}) {
+    const { createPairingAuthority, serveAuthority } = await import(control);
+    const cli = fileURLToPath(control);
     const admin = (command, ...args) => JSON.parse(execFileSync(process.execPath, [cli, command, path, ...args], {
         env: {}, stdio: ["ignore", "pipe", "pipe"],
     }));
@@ -77,18 +77,19 @@ export async function authorityFixture(path, { pairing = false } = {}) {
             assert.equal(request.method, "POST");
             assert.equal(request.headers.get("authorization"), `Bearer ${bearer}`);
             const body = await request.text();
-            const { target, objectIncarnation, runnerIncarnation, placement, deliveryCheck } = JSON.parse(body);
-            if (url.pathname === "/v1/send") await fixture.beforeSend?.();
+            const { target, objectIncarnation, runnerIncarnation, placement, deliveryCheck, delivery } = JSON.parse(body);
+            const dispatch = url.pathname === "/v1/send" && !delivery.closeUnsent;
+            if (dispatch) await fixture.beforeSend?.();
             const response = await fetch(`${endpoint}${url.pathname}`, {
                 method: "POST", headers: { authorization: `Bearer ${bearer}` }, body,
             });
             const text = await response.text();
             if (url.pathname === "/v1/check") {
                 checks.push({ target, objectIncarnation, runnerIncarnation,
-                    ...(deliveryCheck === undefined ? {} : { deliveryCheck }),
+                    ...(deliveryCheck === undefined ? {} : { deliveryCheck, status: response.status }),
                     ...(placement === undefined ? {} : { placement }), allowed: response.ok });
                 if (response.ok) return await fixture.beforeReply?.(JSON.parse(text)) ?? Response.json(JSON.parse(text));
-            } else if (response.ok) {
+            } else if (dispatch && response.ok) {
                 const reply = await fixture.afterSend?.();
                 if (reply) return reply;
             }

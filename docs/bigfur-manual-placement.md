@@ -216,15 +216,14 @@ on Mercury to validate this behavior.
 3. The `--production` runner uses the pairing receipt for Hello, request
    signatures, claim and Start checks, and evidence. It checks fresh Status
    before consuming a Start grant. Its journal binds the enrollment, signing
-   key and original lock file identity. The runner rejects a copied journal
-   directory. The original journal resumes with its stored signatures.
-   The macOS production integration uses a synthetic provider and mocked
+   key and original lock file identity. Journal-only copies and stale enrollment
+   cannot obtain new execution permits. The original journal resumes with
+   its stored signatures. The production integration uses a synthetic provider and mocked
    Telegram to exercise copied journals, mismatched placement, lost Start and result
    acknowledgments, both kinds of cancellation, abrupt loss, and retired
    journal reconciliation. Unknown produces zero deliveries or new launches.
-   A full clone with the current exportable seed and enrollment cannot be
-   distinguished on the wire. Host-bound identity would be required to make
-   that distinction.
+   Control cannot distinguish a full clone holding the current exportable seed
+   and enrollment on the wire. Distinguishing that clone requires host-bound identity.
 4. Native synthetic loopback custody was accepted on macOS, Linux and Windows
    in the base candidate. The production entry point ran on macOS and was
    cross-checked for Linux and Windows. A separately

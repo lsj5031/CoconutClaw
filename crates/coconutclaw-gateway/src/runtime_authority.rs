@@ -243,6 +243,13 @@ struct SendReply {
     message_id: i64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UnsentReply {
+    nonce: String,
+    no_send: bool,
+}
+
 impl<'a> Authority<'a> {
     pub fn read(env: &Env, object_incarnation: &'a str, runner: Option<Runner>) -> Option<Self> {
         let origin = Url::parse(&env.var("CUTOVER_AUTHORITY_ORIGIN").ok()?.to_string()).ok()?;
@@ -386,31 +393,39 @@ impl<'a> Authority<'a> {
         .ok_or_else(|| "invalid authority permit".into())
     }
 
-    pub async fn check(&self) -> Option<i64> {
-        Some(self.permit().await?.valid_until)
+    async fn delivery_call<T: DeserializeOwned>(
+        &self,
+        delivery: &Delivery,
+        nonce: &str,
+        close_unsent: bool,
+    ) -> Option<T> {
+        let mut request = json!({
+            "task": delivery.task,
+            "sendNumber": delivery.sends,
+            "chatId": delivery.chat_id,
+            "messageThreadId": delivery.thread_id,
+            "text": delivery.text,
+        });
+        if close_unsent {
+            request["closeUnsent"] = json!(true);
+        }
+        self.call("/v1/send", nonce, request, Check::Standard)
+            .await
+            .ok()
+            .flatten()
     }
 
-    pub async fn send(&self, delivery: &Delivery) -> Receipt {
+    pub async fn send(&self, delivery: &Delivery) -> Option<Receipt> {
         let nonce = nonce();
-        let sent = self
-            .call::<SendReply>(
-                "/v1/send",
-                &nonce,
-                json!({
-                    "task": delivery.task,
-                    "sendNumber": delivery.sends,
-                    "chatId": delivery.chat_id,
-                    "messageThreadId": delivery.thread_id,
-                    "text": delivery.text,
-                }),
-                Check::Standard,
-            )
-            .await;
-        match sent {
-            Ok(Some(reply)) if reply.nonce == nonce && reply.message_id > 0 => {
-                Receipt::Delivered(reply.message_id)
-            }
-            _ => Receipt::Unknown,
-        }
+        let reply: SendReply = self.delivery_call(delivery, &nonce, false).await?;
+        (reply.nonce == nonce && reply.message_id > 0)
+            .then_some(Receipt::Delivered(reply.message_id))
+    }
+
+    pub async fn close_unsent(&self, delivery: &Delivery) -> bool {
+        let nonce = nonce();
+        self.delivery_call::<UnsentReply>(delivery, &nonce, true)
+            .await
+            .is_some_and(|reply| reply.nonce == nonce && reply.no_send)
     }
 }

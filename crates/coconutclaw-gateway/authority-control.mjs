@@ -12,6 +12,7 @@ import {
 
 const permitMs = 900;
 const bodyLimit = 32 * 1024;
+const closedUnsent = 0;
 const freshObjectOnly = "fresh-object-only";
 const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
 const uuid = value => typeof value === "string" &&
@@ -312,6 +313,19 @@ class AuthorityStore {
         return { generation: current.generation, ...(historical ? { reconcileOnly: true } : {}) };
     }
 
+    closeUnsent(request, credentialVersion) {
+        return this.write(() => {
+            const { generation } = this.authorize(request, credentialVersion);
+            const { task, sendNumber } = request.delivery;
+            this.db.prepare("INSERT OR IGNORE INTO sends VALUES (?, ?, ?, ?)")
+                .run(generation, task, sendNumber, closedUnsent);
+            const { message_id: messageId } = this.db.prepare(
+                "SELECT message_id FROM sends WHERE generation=? AND task=? AND number=?",
+            ).get(generation, task, sendNumber);
+            if (messageId !== closedUnsent) throw new Denied(409);
+        });
+    }
+
     async dispatch(request, credentialVersion, send) {
         const { task, sendNumber } = request.delivery;
         const generation = this.write(() => {
@@ -357,7 +371,12 @@ async function readJson(stream) {
 }
 
 function validDelivery(delivery) {
-    return fields(delivery, ["task", "sendNumber", "chatId", "messageThreadId", "text"]) &&
+    const members = ["task", "sendNumber", "chatId", "messageThreadId", "text"];
+    if (delivery?.closeUnsent !== undefined) {
+        if (delivery.closeUnsent !== true) return false;
+        members.push("closeUnsent");
+    }
+    return fields(delivery, members) &&
         typeof delivery.task === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(delivery.task) &&
         positiveInteger(delivery.sendNumber) &&
         Number.isSafeInteger(delivery.chatId) && delivery.chatId !== 0 &&
@@ -456,6 +475,10 @@ function serve(store, { bearer, credentialVersion }, send) {
             return { ...binding, highWater, validUntil, ...enrollment };
         }
         if (dispatching) throw new Denied(503);
+        if (body.delivery.closeUnsent) {
+            store.closeUnsent(body, credentialVersion);
+            return { nonce: body.nonce, noSend: true };
+        }
         dispatching = true;
         try {
             return { nonce: body.nonce, messageId: await store.dispatch(body, credentialVersion, send) };

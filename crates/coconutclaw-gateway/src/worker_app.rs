@@ -365,7 +365,7 @@ impl DurableObject for BotLedger {
                     settle_alarm(alarm).await?;
                     storage.sync().await
                 }
-                LocalPhase::Executor => self.deliver(&storage, &ledger, None).await,
+                LocalPhase::Executor => self.deliver(&storage, &ledger, None, now()).await,
                 LocalPhase::Placement => Ok(()),
                 LocalPhase::Pilot => {
                     let alarm = ledger
@@ -430,28 +430,38 @@ impl BotLedger {
         storage: &Storage,
         ledger: &Ledger,
         authority: Option<&Authority<'_>>,
+        at: i64,
     ) -> Result<()> {
         let (delivery, alarm) =
-            ledger.transaction(storage, || ledger.wake_delivery(storage, now()))?;
+            ledger.transaction(storage, || ledger.wake_delivery(storage, at))?;
         settle_alarm(alarm).await?;
         storage.sync().await?;
         if let Some(delivery) = delivery {
             let receipt = if let Some(authority) = authority {
-                let receipt = authority.send(&delivery).await;
-                if authority.check().await.is_none() {
-                    return Ok(());
-                }
-                receipt
+                authority.send(&delivery).await
             } else {
-                send_telegram(&delivery).await.unwrap_or(Receipt::Unknown)
+                Some(send_telegram(&delivery).await.unwrap_or(Receipt::Unknown))
             };
-            let alarm = ledger.transaction(storage, || {
-                ledger.settle_delivery(storage, delivery, receipt, now())
-            })?;
-            settle_alarm(alarm).await?;
-            storage.sync().await?;
+            if let Some(receipt) = receipt {
+                self.settle_delivery(storage, ledger, delivery, receipt)
+                    .await?;
+            }
         }
         Ok(())
+    }
+
+    async fn settle_delivery(
+        &self,
+        storage: &Storage,
+        ledger: &Ledger,
+        delivery: Delivery,
+        receipt: Receipt,
+    ) -> Result<()> {
+        let alarm = ledger.transaction(storage, || {
+            ledger.settle_delivery(storage, delivery, receipt, now())
+        })?;
+        settle_alarm(alarm).await?;
+        storage.sync().await
     }
 
     fn cutover_authority(&self, runner: Option<Runner>) -> Option<Authority<'_>> {
@@ -470,17 +480,27 @@ impl BotLedger {
         {
             return Ok(());
         }
-        match authority.delivery_allowed().await {
-            Ok(true) => self.deliver(storage, &ledger, Some(&authority)).await?,
-            Ok(false) => {}
-            Err(_) => {
-                let alarm =
-                    ledger.transaction(storage, || ledger.defer_unsent_delivery(storage, now()))?;
-                settle_alarm(alarm).await?;
-                storage.sync().await?;
-            }
+        let allowed = authority.delivery_allowed().await;
+        let at = now();
+        if let Some(delivery) = ledger.expired_delivery(at)? {
+            let receipt = if matches!(allowed, Ok(true)) && authority.close_unsent(&delivery).await
+            {
+                Receipt::Unsent
+            } else {
+                Receipt::Unknown
+            };
+            return self
+                .settle_delivery(storage, &ledger, delivery, receipt)
+                .await;
         }
-        Ok(())
+        if matches!(allowed, Ok(true)) {
+            return self.deliver(storage, &ledger, Some(&authority), at).await;
+        }
+        let alarm = ledger.transaction(storage, || {
+            ledger.defer_delivery(storage, at, allowed.is_err())
+        })?;
+        settle_alarm(alarm).await?;
+        storage.sync().await
     }
 
     fn controlled_ledger(&self, storage: &Storage, phase: LocalPhase) -> Result<Ledger> {

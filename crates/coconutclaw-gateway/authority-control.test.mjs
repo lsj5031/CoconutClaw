@@ -274,6 +274,13 @@ if (process.argv[2] === "serve-test") {
         assert.equal(receipt.objectId, paired.target.objectId);
 
         await authority.stop();
+        const db = new DatabaseSync(path);
+        try {
+            assert.equal(db.prepare("UPDATE invitations SET expires=? WHERE generation=2 AND placement='alpha'")
+                .run(Date.now() - 1).changes, 1);
+        } finally {
+            db.close();
+        }
         authority = await start();
         assert.deepEqual(await authority.pair(request), attempts[0]);
         assert.equal((await authority.pair({ ...request, key: "6".repeat(64) })).status, 401);
@@ -284,14 +291,19 @@ if (process.argv[2] === "serve-test") {
         ]);
         assert.deepEqual(stored(), legacyRows);
         const unused = (await issue({ key })).code;
+        const unusedRequest = {
+            code: unused, key, signature: sign(null, pairingChallenge(unused, true), privateKey).toString("hex"),
+        };
+        const runnerBinding = { objectIncarnation, placement: "alpha", runnerIncarnation: receipt.incarnation };
+        await writeFile(`${path}.runner`, JSON.stringify({ placement: "alpha", incarnation: receipt.incarnation }), { mode: 0o600 });
+        await admin("retire-runner", `${path}.runner`);
+        assert.deepEqual(await authority.pair(request), attempts[0]);
+        assert.deepEqual((await authority.post(paired, "check", { objectIncarnation })).reply.routes, []);
+        assert.equal((await authority.post(paired, "check", runnerBinding)).reply.reconcileOnly, true);
         await admin("retire", "2");
         assert.deepEqual(await authority.pair(request), attempts[0]);
-        assert.equal((await authority.pair({
-            code: unused, key, signature: sign(null, pairingChallenge(unused, true), privateKey).toString("hex"),
-        })).status, 503);
-        assert.equal((await authority.post(paired, "check", {
-            objectIncarnation, placement: "alpha", runnerIncarnation: receipt.incarnation,
-        })).reply.reconcileOnly, true);
+        assert.equal((await authority.pair(unusedRequest)).status, 503);
+        assert.equal((await authority.post(paired, "check", runnerBinding)).reply.reconcileOnly, true);
         const successor = {
             ...paired, versionId: "version-3",
             target: { ...paired.target, generation: 3, objectId: "7".repeat(64), custodyDigest: "8".repeat(64) },
@@ -304,6 +316,7 @@ if (process.argv[2] === "serve-test") {
         await authority.stop();
         authority = await start();
         assert.deepEqual(await authority.pair(request), attempts[0]);
+        assert.equal((await authority.pair(unusedRequest)).status, 503);
         assert.equal((await authority.post(successor, "check", { objectIncarnation, updateId: 42 })).reply.duplicate, true);
         assert.equal((await authority.post(successor, "check", { objectIncarnation, updateId: 43 })).reply.duplicate, false);
     });
@@ -466,7 +479,10 @@ if (process.argv[2] === "serve-test") {
         await lost;
 
         authority = await start();
-        for (const number of [1, 2, 3]) assert.equal((await send(number)).status, 409);
+        for (const number of [1, 2, 3]) {
+            assert.equal((await send(number)).status, 409);
+            assert.equal((await send(number, { closeUnsent: true })).status, 409);
+        }
         assert.deepEqual(received, Array(3).fill({ chat_id: -321, message_thread_id: 37, text: "synthetic reply" }));
         assert.equal((await authority.post(record)).reply.highWater, 1);
         respond((_, response) => response.end(JSON.stringify({ ok: true, result: { message_id: 0 } })));
@@ -474,6 +490,39 @@ if (process.argv[2] === "serve-test") {
         assert.equal((await send(4)).status, 409);
         assert.deepEqual(received.at(-1), { chat_id: -321, text: "synthetic reply" });
         assert.equal(received.length, 4);
+    });
+
+    test("Control durably closes one unused send number and fences delayed dispatch", options, async context => {
+        const { path, admin, publish, start, received } = await fixture(context);
+        const record = publication(1);
+        await admin("init");
+        await publish(record);
+        let authority = await start();
+        const close = (extra = {}, binding = {}) => authority.post(record, "send", {
+            delivery: sendDelivery(1, { closeUnsent: true, ...extra }), ...binding,
+        });
+        assert.equal((await close({ closeUnsent: false })).status, 400);
+        assert.equal((await close({}, { objectIncarnation: randomUUID() })).status, 503);
+        const closed = await close();
+        assert.equal(closed.status, 200);
+        assert.deepEqual(closed.reply, { nonce: closed.body.nonce, noSend: true });
+        assert.deepEqual(received, []);
+        await authority.stop();
+        const db = new DatabaseSync(path, { readOnly: true });
+        try {
+            assert.deepEqual(db.prepare("SELECT generation,task,number,message_id FROM sends").all().map(row => ({ ...row })),
+                [{ generation: 1, task: "telegram:42", number: 1, message_id: 0 }]);
+        } finally {
+            db.close();
+        }
+        authority = await start();
+        const repeated = await close();
+        assert.deepEqual(repeated.reply, { nonce: repeated.body.nonce, noSend: true });
+        assert.equal((await authority.post(record, "send", { delivery: sendDelivery(1, { text: "delayed" }) })).status, 409);
+        assert.equal((await authority.post(record, "send", { delivery: sendDelivery(2) })).reply.messageId, 42);
+        assert.equal(received.length, 1);
+        await admin("retire", "1");
+        assert.equal((await close()).status, 503);
     });
 
     test("the dispatch writer orders retirement across processes and denies egress after retirement", options, async context => {
@@ -491,6 +540,7 @@ if (process.argv[2] === "serve-test") {
         assert.equal((await peer.post(record, "check", { deliveryCheck: true })).status, 503);
         assert.equal((await authority.post(record)).status, 200);
         assert.equal((await peer.post(record, "send", { delivery: sendDelivery(2) })).status, 503);
+        assert.equal((await peer.post(record, "send", { delivery: sendDelivery(2, { closeUnsent: true }) })).status, 503);
         let retired = false;
         const retirement = admin("retire", "1").then(status => {
             retired = true;
