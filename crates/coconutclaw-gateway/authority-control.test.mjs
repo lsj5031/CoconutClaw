@@ -255,6 +255,11 @@ if (process.argv[2] === "serve-test") {
         assert.equal(received.length, 2);
         const { publicKey, privateKey } = generateKeyPairSync("ed25519");
         const key = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+        const { code: expired } = await issue({ key, ttlMs: 1 });
+        await sleep(20);
+        assert.equal((await authority.pair({
+            code: expired, key, signature: sign(null, pairingChallenge(expired, true), privateKey).toString("hex"),
+        })).status, 410);
         const { code } = await issue({ key });
         const request = { code, key, signature: sign(null, pairingChallenge(code, true), privateKey).toString("hex") };
         assert.equal((await authority.pair({
@@ -278,6 +283,29 @@ if (process.argv[2] === "serve-test") {
             { placement: "alpha", alias: null },
         ]);
         assert.deepEqual(stored(), legacyRows);
+        const unused = (await issue({ key })).code;
+        await admin("retire", "2");
+        assert.deepEqual(await authority.pair(request), attempts[0]);
+        assert.equal((await authority.pair({
+            code: unused, key, signature: sign(null, pairingChallenge(unused, true), privateKey).toString("hex"),
+        })).status, 503);
+        assert.equal((await authority.post(paired, "check", {
+            objectIncarnation, placement: "alpha", runnerIncarnation: receipt.incarnation,
+        })).reply.reconcileOnly, true);
+        const successor = {
+            ...paired, versionId: "version-3",
+            target: { ...paired.target, generation: 3, objectId: "7".repeat(64), custodyDigest: "8".repeat(64) },
+            retirement: { ...paired.retirement, generation: 2 },
+            ingress: [{
+                generation: 2, objectId: paired.target.objectId, custodyDigest: paired.target.custodyDigest, updateIds: [42],
+            }],
+        };
+        await publish(successor);
+        await authority.stop();
+        authority = await start();
+        assert.deepEqual(await authority.pair(request), attempts[0]);
+        assert.equal((await authority.post(successor, "check", { objectIncarnation, updateId: 42 })).reply.duplicate, true);
+        assert.equal((await authority.post(successor, "check", { objectIncarnation, updateId: 43 })).reply.duplicate, false);
     });
 
     test("observation records one authenticated exact non-agent candidate while denying every request", options, async context => {
@@ -460,6 +488,7 @@ if (process.argv[2] === "serve-test") {
         const sent = authority.post(record, "send", { delivery: sendDelivery(1) });
         const fakeReply = await accepted.promise;
         assert.equal((await authority.post(record, "check", { deliveryCheck: true })).status, 503);
+        assert.equal((await peer.post(record, "check", { deliveryCheck: true })).status, 503);
         assert.equal((await authority.post(record)).status, 200);
         assert.equal((await peer.post(record, "send", { delivery: sendDelivery(2) })).status, 503);
         let retired = false;

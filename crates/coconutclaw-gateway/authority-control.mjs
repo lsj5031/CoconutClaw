@@ -197,22 +197,29 @@ class AuthorityStore {
         if (!fields(body, ["code", "key", "signature"]) || !sha256(body.code) || !sha256(body.key) ||
             typeof body.signature !== "string" || !/^[a-f0-9]{128}$/.test(body.signature)) throw new Denied(400);
         return this.write(() => {
-            const { generation, publication } = this.active();
+            const current = this.current();
+            if (!current || (this.pairing && current.retired)) throw new Denied(503);
+            const publication = JSON.parse(current.publication);
             const production = publication.target.pairing === productionPairing;
             if (!this.pairing && !production) throw new Denied(503);
             const hash = invitationHash(body.code);
-            const invite = this.db.prepare("SELECT * FROM invitations WHERE hash=? AND generation=?").get(hash, generation);
+            const invite = this.db.prepare("SELECT * FROM invitations WHERE hash=?").get(hash);
             if (!invite || !equalSecret(body.key, invite.key)) throw new Denied(401);
             const der = Buffer.from(`302a300506032b6570032100${body.key}`, "hex");
             const key = createPublicKey({ key: der, format: "der", type: "spki" });
             if (!verify(null, pairingChallenge(body.code, production), key, Buffer.from(body.signature, "hex"))) throw new Denied(401);
-            const receipt = (placement, incarnation) => ({
-                generation, objectId: publication.target.objectId, placement, incarnation,
-            });
+            const { generation } = invite;
+            const currentGeneration = current.generation === generation;
+            const receipt = (placement, incarnation) => {
+                const issued = currentGeneration ? publication : JSON.parse(this.db
+                    .prepare("SELECT publication FROM publications WHERE generation=?").get(generation).publication);
+                return { generation, objectId: issued.target.objectId, placement, incarnation };
+            };
             if (invite.placement !== null) {
                 if (!production) throw new Denied(409);
                 return receipt(invite.placement, invite.incarnation);
             }
+            if (current.retired || !currentGeneration) throw new Denied(503);
             if (invite.expires <= Date.now()) throw new Denied(410);
             const enrolled = this.db.prepare("SELECT placement,key,alias FROM invitations WHERE generation=? AND placement IS NOT NULL")
                 .all(generation);
@@ -265,11 +272,11 @@ class AuthorityStore {
         const production = enrolled.target.pairing === productionPairing;
         const historical = row.retired || generation !== current.generation;
         if (!isDeepStrictEqual(target, wireTarget(enrolled)) ||
-            (!historical && enrolled.target.telegramCredentialVersion !== credentialVersion) ||
-            (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation)) {
+            (!historical && enrolled.target.telegramCredentialVersion !== credentialVersion)) {
             throw new Denied(503);
         }
-        if (historical && (runnerIncarnation === null || enrolled.continuity !== freshObjectOnly)) {
+        if ((enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation) ||
+            (historical && (runnerIncarnation === null || enrolled.continuity !== freshObjectOnly))) {
             throw new Denied(deliveryCheck ? 410 : 503);
         }
         if (updateId !== undefined && !production) throw new Denied(503);
@@ -441,8 +448,10 @@ function serve(store, { bearer, credentialVersion }, send) {
     const server = authorityServer(bearer, async (body, check) => {
         if (check) {
             const validUntil = Date.now() + permitMs;
-            const { generation: highWater, ...enrollment } = store.authorize(body, credentialVersion);
-            if ((body.deliveryCheck && dispatching) || validUntil <= Date.now()) throw new Denied(503);
+            const authorize = () => store.authorize(body, credentialVersion);
+            if (body.deliveryCheck && dispatching) throw new Denied(503);
+            const { generation: highWater, ...enrollment } = body.deliveryCheck ? store.write(authorize) : authorize();
+            if (validUntil <= Date.now()) throw new Denied(503);
             const { delivery, deliveryCheck, updateId, ...binding } = body;
             return { ...binding, highWater, validUntil, ...enrollment };
         }

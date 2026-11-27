@@ -1941,6 +1941,37 @@ test("BigFur pending paired delivery rearms after a Control outage at cold wake"
     ]);
 });
 
+test("BigFur holds a second pending reply while Control finishes a timed-out send", timeout, async context => {
+    const { mock, client, cutover, ingress, telegram, owner, topic } =
+        await productionAuthorityFixture(context, { pairedProduction: true });
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null);
+    const alpha = await pairProduction(mock, client, cutover, "alpha");
+    const gate = Promise.withResolvers();
+    mock.holdSend = ({ task }) => task === "telegram:45296" ? gate.promise : undefined;
+    try {
+        for (const id of [45296, 45297]) {
+            const { task } = await ingress(telegram(id));
+            const { attempt } = await client.agent("alpha", "claim", { task });
+            const grant = await client.agent("alpha", "start", { attempt });
+            await reportProductionResult(client, grant, `reply ${id}`, alpha.incarnation);
+        }
+        await until(() => mock.checks.some(check => check.deliveryCheck && !check.allowed), "Control busy at alarm");
+        assert.deepEqual(await client.sql("SELECT task,phase,sends FROM outbox ORDER BY task"), [
+            { task: "telegram:45296", phase: "unknown", sends: 1 },
+            { task: "telegram:45297", phase: "pending", sends: 0 },
+        ]);
+        assert.deepEqual(mock.sends.map(send => send.task), ["telegram:45296"]);
+    } finally {
+        gate.resolve();
+    }
+    await until(async () => (await client.sql("SELECT phase FROM outbox WHERE task='telegram:45297'"))[0]?.phase === "delivered",
+        "second pending reply dispatched");
+    assert.deepEqual(mock.sends, [45296, 45297].map(id => ({
+        task: `telegram:${id}`, sendNumber: 1, chatId: owner, messageThreadId: topic, text: `reply ${id}`,
+    })));
+});
+
 test("BigFur paired successor deduplicates a completed singleton update from the frozen predecessor", timeout, async context => {
     const { mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
         await productionAuthorityFixture(context);
@@ -2120,6 +2151,61 @@ test("BigFur production pairing keeps immutable pins and fences retired writers 
     assert.equal((await client.agent("alpha", "next")).task, "telegram:45305");
 });
 
+test("BigFur retirement at the Start permit boundary marks recently seen alpha Offline", timeout, async context => {
+    const { mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
+        await productionAuthorityFixture(context, { pairedProduction: true });
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null);
+    const alpha = await pairProduction(mock, client, cutover, "alpha");
+    const beta = await pairProduction(mock, client, cutover, "beta", "desk");
+    const { task } = await ingress(telegram(45311));
+    const { attempt } = await client.agent("alpha", "claim", { task });
+    const status = () => client.post("status", { task }, cancelHeaders);
+    assert.equal((await status()).runner, "Online runner");
+
+    let checks = 0;
+    let originalDeadline;
+    mock.beforeReply = permit => {
+        if (permit.placement === "alpha" && ++checks === 2) {
+            originalDeadline = permit.validUntil;
+            mock.retireRunner({ placement: "alpha", incarnation: alpha.incarnation });
+        }
+    };
+    assert.deepEqual(await client.agent("alpha", "start", { attempt }, 503), { error: "inactive_generation" });
+    mock.beforeReply = undefined;
+    assert.equal(checks, 3);
+    const attemptRow = () => client.sql("SELECT phase,start_until FROM attempts WHERE id=?", attempt);
+    assert.deepEqual(await attemptRow(), [{ phase: "authorized", start_until: originalDeadline }]);
+    assert.deepEqual(await status(), {
+        placement: "alpha", runner: "Offline runner", attempt_phase: "authorized", outcome: null,
+    });
+    assert.equal((await client.agent("alpha", "hello")).reconcile_only, true);
+    await client.agent("alpha", "start", { attempt }, 503);
+    assert.deepEqual(await attemptRow(), [{ phase: "authorized", start_until: originalDeadline }]);
+    const alphaBinding = { placement: "alpha", instance: `bigfur:1:${alpha.objectId}`, attempt };
+    for (const event of [{ kind: "started" }, { kind: "result", text: "retired alpha" }]) {
+        const proof = productionProof(client, alphaBinding, event, alpha.incarnation);
+        assert.equal((await client.agent("alpha", "report", { proof })).event, event.kind);
+    }
+    assert.deepEqual(await status(), {
+        placement: "alpha", runner: "Offline runner", attempt_phase: "unknown", outcome: "Unknown attempt outcome",
+    });
+    assert.deepEqual(await client.sql("SELECT * FROM outbox"), []);
+    assert.deepEqual(await ingress(telegram(45312)), { disposition: "ignored", task: null });
+    const routed = telegram(45312);
+    routed.message.text = "@desk sibling stays routable";
+    const { task: sibling } = await ingress(routed);
+    assert.equal((await client.agent("beta", "next")).task, sibling);
+    const claim = await client.agent("beta", "claim", { task: sibling });
+    const grant = await client.agent("beta", "start", { attempt: claim.attempt });
+    assert.equal(grant.placement, "beta");
+    await reportProductionResult(client, grant, "beta reply", beta.incarnation);
+    await until(() => mock.sends.length === 1, "active sibling sends");
+    assert.deepEqual(mock.sends, [
+        { task: sibling, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "beta reply" },
+    ]);
+});
+
 test("BigFur native production runner binds the receipt and reconciles without repeating effects", {
     ...nativeTimeout, skip: !executable || !["darwin", "linux"].includes(process.platform),
 }, async context => {
@@ -2142,7 +2228,7 @@ test("BigFur native production runner binds the receipt and reconciles without r
     assert.equal(beta.generation, cutover.target.pin.generation);
     assert.equal(beta.objectId, cutover.target.pin.objectId);
     cutover.enrolled.beta = beta.incarnation;
-    assert.equal((await redeemProduction(mock, client.keys.beta, pairingCode))[0], 409);
+    assert.deepEqual(await redeemProduction(mock, client.keys.beta, pairingCode), [200, beta]);
     const codex = join(runner.root, "codex-test");
     await writeFile(codex, `#!/bin/sh
 while [ "$#" -gt 1 ]; do

@@ -24,9 +24,11 @@ export async function authorityFixture(path, { pairing = false } = {}) {
     const sends = [];
     const credentialVersion = "synthetic-existing-token";
     const credentials = { bearer, credentialVersion };
-    const send = delivery => {
+    const send = async delivery => {
         sends.push(delivery);
-        return sends.length;
+        const messageId = sends.length;
+        await fixture.holdSend?.(delivery);
+        return messageId;
     };
     const local = pairing ? await createPairingAuthority(path, credentials, send) : undefined;
     const server = local ? undefined : serveAuthority(path, credentials, send);
@@ -44,6 +46,7 @@ export async function authorityFixture(path, { pairing = false } = {}) {
         retireRunner: runner => record("retire-runner", runner),
         beforeReply: undefined,
         beforeSend: undefined,
+        holdSend: undefined,
         afterSend: undefined,
         close: local?.close ?? (() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))),
         status: () => admin("status"),
@@ -74,7 +77,7 @@ export async function authorityFixture(path, { pairing = false } = {}) {
             assert.equal(request.method, "POST");
             assert.equal(request.headers.get("authorization"), `Bearer ${bearer}`);
             const body = await request.text();
-            const { target, objectIncarnation, runnerIncarnation, placement } = JSON.parse(body);
+            const { target, objectIncarnation, runnerIncarnation, placement, deliveryCheck } = JSON.parse(body);
             if (url.pathname === "/v1/send") await fixture.beforeSend?.();
             const response = await fetch(`${endpoint}${url.pathname}`, {
                 method: "POST", headers: { authorization: `Bearer ${bearer}` }, body,
@@ -82,6 +85,7 @@ export async function authorityFixture(path, { pairing = false } = {}) {
             const text = await response.text();
             if (url.pathname === "/v1/check") {
                 checks.push({ target, objectIncarnation, runnerIncarnation,
+                    ...(deliveryCheck === undefined ? {} : { deliveryCheck }),
                     ...(placement === undefined ? {} : { placement }), allowed: response.ok });
                 if (response.ok) return await fixture.beforeReply?.(JSON.parse(text)) ?? Response.json(JSON.parse(text));
             } else if (response.ok) {

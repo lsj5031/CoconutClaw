@@ -104,19 +104,20 @@ close ingress and effect authority.
    `bigfur-production`. Later generations route to
    `bigfur-production:<generation>`. Verify the new deployment routes to
    the fresh object and remove the predecessor's ingress route.
-3. Verify that the Telegram pending-update boundary excludes all updates
-   admitted by the predecessor, including deliveries whose HTTP acknowledgments
-   may have been lost. Preserve the predecessor ledger for reconciliation
-   and exclude its tasks and outbox from replay. If the ingress boundary is
-   uncertain, keep admission closed. A fresh ledger cannot deduplicate
-   against unavailable predecessor records.
+3. For a paired successor, freeze the predecessor's ingress and include its
+   verified update IDs in the Control publication using the
+   [Control runbook](gateway-authority-control.md#production-placement-registry).
+   This covers updates whose HTTP acknowledgments were lost. Preserve the
+   predecessor ledger for reconciliation and keep its tasks and outbox held.
+   A legacy singleton successor still requires a separately verified
+   Telegram pending-update boundary.
 4. Publish the successor against the exact new route and Worker version.
    Enroll a fresh runner incarnation and a generation-scoped journal. Open
    ingress only after verifying the predecessor and retired runner are
-   denied. Admission uses Cloudflare SQLite and the webhook secret
-   independently of the control store.
+   denied. Legacy singleton admission uses Cloudflare SQLite and the webhook
+   secret. New paired admission also requires active Control.
 
 The same ledger deduplicates repeated update IDs across ordinary eviction.
-An alarm without control authority leaves its work held. Inspect pending
-deliveries after a control outage. A lost send acknowledgment spends the
-send reservation and records Unknown without retrying the effect.
+A temporary Control outage rearms alarms for pending work with zero sends.
+Retirement holds the generation's deliveries. A lost send acknowledgment
+spends the send reservation and records Unknown.

@@ -78,7 +78,11 @@ receipt commit. Retirement either wins before dispatch begins or waits for
 that request. An already-issued request can still complete at Telegram.
 Duplicates never dispatch, even after restart. A timeout, lost acknowledgment,
 or crash leaves a spent reservation. A null receipt means the outcome may
-be Unknown. A concurrent send can receive 503 while the writer is busy.
+be Unknown. Before reserving locally, the alarm checks delivery readiness
+against the Control writer lock. A busy Control or temporary check failure
+rearms pending, unsent work. An exact retired target stops delivery alarms.
+The send endpoint checks authority again at dispatch. An ambiguous call
+after reservation spends the attempt and is held for reconciliation.
 Reconcile held deliveries against the Worker and private control evidence
 before any operator-authorized new effect. The reservation key is scoped to
 one generation, so hold old work through the handoff.
@@ -93,12 +97,35 @@ existing Control database after its predecessor is retired. A new production
 installation can publish generation 1. A previously published generation
 requires the next consecutive generation and its fresh object.
 
+Before publishing a paired successor, close predecessor ingress, retire its
+effect authority and drain issued permits. With the predecessor's actual
+object still pinned, call `POST /v1/production/ingress-handoff` with the
+`x-cutover-operator` header. The endpoint atomically freezes fresh ingress
+and returns the generation, object ID, custody digest and committed update
+IDs. Repeating it gives the same record after cold wake. Verify provenance
+and continuity under operator custody. Keep the records private.
+
+Include the verified records in the publication's top-level `ingress` array,
+in generation order. Control requires an exact generation, object and custody
+match for every previously published BigFur ledger whose IDs it does not
+already hold. Previously imported records remain in the immutable
+publication history. When a predecessor's records or their provenance are
+unavailable, hold the paired publication. The original installations still
+need the predecessor freeze/export route on the pinned object before moving
+public ingress.
+
 The Control operator reads a runner's public card and uses
 `node authority-control.mjs issue "$DB" CARD.json` with `{"key":"<card id>"}`.
-Include `"alias":"desk"` for a later runner. The returned code is private,
-expires after five minutes, and redeems once against that exact signing key.
+Include `"alias":"desk"` for a later runner. The private code can enroll its
+exact signing key once within five minutes. Repeating the authenticated
+redemption returns the original receipt, including after retirement.
 The first runner is `alpha` and the default. `beta` and `gamma` require unique
 aliases. Admission consults the published registry through `/v1/check`.
+The same check suppresses inherited IDs before creating a successor task.
+An authenticated, in-scope update with an exact ID already in the local
+inbox can be acknowledged even during a Control outage or after retirement.
+Requests that require a registry lookup, including inherited IDs known only
+to Control, fail closed while Control is unavailable.
 Expose `POST /v1/pair` through the Control HTTPS proxy for authorized pairing,
 with the same body cap and logging restrictions as the other Control routes.
 

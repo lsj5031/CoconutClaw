@@ -202,14 +202,17 @@ on Mercury to validate this behavior.
 1. The production router accepts the `production-v1` pairing marker under its
    existing webhook, private owner and topic guards. It resolves the published
    aliases inside the inbox transaction and persists the task pin and reply topic.
-   Registry availability is required for new paired admission. Runner health is
-   independent. Singleton production continues to queue plain text on `alpha`.
+   New paired admission requires an active registry. The exact locally recorded
+   update ID can be acknowledged during a Control outage or after retirement.
+   Runner health is independent. Singleton production queues plain text on `alpha`.
    [Gateway ingress](../crates/coconutclaw-gateway/src/worker_app.rs)
 2. Control publishes `production-v1` with `fresh-object-only` continuity in the
-   existing generation ledger. Loopback tests cover cold wake, retired predecessor
-   restore, independent runner retirement and single same-topic dispatch. In-place
-   restoration of the active object and rollback of Control remain outside the
-   recovery contract. [Control runbook](gateway-authority-control.md)
+   existing generation ledger. A paired successor requires verified frozen inbox
+   IDs from its BigFur predecessors. Loopback tests cover predecessor redelivery,
+   cold wake during Control outage, retired predecessor restore, runner retirement at
+   the Start permit boundary, and one same-topic dispatch. Recovery requires a
+   fresh object and independently verified Control continuity.
+   [Control runbook](gateway-authority-control.md)
 3. The `--production` runner uses the pairing receipt for Hello, request
    signatures, claim and Start checks, and evidence. It checks fresh Status
    before consuming a Start grant. Its journal binds the enrollment, signing
@@ -219,12 +222,15 @@ on Mercury to validate this behavior.
    Telegram to exercise copied journals, mismatched placement, lost Start and result
    acknowledgments, both kinds of cancellation, abrupt loss, and retired
    journal reconciliation. Unknown produces zero deliveries or new launches.
+   A full clone with the current exportable seed and enrollment cannot be
+   distinguished on the wire. Host-bound identity would be required to make
+   that distinction.
 4. Native synthetic loopback custody was accepted on macOS, Linux and Windows
    in the base candidate. The production entry point ran on macOS and was
    cross-checked for Linux and Windows. A separately
    authorized rollout still needs native host admission with host-owned
-   credentials and workspace, verified Control and Telegram custody, and
-   same-topic Telegram acceptance.
+   credentials and workspace, verified Control and Telegram custody, provenance
+   for predecessor inbox exports, and same-topic Telegram acceptance.
 
 | Host | Native custody path |
 | --- | --- |
@@ -254,3 +260,6 @@ material outside the journal, workspace and Codex home. Use `resume` with
 the original receipt and journal after restart. A retired runner drains
 eligible signed evidence under its original enrollment and exits without
 requesting new work.
+
+If the pairing response is lost, repeat `redeem-production` with the same
+seed and code file to recover the committed receipt.
