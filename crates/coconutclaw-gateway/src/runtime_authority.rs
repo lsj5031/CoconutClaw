@@ -129,6 +129,9 @@ impl Pin {
                     && pin.hostname == "127.0.0.1"
                     && pin.generation == NonZeroU32::MIN
             }
+            (None, None, Some("production-v1")) => {
+                phase == "phase2-production" && pin.hostname == "bigfur.liu.nz"
+            }
             _ => false,
         };
         (host.host_str() == Some(&pin.hostname)
@@ -154,6 +157,10 @@ impl Pin {
 
     pub fn agent_instance(&self) -> String {
         format!("bigfur:{}:{}", self.generation, self.object_id)
+    }
+
+    pub fn paired(&self) -> bool {
+        self.pairing.is_some()
     }
 }
 
@@ -200,11 +207,23 @@ pub struct Permit {
     pub key: Option<String>,
     #[serde(default, deserialize_with = "present")]
     routes: Option<Vec<PairedRoute>>,
+    #[serde(default)]
+    pub reconcile_only: bool,
 }
 
 impl Permit {
     pub fn routes(self) -> Option<PlacementAliases> {
         PlacementAliases::paired(self.routes?)
+    }
+
+    pub fn has_route(&self, device: Device) -> bool {
+        self.routes
+            .as_ref()
+            .is_some_and(|routes| routes.iter().any(|route| route.placement == device))
+    }
+
+    pub fn same_runner(&self, previous: &Self) -> bool {
+        self.key == previous.key && self.reconcile_only == previous.reconcile_only
     }
 }
 
@@ -312,7 +331,13 @@ impl<'a> Authority<'a> {
         (enrollment
             && permit.nonce == nonce
             && permit.target == self.target
-            && permit.high_water == self.pin().generation
+            && (if permit.reconcile_only {
+                self.runner().is_some()
+                    && self.pin().hostname == "bigfur.liu.nz"
+                    && permit.high_water >= self.pin().generation
+            } else {
+                permit.high_water == self.pin().generation
+            })
             && permit.object_incarnation == self.object_incarnation
             && permit.runner_incarnation.as_ref()
                 == self.runner().map(|runner| &runner.incarnation)

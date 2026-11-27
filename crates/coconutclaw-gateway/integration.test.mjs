@@ -12,7 +12,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { Log, LogLevel, Miniflare } from "miniflare";
-import { checkAuthorityHandoff } from "./authority-preflight.mjs";
+import { checkAuthorityHandoff, pairingChallenge } from "./authority-preflight.mjs";
 import { runnerKey } from "./pair-runner-local.mjs";
 import { authorityFixture, bearer, hostname, origin } from "./runtime-authority-fixture.mjs";
 import {
@@ -111,7 +111,7 @@ async function runFixture(context, {
                 ...(executor && pin !== undefined ? { LOCAL_GENERATION: pin } : {}),
                 ...(inspect ? { LOCAL_SQL_METRICS: "1" } : {}),
                 ...(cutover ? {
-                    PHASE: cutover.pairing ? "phase2-pairing-local"
+                    PHASE: cutover.pairedProduction ? "phase2-production" : cutover.pairing ? "phase2-pairing-local"
                         : cutover.enrolled ? "phase2-placement-local"
                             : cutover.production ? "phase2-production" : "phase2-cutover",
                     CUTOVER_TARGET: JSON.stringify(cutover.target?.pin ?? {}),
@@ -193,7 +193,8 @@ async function runFixture(context, {
         return response;
     }
 
-    const requestHost = () => cutover?.enrolled ? "127.0.0.1" : cutover?.production ? "bigfur.liu.nz" : hostname;
+    const requestHost = () => cutover?.target?.pin.hostname ??
+        (cutover?.enrolled && !cutover.pairedProduction ? "127.0.0.1" : cutover?.production ? "bigfur.liu.nz" : hostname);
     const dispatch = (url, init) => service.dispatchFetch(url, { method: "POST", ...init });
 
     async function post(path, body, headers, status = 200, chunked = false) {
@@ -1763,7 +1764,7 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
     assert.ok(warmSamples.every(row => row.written <= 10), "warm writes stay below 10 rows per operation");
 });
 
-async function productionAuthorityFixture(context, { enrolled, placementAliases, pairing = false } = {}) {
+async function productionAuthorityFixture(context, { enrolled, placementAliases, pairing = false, pairedProduction = false } = {}) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "direct-retirement-"));
     const mock = await authorityFixture(join(root, "control.sqlite"), { pairing });
     context.after(async () => {
@@ -1773,7 +1774,8 @@ async function productionAuthorityFixture(context, { enrolled, placementAliases,
     const owner = 5_123_456_789;
     const topic = 101550;
     const cutover = {
-        production: true, enrolled, pairing, scope: `${owner}:${topic}`, runner: "d".repeat(64),
+        production: true, pairedProduction, enrolled: pairedProduction ? {} : enrolled,
+        pairing, scope: `${owner}:${topic}`, runner: "d".repeat(64),
         controlOnline: false, authorityCalls: 0,
         fetch(request) {
             cutover.authorityCalls++;
@@ -1800,7 +1802,7 @@ async function productionAuthorityFixture(context, { enrolled, placementAliases,
             generation: 1, revision: "e".repeat(40), hostname: enrolled ? "127.0.0.1" : "bigfur.liu.nz", objectId,
             custodyDigest: "b".repeat(64),
             telegramCredentialVersion: "synthetic-existing-token",
-            ...(pairing ? { pairing: "fixture-v1" }
+            ...(pairedProduction ? { pairing: "production-v1" } : pairing ? { pairing: "fixture-v1" }
                 : enrolled ? { executorKeys: Object.fromEntries(Object.keys(enrolled).map(device => [device, key(device)])) }
                     : { executorKey: key("alpha") }),
         },
@@ -1817,13 +1819,43 @@ async function productionAuthorityFixture(context, { enrolled, placementAliases,
     return { root, mock, owner, topic, cutover, client, cancelHeaders, telegram, ingress };
 }
 
-async function reportProductionResult(client, grant, text) {
+function productionProof(client, grant, event, incarnation) {
+    const device = grant.placement ?? "alpha";
+    const payload = JSON.stringify({ attempt: grant.attempt, event });
+    const domain = incarnation
+        ? `coconutclaw-enrolled-evidence-v1\n${grant.instance}\n${device}\n${incarnation}\n`
+        : `coconutclaw-evidence-v1\n${grant.instance}\nalpha\n`;
+    return { payload, signature: sign(null, Buffer.from(domain + payload), client.keys[device].privateKey).toString("hex") };
+}
+
+async function reportProductionResult(client, grant, text, incarnation) {
     for (const event of [{ kind: "started" }, { kind: "result", text }]) {
-        const payload = JSON.stringify({ attempt: grant.attempt, event });
-        const message = `coconutclaw-evidence-v1\n${grant.instance}\nalpha\n${payload}`;
-        const signature = sign(null, Buffer.from(message), client.keys.alpha.privateKey).toString("hex");
-        await client.agent("alpha", "report", { proof: { payload, signature } });
+        await client.agent(grant.placement ?? "alpha", "report", { proof: productionProof(client, grant, event, incarnation) });
     }
+}
+
+async function redeemProduction(mock, keys, code) {
+    const key = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+    const response = await fetch(`${mock.endpoint}/v1/pair`, {
+        method: "POST",
+        body: JSON.stringify({
+            code, key, signature: sign(null, pairingChallenge(code, true), keys.privateKey).toString("hex"),
+        }),
+    });
+    return [response.status, response.ok ? await response.json() : null];
+}
+
+async function pairProduction(mock, client, cutover, device, alias) {
+    const keys = client.keys[device];
+    const key = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+    const code = mock.issue({ key, alias });
+    const [status, receipt] = await redeemProduction(mock, keys, code);
+    assert.equal(status, 200);
+    assert.equal(receipt.placement, device);
+    assert.equal(receipt.generation, cutover.target.pin.generation);
+    assert.equal(receipt.objectId, cutover.target.pin.objectId);
+    cutover.enrolled[device] = receipt.incarnation;
+    return receipt;
 }
 
 async function nativePlacement(context) {
@@ -1840,6 +1872,133 @@ async function nativePlacement(context) {
     }
     return { mock, client, cutover, admit, cancelHeaders, owner, topic };
 }
+
+test("BigFur production pairing keeps immutable pins and fences retired writers across cold wake", timeout, async context => {
+    const { root, mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
+        await productionAuthorityFixture(context, { pairedProduction: true });
+    const noAuthority = { error: "inactive_generation" };
+    const ignored = { disposition: "ignored", task: null };
+    const admit = (id, text, status = 200) => {
+        const update = telegram(id);
+        update.message.text = text;
+        return ingress(update, status);
+    };
+    const status = task => client.post("status", { task }, cancelHeaders);
+    const outbox = task => client.sql("SELECT phase,sends FROM outbox WHERE task=?", task);
+    const begin = async (device, task) => {
+        const { attempt, placement, message_thread_id } = await client.agent(device, "claim", { task });
+        assert.equal(placement, device);
+        assert.equal(message_thread_id, topic);
+        const grant = await client.agent(device, "start", { attempt });
+        assert.equal(grant.placement, device);
+        return grant;
+    };
+    const report = (grant, event, status) => client.agent(grant.placement, "report", {
+        proof: productionProof(client, grant, event, cutover.enrolled[grant.placement]),
+    }, status);
+
+    assert.deepEqual(await admit(45301, "@desk blocked", 503), noAuthority);
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null);
+    const alpha = await pairProduction(mock, client, cutover, "alpha");
+    const beta = await pairProduction(mock, client, cutover, "beta", "desk");
+    const { placement, incarnation } = beta;
+    const betaBinding = { placement, incarnation };
+    const beforeGuards = cutover.authorityCalls;
+    assert.deepEqual(await ingress(telegram(45301, topic + 1)), ignored);
+    assert.deepEqual(await ingress(telegram(45301, topic, owner + 1)), ignored);
+    assert.equal(cutover.authorityCalls, beforeGuards);
+
+    const admission = await Promise.all([admit(45301, "@desk hello"), admit(45301, "@desk hello")]);
+    assert.deepEqual(admission.map(reply => reply.disposition).sort(), ["duplicate", "task"]);
+    const pinned = "telegram:45301";
+    assert.deepEqual(await status(pinned), {
+        placement: "beta", runner: "Offline runner", attempt_phase: null, outcome: null,
+    });
+    mock.rename({ ...betaBinding, alias: "studio" });
+    assert.deepEqual(await admit(45301, "@desk hello"), { disposition: "duplicate" });
+    assert.deepEqual(await admit(45302, "@desk hello"), ignored);
+    const first = (await admit(45302, "plain text default")).task;
+    const olderEvidence = (await admit(45303, "@studio will retire")).task;
+    assert.equal((await client.agent("alpha", "next")).task, first);
+    assert.equal((await client.agent("beta", "next")).task, pinned);
+    assert.equal((await client.agent("alpha", "hello")).device, "alpha");
+    const betaPacket = client.signed("beta", { op: "hello" });
+    await client.wire({ ...betaPacket, headers: {
+        ...betaPacket.headers, "x-executor-incarnation": alpha.incarnation,
+    } }, 503);
+
+    const firstGrant = await begin("alpha", first);
+    await reportProductionResult(client, firstGrant, "default topic", alpha.incarnation);
+    await until(async () => (await outbox(first))[0]?.phase === "delivered", "first paired production send");
+    const betaGrant = await begin("beta", pinned);
+    await reportProductionResult(client, betaGrant, "pinned topic", incarnation);
+    const retiredGrant = await begin("beta", olderEvidence);
+    const oldProof = productionProof(client, retiredGrant, { kind: "started" }, incarnation);
+    const savedPacket = client.signed("beta", { op: "report", proof: oldProof });
+    const pending = [{ phase: "pending", sends: 0 }];
+    assert.deepEqual(await outbox(pinned), pending);
+    await client.stop();
+    const snapshot = join(root, "paired-predecessor");
+    await client.snapshot(snapshot);
+    const beforeWake = mock.checks.at(-1).objectIncarnation;
+    await client.restart();
+    assert.equal((await client.agent("alpha", "hello")).device, "alpha");
+    assert.notEqual(mock.checks.at(-1).objectIncarnation, beforeWake);
+
+    mock.retireRunner(betaBinding);
+    assert.equal((await client.agent("beta", "hello")).reconcile_only, true);
+    assert.equal((await client.agent("alpha", "hello")).reconcile_only, undefined);
+    assert.deepEqual(await client.agent("beta", "start", { attempt: retiredGrant.attempt }, 503), noAuthority);
+    assert.deepEqual(await client.agent("beta", "claim", { task: olderEvidence }, 503), noAuthority);
+    const wrongDomain = productionProof(client, retiredGrant, { kind: "started" }, alpha.incarnation);
+    await client.agent("beta", "report", { proof: wrongDomain }, 401);
+    await report(retiredGrant, { kind: "started" });
+    await report(retiredGrant, { kind: "result", text: "held" });
+    assert.deepEqual(await status(olderEvidence), {
+        placement: "beta", runner: "Offline runner", attempt_phase: "unknown", outcome: "Unknown attempt outcome",
+    });
+    assert.deepEqual(await outbox(olderEvidence), []);
+    assert.deepEqual(await admit(45303, "@studio will retire"), { disposition: "duplicate" });
+    assert.deepEqual(await admit(45304, "@studio retired"), ignored);
+    await until(async () => (await outbox(pinned))[0]?.phase === "delivered", "paired cold wake sends pending result");
+    const deliveries = [
+        { task: first, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "default topic" },
+        { task: pinned, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "pinned topic" },
+    ];
+    assert.deepEqual(mock.sends, deliveries);
+
+    const predecessor = { ...cutover };
+    const { objectId } = await client.post("production/identity", {}, { ...cancelHeaders, "x-cutover-generation": "2" });
+    const successor = {
+        pin: { ...cutover.target.pin, generation: 2, objectId, custodyDigest: "c".repeat(64) },
+        versionId: "paired-successor",
+    };
+    assert.throws(() => mock.publish(successor, null));
+    mock.retire();
+    assert.throws(() => mock.publish({ ...successor, pin: { ...successor.pin, objectId: predecessor.target.pin.objectId } }, null));
+    mock.publish(successor, null);
+    const restored = await runFixture(context, { inspect: true, restore: snapshot, cutover: predecessor, keys: client.keys });
+    await restored.agent("beta", "next", {}, 503);
+    await restored.agent("alpha", "start", { attempt: firstGrant.attempt }, 503);
+    assert.equal((await restored.wire(savedPacket, 200)).event, "started");
+    assert.deepEqual(await restored.wire(savedPacket, 409), { error: "replay" });
+    await until(() => mock.checks.some(check => check.target.pin.generation === 1 &&
+        check.runnerIncarnation === null && !check.allowed), "restored predecessor alarm reaches Control");
+    assert.deepEqual(await restored.sql("SELECT phase,sends FROM outbox WHERE task=?", pinned), pending);
+    assert.deepEqual(mock.sends, deliveries);
+
+    cutover.target = successor;
+    cutover.enrolled = {};
+    await client.restart();
+    const oldKey = client.keys.alpha.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+    assert.equal((await redeemProduction(mock, client.keys.alpha, mock.issue({ key: oldKey })))[0], 409);
+    await client.wire(betaPacket, 503);
+    client.keys.alpha = generateKeyPairSync("ed25519");
+    await pairProduction(mock, client, cutover, "alpha");
+    assert.equal((await admit(45305, "fresh default")).disposition, "task");
+    assert.equal((await client.agent("alpha", "next")).task, "telegram:45305");
+});
 
 test("BigFur fresh install pairs native runners and keeps the default, offline pins, and Unknown", {
     ...nativeTimeout, skip: !executable || !cutoverCli,

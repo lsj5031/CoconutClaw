@@ -199,21 +199,17 @@ on Mercury to validate this behavior.
 
 ## BigFur integration gates
 
-1. Scope production admission to its existing webhook, private owner and
-   topic check. Resolve aliases against a published set of enrolled placements
-   in the same transaction that records the immutable pin. Keep plain text
-   on `alpha` for the legacy generation. Prove duplicate updates, alias changes,
-   offline admission, and same-topic replies without consulting runner health
-   at admission. The production handler currently pins every admitted task to
-   `alpha`. [Gateway ingress](../crates/coconutclaw-gateway/src/worker_app.rs)
-2. Carry the fixture's per-placement Control enrollment into a separately
-   authorized production generation. Define independent runner retirement,
-   including who can reconcile old evidence after retirement. Prove that copied
-   or retired journals cannot acquire permits. Verify cold wake, predecessor
-   fencing, exclusive delivery custody and stale-restore behavior for the
-   production object lifecycle before opening the scope.
-   [Control publication](../crates/coconutclaw-gateway/authority-control.mjs) ·
-   [Worker permit verification](../crates/coconutclaw-gateway/src/runtime_authority.rs)
+1. The production router accepts the `production-v1` pairing marker under its
+   existing webhook, private owner and topic guards. It resolves the published
+   aliases inside the inbox transaction and persists the task pin and reply topic.
+   Registry availability is required for new paired admission. Runner health is
+   independent. Singleton production continues to queue plain text on `alpha`.
+   [Gateway ingress](../crates/coconutclaw-gateway/src/worker_app.rs)
+2. Control publishes `production-v1` with `fresh-object-only` continuity in the
+   existing generation ledger. Loopback tests cover cold wake, retired predecessor
+   restore, independent runner retirement and single same-topic dispatch. In-place
+   restoration of the active object and rollback of Control remain outside the
+   recovery contract. [Control runbook](gateway-authority-control.md)
 3. Teach the native runner to use its enrolled placement for Hello, request
    signatures, claim checks, grant consumption, and evidence. Bind each journal
    to the exact enrollment and keep preexisting signed evidence verifiable in

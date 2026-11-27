@@ -6,8 +6,8 @@ import { request as httpsRequest } from "node:https";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import {
-    checkAuthorityHandoff, fields, pairingChallenge, placement, reference, sha256, targetFields, validEnrollments,
-    validTarget,
+    checkAuthorityHandoff, fields, pairingChallenge, placement, productionPairing, reference, sha256,
+    targetFields, validEnrollments, validTarget,
 } from "./authority-preflight.mjs";
 
 const permitMs = 900;
@@ -20,6 +20,26 @@ const wireTarget = ({ target: { deployment, ...pin }, versionId }) => ({ pin, ve
 const placements = ["alpha", "beta", "gamma"];
 const invitationHash = code => createHash("sha256").update(code).digest("hex");
 const aliasName = value => typeof value === "string" && /^[a-z0-9-]{1,32}$/.test(value);
+const enrollmentSchema = `
+    CREATE TABLE invitations (
+        hash TEXT PRIMARY KEY,
+        generation INTEGER NOT NULL REFERENCES publications,
+        key TEXT NOT NULL,
+        alias TEXT,
+        expires INTEGER NOT NULL,
+        placement TEXT,
+        incarnation TEXT UNIQUE,
+        CHECK ((placement IS NULL) = (incarnation IS NULL)),
+        UNIQUE (generation, placement)
+    ) STRICT;
+    CREATE UNIQUE INDEX enrolled_keys ON invitations(generation, key) WHERE placement IS NOT NULL;
+    CREATE UNIQUE INDEX enrolled_aliases ON invitations(generation, alias) WHERE placement IS NOT NULL;`;
+const productionEnrollmentSchema = `
+    ${enrollmentSchema}
+    CREATE TABLE retired_runners (
+        incarnation TEXT PRIMARY KEY REFERENCES invitations(incarnation)
+    ) STRICT;
+    PRAGMA user_version=3;`;
 
 class Denied extends Error {
     constructor(status) {
@@ -53,24 +73,12 @@ class AuthorityStore {
                         message_id INTEGER,
                         PRIMARY KEY (generation, task, number)
                     ) STRICT;
-                    ${pairing ? `CREATE TABLE invitations (
-                        hash TEXT PRIMARY KEY,
-                        generation INTEGER NOT NULL REFERENCES publications,
-                        key TEXT NOT NULL,
-                        alias TEXT,
-                        expires INTEGER NOT NULL,
-                        placement TEXT,
-                        incarnation TEXT UNIQUE,
-                        CHECK ((placement IS NULL) = (incarnation IS NULL)),
-                        UNIQUE (generation, placement)
-                    ) STRICT;
-                    CREATE UNIQUE INDEX enrolled_keys ON invitations(generation, key) WHERE placement IS NOT NULL;
-                    CREATE UNIQUE INDEX enrolled_aliases ON invitations(generation, alias) WHERE placement IS NOT NULL;` : ""}
+                    ${pairing ? enrollmentSchema : ""}
                     PRAGMA user_version=${version};
                     COMMIT;
                 `);
             }
-            if (this.db.prepare("PRAGMA user_version").get().user_version !== version ||
+            if (!(pairing ? [2] : [1, 3]).includes(this.db.prepare("PRAGMA user_version").get().user_version) ||
                 this.db.prepare("PRAGMA journal_mode").get().journal_mode !== "delete") {
                 throw new Error("invalid authority store");
             }
@@ -107,14 +115,16 @@ class AuthorityStore {
 
     publish(publication) {
         const fresh = publication?.continuity === freshObjectOnly;
+        const production = publication?.target?.pairing === productionPairing;
         const keys = publication?.target?.executorKeys;
         const multi = keys !== undefined;
         const incarnations = publication?.runnerIncarnations;
         const members = ["target", "retirement", "versionId", fresh ? "continuity" : "objectIncarnation"];
-        if (!this.pairing) members.push(multi ? "runnerIncarnations" : "runnerIncarnation");
+        if (!this.pairing && !production) members.push(multi ? "runnerIncarnations" : "runnerIncarnation");
         if (!fields(publication, members) ||
             !validTarget(publication.target, this.pairing) || !reference(publication.versionId) ||
-            (this.pairing ? publication.target.generation !== 1
+            (this.pairing ? production || publication.target.generation !== 1
+                : production ? !fresh
                 : multi ? fresh || !validEnrollments(incarnations) || !fields(incarnations, Object.keys(keys))
                     : !sha256(publication.runnerIncarnation)) ||
             (fresh ? publication.target.hostname !== "bigfur.liu.nz" : !uuid(publication.objectIncarnation))) {
@@ -133,9 +143,13 @@ class AuthorityStore {
                     if (!(fresh || multi || old.runnerIncarnations || old.continuity === freshObjectOnly)) return false;
                     const previous = old.runnerIncarnations ? Object.values(old.runnerIncarnations) : [old.runnerIncarnation];
                     return old.target.objectId === publication.target.objectId ||
-                        previous.some(runner => runners.includes(runner));
+                        previous.some(runner => runner !== undefined && runners.includes(runner)) ||
+                        (old.target.pairing === productionPairing && !production);
                 });
             if (reused) throw new Error("publication requires a fresh object and runner incarnation");
+            if (production && this.db.prepare("PRAGMA user_version").get().user_version === 1) {
+                this.db.exec(productionEnrollmentSchema);
+            }
             this.db.prepare("INSERT INTO publications VALUES (?, ?)").run(generation, JSON.stringify(publication));
             return this.status();
         });
@@ -161,7 +175,8 @@ class AuthorityStore {
         if (!sha256(key) || (alias !== null && !aliasName(alias)) ||
             !positiveInteger(ttlMs) || ttlMs > 5 * 60_000) throw new Denied(400);
         return this.write(() => {
-            const { generation } = this.active();
+            const { generation, publication } = this.active();
+            if (!this.pairing && publication.target.pairing !== productionPairing) throw new Denied(503);
             const code = randomBytes(32).toString("hex");
             this.db.prepare("INSERT INTO invitations (hash,generation,key,alias,expires) VALUES (?,?,?,?,?)")
                 .run(invitationHash(code), generation, key, alias, Date.now() + ttlMs);
@@ -174,12 +189,14 @@ class AuthorityStore {
             typeof body.signature !== "string" || !/^[a-f0-9]{128}$/.test(body.signature)) throw new Denied(400);
         return this.write(() => {
             const { generation, publication } = this.active();
+            const production = publication.target.pairing === productionPairing;
+            if (!this.pairing && !production) throw new Denied(503);
             const hash = invitationHash(body.code);
             const invite = this.db.prepare("SELECT * FROM invitations WHERE hash=? AND generation=?").get(hash, generation);
             if (!invite || !equalSecret(body.key, invite.key)) throw new Denied(401);
             const der = Buffer.from(`302a300506032b6570032100${body.key}`, "hex");
             const key = createPublicKey({ key: der, format: "der", type: "spki" });
-            if (!verify(null, pairingChallenge(body.code), key, Buffer.from(body.signature, "hex"))) throw new Denied(401);
+            if (!verify(null, pairingChallenge(body.code, production), key, Buffer.from(body.signature, "hex"))) throw new Denied(401);
             if (invite.placement !== null) throw new Denied(409);
             if (invite.expires <= Date.now()) throw new Denied(410);
             const enrolled = this.db.prepare("SELECT placement,key,alias FROM invitations WHERE generation=? AND placement IS NOT NULL")
@@ -187,36 +204,79 @@ class AuthorityStore {
             const name = placements.find(name => !enrolled.some(runner => runner.placement === name));
             if (!name || (name !== "alpha" && invite.alias === null) ||
                 enrolled.some(runner => runner.key === invite.key || runner.alias === invite.alias)) throw new Denied(409);
+            if (production && (this.db.prepare("SELECT 1 FROM invitations WHERE key=? AND placement IS NOT NULL")
+                .get(invite.key) || this.db.prepare("SELECT publication FROM publications").iterate()
+                .some(row => JSON.parse(row.publication).target.executorKey === invite.key))) throw new Denied(409);
             const incarnation = randomBytes(32).toString("hex");
             this.db.prepare("UPDATE invitations SET placement=?,incarnation=? WHERE hash=?").run(name, incarnation, hash);
             return { generation, objectId: publication.target.objectId, placement: name, incarnation };
         });
     }
 
+    changeRunner(record, retiring) {
+        const expected = retiring ? ["placement", "incarnation"] : ["placement", "incarnation", "alias"];
+        if (!fields(record, expected)) throw new Denied(400);
+        const { placement: name, alias, incarnation } = record;
+        if (!placement(name) || !sha256(incarnation) ||
+            (!retiring && !aliasName(alias))) throw new Denied(400);
+        return this.write(() => {
+            const { generation, publication } = this.active();
+            if (publication.target.pairing !== productionPairing) throw new Denied(503);
+            const runner = this.db.prepare("SELECT incarnation FROM invitations WHERE generation=? AND placement=?")
+                .get(generation, name);
+            if (!runner || !equalSecret(incarnation, runner.incarnation)) throw new Denied(409);
+            if (retiring) {
+                this.db.prepare("INSERT OR IGNORE INTO retired_runners VALUES (?)").run(incarnation);
+            } else {
+                const changed = this.db.prepare(`UPDATE invitations SET alias=? WHERE incarnation=?
+                    AND NOT EXISTS (SELECT 1 FROM retired_runners WHERE incarnation=?)`)
+                    .run(alias, incarnation, incarnation);
+                if (!changed.changes) throw new Denied(409);
+            }
+            return { generation, placement: name };
+        });
+    }
+
     authorize({ target, objectIncarnation, runnerIncarnation, placement: name }, credentialVersion) {
-        const { generation, publication: enrolled } = this.active();
+        const current = this.current();
+        const generation = target?.pin?.generation;
+        if (!current || !targetFields.generation(generation)) throw new Denied(503);
+        const row = this.db.prepare(`
+            SELECT publication, retirements.generation IS NOT NULL AS retired
+            FROM publications LEFT JOIN retirements USING (generation) WHERE generation=?
+        `).get(generation);
+        if (!row) throw new Denied(503);
+        const enrolled = JSON.parse(row.publication);
+        const production = enrolled.target.pairing === productionPairing;
+        const historical = row.retired || generation !== current.generation;
         if (!isDeepStrictEqual(target, wireTarget(enrolled)) ||
-            enrolled.target.telegramCredentialVersion !== credentialVersion ||
-            (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation)) {
+            (!historical && enrolled.target.telegramCredentialVersion !== credentialVersion) ||
+            (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation) ||
+            (historical && (runnerIncarnation === null || enrolled.continuity !== freshObjectOnly))) {
             throw new Denied(503);
         }
-        if (this.pairing) {
+        if (this.pairing || production) {
             if (name === undefined && runnerIncarnation === null) {
-                const routes = this.db.prepare("SELECT placement,alias FROM invitations WHERE generation=? AND placement IS NOT NULL ORDER BY placement")
+                const routes = this.db.prepare(`SELECT placement,alias FROM invitations
+                    WHERE generation=? AND placement IS NOT NULL
+                    ${production ? "AND incarnation NOT IN (SELECT incarnation FROM retired_runners)" : ""}
+                    ORDER BY placement`)
                     .all(generation);
                 return { generation, routes };
             }
             const runner = this.db.prepare("SELECT key,incarnation FROM invitations WHERE generation=? AND placement=?")
                 .get(generation, name ?? "");
             if (!runner || !equalSecret(runnerIncarnation, runner.incarnation)) throw new Denied(503);
-            return { generation, key: runner.key };
+            const retired = production && this.db.prepare("SELECT 1 FROM retired_runners WHERE incarnation=?")
+                .get(runner.incarnation);
+            return { generation: current.generation, key: runner.key, ...(historical || retired ? { reconcileOnly: true } : {}) };
         }
         const runner = enrolled.runnerIncarnations ? enrolled.runnerIncarnations[name] : enrolled.runnerIncarnation;
         if ((name !== undefined && !enrolled.runnerIncarnations) ||
             (runnerIncarnation !== null && (runner === undefined || !equalSecret(runnerIncarnation, runner)))) {
             throw new Denied(503);
         }
-        return { generation };
+        return { generation: current.generation, ...(historical ? { reconcileOnly: true } : {}) };
     }
 
     async dispatch(request, credentialVersion, send) {
@@ -362,10 +422,10 @@ function serve(store, { bearer, credentialVersion }, send) {
         } finally {
             dispatching = false;
         }
-    }, store.pairing ? body => {
+    }, body => {
         if (dispatching) throw new Denied(503);
         return store.redeem(body);
-    } : undefined);
+    });
     server.once("close", () => store.db.close());
     return server;
 }
@@ -419,7 +479,7 @@ export function observeAuthority(candidate, bearer, record) {
 }
 
 function main([command, path, argument, ...extra]) {
-    const usage = "usage: authority-control.mjs init|status DB | publish DB RECORD | retire DB GENERATION | observe CANDIDATE PORT | serve DB PORT";
+    const usage = "usage: authority-control.mjs init|status DB | publish|issue|rename|retire-runner DB RECORD | retire DB GENERATION | observe CANDIDATE PORT | serve DB PORT";
     if (!path || extra.length) throw new Error(usage);
     if (["observe", "serve"].includes(command)) {
         const port = Number(argument);
@@ -436,14 +496,18 @@ function main([command, path, argument, ...extra]) {
         return;
     }
     if ((["init", "status"].includes(command) && argument !== undefined) ||
-        (command === "publish" && !argument) ||
+        (["publish", "issue", "rename", "retire-runner"].includes(command) && !argument) ||
         (command === "retire" && !targetFields.generation(Number(argument))) ||
-        !["init", "status", "publish", "retire"].includes(command)) throw new Error(usage);
+        !["init", "status", "publish", "retire", "issue", "rename", "retire-runner"].includes(command)) throw new Error(usage);
     const store = new AuthorityStore(path, { initialize: command === "init", timeout: 5000 });
     try {
         let status;
         if (command === "publish") status = store.publish(JSON.parse(readFileSync(argument, "utf8")));
         else if (command === "retire") status = store.retire(Number(argument));
+        else if (command === "issue") status = { code: store.issue(JSON.parse(readFileSync(argument, "utf8"))) };
+        else if (command === "rename" || command === "retire-runner") {
+            status = store.changeRunner(JSON.parse(readFileSync(argument, "utf8")), command === "retire-runner");
+        }
         else status = store.status();
         console.log(JSON.stringify(status));
     } finally {

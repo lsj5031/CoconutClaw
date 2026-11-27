@@ -235,7 +235,7 @@ fn route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
         url.host_str() == Some(&pin.hostname)
             && url.port().is_none()
             && (matches!(url.path(), "/v1/telegram" | "/v1/agent" | "/v1/cancel")
-                || (phase == LocalPhase::PairedPlacement && url.path() == "/v1/status"))
+                || (pin.paired() && url.path() == "/v1/status"))
     } else if phase == LocalPhase::Pilot {
         matches!(
             url.path(),
@@ -523,7 +523,7 @@ impl BotLedger {
         let generation = scope.generation(&pin);
         let text = scope.text(&update);
         let mut permit_deadline = None;
-        let aliases = if phase == LocalPhase::PairedPlacement && text.is_some() {
+        let aliases = if pin.paired() && text.is_some() {
             let Some(authority) = self.cutover_authority(None) else {
                 return Ok(inactive_generation());
             };
@@ -559,11 +559,13 @@ impl BotLedger {
                     Some(aliases) => aliases.select(text),
                     None => Some((Device::Alpha, text)),
                 })
-                .filter(|(device, _)| {
-                    phase == LocalPhase::PairedPlacement || pin.key(*device).is_some()
-                });
+                .filter(|(device, _)| pin.paired() || pin.key(*device).is_some());
             match ledger.direct_generation()? {
-                Some(current) if current == generation => {}
+                Some(current) if current == generation => {
+                    if text.is_some() && ledger.has_update(id)? {
+                        return Ok(Reply::ok(json!({"disposition": "duplicate"})));
+                    }
+                }
                 None if ledger.empty_schema()? => {
                     if selection.is_some() {
                         ledger.initialize_direct(generation)?;
@@ -670,7 +672,7 @@ impl BotLedger {
         let Some(current) = authority
             .permit()
             .await
-            .filter(|current| current.key == permit.key)
+            .filter(|current| current.same_runner(&permit))
         else {
             return Ok(inactive_generation());
         };
@@ -686,6 +688,15 @@ impl BotLedger {
         };
         let mut start = None;
         let (reply, alarm) = if let Some((agent, evidence)) = agent {
+            if now() >= permit_deadline
+                || (current.reconcile_only
+                    && !matches!(
+                        agent.command,
+                        Command::Hello | Command::Status { .. } | Command::Report { .. }
+                    ))
+            {
+                return Ok(inactive_generation());
+            }
             start = match agent.command {
                 Command::Start { attempt } => Some((agent.device, attempt)),
                 _ => None,
@@ -702,12 +713,17 @@ impl BotLedger {
             {
                 return Ok(conflict());
             }
-            if phase == LocalPhase::PairedPlacement {
+            if pin.paired() && !current.reconcile_only {
                 let seen = &self.runner_seen[agent.device as usize];
                 let signed_at = agent.at_ms.min(now());
                 seen.set(Some(seen.get().map_or(signed_at, |at| at.max(signed_at))));
             }
             if let Some(reply) = ledger.read_agent(&agent, now(), &instance, true)? {
+                let reply = if current.reconcile_only && matches!(agent.command, Command::Hello) {
+                    reply.reconcile_only()
+                } else {
+                    reply
+                };
                 return Ok(reply.authority_deadline(permit_deadline));
             }
             ledger.transaction(&storage, || {
@@ -725,6 +741,7 @@ impl BotLedger {
                         instance: &instance,
                         valid_until: permit_deadline,
                         placement: authority.runner().and_then(|runner| runner.placement),
+                        reconcile_only: current.reconcile_only,
                     }),
                     evidence,
                     &storage,
@@ -765,9 +782,10 @@ impl BotLedger {
                 let Some(task) = ledger.placed_task(&query.task)? else {
                     return Ok(Reply::error(404, "not_found"));
                 };
-                let online = self.runner_seen[task.placement as usize]
-                    .get()
-                    .is_some_and(|seen| now().saturating_sub(seen) < RUNNER_PRESENCE_MS);
+                let online = current.has_route(task.placement)
+                    && self.runner_seen[task.placement as usize]
+                        .get()
+                        .is_some_and(|seen| now().saturating_sub(seen) < RUNNER_PRESENCE_MS);
                 return Ok(Reply::ok(json!({
                     "placement": task.placement,
                     "runner": if online { "Online runner" } else { "Offline runner" },
@@ -776,7 +794,12 @@ impl BotLedger {
                 })));
             }
             (
-                ledger.transaction(&storage, || ledger.cancel(&query.task))?,
+                ledger.transaction(&storage, || {
+                    if now() >= permit_deadline {
+                        return Ok(inactive_generation());
+                    }
+                    ledger.cancel(&query.task)
+                })?,
                 None,
             )
         };
@@ -785,7 +808,7 @@ impl BotLedger {
         let Some(final_permit) = authority
             .permit()
             .await
-            .filter(|current| current.key == permit.key)
+            .filter(|current| current.same_runner(&permit))
         else {
             return Ok(inactive_generation());
         };

@@ -133,7 +133,7 @@ pub struct PlacementAliases {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairedRoute {
-    placement: Device,
+    pub placement: Device,
     alias: Option<String>,
 }
 
@@ -172,8 +172,10 @@ impl PlacementAliases {
 
     pub fn paired(routes: Vec<PairedRoute>) -> Option<Self> {
         let mut names = BTreeMap::new();
-        for (route, placement) in routes.iter().zip(Device::ALL) {
-            if route.placement != placement {
+        let mut seen = [false; Device::ALL.len()];
+        for route in routes {
+            let placement = route.placement;
+            if std::mem::replace(&mut seen[placement as usize], true) {
                 return None;
             }
             match &route.alias {
@@ -186,9 +188,9 @@ impl PlacementAliases {
                 _ => return None,
             }
         }
-        (routes.len() <= Device::ALL.len()).then_some(Self {
+        Some(Self {
             names,
-            default: (!routes.is_empty()).then_some(Device::Alpha),
+            default: seen[Device::Alpha as usize].then_some(Device::Alpha),
         })
     }
 

@@ -83,6 +83,42 @@ Reconcile held deliveries against the Worker and private control evidence
 before any operator-authorized new effect. The reservation key is scoped to
 one generation, so hold old work through the handoff.
 
+## Production placement registry
+
+For an authorized multi-placement publication, use `pairing: "production-v1"`
+in the target in place of `executorKey`. Copy that pin into `CUTOVER_TARGET`.
+Use `continuity: "fresh-object-only"` in the publication and omit
+`runnerIncarnation`. Publishing initializes the registry atomically in the
+existing Control database after its predecessor is retired. A new production
+installation can publish generation 1. A previously published generation
+requires the next consecutive generation and its fresh object.
+
+The Control operator reads a runner's public card and uses
+`node authority-control.mjs issue "$DB" CARD.json` with `{"key":"<card id>"}`.
+Include `"alias":"desk"` for a later runner. The returned code is private,
+expires after five minutes, and redeems once against that exact signing key.
+The first runner is `alpha` and the default. `beta` and `gamma` require unique
+aliases. Admission consults the published registry through `/v1/check`.
+Expose `POST /v1/pair` through the Control HTTPS proxy for authorized pairing,
+with the same body cap and logging restrictions as the other Control routes.
+
+Use `rename "$DB" RUNNER.json` with `placement`, `incarnation`, and the new
+`alias`, or `retire-runner "$DB" RUNNER.json` with just `placement` and
+`incarnation`. Both commands take an exact receipt identity in the current
+generation. Retirement is permanent for the slot in that generation. Retiring
+`alpha` closes unprefixed admission while the other aliases continue. Tasks
+already pinned to a retired runner stay with it. Follow the same permit drain
+window as generation retirement. Results accepted before retirement can still
+have pending deliveries.
+
+The holder of the retired enrollment's original private key and incarnation
+can authenticate Hello, Status and signed evidence on the original route.
+This reconciliation authority gives no Claim or Start grant and queues no
+reply. A result first reported under this authority is retained as evidence
+with an Unknown outcome. Evidence keeps its original signature domain.
+Control retains retired production generations for this purpose. Exact
+old-target checks and the original route's credentials still apply.
+
 ## Restore
 
 Retire authority and close routes and effect custody before recovery. The

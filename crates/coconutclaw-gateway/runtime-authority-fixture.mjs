@@ -14,6 +14,11 @@ export async function authorityFixture(path, { pairing = false } = {}) {
     const admin = (command, ...args) => JSON.parse(execFileSync(process.execPath, [cli, command, path, ...args], {
         env: {}, stdio: ["ignore", "pipe", "pipe"],
     }));
+    const record = (command, value) => {
+        const input = `${path}.json`;
+        writeFileSync(input, JSON.stringify(value), { mode: 0o600 });
+        return admin(command, input);
+    };
     if (!pairing && !existsSync(path)) admin("init");
     const checks = [];
     const sends = [];
@@ -33,7 +38,10 @@ export async function authorityFixture(path, { pairing = false } = {}) {
     const fixture = {
         checks,
         sends,
-        ...(local ? { endpoint, issue: local.issue } : {}),
+        endpoint,
+        issue: local?.issue ?? (card => record("issue", card).code),
+        rename: runner => record("rename", runner),
+        retireRunner: runner => record("retire-runner", runner),
         beforeReply: undefined,
         beforeSend: undefined,
         afterSend: undefined,
@@ -43,7 +51,8 @@ export async function authorityFixture(path, { pairing = false } = {}) {
             const publication = {
                 target: { ...target.pin, deployment: "synthetic/deployment" },
                 versionId: target.versionId,
-                ...(local ? {} : typeof runner === "string" ? { runnerIncarnation: runner } : { runnerIncarnations: runner }),
+                ...(target.pin.pairing ? {} : typeof runner === "string"
+                    ? { runnerIncarnation: runner } : { runnerIncarnations: runner }),
                 ...(objectIncarnation === null ? { continuity: "fresh-object-only" } : { objectIncarnation }),
                 retirement: {
                     generation: target.pin.generation - 1, writers: "synthetic/writers",
@@ -52,9 +61,7 @@ export async function authorityFixture(path, { pairing = false } = {}) {
                 },
             };
             if (local) return local.publish(publication);
-            const input = `${path}.json`;
-            writeFileSync(input, JSON.stringify(publication), { mode: 0o600 });
-            admin("publish", input);
+            return record("publish", publication);
         },
         retire() {
             if (local) return local.retire(1);

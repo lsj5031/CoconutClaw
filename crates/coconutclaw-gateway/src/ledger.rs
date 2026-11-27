@@ -17,6 +17,7 @@ pub enum Execution<'a> {
         instance: &'a str,
         valid_until: i64,
         placement: Option<Device>,
+        reconcile_only: bool,
     },
     Local {
         instance: &'a str,
@@ -62,6 +63,13 @@ impl Reply {
     pub fn authority_deadline(mut self, until: i64) -> Self {
         if self.0 == 200 {
             self.1["authority_valid_until"] = json!(until);
+        }
+        self
+    }
+
+    pub fn reconcile_only(mut self) -> Self {
+        if self.0 == 200 {
+            self.1["reconcile_only"] = json!(true);
         }
         self
     }
@@ -384,13 +392,7 @@ impl Ledger {
         fail: bool,
         pilot_now: Option<i64>,
     ) -> Result<Reply> {
-        if self
-            .number(
-                "SELECT sequence AS value FROM inbox WHERE update_id=?",
-                [update.into()],
-            )?
-            .is_some()
-        {
+        if self.has_update(update)? {
             return Ok(Reply::ok(json!({"disposition": "duplicate"})));
         }
         if self.number(
@@ -428,6 +430,15 @@ impl Ledger {
             return Err("fixture rollback".into());
         }
         Ok(Reply::ok(json!({"disposition": disposition, "task": task})))
+    }
+
+    pub fn has_update(&self, update: i64) -> Result<bool> {
+        Ok(self
+            .number(
+                "SELECT sequence AS value FROM inbox WHERE update_id=?",
+                [update.into()],
+            )?
+            .is_some())
     }
 
     fn insert_task(
@@ -662,10 +673,15 @@ impl Ledger {
                     evidence.ok_or("missing verified evidence")?,
                     matches!(
                         execution,
-                        Some(Execution::Local {
-                            reconcile_only: true,
-                            ..
-                        })
+                        Some(
+                            Execution::Local {
+                                reconcile_only: true,
+                                ..
+                            } | Execution::Cutover {
+                                reconcile_only: true,
+                                ..
+                            }
+                        )
                     ),
                 )?;
                 if queued {
