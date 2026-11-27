@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import {
     checkAuthorityHandoff, fields, pairingChallenge, placement, productionPairing, reference, sha256,
-    targetFields, validEnrollments, validTarget,
+    targetFields, updateId, validEnrollments, validTarget,
 } from "./authority-preflight.mjs";
 
 const permitMs = 900;
@@ -121,6 +121,7 @@ class AuthorityStore {
         const incarnations = publication?.runnerIncarnations;
         const members = ["target", "retirement", "versionId", fresh ? "continuity" : "objectIncarnation"];
         if (!this.pairing && !production) members.push(multi ? "runnerIncarnations" : "runnerIncarnation");
+        if (production && publication.ingress !== undefined) members.push("ingress");
         if (!fields(publication, members) ||
             !validTarget(publication.target, this.pairing) || !reference(publication.versionId) ||
             (this.pairing ? production || publication.target.generation !== 1
@@ -137,16 +138,24 @@ class AuthorityStore {
                 throw new Error("publication requires the next generation and a retired predecessor");
             }
             const runners = multi ? Object.values(incarnations) : [publication.runnerIncarnation];
-            const reused = this.db.prepare("SELECT publication FROM publications").iterate()
-                .some(row => {
-                    const old = JSON.parse(row.publication);
-                    if (!(fresh || multi || old.runnerIncarnations || old.continuity === freshObjectOnly)) return false;
-                    const previous = old.runnerIncarnations ? Object.values(old.runnerIncarnations) : [old.runnerIncarnation];
-                    return old.target.objectId === publication.target.objectId ||
-                        previous.some(runner => runner !== undefined && runners.includes(runner)) ||
-                        (old.target.pairing === productionPairing && !production);
-                });
+            const history = this.db.prepare("SELECT publication FROM publications ORDER BY generation").all()
+                .map(row => JSON.parse(row.publication));
+            const reused = history.some(old => {
+                if (!(fresh || multi || old.runnerIncarnations || old.continuity === freshObjectOnly)) return false;
+                const previous = old.runnerIncarnations ? Object.values(old.runnerIncarnations) : [old.runnerIncarnation];
+                return old.target.objectId === publication.target.objectId ||
+                    previous.some(runner => runner !== undefined && runners.includes(runner)) ||
+                    (old.target.pairing === productionPairing && !production);
+            });
             if (reused) throw new Error("publication requires a fresh object and runner incarnation");
+            if (production) {
+                const covered = new Set(history.flatMap(old => (old.ingress ?? []).map(record => record.generation)));
+                const expected = history.map(old => old.target)
+                    .filter(target => target.hostname === "bigfur.liu.nz" && !covered.has(target.generation))
+                    .map(({ generation, objectId, custodyDigest }) => ({ generation, objectId, custodyDigest }));
+                const submitted = (publication.ingress ?? []).map(({ updateIds, ...source }) => source);
+                if (!isDeepStrictEqual(expected, submitted)) throw new Error("missing or mismatched frozen ingress handoff");
+            }
             if (production && this.db.prepare("PRAGMA user_version").get().user_version === 1) {
                 this.db.exec(productionEnrollmentSchema);
             }
@@ -243,7 +252,7 @@ class AuthorityStore {
         });
     }
 
-    authorize({ target, objectIncarnation, runnerIncarnation, placement: name, deliveryCheck }, credentialVersion) {
+    authorize({ target, objectIncarnation, runnerIncarnation, placement: name, deliveryCheck, updateId }, credentialVersion) {
         const current = this.current();
         const generation = target?.pin?.generation;
         if (!current || !targetFields.generation(generation)) throw new Denied(503);
@@ -263,6 +272,7 @@ class AuthorityStore {
         if (historical && (runnerIncarnation === null || enrolled.continuity !== freshObjectOnly)) {
             throw new Denied(deliveryCheck ? 410 : 503);
         }
+        if (updateId !== undefined && !production) throw new Denied(503);
         if (this.pairing || production) {
             if (name === undefined && runnerIncarnation === null) {
                 const routes = this.db.prepare(`SELECT placement,alias FROM invitations
@@ -270,7 +280,15 @@ class AuthorityStore {
                     ${production ? "AND incarnation NOT IN (SELECT incarnation FROM retired_runners)" : ""}
                     ORDER BY placement`)
                     .all(generation);
-                return { generation, routes };
+                const duplicate = updateId === undefined ? {} : {
+                    duplicate: !!this.db.prepare(`
+                        SELECT 1 FROM publications,
+                            json_each(publication, '$.ingress') AS handoff,
+                            json_each(handoff.value, '$.updateIds') AS receipt
+                        WHERE receipt.value=? LIMIT 1
+                    `).get(updateId),
+                };
+                return { generation, routes, ...duplicate };
             }
             const runner = this.db.prepare("SELECT key,incarnation FROM invitations WHERE generation=? AND placement=?")
                 .get(generation, name ?? "");
@@ -394,10 +412,13 @@ function authorityServer(bearer, decide, redeem) {
             const scoped = body?.placement !== undefined;
             if (scoped) members.push("placement");
             if (body?.deliveryCheck !== undefined) members.push("deliveryCheck");
+            if (body?.updateId !== undefined) members.push("updateId");
             if (!fields(body, members) ||
                 !uuid(body.nonce) || !uuid(body.objectIncarnation) ||
                 (scoped && (!check || !placement(body.placement) || !sha256(body.runnerIncarnation))) ||
                 (body.deliveryCheck !== undefined && (!check || body.deliveryCheck !== true || body.runnerIncarnation !== null)) ||
+                (body.updateId !== undefined && (!check || body.deliveryCheck !== undefined ||
+                    body.runnerIncarnation !== null || !updateId(body.updateId))) ||
                 (check ? body.delivery !== null || (body.runnerIncarnation !== null && !sha256(body.runnerIncarnation))
                     : body.runnerIncarnation !== null || !validDelivery(body.delivery))) {
                 throw new Denied(400);
@@ -422,7 +443,7 @@ function serve(store, { bearer, credentialVersion }, send) {
             const validUntil = Date.now() + permitMs;
             const { generation: highWater, ...enrollment } = store.authorize(body, credentialVersion);
             if ((body.deliveryCheck && dispatching) || validUntil <= Date.now()) throw new Denied(503);
-            const { delivery, deliveryCheck, ...binding } = body;
+            const { delivery, deliveryCheck, updateId, ...binding } = body;
             return { ...binding, highWater, validUntil, ...enrollment };
         }
         if (dispatching) throw new Denied(503);

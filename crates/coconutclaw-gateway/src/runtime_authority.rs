@@ -193,6 +193,13 @@ pub struct Runner {
     pub placement: Option<Device>,
 }
 
+#[derive(Clone, Copy)]
+enum Check {
+    Standard,
+    Delivery,
+    Ingress(i64),
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Permit {
@@ -207,6 +214,8 @@ pub struct Permit {
     pub key: Option<String>,
     #[serde(default, deserialize_with = "present")]
     routes: Option<Vec<PairedRoute>>,
+    #[serde(default, deserialize_with = "present")]
+    pub duplicate: Option<bool>,
     #[serde(default)]
     pub reconcile_only: bool,
 }
@@ -287,7 +296,7 @@ impl<'a> Authority<'a> {
         path: &str,
         nonce: &str,
         delivery: Value,
-        delivery_check: bool,
+        check: Check,
     ) -> Result<Option<T>> {
         let url = self.origin.join(path)?;
         let mut request = json!({
@@ -300,8 +309,10 @@ impl<'a> Authority<'a> {
         if let Some(placement) = self.runner().and_then(|runner| runner.placement) {
             request["placement"] = json!(placement);
         }
-        if delivery_check {
-            request["deliveryCheck"] = json!(true);
+        match check {
+            Check::Standard => {}
+            Check::Delivery => request["deliveryCheck"] = json!(true),
+            Check::Ingress(id) => request["updateId"] = json!(id),
         }
         let mut response = Response::from(
             JsFuture::from(ask_authority(
@@ -312,7 +323,7 @@ impl<'a> Authority<'a> {
             .await?
             .dyn_into::<web_sys::Response>()?,
         );
-        if delivery_check && response.status_code() == 410 {
+        if matches!(check, Check::Delivery) && response.status_code() == 410 {
             return Ok(None);
         }
         if response.status_code() != 200 {
@@ -325,19 +336,25 @@ impl<'a> Authority<'a> {
     }
 
     pub async fn permit(&self) -> Option<Permit> {
-        self.checked_permit(false).await.ok().flatten()
+        self.checked_permit(Check::Standard).await.ok().flatten()
+    }
+
+    pub async fn ingress_permit(&self, update: i64) -> Option<Permit> {
+        self.checked_permit(Check::Ingress(update))
+            .await
+            .ok()
+            .flatten()
     }
 
     pub async fn delivery_allowed(&self) -> Result<bool> {
-        Ok(self.checked_permit(true).await?.is_some())
+        Ok(self.checked_permit(Check::Delivery).await?.is_some())
     }
 
-    async fn checked_permit(&self, delivery_check: bool) -> Result<Option<Permit>> {
+    async fn checked_permit(&self, check: Check) -> Result<Option<Permit>> {
         let nonce = nonce();
         let started = now();
-        let Some(permit): Option<Permit> = self
-            .call("/v1/check", &nonce, Value::Null, delivery_check)
-            .await?
+        let Some(permit): Option<Permit> =
+            self.call("/v1/check", &nonce, Value::Null, check).await?
         else {
             return Ok(None);
         };
@@ -349,6 +366,7 @@ impl<'a> Authority<'a> {
             (true, false) => permit.key.is_none() && permit.routes.is_some(),
         };
         (enrollment
+            && permit.duplicate.is_some() == matches!(check, Check::Ingress(_))
             && permit.nonce == nonce
             && permit.target == self.target
             && (if permit.reconcile_only {
@@ -385,7 +403,7 @@ impl<'a> Authority<'a> {
                     "messageThreadId": delivery.thread_id,
                     "text": delivery.text,
                 }),
-                false,
+                Check::Standard,
             )
             .await;
         match sent {

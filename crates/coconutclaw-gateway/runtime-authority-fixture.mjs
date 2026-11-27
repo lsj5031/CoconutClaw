@@ -47,13 +47,14 @@ export async function authorityFixture(path, { pairing = false } = {}) {
         afterSend: undefined,
         close: local?.close ?? (() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))),
         status: () => admin("status"),
-        publish(target, objectIncarnation, runner) {
+        publish(target, objectIncarnation, runner, ingress) {
             const publication = {
                 target: { ...target.pin, deployment: "synthetic/deployment" },
                 versionId: target.versionId,
                 ...(target.pin.pairing ? {} : typeof runner === "string"
                     ? { runnerIncarnation: runner } : { runnerIncarnations: runner }),
                 ...(objectIncarnation === null ? { continuity: "fresh-object-only" } : { objectIncarnation }),
+                ...(ingress === undefined ? {} : { ingress }),
                 retirement: {
                     generation: target.pin.generation - 1, writers: "synthetic/writers",
                     executorGrants: "synthetic/grants", custody: "synthetic/custody",

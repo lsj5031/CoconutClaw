@@ -252,6 +252,30 @@ impl Ledger {
         )
     }
 
+    pub fn ingress_frozen(&self) -> Result<bool> {
+        Ok(self
+            .number(
+                "SELECT 1 AS value FROM sqlite_master WHERE type='table' AND name='direct_ingress_frozen'",
+                [],
+            )?
+            .is_some())
+    }
+
+    pub fn freeze_ingress(&self) -> Result<Vec<i64>> {
+        self.write(
+            "CREATE TABLE IF NOT EXISTS direct_ingress_frozen (slot INTEGER PRIMARY KEY) STRICT",
+            [],
+        )?;
+        let rows = self
+            .sql
+            .exec(
+                "SELECT update_id AS value FROM inbox ORDER BY update_id",
+                None,
+            )?
+            .to_array::<Number>()?;
+        Ok(rows.into_iter().map(|row| row.value).collect())
+    }
+
     pub fn initialize_local_cutover(&self) -> Result<()> {
         self.initialize_schema(include_str!("local-cutover.sql"))
     }

@@ -61,6 +61,7 @@ const PILOT_INSTANCE: &str = "hosted-synthetic-pilot";
 const PRODUCTION_INSTANCE: &str = "bigfur-production";
 const PRODUCTION_HOST: &str = "bigfur.liu.nz";
 const PRODUCTION_IDENTITY: &str = "/v1/production/identity";
+const PRODUCTION_INGRESS_HANDOFF: &str = "/v1/production/ingress-handoff";
 const PILOT_UPDATE: i64 = 23001;
 const PILOT_TASK: &str = "telegram:23001";
 const PILOT_TOPIC: i32 = 37;
@@ -235,7 +236,8 @@ fn route(req: &Request, env: &Env) -> Result<Option<LocalPhase>> {
         url.host_str() == Some(&pin.hostname)
             && url.port().is_none()
             && (matches!(url.path(), "/v1/telegram" | "/v1/agent" | "/v1/cancel")
-                || (pin.paired() && url.path() == "/v1/status"))
+                || (pin.paired() && url.path() == "/v1/status")
+                || (phase == LocalPhase::Production && url.path() == PRODUCTION_INGRESS_HANDOFF))
     } else if phase == LocalPhase::Pilot {
         matches!(
             url.path(),
@@ -320,6 +322,8 @@ impl DurableObject for BotLedger {
         }
         let reply = if phase.direct() && req.path() == "/v1/telegram" {
             self.handle_direct_telegram(req, phase).await
+        } else if phase == LocalPhase::Production && req.path() == PRODUCTION_INGRESS_HANDOFF {
+            self.freeze_production_ingress(req).await
         } else if phase.controlled() {
             self.handle_cutover(req, phase).await
         } else {
@@ -500,6 +504,42 @@ impl BotLedger {
         }
     }
 
+    async fn freeze_production_ingress(&self, req: Request) -> Result<Reply> {
+        if !authorized(
+            &req,
+            &self.env,
+            "x-cutover-operator",
+            "CUTOVER_CANCEL_SECRET",
+        ) {
+            return Ok(Reply::error(401, "unauthorized"));
+        }
+        let (Some(pin), Some(scope)) = (Pin::read(&self.env), TelegramScope::read(&self.env))
+        else {
+            return Ok(inactive_generation());
+        };
+        if pin.object_id != self.state.id().to_string() {
+            return Ok(inactive_generation());
+        }
+        let generation = scope.generation(&pin);
+        let storage = self.state.storage();
+        let ledger = Ledger::new(&storage, None);
+        let reply = ledger.transaction(&storage, || {
+            match ledger.direct_generation()? {
+                Some(current) if current == generation => {}
+                None if ledger.empty_schema()? => ledger.initialize_direct(generation)?,
+                _ => return Ok(inactive_generation()),
+            }
+            Ok(Reply::ok(json!({
+                "generation": pin.generation,
+                "objectId": pin.object_id,
+                "custodyDigest": pin.custody_digest,
+                "updateIds": ledger.freeze_ingress()?,
+            })))
+        })?;
+        storage.sync().await?;
+        Ok(reply)
+    }
+
     async fn handle_direct_telegram(&self, mut req: Request, phase: LocalPhase) -> Result<Reply> {
         if !authorized(
             &req,
@@ -545,9 +585,17 @@ impl BotLedger {
             let Some(authority) = self.cutover_authority(None) else {
                 return Ok(inactive_generation());
             };
-            let Some(permit) = authority.permit().await else {
+            let permit = if phase == LocalPhase::Production {
+                authority.ingress_permit(id).await
+            } else {
+                authority.permit().await
+            };
+            let Some(permit) = permit else {
                 return Ok(inactive_generation());
             };
+            if permit.duplicate == Some(true) {
+                return Ok(Reply::ok(json!({"disposition": "duplicate"})));
+            }
             permit_deadline = Some(permit.valid_until);
             let Some(aliases) = permit.routes() else {
                 return Ok(inactive_generation());
@@ -583,6 +631,9 @@ impl BotLedger {
                 None if ledger.empty_schema()? => false,
                 _ => return Ok(inactive_generation()),
             };
+            if phase == LocalPhase::Production && text.is_some() && ledger.ingress_frozen()? {
+                return Ok(inactive_generation());
+            }
             if permit_deadline.is_some_and(|deadline| at >= deadline) {
                 return Ok(inactive_generation());
             }

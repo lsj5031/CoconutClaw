@@ -1941,6 +1941,54 @@ test("BigFur pending paired delivery rearms after a Control outage at cold wake"
     ]);
 });
 
+test("BigFur paired successor deduplicates a completed singleton update from the frozen predecessor", timeout, async context => {
+    const { mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
+        await productionAuthorityFixture(context);
+    const redelivery = telegram(45294);
+    const { task } = await ingress(redelivery);
+    assert.equal(task, "telegram:45294");
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null, cutover.runner);
+    const { attempt } = await client.agent("alpha", "claim", { task });
+    const grant = await client.agent("alpha", "start", { attempt });
+    await reportProductionResult(client, grant, "singleton reply");
+    await until(() => mock.sends.length === 1, "singleton reply sent");
+    mock.retire();
+    await client.post("production/ingress-handoff", {}, webhook, 401);
+    const handoff = await client.post("production/ingress-handoff", {}, cancelHeaders);
+    assert.deepEqual(handoff, {
+        generation: 1, objectId: cutover.target.pin.objectId, custodyDigest: cutover.target.pin.custodyDigest,
+        updateIds: [45294],
+    });
+    assert.deepEqual(await ingress(redelivery), { disposition: "duplicate" });
+    assert.deepEqual(await ingress(telegram(45295), 503), { error: "inactive_generation" });
+    await client.restart();
+    assert.deepEqual(await client.post("production/ingress-handoff", {}, cancelHeaders), handoff);
+    assert.deepEqual(await ingress(telegram(45295), 503), { error: "inactive_generation" });
+
+    const { objectId } = await client.post("production/identity", {}, { ...cancelHeaders, "x-cutover-generation": "2" });
+    const { executorKey, ...previousPin } = cutover.target.pin;
+    const next = {
+        pin: { ...previousPin, generation: 2, objectId, custodyDigest: "c".repeat(64), pairing: "production-v1" },
+        versionId: "paired-successor",
+    };
+    assert.throws(() => mock.publish(next, null));
+    assert.throws(() => mock.publish(next, null, undefined, [{ ...handoff, objectId }]));
+    assert.throws(() => mock.publish(next, null, undefined, [{ ...handoff, updateIds: [45294, 45294] }]));
+    mock.publish(next, null, undefined, [handoff]);
+    Object.assign(cutover, { target: next, pairedProduction: true, enrolled: {} });
+    client.keys.alpha = generateKeyPairSync("ed25519");
+    await client.restart();
+    await pairProduction(mock, client, cutover, "alpha");
+    assert.deepEqual(await ingress(redelivery), { disposition: "duplicate" });
+    assert.deepEqual(await ingress(telegram(45295)), { disposition: "task", task: "telegram:45295" });
+    assert.deepEqual(await client.sql("SELECT id,pin FROM tasks"), [{ id: "telegram:45295", pin: "alpha" }]);
+    assert.equal((await client.agent("alpha", "next")).task, "telegram:45295");
+    assert.deepEqual(mock.sends, [
+        { task, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "singleton reply" },
+    ]);
+});
+
 test("BigFur production pairing keeps immutable pins and fences retired writers across cold wake", timeout, async context => {
     const { root, mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =
         await productionAuthorityFixture(context, { pairedProduction: true });
@@ -2045,8 +2093,10 @@ test("BigFur production pairing keeps immutable pins and fences retired writers 
     };
     assert.throws(() => mock.publish(successor, null));
     mock.retire();
-    assert.throws(() => mock.publish({ ...successor, pin: { ...successor.pin, objectId: predecessor.target.pin.objectId } }, null));
-    mock.publish(successor, null);
+    const handoff = await client.post("production/ingress-handoff", {}, cancelHeaders);
+    assert.throws(() => mock.publish({ ...successor, pin: { ...successor.pin, objectId: predecessor.target.pin.objectId } },
+        null, undefined, [handoff]));
+    mock.publish(successor, null, undefined, [handoff]);
     const restored = await runFixture(context, { inspect: true, restore: snapshot, cutover: predecessor, keys: client.keys });
     await restored.agent("beta", "next", {}, 503);
     await restored.agent("alpha", "start", { attempt: firstGrant.attempt }, 503);
@@ -2065,6 +2115,7 @@ test("BigFur production pairing keeps immutable pins and fences retired writers 
     await client.wire(betaPacket, 503);
     client.keys.alpha = generateKeyPairSync("ed25519");
     await pairProduction(mock, client, cutover, "alpha");
+    assert.deepEqual(await admit(45301, "@desk hello"), { disposition: "duplicate" });
     assert.equal((await admit(45305, "fresh default")).disposition, "task");
     assert.equal((await client.agent("alpha", "next")).task, "telegram:45305");
 });
@@ -3117,6 +3168,7 @@ test("BigFur recovery routes a new generation only after retiring predecessor ef
     assert.deepEqual(await client.agent("alpha", "next", {}, 503), inactive);
     assert.throws(() => mock.publish(cutover.target, null, cutover.runner));
     mock.retire();
+    const firstHandoff = await retired.post("production/ingress-handoff", {}, cancelHeaders);
     assert.deepEqual(await retired.wire(oldPacket, 503), inactive);
     assert.throws(() => mock.publish({
         ...cutover.target, pin: { ...cutover.target.pin, objectId: stale.target.pin.objectId },
@@ -3133,6 +3185,7 @@ test("BigFur recovery routes a new generation only after retiring predecessor ef
     const { objectId: placementObject } = await client.post("production/identity", {}, {
         ...cancelHeaders, "x-cutover-generation": "3",
     });
+    const secondHandoff = await client.post("production/ingress-handoff", {}, cancelHeaders);
     const { executorKey: legacyKey, ...previousPin } = cutover.target.pin;
     cutover.target = {
         pin: { ...previousPin, generation: 3, objectId: placementObject, pairing: "production-v1" },
@@ -3142,11 +3195,14 @@ test("BigFur recovery routes a new generation only after retiring predecessor ef
     cutover.enrolled = {};
     assert.throws(() => mock.publish(cutover.target, null));
     mock.retire();
-    mock.publish(cutover.target, null);
+    assert.throws(() => mock.publish(cutover.target, null, undefined, [secondHandoff]));
+    mock.publish(cutover.target, null, undefined, [firstHandoff, secondHandoff]);
     await client.restart();
     assert.equal((await redeemProduction(mock, client.keys.alpha, mock.issue({ key: legacyKey })))[0], 409);
     client.keys.alpha = generateKeyPairSync("ed25519");
     await pairProduction(mock, client, cutover, "alpha");
+    assert.deepEqual(await ingress(telegram(42201)), { disposition: "duplicate" });
+    assert.deepEqual(await ingress(telegram(42202)), { disposition: "duplicate" });
     await ingress(telegram(42203));
     assert.equal((await client.agent("alpha", "next")).task, "telegram:42203");
 
