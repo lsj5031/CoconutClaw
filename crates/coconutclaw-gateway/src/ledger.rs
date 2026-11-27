@@ -830,7 +830,7 @@ impl Ledger {
                         "SELECT text FROM outbox WHERE task=?",
                         [row.task.as_str().into()],
                     )?;
-                    if !stored.is_some_and(|message| message.text == text) {
+                    if stored.is_none_or(|message| message.text != text) {
                         return Ok(conflict());
                     }
                 } else if row.phase.has_grant() {

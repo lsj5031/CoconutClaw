@@ -353,8 +353,8 @@ impl DurableObject for BotLedger {
             let ledger = self.ledger(&storage, phase, "alarm")?;
             if let Some(pin) = pin
                 && (ledger.legacy_cutover_held()?
-                    || !Self::local_authority(&ledger, pin)?
-                        .is_some_and(|authority| authority.active == 1))
+                    || Self::local_authority(&ledger, pin)?
+                        .is_none_or(|authority| authority.active != 1))
             {
                 return Ok(());
             }
