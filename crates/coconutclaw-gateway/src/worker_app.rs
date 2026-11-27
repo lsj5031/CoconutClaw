@@ -459,13 +459,22 @@ impl BotLedger {
         let Some(authority) = self.cutover_authority(None) else {
             return Ok(());
         };
-        if authority.check().await.is_none() {
+        let ledger = self.controlled_ledger(storage, phase)?;
+        if self
+            .attempt_floor(&ledger, phase, authority.pin())?
+            .is_none()
+        {
             return Ok(());
         }
-        let pin = authority.pin();
-        let ledger = self.controlled_ledger(storage, phase)?;
-        if self.attempt_floor(&ledger, phase, pin)?.is_some() {
-            self.deliver(storage, &ledger, Some(&authority)).await?;
+        match authority.delivery_allowed().await {
+            Ok(true) => self.deliver(storage, &ledger, Some(&authority)).await?,
+            Ok(false) => {}
+            Err(_) => {
+                let alarm =
+                    ledger.transaction(storage, || ledger.defer_unsent_delivery(storage, now()))?;
+                settle_alarm(alarm).await?;
+                storage.sync().await?;
+            }
         }
         Ok(())
     }
@@ -522,6 +531,15 @@ impl BotLedger {
         };
         let generation = scope.generation(&pin);
         let text = scope.text(&update);
+        let storage = self.state.storage();
+        let ledger = Ledger::new(&storage, None);
+        if text.is_some()
+            && ledger.direct_generation()?.as_ref() == Some(&generation)
+            && ledger.has_update(id)?
+        {
+            storage.sync().await?;
+            return Ok(Reply::ok(json!({"disposition": "duplicate"})));
+        }
         let mut permit_deadline = None;
         let aliases = if pin.paired() && text.is_some() {
             let Some(authority) = self.cutover_authority(None) else {
@@ -547,35 +565,33 @@ impl BotLedger {
         } else {
             None
         };
-        let storage = self.state.storage();
-        let ledger = Ledger::new(&storage, None);
         let reply = ledger.transaction(&storage, || {
             let at = now();
-            if permit_deadline.is_some_and(|deadline| at >= deadline) {
-                return Ok(inactive_generation());
-            }
             let selection = text
                 .and_then(|text| match &aliases {
                     Some(aliases) => aliases.select(text),
                     None => Some((Device::Alpha, text)),
                 })
                 .filter(|(device, _)| pin.paired() || pin.key(*device).is_some());
-            match ledger.direct_generation()? {
+            let initialized = match ledger.direct_generation()? {
                 Some(current) if current == generation => {
                     if text.is_some() && ledger.has_update(id)? {
                         return Ok(Reply::ok(json!({"disposition": "duplicate"})));
                     }
+                    true
                 }
-                None if ledger.empty_schema()? => {
-                    if selection.is_some() {
-                        ledger.initialize_direct(generation)?;
-                    }
-                }
+                None if ledger.empty_schema()? => false,
                 _ => return Ok(inactive_generation()),
+            };
+            if permit_deadline.is_some_and(|deadline| at >= deadline) {
+                return Ok(inactive_generation());
             }
             let Some((device, text)) = selection else {
                 return Ok(Reply::ok(json!({"disposition": "ignored", "task": null})));
             };
+            if !initialized {
+                ledger.initialize_direct(generation)?;
+            }
             if !ledger.take_pilot_request(at, false)? {
                 return ledger.pilot_limit(at);
             }

@@ -287,7 +287,8 @@ impl<'a> Authority<'a> {
         path: &str,
         nonce: &str,
         delivery: Value,
-    ) -> Result<T> {
+        delivery_check: bool,
+    ) -> Result<Option<T>> {
         let url = self.origin.join(path)?;
         let mut request = json!({
             "nonce": nonce,
@@ -299,6 +300,9 @@ impl<'a> Authority<'a> {
         if let Some(placement) = self.runner().and_then(|runner| runner.placement) {
             request["placement"] = json!(placement);
         }
+        if delivery_check {
+            request["deliveryCheck"] = json!(true);
+        }
         let mut response = Response::from(
             JsFuture::from(ask_authority(
                 url.as_str(),
@@ -308,19 +312,35 @@ impl<'a> Authority<'a> {
             .await?
             .dyn_into::<web_sys::Response>()?,
         );
+        if delivery_check && response.status_code() == 410 {
+            return Ok(None);
+        }
         if response.status_code() != 200 {
             return Err("authority denied".into());
         }
         let bytes = collect_body(response.stream()?)
             .await
             .map_err(|_| "invalid authority response")?;
-        Ok(serde_json::from_slice(&bytes)?)
+        Ok(Some(serde_json::from_slice(&bytes)?))
     }
 
     pub async fn permit(&self) -> Option<Permit> {
+        self.checked_permit(false).await.ok().flatten()
+    }
+
+    pub async fn delivery_allowed(&self) -> Result<bool> {
+        Ok(self.checked_permit(true).await?.is_some())
+    }
+
+    async fn checked_permit(&self, delivery_check: bool) -> Result<Option<Permit>> {
         let nonce = nonce();
         let started = now();
-        let permit: Permit = self.call("/v1/check", &nonce, Value::Null).await.ok()?;
+        let Some(permit): Option<Permit> = self
+            .call("/v1/check", &nonce, Value::Null, delivery_check)
+            .await?
+        else {
+            return Ok(None);
+        };
         let enrollment = match (self.pin().pairing.is_some(), self.runner().is_some()) {
             (false, _) => permit.key.is_none() && permit.routes.is_none(),
             (true, true) => {
@@ -344,7 +364,8 @@ impl<'a> Authority<'a> {
             && permit.placement == self.runner().and_then(|runner| runner.placement)
             && permit.valid_until <= started + PERMIT_MS
             && permit.valid_until > now())
-        .then_some(permit)
+        .then_some(Some(permit))
+        .ok_or_else(|| "invalid authority permit".into())
     }
 
     pub async fn check(&self) -> Option<i64> {
@@ -364,10 +385,11 @@ impl<'a> Authority<'a> {
                     "messageThreadId": delivery.thread_id,
                     "text": delivery.text,
                 }),
+                false,
             )
             .await;
         match sent {
-            Ok(reply) if reply.nonce == nonce && reply.message_id > 0 => {
+            Ok(Some(reply)) if reply.nonce == nonce && reply.message_id > 0 => {
                 Receipt::Delivered(reply.message_id)
             }
             _ => Receipt::Unknown,

@@ -21,7 +21,8 @@ import {
     importCutoverFixture, returnFixtureTasks, seedCutoverSource,
 } from "./cutover-fixture.mjs";
 
-const { workers: { default: { bundleDir, config } } } = await readBuildOutput(import.meta.dirname);
+const { workers: { default: { bundleDir, config } } } =
+    await readBuildOutput(process.env.GATEWAY_TEST_BUILD_ROOT ?? import.meta.dirname);
 const { mainModule, modules } = config.manifest;
 const moduleTypes = { esm: "ESModule", wasm: "CompiledWasm" };
 const workerModules = [mainModule, ...Object.keys(modules).filter(name => name !== mainModule)].map(name => ({
@@ -1886,6 +1887,59 @@ async function nativePlacement(context) {
     }
     return { mock, client, cutover, admit, cancelHeaders, owner, topic };
 }
+
+test("BigFur paired duplicates acknowledge locally during outage and after retirement", timeout, async context => {
+    const { mock, client, cutover, ingress, telegram, topic } =
+        await productionAuthorityFixture(context, { pairedProduction: true });
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null);
+    await pairProduction(mock, client, cutover, "alpha");
+    assert.deepEqual(await ingress(telegram(45291)), { disposition: "task", task: "telegram:45291" });
+    const duplicate = { disposition: "duplicate" };
+    const ignored = { disposition: "ignored", task: null };
+    const noAuthority = { error: "inactive_generation" };
+    cutover.controlOnline = false;
+    await client.restart();
+    const before = cutover.authorityCalls;
+    assert.deepEqual(await ingress(telegram(45291)), duplicate);
+    assert.deepEqual(await ingress(telegram(45291, topic + 1)), ignored);
+    assert.equal(cutover.authorityCalls, before);
+    assert.deepEqual(await ingress(telegram(45292), 503), noAuthority);
+    cutover.controlOnline = true;
+    mock.retire();
+    assert.deepEqual(await ingress(telegram(45291)), duplicate);
+    assert.deepEqual(await ingress(telegram(45292), 503), noAuthority);
+    assert.deepEqual(await client.sql("SELECT id,pin FROM tasks"), [{ id: "telegram:45291", pin: "alpha" }]);
+    assert.deepEqual(mock.sends, []);
+});
+
+test("BigFur pending paired delivery rearms after a Control outage at cold wake", timeout, async context => {
+    const { mock, client, cutover, ingress, telegram, owner, topic } =
+        await productionAuthorityFixture(context, { pairedProduction: true });
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null);
+    const alpha = await pairProduction(mock, client, cutover, "alpha");
+    const { task } = await ingress(telegram(45293));
+    const { attempt } = await client.agent("alpha", "claim", { task });
+    const grant = await client.agent("alpha", "start", { attempt });
+    await reportProductionResult(client, grant, "pending during outage", alpha.incarnation);
+    const outbox = () => client.sql("SELECT phase,sends FROM outbox WHERE task=?", task);
+    await client.stop();
+    assert.deepEqual(await outbox(), [{ phase: "pending", sends: 0 }]);
+    cutover.controlOnline = false;
+    const before = cutover.authorityCalls;
+    await client.restart();
+    await until(() => cutover.authorityCalls > before, "pending alarm reached unavailable Control");
+    assert.deepEqual(await outbox(), [{ phase: "pending", sends: 0 }]);
+    assert.deepEqual(mock.sends, []);
+    cutover.controlOnline = true;
+    await until(async () => (await outbox())[0]?.phase === "delivered", "pending alarm resumed");
+    await client.restart();
+    assert.deepEqual(await outbox(), [{ phase: "delivered", sends: 1 }]);
+    assert.deepEqual(mock.sends, [
+        { task, sendNumber: 1, chatId: owner, messageThreadId: topic, text: "pending during outage" },
+    ]);
+});
 
 test("BigFur production pairing keeps immutable pins and fences retired writers across cold wake", timeout, async context => {
     const { root, mock, client, cutover, ingress, telegram, cancelHeaders, owner, topic } =

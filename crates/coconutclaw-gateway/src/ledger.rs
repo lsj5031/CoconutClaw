@@ -1069,6 +1069,23 @@ impl Ledger {
         Ok((delivery, self.arm_delivery(storage, now, until)?))
     }
 
+    pub fn defer_unsent_delivery(
+        &self,
+        storage: &Storage,
+        now: i64,
+    ) -> Result<Option<js_sys::Promise>> {
+        if self
+            .number(
+                "SELECT 1 AS value FROM outbox WHERE phase='pending' AND sends=0 LIMIT 1",
+                [],
+            )?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        self.arm_delivery(storage, now, now + 1_000)
+    }
+
     fn take_delivery(&self, now: i64) -> Result<(Option<Delivery>, i64)> {
         if !self.take_pilot_request(now, true)? {
             return Ok((None, self.pilot_reset_at()?));

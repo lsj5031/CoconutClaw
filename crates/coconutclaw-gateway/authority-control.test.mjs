@@ -459,6 +459,8 @@ if (process.argv[2] === "serve-test") {
         respond((_, response) => accepted.resolve(response));
         const sent = authority.post(record, "send", { delivery: sendDelivery(1) });
         const fakeReply = await accepted.promise;
+        assert.equal((await authority.post(record, "check", { deliveryCheck: true })).status, 503);
+        assert.equal((await authority.post(record)).status, 200);
         assert.equal((await peer.post(record, "send", { delivery: sendDelivery(2) })).status, 503);
         let retired = false;
         const retirement = admin("retire", "1").then(status => {
@@ -471,6 +473,7 @@ if (process.argv[2] === "serve-test") {
         assert.equal((await sent).reply.messageId, 43);
         assert.deepEqual(await retirement, { highWater: 1, retired: true });
         assert.equal((await peer.post(record, "send", { delivery: sendDelivery(2) })).status, 503);
+        assert.equal((await authority.post(record, "check", { deliveryCheck: true })).status, 410);
         assert.equal((await authority.post(record)).status, 503);
         assert.equal(received.length, 1);
     });

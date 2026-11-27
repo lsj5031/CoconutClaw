@@ -243,7 +243,7 @@ class AuthorityStore {
         });
     }
 
-    authorize({ target, objectIncarnation, runnerIncarnation, placement: name }, credentialVersion) {
+    authorize({ target, objectIncarnation, runnerIncarnation, placement: name, deliveryCheck }, credentialVersion) {
         const current = this.current();
         const generation = target?.pin?.generation;
         if (!current || !targetFields.generation(generation)) throw new Denied(503);
@@ -257,9 +257,11 @@ class AuthorityStore {
         const historical = row.retired || generation !== current.generation;
         if (!isDeepStrictEqual(target, wireTarget(enrolled)) ||
             (!historical && enrolled.target.telegramCredentialVersion !== credentialVersion) ||
-            (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation) ||
-            (historical && (runnerIncarnation === null || enrolled.continuity !== freshObjectOnly))) {
+            (enrolled.continuity !== freshObjectOnly && objectIncarnation !== enrolled.objectIncarnation)) {
             throw new Denied(503);
+        }
+        if (historical && (runnerIncarnation === null || enrolled.continuity !== freshObjectOnly)) {
+            throw new Denied(deliveryCheck ? 410 : 503);
         }
         if (this.pairing || production) {
             if (name === undefined && runnerIncarnation === null) {
@@ -391,9 +393,11 @@ function authorityServer(bearer, decide, redeem) {
             const members = ["nonce", "target", "objectIncarnation", "runnerIncarnation", "delivery"];
             const scoped = body?.placement !== undefined;
             if (scoped) members.push("placement");
+            if (body?.deliveryCheck !== undefined) members.push("deliveryCheck");
             if (!fields(body, members) ||
                 !uuid(body.nonce) || !uuid(body.objectIncarnation) ||
                 (scoped && (!check || !placement(body.placement) || !sha256(body.runnerIncarnation))) ||
+                (body.deliveryCheck !== undefined && (!check || body.deliveryCheck !== true || body.runnerIncarnation !== null)) ||
                 (check ? body.delivery !== null || (body.runnerIncarnation !== null && !sha256(body.runnerIncarnation))
                     : body.runnerIncarnation !== null || !validDelivery(body.delivery))) {
                 throw new Denied(400);
@@ -417,8 +421,8 @@ function serve(store, { bearer, credentialVersion }, send) {
         if (check) {
             const validUntil = Date.now() + permitMs;
             const { generation: highWater, ...enrollment } = store.authorize(body, credentialVersion);
-            if (validUntil <= Date.now()) throw new Denied(503);
-            const { delivery, ...binding } = body;
+            if ((body.deliveryCheck && dispatching) || validUntil <= Date.now()) throw new Denied(503);
+            const { delivery, deliveryCheck, ...binding } = body;
             return { ...binding, highWater, validUntil, ...enrollment };
         }
         if (dispatching) throw new Denied(503);
