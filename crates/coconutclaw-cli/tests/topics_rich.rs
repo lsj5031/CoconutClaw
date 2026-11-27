@@ -102,8 +102,20 @@ fn mock_connection_waits_for_request_after_nonblocking_accept() {
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-    let (mut connection, _) = listener.accept().unwrap();
+    let timeout = Duration::from_secs(5);
+    let mut client = TcpStream::connect_timeout(&listener.local_addr().unwrap(), timeout).unwrap();
+    client.set_write_timeout(Some(timeout)).unwrap();
+    let deadline = Instant::now() + timeout;
+    let (mut connection, _) = loop {
+        assert!(Instant::now() < deadline, "mock accept timed out");
+        match listener.accept() {
+            Ok(accepted) => break accepted,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("mock accept failed: {error}"),
+        }
+    };
     // Reproduce Darwin's accepted descriptor state on every Unix platform.
     connection.set_nonblocking(true).unwrap();
     let flags = unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_GETFL) };

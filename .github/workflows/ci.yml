@@ -101,7 +101,7 @@ jobs:
               "nodes::tests::durable_claim_replay_restart_and_signed_cancellation_do_not_reinvoke",
               "nodes::tests::windows_rechecks_allowlist_custody_before_peer_dispatch",
               "public_pair_flow_preserves_private_keys_and_runner_refuses_polling",
-              "windows_private_pair_start_probe_and_restart_use_native_transport",
+              "paired_runner_start_dated_probe_disconnect_and_restart_use_native_transport",
               "windows_node_preflight_precedes_layout_and_sqlite_creation",
           ] if os.name == "nt" else []
           passed_names = set(re.findall(r"^test (\S+) \.\.\. ok$", result.stdout, re.MULTILINE))
