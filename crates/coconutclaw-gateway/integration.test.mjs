@@ -2117,8 +2117,12 @@ printf '%s' "$BIGFUR_SYNTHETIC_REPLY" > "$output"
     const restored = join(runner.root, "copied-journal");
     await cp(runner.dir, restored, { recursive: true });
     const packetCount = runner.packets.length;
-    assert.match(await (await runner.runProduction("resume", config, { ...options, journal: restored })).exit(1),
-        /journal identity mismatch/);
+    const copied = await runner.runProduction("resume", config, { ...options, journal: restored });
+    const copyRejected = await Promise.race([
+        copied.exit(1),
+        sleep(5000, undefined, { ref: false }).then(() => assert.fail("copied journal continued past admission")),
+    ]);
+    assert.match(copyRejected, /journal identity mismatch/);
     assert.match(await (await runner.runProduction("resume", config, { ...options, enrollment: alpha })).exit(1),
         /journal identity mismatch/);
     assert.equal(runner.packets.length, packetCount);
@@ -3036,8 +3040,12 @@ test("BigFur recovery routes a new generation only after retiring predecessor ef
     cutover.controlOnline = true;
     stale.controlOnline = true;
     const oldPacket = client.signed("alpha", { op: "claim", task: "telegram:42201" });
-    const retired = await runFixture(context, { cutover: stale, keys: client.keys });
+    const retired = await runFixture(context, { inspect: true, cutover: stale, keys: { ...client.keys } });
     await retired.post("telegram", telegram(42201), webhook);
+    const legacyClaim = await retired.agent("alpha", "claim", { task: "telegram:42201" });
+    const legacyGrant = await retired.agent("alpha", "start", { attempt: legacyClaim.attempt });
+    const started = productionProof(retired, legacyGrant, { kind: "started" });
+    const result = productionProof(retired, legacyGrant, { kind: "result", text: "held legacy result" });
 
     const generationHeader = { ...cancelHeaders, "x-cutover-generation": "2" };
     await client.post("production/identity", {}, { "x-cutover-generation": "2" }, 401);
@@ -3067,6 +3075,33 @@ test("BigFur recovery routes a new generation only after retiring predecessor ef
     await client.wire(oldSignature, 401);
     assert.equal((await client.agent("alpha", "claim", { task: "telegram:42202" })).task, "telegram:42202");
     assert.deepEqual(await client.sql("SELECT update_id FROM inbox"), [{ update_id: 42202 }]);
+
+    const { objectId: placementObject } = await client.post("production/identity", {}, {
+        ...cancelHeaders, "x-cutover-generation": "3",
+    });
+    const { executorKey: legacyKey, ...previousPin } = cutover.target.pin;
+    cutover.target = {
+        pin: { ...previousPin, generation: 3, objectId: placementObject, pairing: "production-v1" },
+        versionId: "production-placements",
+    };
+    cutover.pairedProduction = true;
+    cutover.enrolled = {};
+    assert.throws(() => mock.publish(cutover.target, null));
+    mock.retire();
+    mock.publish(cutover.target, null);
+    await client.restart();
+    assert.equal((await redeemProduction(mock, client.keys.alpha, mock.issue({ key: legacyKey })))[0], 409);
+    client.keys.alpha = generateKeyPairSync("ed25519");
+    await pairProduction(mock, client, cutover, "alpha");
+    await ingress(telegram(42203));
+    assert.equal((await client.agent("alpha", "next")).task, "telegram:42203");
+
+    assert.equal((await retired.agent("alpha", "hello")).reconcile_only, true);
+    await retired.agent("alpha", "start", { attempt: legacyGrant.attempt }, 503);
+    assert.equal((await retired.agent("alpha", "report", { proof: started })).event, "started");
+    assert.equal((await retired.agent("alpha", "report", { proof: result })).event, "result");
+    assert.equal((await retired.agent("alpha", "status", { attempt: legacyGrant.attempt })).phase, "unknown");
+    assert.deepEqual(await retired.sql("SELECT * FROM outbox"), []);
     assert.deepEqual(mock.sends, []);
 });
 

@@ -105,7 +105,7 @@ with the same body cap and logging restrictions as the other Control routes.
 Use `rename "$DB" RUNNER.json` with `placement`, `incarnation`, and the new
 `alias`, or `retire-runner "$DB" RUNNER.json` with just `placement` and
 `incarnation`. Both commands take an exact receipt identity in the current
-generation. Retirement is permanent for the slot in that generation. Retiring
+generation. A retired slot and its alias remain reserved for that generation. Retiring
 `alpha` closes unprefixed admission while the other aliases continue. Tasks
 already pinned to a retired runner stay with it. Follow the same permit drain
 window as generation retirement. Results accepted before retirement can still

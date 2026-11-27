@@ -213,14 +213,15 @@ on Mercury to validate this behavior.
 3. The `--production` runner uses the pairing receipt for Hello, request
    signatures, claim and Start checks, and evidence. It checks fresh Status
    before consuming a Start grant. Its journal binds the enrollment, signing
-   key and original lock file identity. A file copy needs a new enrollment
-   and journal. The original journal resumes with its stored signatures.
+   key and original lock file identity. The runner rejects a copied journal
+   directory. The original journal resumes with its stored signatures.
    The macOS production integration uses a synthetic provider and mocked
-   Telegram to exercise mismatched placement, lost Start and result
+   Telegram to exercise copied journals, mismatched placement, lost Start and result
    acknowledgments, both kinds of cancellation, abrupt loss, and retired
    journal reconciliation. Unknown produces zero deliveries or new launches.
 4. Native synthetic loopback custody was accepted on macOS, Linux and Windows
-   in the base candidate. Production uses those custody paths. A separately
+   in the base candidate. The production entry point ran on macOS and was
+   cross-checked for Linux and Windows. A separately
    authorized rollout still needs native host admission with host-owned
    credentials and workspace, verified Control and Telegram custody, and
    same-topic Telegram acceptance.
