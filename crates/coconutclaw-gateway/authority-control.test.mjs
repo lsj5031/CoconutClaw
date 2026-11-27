@@ -6,11 +6,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as control from "./authority-control.mjs";
+import { pairingChallenge } from "./authority-preflight.mjs";
 
 const { observeAuthority, serveAuthority, telegramSender } = control;
 
@@ -158,10 +160,10 @@ async function fixture(context) {
         const { stdout } = await exec(process.execPath, [cli, command, path, ...args], { env: {} });
         return JSON.parse(stdout);
     };
-    const publish = async record => {
+    const recordCommand = async (command, record) => {
         const input = join(root, `${randomUUID()}.json`);
         await writeFile(input, JSON.stringify(record), { mode: 0o600 });
-        return admin("publish", input);
+        return admin(command, input);
     };
     async function start(version = credentialVersion) {
         const child = fork(fileURLToPath(import.meta.url), ["serve-test", path, endpoint, version], {
@@ -175,6 +177,12 @@ async function fixture(context) {
         ]);
         return {
             stop: () => kill(child),
+            pair: async body => {
+                const response = await fetch(`http://127.0.0.1:${port}/v1/pair`, {
+                    method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(3000),
+                });
+                return { status: response.status, reply: response.ok ? await response.json() : null };
+            },
             post: async (record, route = "check", extra = {}, key = bearer) => {
                 const { deployment, ...pin } = record.target;
                 const body = {
@@ -192,7 +200,10 @@ async function fixture(context) {
             },
         };
     }
-    return { root, admin, publish, start, received, respond: callback => { handle = callback; } };
+    return {
+        root, path, admin, publish: record => recordCommand("publish", record),
+        issue: record => recordCommand("issue", record), start, received, respond: callback => { handle = callback; },
+    };
 }
 
 async function kill(child) {
@@ -207,6 +218,68 @@ if (process.argv[2] === "serve-test") {
     const server = serveAuthority(path, { bearer, credentialVersion }, telegramSender(endpoint, token));
     server.listen(0, "127.0.0.1", () => process.send(server.address().port));
 } else {
+    test("populated Control upgrades and recovers the same authenticated production pairing receipt", options, async context => {
+        const { path, admin, publish, issue, start, received, respond } = await fixture(context);
+        const legacy = publication(1);
+        const paired = publication(2);
+        delete paired.target.executorKey;
+        delete paired.objectIncarnation;
+        delete paired.runnerIncarnation;
+        Object.assign(paired.target, { hostname: "bigfur.liu.nz", objectId: "5".repeat(64), pairing: "production-v1" });
+        paired.continuity = "fresh-object-only";
+        const objectIncarnation = randomUUID();
+        await admin("init");
+        await publish(legacy);
+        let authority = await start();
+        assert.equal((await authority.post(legacy, "send", { delivery: sendDelivery(1) })).status, 200);
+        respond(request => request.socket.destroy());
+        assert.equal((await authority.post(legacy, "send", { delivery: sendDelivery(2) })).status, 502);
+        await admin("retire", "1");
+        const stored = () => {
+            const db = new DatabaseSync(path, { readOnly: true });
+            try {
+                return {
+                    publication: db.prepare("SELECT publication FROM publications WHERE generation=1").get(),
+                    retirement: db.prepare("SELECT generation FROM retirements").all(),
+                    sends: db.prepare("SELECT * FROM sends ORDER BY generation,task,number").all(),
+                };
+            } finally {
+                db.close();
+            }
+        };
+        const legacyRows = stored();
+        assert.deepEqual(legacyRows.sends.map(row => row.message_id), [42, null]);
+        await publish(paired);
+        assert.deepEqual(stored(), legacyRows);
+        assert.equal((await authority.post(legacy, "send", { delivery: sendDelivery(3) })).status, 503);
+        assert.equal(received.length, 2);
+        const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+        const key = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+        const { code } = await issue({ key });
+        const request = { code, key, signature: sign(null, pairingChallenge(code, true), privateKey).toString("hex") };
+        assert.equal((await authority.pair({
+            ...request, signature: sign(null, pairingChallenge(code, false), privateKey).toString("hex"),
+        })).status, 401);
+        const attempts = await Promise.all([authority.pair(request), authority.pair(request)]);
+        assert.equal(attempts[0].status, 200);
+        assert.deepEqual(attempts[1], attempts[0]);
+        const receipt = attempts[0].reply;
+        assert.equal(receipt.placement, "alpha");
+        assert.equal(receipt.generation, 2);
+        assert.equal(receipt.objectId, paired.target.objectId);
+
+        await authority.stop();
+        authority = await start();
+        assert.deepEqual(await authority.pair(request), attempts[0]);
+        assert.equal((await authority.pair({ ...request, key: "6".repeat(64) })).status, 401);
+        assert.equal((await authority.pair({ ...request, signature: "0".repeat(128) })).status, 401);
+        assert.equal((await authority.pair({ ...request, alias: "other" })).status, 400);
+        assert.deepEqual((await authority.post(paired, "check", { objectIncarnation })).reply.routes, [
+            { placement: "alpha", alias: null },
+        ]);
+        assert.deepEqual(stored(), legacyRows);
+    });
+
     test("observation records one authenticated exact non-agent candidate while denying every request", options, async context => {
         const record = publication(1);
         const observed = [];

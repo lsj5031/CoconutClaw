@@ -197,7 +197,13 @@ class AuthorityStore {
             const der = Buffer.from(`302a300506032b6570032100${body.key}`, "hex");
             const key = createPublicKey({ key: der, format: "der", type: "spki" });
             if (!verify(null, pairingChallenge(body.code, production), key, Buffer.from(body.signature, "hex"))) throw new Denied(401);
-            if (invite.placement !== null) throw new Denied(409);
+            const receipt = (placement, incarnation) => ({
+                generation, objectId: publication.target.objectId, placement, incarnation,
+            });
+            if (invite.placement !== null) {
+                if (!production) throw new Denied(409);
+                return receipt(invite.placement, invite.incarnation);
+            }
             if (invite.expires <= Date.now()) throw new Denied(410);
             const enrolled = this.db.prepare("SELECT placement,key,alias FROM invitations WHERE generation=? AND placement IS NOT NULL")
                 .all(generation);
@@ -209,7 +215,7 @@ class AuthorityStore {
                 .some(row => JSON.parse(row.publication).target.executorKey === invite.key))) throw new Denied(409);
             const incarnation = randomBytes(32).toString("hex");
             this.db.prepare("UPDATE invitations SET placement=?,incarnation=? WHERE hash=?").run(name, incarnation, hash);
-            return { generation, objectId: publication.target.objectId, placement: name, incarnation };
+            return receipt(name, incarnation);
         });
     }
 
