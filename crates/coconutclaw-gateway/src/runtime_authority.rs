@@ -419,7 +419,7 @@ impl<'a> Authority<'a> {
         let nonce = nonce();
         let reply: SendReply = self.delivery_call(delivery, &nonce, false).await?;
         (reply.nonce == nonce && reply.message_id > 0)
-            .then_some(Receipt::Delivered(reply.message_id))
+            .then_some(Receipt::ControlDelivered(reply.message_id))
     }
 
     pub async fn close_unsent(&self, delivery: &Delivery) -> bool {

@@ -138,8 +138,10 @@ pub struct Delivery {
     pub sends: i64,
 }
 
+#[derive(Clone, Copy)]
 pub enum Receipt {
     Delivered(i64),
+    ControlDelivered(i64),
     Unsent,
     Rejected,
     RateLimited(i64),
@@ -1043,13 +1045,21 @@ impl Ledger {
         Ok(delivery)
     }
 
-    pub fn finish_send(&self, task: &str, receipt: Receipt, sends: i64, now: i64) -> Result<()> {
+    pub fn finish_send(&self, task: &str, receipt: Receipt, sends: i64, now: i64) -> Result<bool> {
+        let control_receipt = matches!(receipt, Receipt::ControlDelivered(_));
+        let Some(in_flight) = self.number(
+            "SELECT phase='in_flight' AS value FROM outbox WHERE task=? AND sends=?
+             AND (phase='in_flight' OR (phase='unknown' AND ?))",
+            [task.into(), sends.into(), i64::from(control_receipt).into()],
+        )?
+        else {
+            return Ok(false);
+        };
         let (phase, ready_at) = match receipt {
-            Receipt::Delivered(message_id) => {
+            Receipt::Delivered(message_id) | Receipt::ControlDelivered(message_id) => {
                 self.write(
-                    "INSERT INTO delivery_receipts(task,message_id)
-                     SELECT task,? FROM outbox WHERE task=? AND phase='in_flight' AND sends=?",
-                    [message_id.into(), task.into(), sends.into()],
+                    "INSERT INTO delivery_receipts(task,message_id) VALUES (?,?)",
+                    [task.into(), message_id.into()],
                 )?;
                 ("delivered", 0)
             }
@@ -1063,9 +1073,10 @@ impl Ledger {
             Receipt::Unknown => ("unknown", 0),
         };
         self.write(
-            "UPDATE outbox SET phase=?,ready_at=? WHERE task=? AND phase='in_flight' AND sends=?",
-            [phase.into(), ready_at.into(), task.into(), sends.into()],
-        )
+            "UPDATE outbox SET phase=?,ready_at=? WHERE task=?",
+            [phase.into(), ready_at.into(), task.into()],
+        )?;
+        Ok(in_flight != 0)
     }
 
     pub fn bootstrap_delivery(
@@ -1165,10 +1176,13 @@ impl Ledger {
         receipt: Receipt,
         now: i64,
     ) -> Result<Option<js_sys::Promise>> {
+        let settled_in_flight = self.finish_send(&delivery.task, receipt, delivery.sends, now)?;
+        if !settled_in_flight {
+            return Ok(None);
+        }
         if let Receipt::RateLimited(delay) = receipt {
             self.delay_sends_until(now + delay)?;
         }
-        self.finish_send(&delivery.task, receipt, delivery.sends, now)?;
         self.arm_delivery(storage, now, now)
     }
 

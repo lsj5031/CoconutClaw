@@ -93,7 +93,58 @@ async function runFixture(context, {
                     stream.on("data", chunk => logs.push(chunk));
                 }
             },
-            modules: workerModules,
+            modules: cutover?.holdReceipt ? [{
+                path: join(bundleDir, "receipt-fixture.mjs"),
+                type: "ESModule",
+                contents: `
+                    import worker, { BotLedger as Ledger } from ${JSON.stringify(`./${mainModule}`)};
+                    const timeout = AbortSignal.timeout.bind(AbortSignal);
+                    AbortSignal.timeout = ms => timeout(ms === 1500 ? 15_000 : ms);
+                    const expire = "/fixture-expire";
+                    const advance = "/fixture-advance-send";
+                    const duplicate = "/fixture-commit-receipt";
+                    export class BotLedger extends Ledger {
+                        constructor(state, env) {
+                            super(state, env);
+                            this.storage = state.storage;
+                        }
+                        fetch(request) {
+                            const path = new URL(request.url).pathname;
+                            if (path === expire) {
+                                this.storage.sql.exec("UPDATE outbox SET ready_at=0 WHERE phase='in_flight'");
+                                return super.alarm();
+                            }
+                            if (path === advance) {
+                                this.storage.sql.exec("UPDATE outbox SET sends=2 WHERE phase='unknown' AND sends=1");
+                                return new Response(null, { status: 204 });
+                            }
+                            if (path === duplicate) {
+                                this.storage.transactionSync(() => {
+                                    this.storage.sql.exec("INSERT INTO delivery_receipts SELECT task,1 FROM outbox WHERE phase='unknown'");
+                                    this.storage.sql.exec("UPDATE outbox SET phase='delivered' WHERE phase='unknown'");
+                                });
+                                return new Response(null, { status: 204 });
+                            }
+                            return super.fetch(request);
+                        }
+                        async alarm() {
+                            const result = await super.alarm();
+                            await fetch(${JSON.stringify(`${origin}/fixture-alarm-finished`)});
+                            return result;
+                        }
+                    }
+                    export default {
+                        fetch(request, env, context) {
+                            const path = new URL(request.url).pathname;
+                            if (path === expire || path === advance || path === duplicate) {
+                                const id = env.BOTS.idFromName("bigfur-production");
+                                return env.BOTS.get(id).fetch(request);
+                            }
+                            return worker.fetch(request, env, context);
+                        }
+                    };
+                `,
+            }, ...workerModules] : workerModules,
             modulesRoot: bundleDir,
             compatibilityDate: config.compatibilityDate,
             compatibilityFlags: config.compatibilityFlags,
@@ -1780,7 +1831,7 @@ test("Phase 2 full retained ledger stays within the measured SQL envelope", time
 });
 
 async function productionAuthorityFixture(context, {
-    enrolled, placementAliases, pairing = false, pairedProduction = false, control,
+    enrolled, placementAliases, pairing = false, pairedProduction = false, control, holdReceipt,
 } = {}) {
     const root = await mkdtemp(join(import.meta.dirname, "build", "direct-retirement-"));
     const mock = await authorityFixture(join(root, "control.sqlite"), { pairing, control });
@@ -1792,7 +1843,7 @@ async function productionAuthorityFixture(context, {
     const topic = 101550;
     const cutover = {
         production: true, pairedProduction, enrolled: pairedProduction ? {} : enrolled,
-        pairing, scope: `${owner}:${topic}`, runner: "d".repeat(64),
+        pairing, holdReceipt, scope: `${owner}:${topic}`, runner: "d".repeat(64),
         controlOnline: false, authorityCalls: 0,
         fetch(request) {
             cutover.authorityCalls++;
@@ -2016,6 +2067,86 @@ for (const scenario of ["proven unsent", "unproven unsent", "mismatched no-send 
         assert.deepEqual(mock.sends, proven || received || lost ? [
             { task, sendNumber: proven ? 2 : 1, chatId: owner, messageThreadId: topic, text: scenario },
         ] : []);
+    });
+}
+
+for (const scenario of ["valid", "duplicate", "mismatched nonce", "nonpositive ID", "stale send number"]) {
+    test(`BigFur late receipt after expiry with ${scenario}`, timeout, async context => {
+        const { root, mock, client, cutover, ingress, telegram, owner, topic } =
+            await productionAuthorityFixture(context, { pairedProduction: true, holdReceipt: true });
+        cutover.controlOnline = true;
+        mock.publish(cutover.target, null);
+        const alpha = await pairProduction(mock, client, cutover, "alpha");
+        const { task } = await ingress(telegram(45295));
+        const { attempt } = await client.agent("alpha", "claim", { task });
+        const grant = await client.agent("alpha", "start", { attempt });
+        const outbox = async () => (await client.sql(
+            "SELECT phase,sends,message_id FROM outbox LEFT JOIN delivery_receipts USING(task) WHERE task=?", task,
+        ))[0];
+        const gate = Promise.withResolvers();
+        const forward = cutover.fetch;
+        let held = false;
+        let finished = false;
+        let dispatches = 0;
+        cutover.fetch = async request => {
+            const { pathname } = new URL(request.url);
+            if (pathname === "/fixture-alarm-finished") {
+                finished = true;
+                return new Response(null, { status: 204 });
+            }
+            const delivery = pathname === "/v1/send" && (await request.clone().json()).delivery;
+            if (!delivery || delivery.closeUnsent) return forward(request);
+            dispatches++;
+            const response = await forward(request);
+            assert.equal(response.status, 200);
+            const receipt = await response.json();
+            cutover.controlOnline = false;
+            held = true;
+            await gate.promise;
+            if (scenario === "mismatched nonce") receipt.nonce = "unrelated";
+            if (scenario === "nonpositive ID") receipt.messageId = 0;
+            return Response.json(receipt);
+        };
+        const stale = scenario === "stale send number";
+        try {
+            await reportProductionResult(client, grant, scenario, alpha.incarnation);
+            await until(() => held, "Control committed a receipt and the proxy is holding it");
+            assert.deepEqual(await outbox(), { phase: "in_flight", sends: 1, message_id: null });
+            assert.equal((await client.dispatch("https://bigfur.liu.nz/fixture-expire")).status, 200);
+            assert.deepEqual(await outbox(), { phase: "unknown", sends: 1, message_id: null });
+            const control = new DatabaseSync(join(root, "control.sqlite"), { readOnly: true });
+            try {
+                assert.deepEqual(control.prepare("SELECT generation,task,number,message_id FROM sends").all()
+                    .map(row => ({ ...row })), [{ generation: 1, task, number: 1, message_id: 1 }]);
+            } finally {
+                control.close();
+            }
+            if (stale) {
+                assert.equal((await client.dispatch("https://bigfur.liu.nz/fixture-advance-send")).status, 204);
+            }
+            if (scenario === "duplicate") {
+                assert.equal((await client.dispatch("https://bigfur.liu.nz/fixture-commit-receipt")).status, 204);
+            }
+            mock.retire();
+            cutover.controlOnline = true;
+            assert.equal(finished, false);
+        } finally {
+            gate.resolve();
+        }
+        const authorityCalls = cutover.authorityCalls;
+        await until(() => finished, "original send alarm finished after receipt release");
+        assert.equal(cutover.authorityCalls, authorityCalls);
+        const expected = scenario === "valid" || scenario === "duplicate"
+            ? { phase: "delivered", sends: 1, message_id: 1 }
+            : { phase: "unknown", sends: stale ? 2 : 1, message_id: null };
+        assert.deepEqual(await outbox(), expected);
+        assert.deepEqual(await client.scheduledAlarm(), []);
+        await client.restart();
+        assert.deepEqual(await outbox(), expected);
+        assert.deepEqual(await ingress(telegram(45295)), { disposition: "duplicate" });
+        assert.deepEqual(await ingress(telegram(45296), 503), { error: "inactive_generation" });
+        assert.equal(dispatches, 1);
+        assert.deepEqual(mock.sends, [{ task, sendNumber: 1, chatId: owner, messageThreadId: topic, text: scenario }]);
     });
 }
 
