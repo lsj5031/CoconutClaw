@@ -7,6 +7,8 @@
     "stage:pilot": "sh build.sh && node stage.mjs phase2-pilot",
     "stage:production": "sh build.sh && node stage.mjs phase2-production",
     "stage:production-control": "sh build.sh && node stage.mjs phase2-production-control",
+    "preflight:production-control": "node release-production-control.mjs --check",
+    "release:production-control": "node release-production-control.mjs",
     "stage:control-staging-gateway": "sh build.sh && node stage.mjs phase2-control-staging",
     "stage:control": "node stage.mjs control",
     "stage:control-staging": "node stage.mjs control-staging",
@@ -14,7 +16,7 @@
     "check:cf": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run",
     "check:cf:pilot": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run --mode phase2-pilot",
     "check:cf:production": "CF_SEND_TELEMETRY=false cf deploy --prebuilt --dry-run --mode phase2-production",
-    "test": "npm run stage && node --test authority-control.test.mjs authority-preflight.test.mjs automation.test.mjs config.test.mjs control-worker.test.mjs integration.test.mjs"
+    "test": "npm run stage && node --test authority-control.test.mjs authority-preflight.test.mjs automation.test.mjs config.test.mjs control-worker.test.mjs integration.test.mjs operator-query.test.mjs release-production-control.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/build-output-utils": "0.8.2",

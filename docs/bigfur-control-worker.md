@@ -79,46 +79,34 @@ report and agent routes and runner credentials.
    sha256sum "$SOURCE"
    ```
 
-   For an active source, use the verified export and set `CUTOVER_TARGET_FILE`
-   to a new path in the private staging directory. Derive the staged pin from
-   the active publication's target with only `deployment` omitted. Run the
-   check against the exact file you will use for `CUTOVER_TARGET` immediately
-   before upload. The check compares the parsed JSON objects, so whitespace
-   and member order can differ. Exit status `0` means they match. Any failure,
-   including a wrong generation, blocks upload. Neither command prints values.
+   For an active source, verify the export's freshness and provenance against
+   the independent control record while ingress and writers are held. Supply
+   that verified export and its independently recorded SHA-256 as `SOURCE`
+   and `SOURCE_SHA256`. In the private JSON `GATEWAY_SECRETS_FILE`, set
+   `CUTOVER_TARGET` to the JSON-encoded active publication target with only
+   `deployment` removed. The CLI compares the parsed objects, so whitespace
+   and member order can differ. The credential version label is part of the
+   comparison.
 
    ```sh
-   cutover_pin() {
-       node --input-type=module - "$SOURCE" "$CUTOVER_TARGET_FILE" "$1" <<'JS'
-   import { readFileSync, writeFileSync } from "node:fs";
-   import { isDeepStrictEqual } from "node:util";
-
-   const [sourcePath, pinPath, mode] = process.argv.slice(2);
-   try {
-       const source = JSON.parse(readFileSync(sourcePath, "utf8"));
-       const active = source.publications.at(-1);
-       if (!active || source.retirements.some(row => row.generation === active.generation)) {
-           throw new Error();
-       }
-       const { target } = JSON.parse(active.publication);
-       if (target.generation !== active.generation || !Object.hasOwn(target, "deployment")) {
-           throw new Error();
-       }
-       const { deployment, ...expected } = target;
-       if (mode === "derive") {
-           writeFileSync(pinPath, JSON.stringify(expected), { flag: "wx", mode: 0o600 });
-       } else if (mode !== "check" ||
-           !isDeepStrictEqual(JSON.parse(readFileSync(pinPath, "utf8")), expected)) {
-           throw new Error();
-       }
-   } catch {
-       console.error("CUTOVER_TARGET pre-upload check failed");
-       process.exitCode = 1;
-   }
-   JS
-   }
-   cutover_pin derive && cutover_pin check
+   npm run stage:production-control
+   npm run preflight:production-control -- "$SOURCE" "$SOURCE_SHA256" "$GATEWAY_SECRETS_FILE"
    ```
+
+   Run these gateway package commands from `crates/coconutclaw-gateway`.
+   For an authorized release with traffic held, use
+   `npm run release:production-control -- "$SOURCE" "$SOURCE_SHA256" "$GATEWAY_SECRETS_FILE"`.
+   It repeats the preflight before invoking `cf deploy --prebuilt --mode
+   phase2-production-control`. It passes a private temporary copy of the
+   checked JSON secrets with the validated pin re-encoded and suppresses
+   deploy output. Check the resulting version through the authenticated
+   Cloudflare control plane. A failed preflight
+   blocks `cf`. If `cf` starts and exits unsuccessfully, verify release state
+   before retrying. The digest binds the verified bytes. Freshness still
+   depends on the independent record and keeping writers held through release.
+   After migration, use the current private Control snapshot as the source.
+   Verify its `sourceSha256` independently and save `JSON.stringify(source)`
+   to the private file without a trailing newline.
 
    After confirming the uploaded Gateway version, prepare the import.
 
@@ -192,6 +180,46 @@ The operator routes all use `POST` and the operator bearer. `status` and
 `snapshot` take no body. `publish`, `issue`, `rename`, and `retire-runner`
 take the corresponding record shapes from the host runbook. The Gateway
 never proxies these routes.
+
+## Gateway ledger queries
+
+Use the project's authenticated Cloudflare `cf` context. Verify that
+`BOT_LEDGER_NAMESPACE_ID` names the production `BotLedger` namespace and
+`GATEWAY_OBJECT_ID` is the exact object from the verified publication for
+the generation under investigation. Run from `crates/coconutclaw-gateway`.
+
+```sh
+queries=$(node operator-query.mjs task-status "$TASK_ID") &&
+  ./node_modules/.bin/cf durable-objects namespaces query "$BOT_LEDGER_NAMESPACE_ID" \
+    --durable-object-id "$GATEWAY_OBJECT_ID" --queries "$queries"
+
+queries=$(node operator-query.mjs webhook-health) &&
+  ./node_modules/.bin/cf durable-objects namespaces query "$BOT_LEDGER_NAMESPACE_ID" \
+    --durable-object-id "$GATEWAY_OBJECT_ID" --queries "$queries"
+```
+
+`TASK_ID` is `telegram:<update-id>`. Both queries project only metadata using
+fixed `SELECT` statements through the existing authenticated ledger API.
+
+- `task-status` shows the stored execution phase and the Gateway outbox phase
+  independently. `absent` means this object has no task row for that ID.
+  `no_attempt` means no attempt is attached, `missing_attempt` means an
+  attached attempt record is unavailable, and `no_outbox` means there is no
+  local delivery record. `unknown` in either phase is durable uncertainty
+  about that outcome. `send_reservations` counts local reservations.
+  `delivery_receipt_recorded` reports Gateway receipt presence only. Control
+  may hold send evidence that the Gateway has yet to record.
+- The task timestamps are stored Unix milliseconds. They describe the claim
+  lease expiry, Start grant expiry, per-row pending delivery readiness or
+  in-flight reservation expiry when that phase applies. A deadline may
+  already have elapsed. The event times are unavailable. Other pacing and
+  authority checks can delay delivery beyond readiness.
+- `webhook-health` shows the local generation, durable ingress freeze, retained
+  inbox count, and latest committed sequence and disposition in ledger order.
+  A zero count means this ledger has no committed inbox evidence. An unavailable
+  query or uninitialized schema leaves the evidence unknown. Webhook event
+  times, rejected requests, acknowledgments without a new inbox row, Telegram
+  registration and current reachability are outside this recorded evidence.
 
 ## Recovery
 
