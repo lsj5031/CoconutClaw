@@ -9,7 +9,9 @@ SELECT CASE WHEN t.id IS NULL THEN 'absent' ELSE 'present' END AS task_evidence,
            WHEN a.id IS NULL THEN 'missing_attempt'
            ELSE a.phase
        END AS execution,
+       CASE WHEN t.pin IN ('alpha', 'beta', 'gamma') THEN t.pin END AS task_pin,
        a.id AS attempt,
+       CASE WHEN a.device IN ('alpha', 'beta', 'gamma') THEN a.device END AS attempt_device,
        a.cancel_requested,
        CASE WHEN a.phase = 'claimed' THEN a.lease_until END AS claim_lease_expires_at_ms,
        CASE WHEN a.phase = 'authorized' THEN a.start_until END AS start_grant_expires_at_ms,

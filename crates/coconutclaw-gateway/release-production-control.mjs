@@ -69,22 +69,28 @@ try {
     process.exit(1);
 }
 
-console.log("BigFur release preflight passed.");
-if (!checkOnly) {
+if (checkOnly) {
+    console.log("BigFur release preflight passed.");
+} else {
     let directory;
     try {
         directory = mkdtempSync(join(tmpdir(), "bigfur-release-"));
         const path = join(directory, "secrets.json");
         writeFileSync(path, JSON.stringify(secrets), { flag: "wx", mode: 0o600 });
-        const result = spawnSync("cf", ["deploy", "--prebuilt", "--mode", mode, "--secrets-file", path], {
+        const result = spawnSync("cf", ["workers", "versions", "create", "--prebuilt", "--mode", mode, "--secrets-file", path], {
             cwd: root,
-            env: { ...process.env, CF_SEND_TELEMETRY: "false" },
-            stdio: "ignore",
+            env: { ...process.env, CF_SEND_TELEMETRY: "false", FORCE_COLOR: "0", CF_QUIET: "false" },
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
         });
-        if (result.status !== 0) throw new Error();
-        console.log("BigFur release command completed.");
+        if (result.error || result.status !== 0) throw new Error();
+        const versionLines = result.stdout.split(/\r?\n/).filter(line => /^\s*(?:│\s*)?Worker Version ID:/.test(line));
+        const version = versionLines.length === 1 && /^\s*(?:│\s*)?Worker Version ID: ([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})\s*$/
+            .exec(versionLines[0]);
+        if (!version) throw new Error();
+        console.log(version[1]);
     } catch {
-        console.error("BigFur release command did not complete successfully. Verify deployment state before retrying.");
+        console.error("BigFur upload did not return a verified candidate version ID. Check upload state before retrying.");
         process.exitCode = 1;
     } finally {
         if (directory) rmSync(directory, { recursive: true, force: true });

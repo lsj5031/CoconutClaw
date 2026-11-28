@@ -94,19 +94,23 @@ report and agent routes and runner credentials.
    ```
 
    Run these gateway package commands from `crates/coconutclaw-gateway`.
-   For an authorized release with traffic held, use
-   `npm run release:production-control -- "$SOURCE" "$SOURCE_SHA256" "$GATEWAY_SECRETS_FILE"`.
-   It repeats the preflight before invoking `cf deploy --prebuilt --mode
-   phase2-production-control`. It passes a private temporary copy of the
-   checked JSON secrets with the validated pin re-encoded and suppresses
-   deploy output. Check the resulting version through the authenticated
-   Cloudflare control plane. A failed preflight
-   blocks `cf`. If `cf` starts and exits unsuccessfully, verify release state
-   before retrying. The digest binds the verified bytes. Freshness still
+   For an authorized upload with traffic held, capture the candidate UUID
+   and verify the exact version in the project account.
+
+   ```sh
+   GATEWAY_VERSION=$(npm run --silent release:production-control -- "$SOURCE" "$SOURCE_SHA256" "$GATEWAY_SECRETS_FILE") &&
+     ./node_modules/.bin/cf workers versions get "$GATEWAY_VERSION" --worker-id coconutclaw-phase1-test
+   ```
+
+   The release command repeats the preflight before calling `cf workers
+   versions create --prebuilt --mode phase2-production-control --secrets-file`
+   with a private copy of the checked secrets. It uploads a version only and
+   prints its UUID. A failed preflight blocks `cf`. If the upload fails or
+   produces no verified UUID, check upload state before retrying. Freshness
    depends on the independent record and keeping writers held through release.
-   After migration, use the current private Control snapshot as the source.
-   Verify its `sourceSha256` independently and save `JSON.stringify(source)`
-   to the private file without a trailing newline.
+   For a preflight against a post-migration snapshot, verify its
+   `sourceSha256` independently and save `JSON.stringify(source)` to the private
+   source file without a trailing newline.
 
    After confirming the uploaded Gateway version, prepare the import.
 
@@ -138,8 +142,24 @@ report and agent routes and runner credentials.
    with the same digest and version returns the original migration record.
    A different import is rejected. An active version change is recorded
    alongside the immutable publication and leaves generation, object, custody,
-   runner instances, signature domains, and send keys intact.
-6. While ingress is held, verify the candidate can make the expected
+   runner instances, signature domains, and send keys intact. Confirm that
+   both readbacks show `migration.gatewayVersion` equal to the verified
+   `GATEWAY_VERSION`. An existing import cannot bind another version under
+   the same import record. Hold activation until the authorized Control
+   publication or initial migration binds the exact candidate.
+6. After the Control bind and readback, explicitly activate the candidate at
+   100% with the existing production route and its ingress, runner and sender
+   holds still in place. Verify that the first deployment in the list serves
+   exactly the candidate UUID at 100%.
+
+   ```sh
+   versions=$(printf '[{"version_id":"%s","percentage":100}]' "$GATEWAY_VERSION") &&
+     ./node_modules/.bin/cf workers deployments create --worker coconutclaw-phase1-test \
+       --strategy percentage --versions "$versions" &&
+     ./node_modules/.bin/cf workers deployments list --worker coconutclaw-phase1-test
+   ```
+
+   While ingress is held, verify the candidate can make the expected
    authority check, the old version is denied even with an exact previous
    pin, and the old endpoint and old sender are still fenced. Verify the
    existing and retired runner receipts through signed requests, fixed
@@ -203,6 +223,9 @@ fixed `SELECT` statements through the existing authenticated ledger API.
 
 - `task-status` shows the stored execution phase and the Gateway outbox phase
   independently. `absent` means this object has no task row for that ID.
+  `task_pin` is the fixed requested runner slot and is visible before a claim.
+  `attempt_device` is the current attempt's runner slot. Each is `alpha`,
+  `beta`, `gamma` or `null` when the corresponding slot is unavailable.
   `no_attempt` means no attempt is attached, `missing_attempt` means an
   attached attempt record is unavailable, and `no_outbox` means there is no
   local delivery record. `unknown` in either phase is durable uncertainty

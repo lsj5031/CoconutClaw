@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+const candidate = "01234567-89ab-4def-8123-456789abcdef";
+
 function fixture(context) {
     const root = mkdtempSync(join(tmpdir(), "bigfur-release-test-"));
     context.after(() => rmSync(root, { recursive: true, force: true }));
@@ -22,20 +24,25 @@ function fixture(context) {
     execFileSync(process.execPath, ["stage.mjs", "phase2-production-control"], { cwd: root });
     const setBuildContext = (mode, isPreview = false) => writeFileSync(join(output, "config.json"),
         JSON.stringify({ buildContext: { mode, isPreview } }));
-    const called = join(root, "deploy-called");
+    const called = join(root, "cf-called");
     const credential = "synthetic-private-credential";
     writeFileSync(join(bin, "cf"), `#!/usr/bin/env node
         const assert = require("node:assert/strict");
         const fs = require("node:fs");
         const args = process.argv.slice(2);
-        fs.writeFileSync("deploy-called", args[5] ?? "");
-        assert.deepEqual(args.slice(0, 5), ["deploy", "--prebuilt", "--mode", "phase2-production-control", "--secrets-file"]);
-        assert.equal(args.length, 6);
-        assert.equal(fs.statSync(args[5]).mode & 0o777, 0o600);
+        fs.appendFileSync("cf-called", JSON.stringify(args) + "\\n");
+        assert.deepEqual(args.slice(0, 7), ["workers", "versions", "create", "--prebuilt", "--mode",
+            "phase2-production-control", "--secrets-file"]);
+        assert.equal(args.length, 8);
+        const [privateCopy] = args.slice(7);
+        assert.equal(fs.statSync(privateCopy).mode & 0o777, 0o600);
         const staged = JSON.parse(fs.readFileSync("secrets.json"));
         staged.CUTOVER_TARGET = JSON.stringify(JSON.parse(staged.CUTOVER_TARGET));
-        assert.deepEqual(JSON.parse(fs.readFileSync(args[5])), staged);
+        assert.deepEqual(JSON.parse(fs.readFileSync(privateCopy)), staged);
         console.log(${JSON.stringify(credential)});
+        console.error(${JSON.stringify(credential)});
+        console.log(fs.existsSync("cf-output") ? fs.readFileSync("cf-output", "utf8") :
+            "│  Worker Version ID: ${candidate}");
     `, { mode: 0o700 });
 
     const pin = {
@@ -93,17 +100,32 @@ function fixture(context) {
     return { called, digest, current, pin, root, output, run, stageSecrets, setBuildContext, authority, exportSource };
 }
 
-test("matching verified pin reaches the real release entry point's mocked cf with checked secrets", context => {
+test("matching verified pin uploads exactly one candidate using checked secrets and never routes traffic", context => {
     const { called, run } = fixture(context);
     const check = run("preflight");
     assert.equal(check.status, 0, check.stderr);
     assert.equal(existsSync(called), false);
     const release = run();
     assert.equal(release.status, 0, release.stderr);
-    assert.equal(existsSync(called), true);
-    const privateCopy = readFileSync(called, "utf8");
+    assert.equal(release.stdout.trim(), candidate);
+    const invocations = readFileSync(called, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
+    assert.equal(invocations.length, 1);
+    const [privateCopy] = invocations[0].slice(7);
     assert.ok(privateCopy.endsWith("/secrets.json"));
     assert.equal(existsSync(privateCopy), false);
+});
+
+test("upload without an unambiguous candidate UUID fails without exposing cf output", context => {
+    const { root, run } = fixture(context);
+    for (const output of ["Uploaded", `Worker Version ID: ${candidate} extra`,
+        `Worker Version ID: ${candidate}\nWorker Version ID: ${candidate}`]) {
+        writeFileSync(join(root, "cf-output"), output);
+        const release = run();
+        assert.equal(release.status, 1);
+        assert.equal(release.stdout, "");
+        assert.match(release.stderr, /Check upload state before retrying/);
+        assert.doesNotMatch(release.stderr, new RegExp(candidate));
+    }
 });
 
 test("stale staged production secrets stop the real release before cf", context => {

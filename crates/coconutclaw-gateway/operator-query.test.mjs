@@ -51,13 +51,15 @@ test("task status projects execution, delivery and receipt evidence independentl
         INSERT INTO delivery_receipts VALUES ('telegram:3', 54321);
     `);
     assert.deepEqual(read("task-status", "telegram:1"), {
-        task_evidence: "present", execution: "unknown", attempt: 1, cancel_requested: 0,
+        task_evidence: "present", execution: "unknown", task_pin: "alpha", attempt: 1,
+        attempt_device: null, cancel_requested: 0,
         claim_lease_expires_at_ms: null, start_grant_expires_at_ms: null,
         delivery: "no_outbox", send_reservations: null, delivery_receipt_recorded: null,
         delivery_ready_at_ms: null, delivery_expires_at_ms: null,
     });
     assert.deepEqual(read("task-status", "telegram:2"), {
-        task_evidence: "present", execution: "completed", attempt: 2, cancel_requested: 0,
+        task_evidence: "present", execution: "completed", task_pin: "beta", attempt: 2,
+        attempt_device: null, cancel_requested: 0,
         claim_lease_expires_at_ms: null, start_grant_expires_at_ms: null,
         delivery: "unknown", send_reservations: 1, delivery_receipt_recorded: 0,
         delivery_ready_at_ms: null, delivery_expires_at_ms: null,
@@ -70,6 +72,25 @@ test("task status projects execution, delivery and receipt evidence independentl
     const withoutReceipt = read("task-status", "telegram:4");
     assert.equal(withoutReceipt.delivery, "delivered");
     assert.equal(withoutReceipt.delivery_receipt_recorded, 0);
+});
+
+test("task status shows the waiting task pin separately from the current attempt device", context => {
+    const read = readFixture(context, `
+        INSERT INTO tasks(id, chat_id, prompt, pin, current_attempt) VALUES
+            ('telegram:81', 1, '', 'beta', NULL), ('telegram:82', 1, '', 'gamma', 1),
+            ('telegram:83', 1, '', 'synthetic private value', NULL);
+        INSERT INTO attempts(id, task, device, lease_until, phase) VALUES
+            (1, 'telegram:82', 'gamma', 1700000000000, 'claimed');
+    `);
+    const waiting = read("task-status", "telegram:81");
+    assert.equal(waiting.execution, "no_attempt");
+    assert.equal(waiting.task_pin, "beta");
+    assert.equal(waiting.attempt_device, null);
+    const claimed = read("task-status", "telegram:82");
+    assert.equal(claimed.execution, "claimed");
+    assert.equal(claimed.task_pin, "gamma");
+    assert.equal(claimed.attempt_device, "gamma");
+    assert.equal(read("task-status", "telegram:83").task_pin, null);
 });
 
 test("task status distinguishes missing evidence and reports only stored deadlines", context => {
