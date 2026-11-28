@@ -5,18 +5,22 @@ import { test } from "node:test";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 import { loadAndParseConfig } from "@cloudflare/config";
 
-test("only explicit non-preview pilot and production modes select the custom domain", async () => {
+test("gateway config separates public production, external legacy authority, and private staging", async () => {
     for (const isPreview of [false, true]) {
-        for (const mode of [undefined, "production", "phase2-cutover", "phase2-local", "phase2-pilot", "phase2-production"]) {
+        for (const mode of [undefined, "production", "phase2-cutover", "phase2-local", "phase2-pilot",
+            "phase2-production", "phase2-production-control", "phase2-control-staging"]) {
             const { result } = await loadAndParseConfig(join(import.meta.dirname, "cloudflare.config.ts"), {
                 isPreview, mode,
             });
             if (!result.success) throw result.error;
             const { worker } = result.data;
             const pilot = !isPreview && mode === "phase2-pilot";
-            const production = !isPreview && mode === "phase2-production";
-            assert.deepEqual(worker.domains, pilot || production ? ["bigfur.liu.nz"] : undefined, JSON.stringify({ isPreview, mode }));
-            assert.equal(worker.env.PHASE.value, pilot || production ? mode : "disabled");
+            const staging = !isPreview && mode === "phase2-control-staging";
+            const bound = staging || (!isPreview && mode === "phase2-production-control");
+            const production = bound || (!isPreview && mode === "phase2-production");
+            assert.deepEqual(worker.domains, pilot || (production && !staging) ? ["bigfur.liu.nz"] : undefined,
+                JSON.stringify({ isPreview, mode }));
+            assert.equal(worker.env.PHASE.value, pilot ? mode : production ? "phase2-production" : "disabled");
             assert.equal(worker.workersDev, false);
             assert.equal(worker.previewUrls, false);
             assert.equal(worker.routes, undefined);
@@ -24,10 +28,44 @@ test("only explicit non-preview pilot and production modes select the custom dom
             assert.equal(worker.env.LOCAL_GENERATION, undefined);
             assert.equal(worker.env.PILOT_GATE?.type, pilot ? "rate-limit" : undefined);
             assert.equal(worker.env.CF_VERSION_METADATA?.type, production ? "version-metadata" : undefined);
-            for (const name of ["CUTOVER_TARGET", "CUTOVER_AUTHORITY_ORIGIN", "CUTOVER_AUTHORITY_BEARER",
+            assert.equal(worker.env.CUTOVER_AUTHORITY_ORIGIN?.type, production && !bound ? "secret" : undefined);
+            assert.deepEqual(worker.env.CONTROL, bound ? {
+                type: "worker", worker: staging ? "coconutclaw-bigfur-control-staging" : "coconutclaw-bigfur-control",
+            } : undefined);
+            assert.equal(worker.env.CONTROL_REQUIRED?.value, bound ? "1" : undefined);
+            for (const name of ["CUTOVER_TARGET", "CUTOVER_AUTHORITY_BEARER",
                 "CUTOVER_CANCEL_SECRET", "PRODUCTION_TELEGRAM_SCOPE", "WEBHOOK_SECRET"]) {
                 assert.equal(worker.env[name]?.type, production ? "secret" : undefined, name);
             }
+            assert.equal(worker.env.CONTROL_OPERATOR_BEARER, undefined);
+            assert.equal(worker.env.CONTROL_TELEGRAM_BOT_TOKEN, undefined);
+        }
+    }
+});
+
+test("Control owns a private SQLite namespace and exposes the operator on a named entrypoint", async () => {
+    for (const [isPreview, mode] of [[false, undefined], [false, "staging"], [true, undefined]]) {
+        const { result } = await loadAndParseConfig(join(import.meta.dirname, "control/cloudflare.config.ts"), {
+            isPreview, mode,
+        });
+        if (!result.success) throw result.error;
+        const { worker } = result.data;
+        const suffix = isPreview || mode === "staging" ? "-staging" : "";
+        assert.equal(worker.name, `coconutclaw-bigfur-control${suffix}`);
+        assert.equal(worker.workersDev, false);
+        assert.equal(worker.previewUrls, false);
+        assert.equal(worker.routes, undefined);
+        assert.equal(worker.domains, undefined);
+        assert.equal(worker.triggers, undefined);
+        assert.deepEqual(worker.exports, {
+            ControlLedger: { type: "durable-object", storage: "sqlite" },
+            ControlOperator: { type: "worker" },
+        });
+        assert.deepEqual(worker.env.CONTROL_LEDGER, {
+            type: "durable-object", worker: worker.name, exportName: "ControlLedger",
+        });
+        for (const name of ["AUTOMATION_MODE", "AUTOMATION_REPOSITORY", "AUTOMATION_METADATA", "AUTOMATION_TELEGRAM"]) {
+            assert.equal(worker.env[name], undefined, name);
         }
     }
 });

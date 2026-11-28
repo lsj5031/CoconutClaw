@@ -2,9 +2,9 @@ use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use wasm_bindgen::{JsCast, prelude::wasm_bindgen};
+use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
-use worker::{Env, Response, Result, Url, web_sys};
+use worker::{Env, Fetcher, Response, Result, Url, web_sys};
 
 use crate::ledger::{Delivery, Receipt};
 use crate::protocol::Device;
@@ -17,18 +17,26 @@ const PERMIT_MS: i64 = 2_000;
 export function nonce() {
     return crypto.randomUUID();
 }
-export function askAuthority(url, bearer, body) {
-    return fetch(url, {
+export function askAuthority(url, bearer, body, service) {
+    const signal = AbortSignal.timeout(1500);
+    const init = {
         method: 'POST', body, redirect: 'manual', cache: 'no-store',
-        headers: { 'authorization': 'Bearer ' + bearer, 'content-type': 'application/json' },
-        signal: AbortSignal.timeout(1500)
+        headers: { 'authorization': 'Bearer ' + bearer, 'content-type': 'application/json' }
+    };
+    if (!service) return fetch(url, { ...init, signal });
+    let abort;
+    const expired = new Promise((_, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
     });
+    return Promise.race([service.fetch(url, init), expired])
+        .finally(() => signal.removeEventListener('abort', abort));
 }
 ")]
 extern "C" {
     pub fn nonce() -> String;
     #[wasm_bindgen(js_name = askAuthority)]
-    fn ask_authority(url: &str, bearer: &str, body: &str) -> js_sys::Promise;
+    fn ask_authority(url: &str, bearer: &str, body: &str, service: &JsValue) -> js_sys::Promise;
 }
 
 #[derive(Deserialize, Serialize, PartialEq)]
@@ -184,8 +192,33 @@ pub struct Authority<'a> {
     target: Target,
     object_incarnation: &'a str,
     runner: Option<Runner>,
-    origin: Url,
+    endpoint: Endpoint,
     bearer: String,
+}
+
+enum Endpoint {
+    Binding(Fetcher),
+    Http(Url),
+}
+
+impl Endpoint {
+    fn read(env: &Env) -> Option<Self> {
+        if let Ok(binding) = env.service("CONTROL") {
+            return Some(Self::Binding(binding));
+        }
+        if env.var("CONTROL_REQUIRED").is_ok() {
+            return None;
+        }
+        let origin = Url::parse(&env.var("CUTOVER_AUTHORITY_ORIGIN").ok()?.to_string()).ok()?;
+        (origin.scheme() == "https"
+            && origin.host_str().is_some()
+            && origin.username().is_empty()
+            && origin.password().is_none()
+            && origin.path() == "/"
+            && origin.query().is_none()
+            && origin.fragment().is_none())
+        .then_some(Self::Http(origin))
+    }
 }
 
 pub struct Runner {
@@ -252,17 +285,10 @@ struct UnsentReply {
 
 impl<'a> Authority<'a> {
     pub fn read(env: &Env, object_incarnation: &'a str, runner: Option<Runner>) -> Option<Self> {
-        let origin = Url::parse(&env.var("CUTOVER_AUTHORITY_ORIGIN").ok()?.to_string()).ok()?;
+        let endpoint = Endpoint::read(env)?;
         let bearer = env.secret("CUTOVER_AUTHORITY_BEARER").ok()?.to_string();
         let version: Version = env.object_var("CF_VERSION_METADATA").ok()?;
-        if origin.scheme() != "https"
-            || origin.host_str().is_none()
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-            || !lower_hex(&bearer, 64)
+        if !lower_hex(&bearer, 64)
             || !reference(&version.id)
             || runner
                 .as_ref()
@@ -285,7 +311,7 @@ impl<'a> Authority<'a> {
             },
             object_incarnation,
             runner,
-            origin,
+            endpoint,
             bearer,
         })
     }
@@ -305,7 +331,12 @@ impl<'a> Authority<'a> {
         delivery: Value,
         check: Check,
     ) -> Result<Option<T>> {
-        let url = self.origin.join(path)?;
+        let (url, service) = match &self.endpoint {
+            Endpoint::Binding(binding) => {
+                (format!("https://control.internal{path}"), binding.as_ref())
+            }
+            Endpoint::Http(origin) => (origin.join(path)?.to_string(), &JsValue::NULL),
+        };
         let mut request = json!({
             "nonce": nonce,
             "target": self.target,
@@ -323,9 +354,10 @@ impl<'a> Authority<'a> {
         }
         let mut response = Response::from(
             JsFuture::from(ask_authority(
-                url.as_str(),
+                &url,
                 &self.bearer,
                 &request.to_string(),
+                service,
             ))
             .await?
             .dyn_into::<web_sys::Response>()?,

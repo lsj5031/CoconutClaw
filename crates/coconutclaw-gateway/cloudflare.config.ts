@@ -1,11 +1,13 @@
 import { bindings, defineConfig, exports } from "@cloudflare/config";
 
-const name = "coconutclaw-phase1-test";
 const ledger = "BotLedger";
 
 export default defineConfig(({ isPreview, mode }) => {
     const pilot = !isPreview && mode === "phase2-pilot";
-    const production = !isPreview && mode === "phase2-production";
+    const staging = !isPreview && mode === "phase2-control-staging";
+    const bound = staging || (!isPreview && mode === "phase2-production-control");
+    const production = bound || (!isPreview && mode === "phase2-production");
+    const name = staging ? "coconutclaw-bigfur-gateway-staging" : "coconutclaw-phase1-test";
     return {
         worker: {
             name,
@@ -13,7 +15,7 @@ export default defineConfig(({ isPreview, mode }) => {
             compatibilityDate: "2026-07-30",
             workersDev: false,
             previewUrls: false,
-            ...(pilot || production ? { domains: ["bigfur.liu.nz"] } : {}),
+            ...(pilot || (production && !staging) ? { domains: ["bigfur.liu.nz"] } : {}),
             exports: {
                 [ledger]: exports.durableObject({ storage: "sqlite" }),
             },
@@ -23,7 +25,10 @@ export default defineConfig(({ isPreview, mode }) => {
                 ...(production ? {
                     CF_VERSION_METADATA: bindings.versionMetadata(),
                     CUTOVER_TARGET: bindings.secret(),
-                    CUTOVER_AUTHORITY_ORIGIN: bindings.secret(),
+                    ...(bound ? {
+                        CONTROL: bindings.worker({ worker: staging ? "coconutclaw-bigfur-control-staging" : "coconutclaw-bigfur-control" }),
+                        CONTROL_REQUIRED: bindings.text("1"),
+                    } : { CUTOVER_AUTHORITY_ORIGIN: bindings.secret() }),
                     CUTOVER_AUTHORITY_BEARER: bindings.secret(),
                     CUTOVER_CANCEL_SECRET: bindings.secret(),
                     PRODUCTION_TELEGRAM_SCOPE: bindings.secret(),

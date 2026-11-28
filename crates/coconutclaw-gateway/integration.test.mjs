@@ -15,6 +15,8 @@ import { Log, LogLevel, Miniflare } from "miniflare";
 import { checkAuthorityHandoff, pairingChallenge } from "./authority-preflight.mjs";
 import { runnerKey } from "./pair-runner-local.mjs";
 import { authorityFixture, bearer, hostname, origin } from "./runtime-authority-fixture.mjs";
+import { controlWorkerFixture } from "./control-worker-fixture.mjs";
+import { snapshotDigest } from "./control-migration.mjs";
 import {
     admitLegacyFixtureUpdate, advanceGatewayFixture, appendRunningFixtureTask, cutoverSnapshot,
     freezeGatewayFixture, importCutoverDelta,
@@ -148,6 +150,7 @@ async function runFixture(context, {
             modulesRoot: bundleDir,
             compatibilityDate: config.compatibilityDate,
             compatibilityFlags: config.compatibilityFlags,
+            ...(cutover?.boundControl ? { serviceBindings: { CONTROL: cutover.boundControl } } : {}),
             bindings: {
                 ...variables,
                 ...(enabled ? { PHASE: executor ? "phase2-local" : "phase1-local" } : {}),
@@ -168,7 +171,7 @@ async function runFixture(context, {
                             : cutover.production ? "phase2-production" : "phase2-cutover",
                     CUTOVER_TARGET: JSON.stringify(cutover.target?.pin ?? {}),
                     CF_VERSION_METADATA: { id: cutover.versionId ?? cutover.target?.versionId ?? "unset" },
-                    CUTOVER_AUTHORITY_ORIGIN: origin,
+                    ...(cutover.boundControl ? { CONTROL_REQUIRED: "1" } : { CUTOVER_AUTHORITY_ORIGIN: origin }),
                     CUTOVER_AUTHORITY_BEARER: bearer,
                     CUTOVER_CANCEL_SECRET: operator["x-fixture-secret"],
                     ...(cutover.scope ? { PRODUCTION_TELEGRAM_SCOPE: cutover.scope } : {}),
@@ -3471,6 +3474,121 @@ test("BigFur production preserves queued work and pending delivery but fences bo
     await verifyFenced(client, restartChecks);
     assert.deepEqual(await restored.sql("SELECT id FROM tasks WHERE id='telegram:42004'"), []);
     assert.notEqual(mock.checks[restartChecks].objectIncarnation, mock.checks[restoreChecks].objectIncarnation);
+});
+
+test("Cloudflare Control fences an old Gateway snapshot with Mars absent", timeout, async context => {
+    const { root, mock, cutover, client, cancelHeaders, telegram, ingress } =
+        await productionAuthorityFixture(context);
+    const control = await controlWorkerFixture(context, join(root, "private-control"));
+    cutover.controlOnline = true;
+    mock.publish(cutover.target, null, cutover.runner);
+    const { task } = await ingress(telegram(46501));
+    const { attempt } = await client.agent("alpha", "claim", { task });
+    const grant = await client.agent("alpha", "start", { attempt });
+    await reportProductionResult(client, grant, "synthetic Control migration");
+    await client.stop();
+    const saved = join(root, "old-gateway");
+    await client.snapshot(saved);
+    const pending = "SELECT phase,sends FROM outbox WHERE task=?";
+    assert.deepEqual(await client.sql(pending, task), [{ phase: "pending", sends: 0 }]);
+    await mock.close();
+    assert.deepEqual(mock.sends, []);
+
+    const source = mock.snapshot();
+    const gatewayVersion = "service-bound-fixture";
+    assert.equal((await control.operator("import", { source, sourceSha256: snapshotDigest(source), gatewayVersion })).status, 200);
+    await control.restart(true);
+    const checks = [];
+    const forward = async request => {
+        const { target, runnerIncarnation } = await request.clone().json();
+        try {
+            const response = await control.forward(request);
+            checks.push({ target, runnerIncarnation, status: response.status });
+            return response;
+        } catch (error) {
+            checks.push({ target, runnerIncarnation, error: String(error) });
+            throw error;
+        }
+    };
+    const legacyBundle = process.env.GATEWAY_CONTROL_LEGACY_BUNDLE === "1";
+    const transport = legacyBundle ? { fetch: forward } : {
+        boundControl: forward,
+        fetch() { throw new Error("Gateway tried an external Control request"); },
+    };
+    const previous = { ...cutover, ...transport };
+    const restored = await runFixture(context, { inspect: true, restore: saved, cutover: previous, keys: client.keys });
+    await restored.agent("alpha", "start", { attempt }, 503);
+    await until(() => checks.some(check => check.runnerIncarnation === null &&
+        check.target.versionId === previous.target.versionId && check.status === 503),
+    () => `restored alarm reaches private Control ${JSON.stringify(checks)}`);
+    assert.deepEqual(await restored.sql(pending, task), [{ phase: "pending", sends: 0 }]);
+    assert.deepEqual(control.sends, []);
+    await restored.stop();
+
+    Object.assign(cutover, transport, { target: { ...previous.target, versionId: gatewayVersion } });
+    await client.restart();
+    assert.equal((await client.agent("alpha", "hello")).device, "alpha");
+    await until(async () => (await client.sql(pending, task))[0]?.phase === "delivered", "rebound gateway records the receipt");
+    assert.deepEqual(control.sends, [{
+        chat_id: telegram(46501).message.chat.id, message_thread_id: telegram(46501).message.message_thread_id,
+        text: "synthetic Control migration",
+    }]);
+    control.onSend = () => new Response(null, { status: 502 });
+    const { task: uncertain } = await ingress(telegram(46502));
+    const claim = await client.agent("alpha", "claim", { task: uncertain });
+    await reportProductionResult(client, await client.agent("alpha", "start", { attempt: claim.attempt }), "synthetic lost receipt");
+    await until(async () => (await client.sql(pending, uncertain))[0]?.phase === "unknown",
+        "Gateway holds the ambiguous Control send");
+    assert.deepEqual(await client.sql(pending, uncertain), [{ phase: "unknown", sends: 1 }]);
+    await control.restart(true);
+    await client.restart();
+    assert.deepEqual(await client.sql(pending, uncertain), [{ phase: "unknown", sends: 1 }]);
+    const { source: evidence } = await (await control.operator("snapshot")).json();
+    assert.deepEqual(evidence.sends.map(row => [row.task, row.number, row.message_id]),
+        [[task, 1, 1], [uncertain, 1, null]]);
+    assert.equal((await control.operator("retire", { generation: 1 })).status, 200);
+    await control.restart(true);
+    if (!legacyBundle) {
+        await client.post("production/ingress-handoff", {}, webhook, 401);
+        const handoff = await client.post("production/ingress-handoff", {}, cancelHeaders);
+        assert.deepEqual(handoff.updateIds, [46501, 46502]);
+        await client.restart();
+        assert.deepEqual(await client.post("production/ingress-handoff", {}, cancelHeaders), handoff);
+    }
+    await restored.restart();
+    await restored.agent("alpha", "claim", { task }, 503);
+    assert.deepEqual(await restored.sql(pending, task), [{ phase: "pending", sends: 0 }]);
+    assert.equal(control.sends.length, 2);
+});
+
+test("Cloudflare Control exposes only signed pairing through the public Gateway", timeout, async context => {
+    const { root, mock, cutover, client } = await productionAuthorityFixture(context, { pairedProduction: true });
+    const control = await controlWorkerFixture(context, join(root, "private-pairing"));
+    mock.publish(cutover.target, null);
+    const keys = client.keys.alpha;
+    const key = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+    const code = mock.issue({ key });
+    const [status, expected] = await redeemProduction(mock, keys, code);
+    assert.equal(status, 200);
+    await mock.close();
+    const source = mock.snapshot();
+    const gatewayVersion = "pairing-binding-version";
+    assert.equal((await control.operator("import", { source, sourceSha256: snapshotDigest(source), gatewayVersion })).status, 200);
+    cutover.target.versionId = gatewayVersion;
+    cutover.boundControl = request => control.forward(request);
+    cutover.fetch = () => { throw new Error("Gateway tried an external Control request"); };
+    await client.restart();
+    const packet = { code, key, signature: sign(null, pairingChallenge(code, true), keys.privateKey).toString("hex") };
+    const post = (path, value) => client.dispatch(path, { body: JSON.stringify(value) });
+    for (const path of ["https://wrong.invalid/v1/pair", "https://bigfur.liu.nz/v1/pair?extra",
+        "https://bigfur.liu.nz/v1/check", "https://bigfur.liu.nz/v1/send", "https://bigfur.liu.nz/v1/operator/status"]) {
+        assert.equal((await post(path, packet)).status, 404);
+    }
+    assert.equal((await post("https://bigfur.liu.nz/v1/pair", { ...packet, signature: "0".repeat(128) })).status, 401);
+    const response = await post("https://bigfur.liu.nz/v1/pair", packet);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), expected);
+    assert.deepEqual(control.sends, []);
 });
 
 test("BigFur fresh-object policy resumes pending replies and signed claims after cold wake", timeout, async context => {

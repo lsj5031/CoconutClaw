@@ -1,5 +1,9 @@
 # BigFur control host
 
+The [Milestone 1 Cloudflare migration runbook](bigfur-control-worker.md) covers
+moving this ledger and sender to a private Worker. The host steps below apply
+to the legacy service and to collecting source evidence before that move.
+
 For the first BigFur deployment, follow the [direct-retirement runbook](bigfur-direct-retirement.md)
 for ledger initialization and predecessor evidence.
 

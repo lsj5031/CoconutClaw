@@ -37,6 +37,7 @@ export async function authorityFixture(path, { pairing = false, control = new UR
         await once(server, "listening");
     }
     const endpoint = local?.endpoint ?? `http://127.0.0.1:${server.address().port}`;
+    let closed;
     const fixture = {
         checks,
         sends,
@@ -48,8 +49,10 @@ export async function authorityFixture(path, { pairing = false, control = new UR
         beforeSend: undefined,
         holdSend: undefined,
         afterSend: undefined,
-        close: local?.close ?? (() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))),
+        close: () => closed ??= (local ? local.close()
+            : new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))),
         status: () => admin("status"),
+        snapshot: () => admin("export"),
         publish(target, objectIncarnation, runner, ingress) {
             const publication = {
                 target: { ...target.pin, deployment: "synthetic/deployment" },

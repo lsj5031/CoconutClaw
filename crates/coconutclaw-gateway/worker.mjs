@@ -69,6 +69,24 @@ async function pilot(request, env, context) {
 
 export default {
     async fetch(request, env, context) {
+        if (env.PHASE === "phase2-production" && env.CONTROL && new URL(request.url).pathname === "/v1/pair") {
+            const url = new URL(request.url);
+            if (url.origin !== "https://bigfur.liu.nz" || url.search || request.method !== "POST") {
+                return Response.json({ error: "not_found" }, { status: 404 });
+            }
+            try {
+                if (JSON.parse(env.CUTOVER_TARGET).pairing !== "production-v1") {
+                    return Response.json({ error: "not_found" }, { status: 404 });
+                }
+                return await env.CONTROL.fetch("https://control.internal/v1/pair", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: request.body,
+                });
+            } catch {
+                return Response.json({ error: "unavailable" }, { status: 503 });
+            }
+        }
         if (env.PHASE !== "phase2-pilot") return fetch(request, env, context);
         try {
             return await pilot(request, env, context);
